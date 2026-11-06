@@ -4,6 +4,7 @@ require "../gem/platform"
 require "../lockfile/parser"
 require "../definition"
 require "../resolution"
+require "./commands_install"
 
 module Celerite
   # Read-only (M1) and resolution (M2) command implementations. Every command
@@ -42,6 +43,16 @@ module Celerite
         show_info(command, stdout, stderr, rest)
       when "lock"
         lock(stdout, stderr, rest)
+      when "install"
+        install(stdout, stderr, rest)
+      when "cache", "package", "pack"
+        cache(stdout, stderr, rest)
+      when "clean"
+        clean(stdout, stderr, rest)
+      when "exec"
+        exec(stdout, stderr, rest)
+      when "binstubs"
+        binstubs(stdout, stderr, rest)
       when "config"
         config(stdout, stderr, rest)
       when "help", "--help", "-h"
@@ -77,9 +88,9 @@ module Celerite
 
     def self.known_unimplemented?(command : String) : Bool
       {
-        "install", "update", "exec", "cache", "package", "pack", "add", "remove",
-        "binstubs", "outdated", "init", "gem", "clean", "pristine", "doctor",
-        "env", "issue", "licenses", "fund", "open", "console", "plugin",
+        "update", "add", "remove", "outdated", "init", "gem", "pristine",
+        "doctor", "env", "issue", "licenses", "fund", "open", "console",
+        "plugin", "version-bump",
       }.includes?(command)
     end
 

@@ -54,6 +54,31 @@ module Celerite
       getter submodules : Bool?
     end
 
+    # Specification fields of a .gem, extracted by the bridge (Marshal side).
+    # Fields returned when writing an installed specification.
+    struct WrittenSpec
+      include JSON::Serializable
+      getter name : String
+      getter full_name : String
+      getter executables : Array(String)
+      getter bindir : String
+      getter extensions : Array(String)
+    end
+
+    struct GemSpecInfo
+      include JSON::Serializable
+      getter name : String
+      getter version : String
+      getter platform : String
+      getter full_name : String
+      getter executables : Array(String)
+      getter bindir : String
+      getter required_ruby_version : String
+      getter required_rubygems_version : String
+      getter extensions : Array(String)
+      getter dependencies : Array(JSON::Any)?
+    end
+
     struct GemfileEvaluation
       include JSON::Serializable
       getter gemfile : String
@@ -138,6 +163,18 @@ module Celerite
         GemfileEvaluation.from_json(request("evaluate_gemfile", {"gemfile" => path}).to_json)
       end
 
+      def read_gem_spec(path : String) : JSON::Any
+        request("read_gem_spec", {"path" => path})
+      end
+
+      def write_installed_spec(gem_path : String, destination : String, gem_dir : String) : JSON::Any
+        request("write_installed_spec", {"gem_path" => gem_path, "destination" => destination, "gem_dir" => gem_dir})
+      end
+
+      def build_extension(gem_dir : String, destination : String, name : String) : JSON::Any
+        request("build_extension", {"gem_dir" => gem_dir, "destination" => destination, "name" => name})
+      end
+
       def bundler_cache_file(version : String) : String?
         result = request("bundler_cache_file", {"version" => version})
         path = result["path"].as_s?
@@ -150,7 +187,7 @@ module Celerite
         @process.wait unless @process.terminated?
       end
 
-      private def request(op : String, payload : Hash(String, String) = {} of String => String) : JSON::Any
+      private def request(op : String, payload : Hash(String, String) | Hash(String, String?) = {} of String => String) : JSON::Any
         @mutex.synchronize do
           @request_id += 1
           id = @request_id

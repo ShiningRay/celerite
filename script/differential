@@ -36,11 +36,26 @@ bundler_lib="$(echo "$bundler_paths" | tail -1)"
 
 normalize() {
   # $1 = reference sandbox, $2 = celerite sandbox
+  # Program output uses Windows paths; the sandbox vars are MSYS paths, so
+  # normalize both spellings.
+  local ref_win="$(cygpath -m "$1" 2>/dev/null || echo "$1")"
+  local cel_win="$(cygpath -m "$2" 2>/dev/null || echo "$2")"
   sed -e "s|$1|{SANDBOX}|g" \
       -e "s|$2|{SANDBOX}|g" \
+      -e "s|$ref_win|{SANDBOX}|g" \
+      -e "s|$cel_win|{SANDBOX}|g" \
       -e 's/\r$//' \
       -e 's/[0-9][0-9-]*T[0-9:.+-]*Z/{TIMESTAMP}/g' \
-      -e 's/[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}/{DATE}/g'
+      -e 's/[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}/{DATE}/g'     | awk '
+        # Reference downloads complete in nondeterministic order; normalize
+        # runs of consecutive "Fetching <gem> <version>" lines by sorting them.
+        /^Fetching [^ ]+ [^ ]+$/ { buf[n++] = $0; next }
+        {
+          if (n > 0) { asort(buf); for (i = 0; i < n; i++) print buf[i]; delete buf; n = 0 }
+          print
+        }
+        END { if (n > 0) { asort(buf); for (i = 0; i < n; i++) print buf[i] } }
+      '
 }
 
 pass=0
@@ -51,7 +66,7 @@ run_fixture() {
   local fixture_dir="$1"
   local name
   name="$(basename "$fixture_dir")"
-  local command_line
+  # Multiple lines = multiple sequential runs (e.g. install reruns)
   command_line="$(cat "$fixture_dir/command")"
 
   local work
@@ -82,23 +97,34 @@ run_fixture() {
     BUNDLE_PATH="$ref_sandbox/bundle" RUBYOPT=""
   )
 
-  # reference run (inside the sandbox project directory)
-  (
-    cd "$ref_sandbox/project" || exit 99
-    env "${isolated_env[@]}" ruby "$bundler_exe" $command_line
-  ) > "$work/ref.out" 2> "$work/ref.err"
-  local ref_code=$?
+  # Reference run(s): one per command line (multi-line command files run the
+  # commands in sequence), outputs concatenated, last exit code kept. Loops
+  # use dedicated fds so the sandboxed commands cannot eat the command list.
+  : > "$work/ref.out"; : > "$work/ref.err"; ref_code=0
+  while IFS= read -r cmd <&3; do
+    [ -z "$cmd" ] && continue
+    (
+      cd "$ref_sandbox/project" || exit 99
+      env "${isolated_env[@]}" ruby "$bundler_exe" $cmd
+    ) >> "$work/ref.out" 2>> "$work/ref.err"
+    ref_code=$?
+  done 3< "$fixture_dir/command"
 
-  # celerite run
-  (
-    cd "$cel_sandbox/project" || exit 99
-    env HOME="$cel_sandbox/home" USERPROFILE="$cel_sandbox/home" \
-      GEM_HOME="$cel_sandbox/gems" GEM_PATH="$cel_sandbox/gems" \
-      BUNDLE_PATH="$cel_sandbox/bundle" RUBYOPT="" \
-      CELERITE_REFERENCE_BUNDLER_LIB="$bundler_lib" \
-      "$celerite_bin" $command_line
-  ) > "$work/cel.out" 2> "$work/cel.err"
-  local cel_code=$?
+  # Celerite run(s)
+  : > "$work/cel.out"; : > "$work/cel.err"; cel_code=0
+  while IFS= read -r cmd <&4; do
+    [ -z "$cmd" ] && continue
+    (
+      cd "$cel_sandbox/project" || exit 99
+      env HOME="$cel_sandbox/home" USERPROFILE="$cel_sandbox/home" \
+        GEM_HOME="$cel_sandbox/gems" GEM_PATH="$cel_sandbox/gems" \
+        BUNDLE_PATH="$cel_sandbox/bundle" RUBYOPT="" \
+        CELERITE_REFERENCE_BUNDLER_LIB="$bundler_lib" \
+        CELERITE_PROFILE_BUNDLER_VERSION="$bundler_version" \
+        "$celerite_bin" $cmd
+    ) >> "$work/cel.out" 2>> "$work/cel.err"
+    cel_code=$?
+  done 4< "$fixture_dir/command"
 
   normalize "$ref_sandbox" "$cel_sandbox" < "$work/ref.out" > "$work/ref.out.n"
   normalize "$ref_sandbox" "$cel_sandbox" < "$work/cel.out" > "$work/cel.out.n"

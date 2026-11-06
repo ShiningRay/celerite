@@ -15,11 +15,13 @@ describe Celerite::CLI do
     err.should be_empty
   end
 
-  it "fails fast for unimplemented dependency commands" do
-    code, out, err = run_cli(["install"])
-    code.should eq(1)
-    err.should contain("not implemented")
-    out.should be_empty
+  it "runs install (M3) through the full path" do
+    # install without a Gemfile reports the missing Gemfile like the reference
+    with_project({} of String => String) do
+      code, out, err = run_cli(["install"])
+      code.should eq(10)
+      err.should contain("Could not locate Gemfile")
+    end
   end
 
   it "rejects unknown commands like the reference" do

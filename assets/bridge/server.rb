@@ -120,6 +120,69 @@ rescue Gem::LoadError, Gem::MissingSpecError, Gem::MissingSpecVersionError
   end
 end
 
+# Unmarshal the specification of a .gem file and serialize the fields the
+# native installer needs (pinned: Gem::Package spec fields).
+def op_read_gem_spec(payload)
+  require "rubygems/package"
+  path = payload["path"]
+  spec = Gem::Package.new(path).spec
+  {
+    "name" => spec.name,
+    "version" => spec.version.to_s,
+    "platform" => spec.platform.to_s,
+    "full_name" => spec.full_name,
+    "executables" => spec.executables,
+    "bindir" => spec.bindir,
+    "required_ruby_version" => spec.required_ruby_version.to_s,
+    "required_rubygems_version" => spec.required_rubygems_version.to_s,
+    "extensions" => spec.extensions,
+    "dependencies" => spec.runtime_dependencies.map { |d|
+      { "name" => d.name, "type" => d.type.to_s, "requirements" => d.requirement.as_list }
+    },
+  }
+end
+
+# Write the Marshal'd specification of an installed gem (specifications/*.gemspec)
+# the way RubyGems does, given the extracted gem directory.
+def op_write_installed_spec(payload)
+  require "rubygems/package"
+  require "fileutils"
+  gem_path = payload["gem_path"]       # cache/<name>-<version>.gem
+  destination = payload["destination"] # specifications/<full_name>.gemspec
+  spec = Gem::Package.new(gem_path).spec
+  # Recording the install path keeps parity with RubyGems-installed specs
+  spec.full_gem_path = payload["gem_dir"] if payload["gem_dir"]
+  FileUtils.mkdir_p(File.dirname(destination))
+  # RubyGems writes Ruby-format stub specifications (not Marshal)
+  File.write(destination, spec.to_ruby_for_cache)
+  {
+    "name" => spec.name,
+    "full_name" => spec.full_name,
+    "executables" => spec.executables,
+    "bindir" => spec.bindir,
+    "extensions" => spec.extensions,
+  }
+end
+
+# Build native extensions with the reference Ruby/RubyGems toolchain
+# (architecture §2.1: extensions run through the Ruby toolchain, not native code).
+def op_build_extension(payload)
+  require "rubygems/ext"
+  require "fileutils"
+  gem_dir = payload["gem_dir"]
+  destination = payload["destination"] # extensions/<platform>/<abi>/<full_name>
+  spec = Gem::Specification.load(File.join(gem_dir, "#{payload["name"]}.gemspec"))
+  raise "gemspec not found in #{gem_dir}" unless spec
+  gem_build_complete = File.join(destination, "gem.build_complete")
+  FileUtils.mkdir_p(destination)
+  spec.extension_dir = destination
+  Gem::Ext::Builder.new(spec).build_extensions
+  File.write(gem_build_complete, "")
+  { "built" => spec.extensions, "complete" => gem_build_complete }
+rescue StandardError => e
+  { "error" => e.message, "backtrace" => e.backtrace.first(4) }
+end
+
 def serialize_source(source)
   type = source.class.name.split("::").last # Rubygems / Git / Path / Plugin / Metadata
   result = { "type" => type }
@@ -141,6 +204,9 @@ def bridge_dispatch(id, op, payload)
            when "ruby_environment" then op_ruby_environment(payload)
            when "evaluate_gemfile" then op_evaluate_gemfile(payload)
            when "bundler_cache_file" then op_bundler_cache_file(payload)
+           when "read_gem_spec" then op_read_gem_spec(payload)
+           when "write_installed_spec" then op_write_installed_spec(payload)
+           when "build_extension" then op_build_extension(payload)
            else
              return bridge_error(id, "UnknownOp", "unknown bridge op #{op.inspect}")
            end

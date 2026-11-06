@@ -160,7 +160,10 @@ module Celerite
             end
           end
           ruby_req = entry.required_ruby_version ? Gem::Requirement.new(entry.required_ruby_version.not_nil!) : Gem::Requirement.new
-          Resolver::IndexSpec.new(name, version, platform, deps, ruby_req, entry.checksum)
+          # Parity: the reference only records per-gem checksums from remote
+          # API sources; file:// indexes install without them.
+          checksum = primary_remote.starts_with?("file:") ? nil : entry.checksum
+          Resolver::IndexSpec.new(name, version, platform, deps, ruby_req, checksum)
         end
       rescue ex : CompactIndex::Error
         raise ex
@@ -173,9 +176,14 @@ module Celerite
     # Resolution
     # ------------------------------------------------------------------
 
-    def resolve! : Array(ResolvedSpec)
+    def resolve!(reuse : Bool = false) : Array(ResolvedSpec)
       @resolved = true
       deps = top_level_deps
+
+      if reuse && reuse_locked_resolution?(deps)
+        @resolved_specs = materialize_locked
+        return @resolved_specs
+      end
 
       @resolved_specs = run_resolution(deps)
       @resolved_specs
@@ -194,6 +202,14 @@ module Celerite
 
     # Locked-path reuse: identical dependencies + sources mean the lockfile is
     # still valid; no network needed (architecture §2.3 execution path 1).
+    def reuse_locked? : Bool
+      reuse_locked_resolution?(top_level_deps)
+    end
+
+    def top_level_dependencies : Array(Resolver::DepSpec)
+      top_level_deps
+    end
+
     private def reuse_locked_resolution?(deps : Array(Resolver::DepSpec)) : Bool
       return false if @unlock == true || (@unlock.is_a?(Array(String)) && !@unlock.as(Array(String)).empty?)
       return false unless @definition.lockfile_exists?
@@ -360,6 +376,10 @@ module Celerite
       specs
     end
 
+    def top_level_dependencies : Array(Resolver::DepSpec)
+      top_level_deps
+    end
+
     def build_base_requirements(unlocked : Set(String)) : Hash(String, Gem::Requirement)
       base = {} of String => Gem::Requirement
       @evaluation.dependencies.each do |dep|
@@ -417,6 +437,10 @@ module Celerite
     # Lockfile generation
     # ------------------------------------------------------------------
 
+    # Install-time checksum overrides: the reference records the sha256 of
+    # each downloaded package in the lockfile even for file:// sources.
+    property install_checksums : Hash(String, String) = {} of String => String
+
     def generated_lockfile : Lockfile::Data
       resolve! unless @resolved
 
@@ -456,7 +480,9 @@ module Celerite
       if checksums_enabled?
         checksum_section = Lockfile::ChecksumsSection.new
         @resolved_specs.each do |spec|
-          checksums = spec.checksum ? [spec.checksum.not_nil!] : [] of String
+          installed = @install_checksums["#{spec.name}-#{spec.version}"]?
+          checksum = installed || spec.checksum
+          checksums = checksum ? [checksum.not_nil!] : [] of String
           checksum_section.entries << Lockfile::ChecksumEntry.new(spec.name, spec.version.to_s, spec.platform, checksums)
         end
         if path = @bundler_cache_path
