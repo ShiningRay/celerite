@@ -8,7 +8,7 @@ Fetched: 2026-11-06
 
 | Tag | Purpose | Files |
 |---|---|---|
-| `rubygems/rubygems` @ `v4.0.24` (Bundler 4.0.24) | primary reference | `v4.0.24/{version,requirement,platform,dependency,settings}.rb`, `v4.0.24/lockfile_{parser,generator}.rb` (bundler sources) |
+| `rubygems/rubygems` @ `v4.0.24` (Bundler 4.0.24) | primary reference | `v4.0.24/{version,requirement,platform,dependency,settings,rubygems_dependency,rubygems_ext,checksum}.rb`, `v4.0.24/lockfile_{parser,generator}.rb`, `v4.0.24/{dsl,definition,gem_version_promoter,compact_index_client,rubygems_ext}.rb`, `v4.0.24/pub_grub/` (vendored PubGrub), `v4.0.24/resolver/` (Bundler resolver layer), `v4.0.24/compact_index_client/` (cache/parser/updater), `v4.0.24/{platform,check,list,show,info,lock,config}.rb` (CLI commands), `v4.0.24/gem_parser.rb` |
 | `rubygems/rubygems` @ `bundler-v2.7.2` (Bundler 2.7.2) | still-supported reference | `bundler-v2.7.2/` same file set |
 
 URLs used:

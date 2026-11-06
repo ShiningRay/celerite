@@ -28,7 +28,18 @@ exit-code contract; per-command expansion happens as each command is implemented
 | Situation | Code |
 |---|---|
 | success | 0 |
-| frozen mode without a lockfile / frozen lockfile missing a Gemfile dep | 16 |
+| generic failure (M1 locked-path messages) | 1 |
+| `Bundler::SolveFailure` (resolution failed) | 6 |
+| `Bundler::GemNotFound` (missing gem) | 7 |
+| `Bundler::GemfileNotFound` | 10 |
+| unknown command (Thor::Error) | 15 |
+| frozen mode without a lockfile / frozen lockfile missing a Gemfile dep (`ProductionError`) | 16 |
+| `Bundler::LockfileError` (unreadable/conflicted lockfile) | 20 |
+| checksum mismatch (`SecurityError`) | 37 |
+
+Exception-path errors render through the friendly-errors pipeline: the message
+is word-wrapped at 80 columns (THOR_COLUMNS override) on stderr; direct
+`ui.error` calls (check/list locked-path messages) are not wrapped.
 | `check` with missing gems / lockfile mismatch | 1 |
 | Gemfile/lockfile parse or resolve errors | 1 |
 | unknown command | 1 (`Could not find command "<cmd>".` on stderr) |
@@ -45,3 +56,7 @@ stdout/stderr split is asserted in differential tests, not derived from docs.
    exact text differential-tested per case.
 4. Non-TTY output must be identical byte-for-byte after normalization
    (paths, temp dirs, timings).
+5. `lock` always re-resolves (never takes a locked shortcut) and ignores
+   frozen mode entirely; progress lines ("Fetching source index from <remote>",
+   "Resolving dependencies...") go to stdout in write mode and stderr with
+   `--print`.

@@ -142,6 +142,13 @@ module Celerite
       def hash : UInt64
         constraints.hash
       end
+
+      # Intersection of two requirements: concatenating the constraint lists
+      # (Ruby semantics: Gem::Requirement.new(a.as_list + b.as_list)).
+      def self.intersect(a : Requirement, b : Requirement) : Requirement
+        list = a.constraints.map(&.to_s) + b.constraints.map(&.to_s)
+        Requirement.new(list)
+      end
     end
   end
 end

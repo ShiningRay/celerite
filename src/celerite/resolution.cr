@@ -1,0 +1,500 @@
+require "../celerite"
+require "digest/sha256"
+require "./bridge/client"
+require "./compact_index/cache"
+require "./resolver/source"
+require "./definition"
+
+module Celerite
+  # M2 resolution orchestration: bridge Gemfile evaluation -> candidate index
+  # -> PubGrub resolution -> lockfile generation (pinned contracts:
+  # `Bundler::Definition` + `Bundler::Resolver`).
+  class Resolution
+    struct LockedSpec
+      getter name : String
+      getter version : Gem::Version
+      getter platform : String?
+      getter source_type : String
+      getter remote : String?
+
+      def initialize(@name : String, @version : Gem::Version, @platform : String?,
+                     @source_type : String, @remote : String?)
+      end
+    end
+
+    struct ResolvedSpec
+      getter name : String
+      getter version : Gem::Version
+      getter platform : String?
+      getter dependencies : Array(Lockfile::SpecDependency)
+      getter checksum : String?
+      getter source_index : Int32
+
+      def initialize(@name : String, @version : Gem::Version, @platform : String?,
+                     @dependencies : Array(Lockfile::SpecDependency), @checksum : String?,
+                     @source_index : Int32)
+      end
+
+      def platform_ruby? : Bool
+        platform.nil? || platform == "ruby"
+      end
+
+      def full_name : String
+        platform_ruby? ? "#{name}-#{version}" : "#{name}-#{version}-#{platform}"
+      end
+    end
+
+    getter evaluation : Bridge::GemfileEvaluation
+    getter resolved_specs : Array(ResolvedSpec)
+    getter sources : Array(Bridge::EvaluatedSource)
+    getter bridge_bundler_version : String
+    getter bundler_cache_path : String?
+
+    @locked_specs : Array(LockedSpec)?
+    @locked_by_name : Hash(String, Array(LockedSpec))?
+    @compact_index_client : CompactIndex::Client?
+    @index_specs_cache : Hash(String, Array(Resolver::IndexSpec))?
+
+    # Progress output for "Fetching source index..." / "Resolving dependencies..."
+    # lines (stdout for `lock`, stderr for `lock --print` — pinned behavior).
+    property progress : IO = IO::Memory.new
+
+    def initialize(@definition : Definition, @unlock : Bool | Array(String) = false,
+                   @bridge : Bridge::Client? = nil)
+      @owned_bridge = @bridge.nil?
+      @bridge = @bridge || Bridge::Client.new
+      @evaluation = eval_gemfile
+      @sources = @evaluation.sources
+      @bridge_bundler_version = @evaluation.bundler_version
+      @bundler_cache_path = query_bundler_cache_path
+      @resolved_specs = [] of ResolvedSpec
+      @resolved = false
+      @current_base_requirements = {} of String => Gem::Requirement
+      @current_index = {} of String => Array(Resolver::IndexSpec)
+      @prerelease_available = Set(String).new
+    end
+
+    def close : Nil
+      @bridge.not_nil!.close if @owned_bridge
+    end
+
+    private def eval_gemfile : Bridge::GemfileEvaluation
+      @bridge.not_nil!.evaluate_gemfile(@definition.gemfile_path)
+    end
+
+    private def query_bundler_cache_path : String?
+      # The reference records a checksum for the running Bundler when its
+      # cached .gem is available; ask the Ruby side for the cache path.
+      @bridge.not_nil!.bundler_cache_file(@bridge_bundler_version)
+    rescue Bridge::BridgeError
+      nil
+    end
+
+    # ------------------------------------------------------------------
+    # Locked state
+    # ------------------------------------------------------------------
+
+    def locked_specs : Array(LockedSpec)
+      @locked_specs ||= begin
+        lockfile = @definition.lockfile_exists? ? @definition.lockfile! : nil
+        list = [] of LockedSpec
+        if lockfile
+          lockfile.sources.each do |source|
+            remote = source.remote
+            source.specs.each do |spec|
+              list << LockedSpec.new(spec.name, Gem::Version.new(spec.version), spec.platform,
+                source.type, remote)
+            end
+          end
+        end
+        list
+      end
+    end
+
+    private def locked_specs_by_name : Hash(String, Array(LockedSpec))
+      @locked_by_name ||= locked_specs.group_by(&.name)
+    end
+
+    # ------------------------------------------------------------------
+    # Source/index setup
+    # ------------------------------------------------------------------
+
+    # Remote of the primary rubygems source (M2: file:// and http(s)),
+    # normalized with a trailing slash like the reference remotes.
+    def primary_remote : String
+      remote = rubygem_source_remote
+      remote = "https://rubygems.org/" if remote.empty?
+      remote += "/" unless remote.ends_with?("/")
+      remote
+    end
+
+    private def rubygem_source_remote : String
+      rubygem_source = @sources.find(&.type.==("Rubygems"))
+      rubygem_source.try(&.remotes.try(&.first?)) ||
+        rubygem_source.try(&.remote) ||
+        ""
+    end
+
+    private def compact_index_client : CompactIndex::Client
+      @compact_index_client ||= CompactIndex::Client.new(primary_remote, user_cache_root)
+    end
+
+    private def user_cache_root : String
+      home = Config.user_home || "."
+      File.join(home, ".bundle", "cache", "compact_index")
+    end
+
+    # Build candidate specs for one gem from the compact index.
+    private def index_specs_for(name : String) : Array(Resolver::IndexSpec)
+      cache = @index_specs_cache ||= {} of String => Array(Resolver::IndexSpec)
+      cache[name] ||= begin
+        entries = compact_index_client.info(name)
+        entries.map do |entry|
+          version = Gem::Version.new(entry.version)
+          platform = entry.platform_ruby? ? Gem::Platform::RUBY : Gem::Platform.new(entry.platform.not_nil!)
+          deps = entry.dependencies.map do |d|
+            if d.requirements.empty?
+              Resolver::DepSpec.new(d.name, Gem::Requirement.new)
+            else
+              Resolver::DepSpec.new(d.name, Gem::Requirement.new(d.requirements))
+            end
+          end
+          ruby_req = entry.required_ruby_version ? Gem::Requirement.new(entry.required_ruby_version.not_nil!) : Gem::Requirement.new
+          Resolver::IndexSpec.new(name, version, platform, deps, ruby_req, entry.checksum)
+        end
+      rescue ex : CompactIndex::Error
+        raise ex
+      rescue ex : Celerite::VersionError
+        raise LockfileError.new("bad compact index data for #{name}: #{ex.message}")
+      end
+    end
+
+    # ------------------------------------------------------------------
+    # Resolution
+    # ------------------------------------------------------------------
+
+    def resolve! : Array(ResolvedSpec)
+      @resolved = true
+      deps = top_level_deps
+
+      @resolved_specs = run_resolution(deps)
+      @resolved_specs
+    end
+
+    private def top_level_deps : Array(Resolver::DepSpec)
+      deps = [] of Resolver::DepSpec
+      seen = Set(String).new
+      @evaluation.dependencies.each do |dep|
+        next if dep.gemspec_dev_dep
+        next unless seen.add?(dep.name)
+        deps << Resolver::DepSpec.new(dep.name, Gem::Requirement.new(dep.requirements))
+      end
+      deps
+    end
+
+    # Locked-path reuse: identical dependencies + sources mean the lockfile is
+    # still valid; no network needed (architecture §2.3 execution path 1).
+    private def reuse_locked_resolution?(deps : Array(Resolver::DepSpec)) : Bool
+      return false if @unlock == true || (@unlock.is_a?(Array(String)) && !@unlock.as(Array(String)).empty?)
+      return false unless @definition.lockfile_exists?
+
+      lockfile = @definition.lockfile!
+      return false unless lockfile.valid?
+
+      locked_deps = lockfile.dependencies
+      return false unless locked_deps.size == deps.size
+
+      all_ok = deps.all? do |dep|
+        locked = locked_deps.find(&.name.==(dep.name))
+        next false unless locked
+        locked.requirement == dep.requirement
+      end
+      return false unless all_ok
+      return false unless sources_compatible?(lockfile)
+
+      ruby_compatible?(lockfile)
+    end
+
+    private def sources_compatible?(lockfile : Lockfile::Data) : Bool
+      remote = primary_remote
+      normalized_remote = normalize_remote(remote)
+      lockfile.sources.all? do |source|
+        next true unless source.type == "GEM"
+        source.remotes.any? { |r| normalize_remote(r) == normalized_remote }
+      end
+    end
+
+    private def normalize_remote(remote : String) : String
+      return File.expand_path(remote.lchop("file:").lstrip('/')).chomp('/') if remote.starts_with?("file:")
+      remote
+    end
+
+    private def ruby_compatible?(lockfile : Lockfile::Data) : Bool
+      lockfile.ruby_version == @evaluation.ruby
+    end
+
+    private def materialize_locked : Array(ResolvedSpec)
+      lockfile = @definition.lockfile!
+      specs = [] of ResolvedSpec
+      lockfile.sources.each do |source|
+        source.specs.each do |spec|
+          checksum = lockfile.checksums.find { |c| c.name == spec.name && c.version == spec.version }
+          specs << ResolvedSpec.new(spec.name, Gem::Version.new(spec.version), spec.platform,
+            spec.dependencies, checksum.try(&.checksums.first?), 0)
+        end
+      end
+      specs
+    end
+
+    private def run_resolution(deps : Array(Resolver::DepSpec)) : Array(ResolvedSpec)
+      unlocked = Set(String).new
+      prerelease_exceptions = Set(String).new
+
+      @progress.puts "Fetching source index from #{primary_remote}"
+
+      base_requirements = build_base_requirements(unlocked)
+      index = build_index(deps)
+      locked_index = build_locked_index
+      remember_relaxation_state(base_requirements, index)
+
+      source = make_source(base_requirements, index, locked_index, prerelease_exceptions, @unlock)
+
+      orchestrator = Resolver::Orchestrator.new(source, deps)
+      @progress.puts "Resolving dependencies..."
+      decisions = solve_with_relaxation(source, deps, prerelease_exceptions, unlocked, orchestrator)
+      decisions_to_specs(decisions, index, locked_index)
+    end
+
+    private def make_source(base_requirements : Hash(String, Gem::Requirement),
+                            index : Hash(String, Array(Resolver::IndexSpec)),
+                            locked_index : Hash(String, Array(Resolver::IndexSpec)),
+                            prerelease_exceptions : Set(String),
+                            unlock : Bool | Array(String) = false) : Resolver::ResolutionSource
+      source = Resolver::ResolutionSource.new(
+        File.basename(@definition.gemfile_path),
+        "rubygems repository #{primary_remote} or installed locally",
+        index,
+        locked_index,
+        base_requirements,
+        Gem::Platform.local,
+        unlock,
+      )
+      prerelease_exceptions.each { |name| source.package_consider_prereleases(name) }
+      source
+    end
+
+    private def remember_relaxation_state(base_requirements : Hash(String, Gem::Requirement),
+                                          index : Hash(String, Array(Resolver::IndexSpec))) : Nil
+      @current_base_requirements = base_requirements
+      @current_index = index
+      @prerelease_available = Set(String).new
+      index.each do |name, specs|
+        @prerelease_available << name if specs.any?(&.version.prerelease?)
+      end
+    end
+
+    private def solve_with_relaxation(source : Resolver::ResolutionSource, deps : Array(Resolver::DepSpec),
+                                      prerelease_exceptions : Set(String), unlocked : Set(String),
+                                      orchestrator : Resolver::Orchestrator? = nil) : Hash(Resolver::Package, Resolver::CandidateVersion)
+      orchestrator ||= Resolver::Orchestrator.new(source, deps)
+      begin
+        return orchestrator.solve
+      rescue ex : Resolver::SolveFailure
+        names = find_names_to_relax(ex.incompatibility)
+        new_prereleases = names[:prerelease].reject { |n| prerelease_exceptions.includes?(n) }.to_set
+        new_unlocks = names[:unlock].reject { |n| unlocked.includes?(n) }.to_set
+
+        if !new_prereleases.empty? || !new_unlocks.empty?
+          new_prereleases.each { |name| prerelease_exceptions << name }
+          new_unlocks.each { |name| unlocked << name }
+
+          base = build_base_requirements(unlocked)
+          index = build_index(deps)
+          locked_index = build_locked_index
+          remember_relaxation_state(base, index)
+          source = make_source(base, index, locked_index, prerelease_exceptions, @unlock)
+          return solve_with_relaxation(source, deps, prerelease_exceptions, unlocked)
+        end
+
+        raise ex
+      end
+    end
+
+    # Simplified port of `Resolver#find_names_to_relax`.
+    private def find_names_to_relax(incompatibility : Resolver::Incompatibility) : {unlock: Set(String), prerelease: Set(String)}
+      unlock_names = Set(String).new
+      prerelease_names = Set(String).new
+
+      current = incompatibility
+      while current.conflict?
+        cause = current.cause.as(Resolver::IncompatibilityCause::Conflict)
+        current = cause.incompatibility
+
+        current.terms.each do |term|
+          name = term.package.name
+          unlock_names << name if @current_base_requirements.has_key?(name)
+          prerelease_names << name if @prerelease_available.includes?(name)
+        end
+      end
+
+      {unlock: unlock_names, prerelease: prerelease_names}
+    end
+
+    private def decisions_to_specs(decisions : Hash(Resolver::Package, Resolver::CandidateVersion),
+                                   index : Hash(String, Array(Resolver::IndexSpec)),
+                                   locked_index : Hash(String, Array(Resolver::IndexSpec))) : Array(ResolvedSpec)
+      specs = [] of ResolvedSpec
+      decisions.each do |package, candidate_version|
+        next if package.root? || package.meta?
+        name = package.name
+        spec = index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? }) ||
+               locked_index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? })
+        next unless spec
+
+        lock_deps = spec.dependencies.map do |dep|
+          Lockfile::SpecDependency.new(dep.name, dep.requirement.to_lock_requirements)
+        end
+        specs << ResolvedSpec.new(name, spec.version, nil, lock_deps, nil, 0)
+      end
+      specs.sort_by!(&.full_name)
+      specs
+    end
+
+    def build_base_requirements(unlocked : Set(String)) : Hash(String, Gem::Requirement)
+      base = {} of String => Gem::Requirement
+      @evaluation.dependencies.each do |dep|
+        next if dep.gemspec_dev_dep
+        requirement = Gem::Requirement.new(dep.requirements)
+        base[dep.name] = base.has_key?(dep.name) ? Gem::Requirement.intersect(base[dep.name], requirement) : requirement
+      end
+
+      locked_specs_by_name.each do |name, specs|
+        next if @unlock == true
+        next if @unlock.is_a?(Array(String)) && @unlock.as(Array(String)).includes?(name)
+        next if unlocked.includes?(name)
+        locked_version = specs.first?.try(&.version)
+        next unless locked_version
+        next unless base.has_key?(name)
+        next unless base[name].satisfied_by?(locked_version)
+
+        floor = Gem::Requirement.new([">= #{locked_version}"])
+        base[name] = Gem::Requirement.intersect(base[name], floor)
+      end
+      base
+    end
+
+    def build_index(deps : Array(Resolver::DepSpec)) : Hash(String, Array(Resolver::IndexSpec))
+      index = {} of String => Array(Resolver::IndexSpec)
+      queue = deps.map(&.name)
+      seen = Set(String).new
+      while name = queue.shift?
+        next unless seen.add?(name)
+        specs = index_specs_for(name)
+        index[name] = specs
+        specs.each do |spec|
+          spec.dependencies.each do |dep|
+            queue << dep.name unless seen.includes?(dep.name)
+          end
+        end
+      end
+      index
+    end
+
+    def build_locked_index : Hash(String, Array(Resolver::IndexSpec))
+      index = {} of String => Array(Resolver::IndexSpec)
+      locked_specs.each do |locked|
+        next unless locked.source_type == "GEM"
+        (index[locked.name] ||= [] of Resolver::IndexSpec) << Resolver::IndexSpec.new(
+          locked.name, locked.version,
+          locked.platform && locked.platform != "ruby" ? Gem::Platform.new(locked.platform.not_nil!) : Gem::Platform::RUBY,
+          [] of Resolver::DepSpec, Gem::Requirement.new, nil
+        )
+      end
+      index
+    end
+
+    # ------------------------------------------------------------------
+    # Lockfile generation
+    # ------------------------------------------------------------------
+
+    def generated_lockfile : Lockfile::Data
+      resolve! unless @resolved
+
+      sections = [] of Lockfile::Section
+
+      remote = primary_remote
+      gem_specs = @resolved_specs.map do |spec|
+        Lockfile::Spec.new(spec.name, spec.version.to_s, spec.platform, spec.dependencies)
+      end
+      sections << Lockfile::TypedSection.new(Lockfile::SourceSection.new("GEM",
+        [Lockfile::Option.new("remote", remote)], gem_specs))
+
+      platforms = [] of String
+      platforms << Gem::Platform.local.to_s
+      @resolved_specs.each do |spec|
+        if platform = spec.platform
+          platforms << platform unless platforms.includes?(platform)
+        end
+      end
+      platforms.sort!
+      sections << Lockfile::TypedSection.new(Lockfile::PlatformsSection.new(platforms))
+
+      dep_section = Lockfile::DependenciesSection.new
+      @evaluation.dependencies.each do |dep|
+        next if dep.gemspec_dev_dep
+        requirement = Gem::Requirement.new(dep.requirements)
+        source_type = dep.source.try(&.type)
+        pinned = !source_type.nil? && source_type != "Rubygems" && source_type != "Metadata"
+        dep_section.dependencies << Lockfile::Dependency.new(
+          dep.name,
+          requirement.none? ? nil : requirement.to_lock_requirements,
+          pinned,
+        )
+      end
+      sections << Lockfile::TypedSection.new(dep_section)
+
+      if checksums_enabled?
+        checksum_section = Lockfile::ChecksumsSection.new
+        @resolved_specs.each do |spec|
+          checksums = spec.checksum ? [spec.checksum.not_nil!] : [] of String
+          checksum_section.entries << Lockfile::ChecksumEntry.new(spec.name, spec.version.to_s, spec.platform, checksums)
+        end
+        if path = @bundler_cache_path
+          if File.file?(path)
+            sha = Digest::SHA256.hexdigest(File.read(path))
+            checksum_section.entries << Lockfile::ChecksumEntry.new("bundler", @bridge_bundler_version, nil, ["sha256=#{sha}"])
+          end
+        end
+        sections << Lockfile::TypedSection.new(checksum_section)
+      end
+
+      indent = profile_is_2_x? ? "   " : "  "
+      if ruby_req = @evaluation.ruby
+        sections << Lockfile::TypedSection.new(Lockfile::RubySection.new(ruby_req, indent))
+      end
+
+      sections << Lockfile::TypedSection.new(Lockfile::BundledWithSection.new(@bridge_bundler_version, indent))
+
+      Lockfile::Data.new(sections, @definition.lockfile_path, true)
+    end
+
+    # Pinned behavior: a NEW lockfile gets CHECKSUMS when the profile defaults
+    # them on (4.0.24) or the config forces them; an existing lockfile keeps
+    # whatever it had (absent stays absent). 2.7.x defaults CHECKSUMS off.
+    private def checksums_enabled? : Bool
+      if profile_is_2_x?
+        # 2.7.x defaults CHECKSUMS off; keep them only when already locked
+        return @definition.lockfile_exists? && !@definition.lockfile!.checksums_section.nil?
+      end
+
+      return false if @definition.config["lockfile_checksums"] != true
+
+      return true unless @definition.lockfile_exists?
+      !@definition.lockfile!.checksums_section.nil?
+    end
+
+    private def profile_is_2_x? : Bool
+      @bridge_bundler_version.starts_with?("2.")
+    end
+  end
+end

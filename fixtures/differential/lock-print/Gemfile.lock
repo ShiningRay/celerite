@@ -1,15 +1,20 @@
 GEM
-  remote: https://rubygems.org/
+  remote: file:///@INDEX_DIR@/
   specs:
     json_pure (2.8.1)
-    rake (13.4.2)
+    racc (1.8.1)
 
 PLATFORMS
   x64-mingw-ucrt
 
 DEPENDENCIES
   json_pure
-  rake (~> 13.0)
+  racc
+
+CHECKSUMS
+  bundler (4.0.24) sha256=16ca64e20816a0cf151a948fb141d788602996d2b4d73577b74388fe84fa98bc
+  json_pure (2.8.1)
+  racc (1.8.1)
 
 BUNDLED WITH
   4.0.24

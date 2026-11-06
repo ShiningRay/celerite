@@ -7,16 +7,15 @@ require "./cli/commands"
 
 module Celerite
   module CLI
-    # Reference-compatible exit codes (observed from the pinned oracles and
-    # recorded in docs/compat-matrix/cli-commands.md).
+    # Friendly-errors semantics (pinned contract: `Bundler.with_friendly_errors`):
+    # BundlerError subclasses exit with their status_code; Thor::Error with 15;
+    # wrap-worthy messages are word-wrapped at the terminal width (80 for
+    # non-TTY, THOR_COLUMNS override).
     module ExitCode
-      SUCCESS           =  0
-      GENERIC           =  1
-      GEM_NOT_FOUND     =  7
-      GEMFILE_NOT_FOUND = 10
-      UNKNOWN_COMMAND   = 15
-      CHECKSUM_MISMATCH = 37
+      SUCCESS = 0
     end
+
+    DEFAULT_TERMINAL_WIDTH = 80
 
     USAGE = <<-TEXT
     Usage:
@@ -24,31 +23,39 @@ module Celerite
 
     Celerite is a Bundler-compatible dependency manager written in Crystal.
 
-    Implemented (M1, locked path):
-      check, list, show, info, platform, version, lock --print, config get
+    Implemented:
+      locked path (M1): check, list, show, info, platform, version, config get
+      resolution (M2): lock [--print] [--update]
 
     Run `celerite help COMMAND` for command help.
     TEXT
 
-    # Bundler-compatible friendly error rendering: message on stderr, mapping
-    # Celerite errors to the reference exit codes.
     def self.run(args : Array(String), stdout : IO, stderr : IO) : Int32
       Commands.dispatch(args, stdout, stderr)
-    rescue ex : GemfileNotFound
-      stderr.puts ex.message
-      ExitCode::GEMFILE_NOT_FOUND
-    rescue ex : LockfileError
-      stderr.puts ex.message
-      ExitCode::GENERIC
-    rescue ex : VersionError | BadRequirementError
-      stderr.puts ex.message
-      ExitCode::GENERIC
-    rescue ex : UnsupportedCommandError
-      stderr.puts ex.message
-      ExitCode::GENERIC
-    rescue ex : UsageError
-      stderr.puts ex.message
-      ExitCode::UNKNOWN_COMMAND
+    rescue ex : Error
+      friendly_error(ex, stderr)
+      ex.status_code
+    rescue ex : Exception
+      # Unhandled internals: report without pretending compatibility.
+      stderr.puts "celerite internal error: #{ex.message}"
+      1
+    end
+
+    private def self.friendly_error(ex : Error, stderr : IO) : Nil
+      message = ex.message || ex.class.name
+      if ex.wrap?
+        stderr.puts Commands.word_wrap(message, terminal_width)
+      else
+        stderr.puts message
+      end
+    end
+
+    def self.terminal_width : Int32
+      if columns = ENV["THOR_COLUMNS"]?
+        value = columns.to_i
+        return value >= 10 ? value : DEFAULT_TERMINAL_WIDTH
+      end
+      DEFAULT_TERMINAL_WIDTH
     end
   end
 end

@@ -24,12 +24,15 @@ if [ ! -x "$celerite_bin" ]; then
   (cd "$repo_root" && shards build >/dev/null) || { echo "celerite build failed" >&2; exit 2; }
 fi
 
-bundler_exe="$(ruby -e 'begin
+bundler_paths="$(ruby -e 'begin
   spec = Gem::Specification.find_by_name("bundler", ARGV[0])
   puts File.join(spec.full_gem_path, "exe", "bundle")
+  puts File.join(spec.full_gem_path, "lib")
 rescue Gem::LoadError
   abort "bundler #{ARGV[0]} is not installed; see vendor/reference/MANIFEST.md"
 end' "$bundler_version")" || exit 2
+bundler_exe="$(echo "$bundler_paths" | head -1)"
+bundler_lib="$(echo "$bundler_paths" | tail -1)"
 
 normalize() {
   # $1 = reference sandbox, $2 = celerite sandbox
@@ -58,10 +61,15 @@ run_fixture() {
   mkdir -p "$ref_sandbox/project" "$ref_sandbox/home" "$ref_sandbox/gems" "$ref_sandbox/bundle"
   mkdir -p "$cel_sandbox/project" "$cel_sandbox/home" "$cel_sandbox/gems" "$cel_sandbox/bundle"
 
-  cp "$fixture_dir"/Gemfile "$ref_sandbox/project/" 2>/dev/null
-  cp "$fixture_dir"/Gemfile.lock "$ref_sandbox/project/" 2>/dev/null
-  cp "$fixture_dir"/Gemfile "$cel_sandbox/project/" 2>/dev/null
-  cp "$fixture_dir"/Gemfile.lock "$cel_sandbox/project/" 2>/dev/null
+  # Ruby (native Windows) needs a Windows path for file:// sources
+  index_dir="$(cygpath -m "$repo_root/fixtures/gem-index" 2>/dev/null || echo "$repo_root/fixtures/gem-index")"
+  for side in ref cel; do
+    sandbox="$ref_sandbox"; [ "$side" = "cel" ] && sandbox="$cel_sandbox"
+    for f in Gemfile Gemfile.lock; do
+      [ -f "$fixture_dir/$f" ] || continue
+      sed "s|@INDEX_DIR@|$index_dir|" "$fixture_dir/$f" > "$sandbox/project/$f"
+    done
+  done
   # extra files, if any
   if compgen -G "$fixture_dir/extra/*" > /dev/null; then
     cp -r "$fixture_dir/extra/." "$ref_sandbox/project/"
@@ -87,6 +95,7 @@ run_fixture() {
     env HOME="$cel_sandbox/home" USERPROFILE="$cel_sandbox/home" \
       GEM_HOME="$cel_sandbox/gems" GEM_PATH="$cel_sandbox/gems" \
       BUNDLE_PATH="$cel_sandbox/bundle" RUBYOPT="" \
+      CELERITE_REFERENCE_BUNDLER_LIB="$bundler_lib" \
       "$celerite_bin" $command_line
   ) > "$work/cel.out" 2> "$work/cel.err"
   local cel_code=$?

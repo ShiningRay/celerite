@@ -3,16 +3,17 @@ require "../errors"
 require "../gem/platform"
 require "../lockfile/parser"
 require "../definition"
+require "../resolution"
 
 module Celerite
-  # M1 read-only command implementations (the "locked path"): every command
-  # here reads an existing lockfile and never writes one. Behavior is pinned
-  # against the Bundler 4.0.24 oracle (observed outputs recorded in
-  # docs/compat-matrix/ and spec fixtures).
+  # Read-only (M1) and resolution (M2) command implementations. Every command
+  # pins its behavior against the Bundler 4.0.24 oracle; observed outputs and
+  # exit codes are recorded in docs/compat-matrix/ and the differential
+  # fixtures.
   #
-  # Installed-gem materialization is an M3 (Ruby bridge) concern; inside M1's
-  # isolated fixtures no gems are installed, which is exactly the state these
-  # implementations reproduce.
+  # Installed-gem materialization remains an M3 (Ruby bridge) concern; inside
+  # M1's isolated fixtures no gems are installed, which is exactly the state
+  # these implementations reproduce.
   module Commands
     # Global flags accepted before the subcommand (parsed, largely inert in M1).
     GLOBAL_FLAGS = ["--no-color", "--verbose", "-V", "--retry", "-r"]
@@ -22,7 +23,7 @@ module Celerite
 
       if args.empty?
         stdout.puts CLI::USAGE
-        return CLI::ExitCode::SUCCESS
+        return 0
       end
 
       command = args[0]
@@ -48,10 +49,10 @@ module Celerite
       else
         if known_unimplemented?(command)
           stderr.puts "The '#{command}' command is not implemented yet."
-          CLI::ExitCode::GENERIC
+          1
         else
           stderr.puts "Could not find command \"#{command}\"."
-          CLI::ExitCode::UNKNOWN_COMMAND
+          15
         end
       end
     end
@@ -82,16 +83,16 @@ module Celerite
       }.includes?(command)
     end
 
-    # A dependency declared in the lockfile without any locked spec. The
-    # reference detects this during resolution (Gemfile eval, M2 bridge); the
-    # locked path detects it purely from the lockfile itself.
-    def self.unresolved_dep(definition : Definition, lockfile : Lockfile::Data) : String?
-      spec_names = lockfile.specs.map(&.name).to_set
-      lockfile.dependencies.find { |dep| !spec_names.includes?(dep.name) }.try(&.name)
-    end
-
-    def self.first_remote(lockfile : Lockfile::Data) : String?
-      lockfile.sources.first?.try(&.remote)
+    # Thor `word_wrap` (pinned contract: friendly-errors `wrap: true`).
+    def self.word_wrap(text : String, width : Int32 = 80) : String
+      pattern = Regex.new("(.{1,#{width}})(\\s+|$)")
+      text.split("\n").map do |line|
+        if line.size > width
+          line.gsub(pattern, "\\1\n").strip
+        else
+          line
+        end
+      end.join("\n")
     end
 
     # ------------------------------------------------------------------
@@ -99,7 +100,7 @@ module Celerite
     # ------------------------------------------------------------------
     def self.version(stdout : IO, rest : Array(String)) : Int32
       stdout.puts Celerite::VERSION
-      CLI::ExitCode::SUCCESS
+      0
     end
 
     # ------------------------------------------------------------------
@@ -124,7 +125,7 @@ module Celerite
 
         if ruby_version
           # Runtime validation (validate_runtime!) needs the system Ruby and is
-          # an M2 bridge concern; M1 fixtures use lockfiles without RUBY VERSION.
+          # an M3 bridge concern; fixtures use lockfiles without RUBY VERSION.
           output << "Your Gemfile specifies a Ruby version requirement:\n* #{ruby_version}"
         else
           output << "Your Gemfile does not specify a Ruby version requirement."
@@ -132,7 +133,7 @@ module Celerite
       end
 
       stdout.puts output.join("\n\n")
-      CLI::ExitCode::SUCCESS
+      0
     end
 
     # ------------------------------------------------------------------
@@ -143,8 +144,7 @@ module Celerite
       config = definition.config
 
       if config.frozen? && !definition.lockfile_exists?
-        stderr.puts "Frozen mode is set, but there's no lockfile"
-        return 16
+        raise ProductionError.new("Frozen mode is set, but there's no lockfile")
       end
 
       lockfile = definition.lockfile!
@@ -153,7 +153,7 @@ module Celerite
       if unresolved_dep(definition, lockfile)
         stderr.puts "Bundler can't satisfy your Gemfile's dependencies."
         stderr.puts "Install missing gems with `bundle install`."
-        return CLI::ExitCode::GENERIC
+        return 1
       end
 
       missing = locked_specs # locked path: no installed gems are discoverable yet
@@ -163,11 +163,11 @@ module Celerite
           stderr.puts " * #{spec.name} (#{spec.version})"
         end
         stderr.puts "Install missing gems with `bundle install`"
-        return CLI::ExitCode::GENERIC
+        return 1
       end
 
       stdout.puts "The Gemfile's dependencies are satisfied"
-      CLI::ExitCode::SUCCESS
+      0
     end
 
     # ------------------------------------------------------------------
@@ -181,14 +181,14 @@ module Celerite
       locked_specs = lockfile.specs.sort_by(&.full_name)
       if lockfile.dependencies.empty?
         stdout.puts "No gems in the Gemfile"
-        return CLI::ExitCode::SUCCESS
+        return 0
       end
 
       if unresolved = unresolved_dep(definition, lockfile)
         remote = first_remote(lockfile) || "https://rubygems.org/"
         stderr.puts "Could not find gem '#{unresolved}' in rubygems repository #{remote} or installed locally."
         stderr.puts "Install missing gems with `bundle install`."
-        return CLI::ExitCode::GENERIC
+        return 1
       end
 
       # Locked path: specs are not installed (M3 materializes them).
@@ -197,7 +197,7 @@ module Celerite
       unless paths
         stderr.puts "Install missing gems with `bundle install`."
       end
-      CLI::ExitCode::GENERIC
+      1
     end
 
     # ------------------------------------------------------------------
@@ -213,46 +213,64 @@ module Celerite
         unless locked_specs.empty?
           full_names = locked_specs.map(&.full_name).join(", ")
           stderr.puts "Could not find #{full_names} in locally installed gems"
-          return CLI::ExitCode::GEM_NOT_FOUND
+          return 7
         end
         # No gems in the bundle: header only (parity with an empty bundle).
-        return CLI::ExitCode::SUCCESS
+        return 0
       end
 
       name = rest.first?
       if name.nil?
         stderr.puts "Could not find command \"#{command}\"."
-        return CLI::ExitCode::UNKNOWN_COMMAND
+        return 15
       end
 
       spec = locked_specs.find(&.name.==(name))
       if spec.nil?
         stderr.puts "Could not find '#{name}' in locally installed gems. Run `bundle install` to install missing gems."
-        return CLI::ExitCode::GEM_NOT_FOUND
+        return 7
       end
 
       # The gem exists in the lockfile but installation discovery is M3.
       full_names = locked_specs.map(&.full_name).join(", ")
       stderr.puts "Could not find #{full_names} in locally installed gems"
-      CLI::ExitCode::GEM_NOT_FOUND
+      7
     end
 
     # ------------------------------------------------------------------
-    # lock (locked path: --print only; writing is M2)
+    # lock (M2: native resolution + generation)
     # ------------------------------------------------------------------
     def self.lock(stdout : IO, stderr : IO, rest : Array(String)) : Int32
-      if !rest.empty? && (rest.first == "--print" || rest.first == "--update")
-        if rest.first == "--update"
-          stderr.puts "The 'lock' command is not implemented yet."
-          return CLI::ExitCode::GENERIC
-        end
-        definition = Definition.build
-        stdout.print definition.lockfile!.to_lock
-        return CLI::ExitCode::SUCCESS
+      if rest.includes?("--add-platform") || rest.includes?("--remove-platform")
+        stderr.puts "The 'lock' command is not implemented yet."
+        return 1
       end
 
-      stderr.puts "The 'lock' command is not implemented yet."
-      CLI::ExitCode::GENERIC
+      print_mode = rest.includes?("--print")
+      update = rest.includes?("--update") || rest.includes?("--all")
+
+      definition = Definition.build
+      unlock : Bool | Array(String) = update ? true : false
+
+      resolution = Resolution.new(definition, unlock)
+      # Progress goes to stdout in write mode, stderr in --print mode
+      # (pinned observation from the reference oracle).
+      resolution.progress = print_mode ? stderr : stdout
+
+      unless print_mode
+        stdout.puts "Writing lockfile to #{File.expand_path(definition.lockfile_path).gsub(/\\/, "/")}"
+      end
+
+      data = resolution.generated_lockfile
+      text = data.to_lock
+
+      if print_mode
+        stdout.print text
+      else
+        File.write(definition.lockfile_path, text)
+      end
+      resolution.close
+      0
     end
 
     # ------------------------------------------------------------------
@@ -265,17 +283,17 @@ module Celerite
         name = rest[1]?
         if name.nil?
           stderr.puts "Please provide the name of the configuration settings you want to retrieve."
-          return CLI::ExitCode::GENERIC
+          return 1
         end
         definition = Definition.build
         stdout.puts "Settings for `#{name}` in order of priority. The top value will be used"
         definition.config.pretty_values_for(name).each do |line|
           stdout.puts line
         end
-        CLI::ExitCode::SUCCESS
+        0
       else
         stderr.puts "The 'config' command is not implemented yet."
-        CLI::ExitCode::GENERIC
+        1
       end
     end
 
@@ -284,7 +302,19 @@ module Celerite
     # ------------------------------------------------------------------
     def self.help(stdout : IO, rest : Array(String)) : Int32
       stdout.puts CLI::USAGE
-      CLI::ExitCode::SUCCESS
+      0
+    end
+
+    # A dependency declared in the lockfile without any locked spec. The
+    # reference detects this during resolution (Gemfile eval, M2 bridge); the
+    # locked path detects it purely from the lockfile itself.
+    def self.unresolved_dep(definition : Definition, lockfile : Lockfile::Data) : String?
+      spec_names = lockfile.specs.map(&.name).to_set
+      lockfile.dependencies.find { |dep| !spec_names.includes?(dep.name) }.try(&.name)
+    end
+
+    def self.first_remote(lockfile : Lockfile::Data) : String?
+      lockfile.sources.first?.try(&.remote)
     end
   end
 end

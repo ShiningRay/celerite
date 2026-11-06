@@ -203,25 +203,12 @@ describe Celerite::CLI do
   end
 
   describe "lock" do
-    it "prints the lockfile byte-identically with --print" do
-      with_project({
-        "Gemfile"      => "source \"https://rubygems.org\"\n\ngem \"json_pure\", \">= 2.0\"\n",
-        "Gemfile.lock" => FIXTURE_LOCKFILE,
-      }) do
-        code, out, err = run_cli(["lock", "--print"])
-        code.should eq(0)
-        out.should eq(FIXTURE_LOCKFILE + "
-")
-        err.should be_empty
-      end
-    end
-
-    it "does not implement lockfile writing yet" do
+    it "rejects platform management flags as not implemented yet" do
       with_project({
         "Gemfile"      => "source \"https://rubygems.org\"\n\ngem \"json_pure\", \">= 2.0\"\n",
         "Gemfile.lock" => FIXTURE_LOCKFILE,
       }) do |dir|
-        code, out, err = run_cli(["lock"])
+        code, out, err = run_cli(["lock", "--add-platform", "ruby"])
         code.should eq(1)
         err.should contain("not implemented")
         File.read(File.join(dir, "Gemfile.lock")).should eq(FIXTURE_LOCKFILE)
@@ -271,7 +258,7 @@ describe Celerite::CLI do
         "Gemfile.lock" => "GEM\n  remote: https://rubygems.org/\n  specs:\n    bad (x.y.z)\n",
       }) do
         code, out, err = run_cli(["check"])
-        code.should eq(1)
+        code.should eq(20) # Bundler::LockfileError status code
         err.should contain("unreadable")
       end
     end

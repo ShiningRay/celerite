@@ -10,6 +10,13 @@ require "./celerite/lockfile/model"
 require "./celerite/lockfile/parser"
 require "./celerite/config"
 require "./celerite/definition"
+require "./celerite/resolver/package"
+require "./celerite/resolver/ranges"
+require "./celerite/resolver/solver"
+require "./celerite/resolver/source"
+require "./celerite/bridge/client"
+require "./celerite/compact_index/cache"
+require "./celerite/resolution"
 
 module Celerite
   VERSION = "0.1.0"

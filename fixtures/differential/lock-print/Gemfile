@@ -1,4 +1,4 @@
-source "https://rubygems.org"
+source "file:///@INDEX_DIR@"
 
 gem "json_pure"
-gem "rake", "~> 13.0"
+gem "racc"

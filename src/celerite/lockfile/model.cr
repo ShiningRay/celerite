@@ -162,9 +162,20 @@ module Celerite
       def initialize(@dependencies : Array(Dependency) = [] of Dependency)
       end
 
+      # The generator sorts dependencies by their rendered form, deduped by
+      # name (pinned: `LockfileGenerator#add_dependencies`).
       def to_lock(io : IO) : Nil
         io << "DEPENDENCIES\n"
-        dependencies.each(&.to_lock(io))
+        handled = [] of String
+        sorted = dependencies.sort_by do |dep|
+          suffix = Lockfile.requirement_suffix(dep.requirements).lchop(" ")
+          "#{dep.name} (#{suffix})"
+        end
+        sorted.each do |dep|
+          next if handled.includes?(dep.name)
+          handled << dep.name
+          dep.to_lock(io)
+        end
       end
     end
 
@@ -195,33 +206,42 @@ module Celerite
       def initialize(@entries : Array(ChecksumEntry) = [] of ChecksumEntry)
       end
 
+      # The generator sorts the rendered lines (checksums + bundler entry).
       def to_lock(io : IO) : Nil
         io << "CHECKSUMS\n"
-        entries.each(&.to_lock(io))
+        lines = entries.map do |entry|
+          String.build { |b| entry.to_lock(b) }.chomp
+        end.sort
+        lines.each do |line|
+          io << line << "\n"
+        end
       end
     end
 
     class RubySection
       getter ruby_version : String
+      # 4.0.24 indents String section values with two spaces; 2.7.x uses three.
+      getter indent : String
 
-      def initialize(@ruby_version : String)
+      def initialize(@ruby_version : String, @indent : String = "  ")
       end
 
       def to_lock(io : IO) : Nil
         io << "RUBY VERSION\n"
-        io << "  " << ruby_version << "\n"
+        io << indent << ruby_version << "\n"
       end
     end
 
     class BundledWithSection
       getter version : String
+      getter indent : String
 
-      def initialize(@version : String)
+      def initialize(@version : String, @indent : String = "  ")
       end
 
       def to_lock(io : IO) : Nil
         io << "BUNDLED WITH\n"
-        io << "  " << version << "\n"
+        io << indent << version << "\n"
       end
     end
 
