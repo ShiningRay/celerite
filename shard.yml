@@ -1,0 +1,13 @@
+name: celerite
+version: 0.1.0
+
+authors:
+  - ShiningRay <tsowly@hotmail.com>
+
+targets:
+  celerite:
+    main: src/cli.cr
+
+crystal: '>= 1.21.1'
+
+license: MIT
