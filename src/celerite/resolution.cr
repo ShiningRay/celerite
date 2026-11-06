@@ -4,8 +4,29 @@ require "./bridge/client"
 require "./compact_index/cache"
 require "./resolver/source"
 require "./definition"
+require "./git_source"
 
 module Celerite
+  # Install path helpers shared by Resolution and the CLI commands.
+  module InstallPaths
+    def self.install_path(config : Config) : String
+      configured = config["path"].to_s
+      base = configured.empty? ? File.join(Config.user_home || ".", ".bundle") : configured
+      File.expand_path(base)
+    end
+
+    def self.downloader_cache_root : String
+      home = Config.user_home || "."
+      File.join(home, ".bundle", "cache")
+    end
+
+    def self.ruby_abi(bridge : Bridge::Client) : String
+      env = bridge.ruby_environment
+      parts = env.ruby_version.split(".")
+      "#{parts[0]}.#{parts[1]}.0"
+    end
+  end
+
   # M2 resolution orchestration: bridge Gemfile evaluation -> candidate index
   # -> PubGrub resolution -> lockfile generation (pinned contracts:
   # `Bundler::Definition` + `Bundler::Resolver`).
@@ -29,10 +50,13 @@ module Celerite
       getter dependencies : Array(Lockfile::SpecDependency)
       getter checksum : String?
       getter source_index : Int32
+      getter source_type : String # GEM / PATH / GIT
+      getter source_info : SourceInfo?
 
       def initialize(@name : String, @version : Gem::Version, @platform : String?,
                      @dependencies : Array(Lockfile::SpecDependency), @checksum : String?,
-                     @source_index : Int32)
+                     @source_index : Int32, @source_type : String = "GEM",
+                     @source_info : SourceInfo? = nil)
       end
 
       def platform_ruby? : Bool
@@ -44,12 +68,26 @@ module Celerite
       end
     end
 
+    # Non-GEM source descriptor (PATH remote / GIT remote+ref options).
+    class SourceInfo
+      include JSON::Serializable
+      getter type : String
+      getter remote : String
+      getter branch : String?
+      getter tag : String?
+      getter ref : String?
+      getter submodules : Bool?
+      getter glob : String?
+      property revision : String?
+    end
+
     getter evaluation : Bridge::GemfileEvaluation
     getter resolved_specs : Array(ResolvedSpec)
     getter sources : Array(Bridge::EvaluatedSource)
     getter bridge_bundler_version : String
     getter bundler_cache_path : String?
 
+    @non_gem_sources : Hash(String, SourceInfo)?
     @locked_specs : Array(LockedSpec)?
     @locked_by_name : Hash(String, Array(LockedSpec))?
     @compact_index_client : CompactIndex::Client?
@@ -144,10 +182,56 @@ module Celerite
       File.join(home, ".bundle", "cache", "compact_index")
     end
 
+    # Non-GEM sources from the Gemfile evaluation (PATH remote / GIT options),
+    # keyed by the dependency name bound to them.
+    def non_gem_sources : Hash(String, SourceInfo)
+      @non_gem_sources ||= begin
+        map = {} of String => SourceInfo
+        @evaluation.dependencies.each do |dep|
+          src = dep.source
+          next if src.nil?
+          next if src.type == "Rubygems" || src.type == "Metadata"
+          map[dep.name] = SourceInfo.from_json({
+            "type" => src.type, "remote" => (src.remote || src.remotes.try(&.first?) || ""),
+            "branch" => src.branch, "tag" => src.tag, "ref" => src.ref,
+            "submodules" => src.submodules, "glob" => src.glob, "revision" => nil,
+          }.to_json)
+        end
+        map
+      end
+    end
+
+    # Loads the spec of a path/git source gem (gemspec in the given dir).
+    def load_source_gem_spec(name : String, dir : String, glob : String?) : Resolver::IndexSpec?
+      info = @bridge.not_nil!.load_gemspec_dir(dir, glob)
+      version = Gem::Version.new(info.version)
+      platform = info.platform == "ruby" ? Gem::Platform::RUBY : Gem::Platform.new(info.platform)
+      deps = (info.dependencies || [] of JSON::Any).map do |d|
+        reqs = d["requirements"].as_a.map(&.as_s)
+        reqs.empty? ? Resolver::DepSpec.new(d["name"].as_s, Gem::Requirement.new) : Resolver::DepSpec.new(d["name"].as_s, Gem::Requirement.new(reqs))
+      end
+      ruby_req = info.required_ruby_version.empty? ? Gem::Requirement.new : Gem::Requirement.new(info.required_ruby_version)
+      Resolver::IndexSpec.new(name, version, platform, deps, ruby_req, nil)
+    rescue ex : Bridge::BridgeError
+      nil
+    end
+
+    # The rubygems index is fetched lazily on first access (pinned reference
+    # behavior: the fetch lands before "Resolving dependencies..." when root
+    # gem deps need it, after it otherwise).
+    @index_fetch_logged = false
+
+    private def log_index_fetch : Nil
+      return if @index_fetch_logged
+      @index_fetch_logged = true
+      @progress.puts "Fetching source index from #{primary_remote}"
+    end
+
     # Build candidate specs for one gem from the compact index.
     private def index_specs_for(name : String) : Array(Resolver::IndexSpec)
       cache = @index_specs_cache ||= {} of String => Array(Resolver::IndexSpec)
       cache[name] ||= begin
+        log_index_fetch
         entries = compact_index_client.info(name)
         entries.map do |entry|
           version = Gem::Version.new(entry.version)
@@ -266,14 +350,18 @@ module Celerite
       unlocked = Set(String).new
       prerelease_exceptions = Set(String).new
 
-      @progress.puts "Fetching source index from #{primary_remote}"
-
       base_requirements = build_base_requirements(unlocked)
       index = build_index(deps)
       locked_index = build_locked_index
       remember_relaxation_state(base_requirements, index)
 
-      source = make_source(base_requirements, index, locked_index, prerelease_exceptions, @unlock)
+      # GEM specs fetch lazily from the compact index during resolution
+      # (pinned: the index fetch lands relative to "Resolving dependencies..."
+      # depending on whether root deps need it).
+      fetcher = Proc(String, Array(Resolver::IndexSpec)).new do |name|
+        index_specs_for(name)
+      end
+      source = make_source(base_requirements, index, locked_index, prerelease_exceptions, @unlock, fetcher)
 
       orchestrator = Resolver::Orchestrator.new(source, deps)
       @progress.puts "Resolving dependencies..."
@@ -285,7 +373,8 @@ module Celerite
                             index : Hash(String, Array(Resolver::IndexSpec)),
                             locked_index : Hash(String, Array(Resolver::IndexSpec)),
                             prerelease_exceptions : Set(String),
-                            unlock : Bool | Array(String) = false) : Resolver::ResolutionSource
+                            unlock : Bool | Array(String) = false,
+                            spec_fetcher : (String -> Array(Resolver::IndexSpec))? = nil) : Resolver::ResolutionSource
       source = Resolver::ResolutionSource.new(
         File.basename(@definition.gemfile_path),
         "rubygems repository #{primary_remote} or installed locally",
@@ -294,6 +383,7 @@ module Celerite
         base_requirements,
         Gem::Platform.local,
         unlock,
+        spec_fetcher,
       )
       prerelease_exceptions.each { |name| source.package_consider_prereleases(name) }
       source
@@ -311,7 +401,8 @@ module Celerite
 
     private def solve_with_relaxation(source : Resolver::ResolutionSource, deps : Array(Resolver::DepSpec),
                                       prerelease_exceptions : Set(String), unlocked : Set(String),
-                                      orchestrator : Resolver::Orchestrator? = nil) : Hash(Resolver::Package, Resolver::CandidateVersion)
+                                      orchestrator : Resolver::Orchestrator? = nil,
+                                      fetcher : (String -> Array(Resolver::IndexSpec))? = nil) : Hash(Resolver::Package, Resolver::CandidateVersion)
       orchestrator ||= Resolver::Orchestrator.new(source, deps)
       begin
         return orchestrator.solve
@@ -328,8 +419,8 @@ module Celerite
           index = build_index(deps)
           locked_index = build_locked_index
           remember_relaxation_state(base, index)
-          source = make_source(base, index, locked_index, prerelease_exceptions, @unlock)
-          return solve_with_relaxation(source, deps, prerelease_exceptions, unlocked)
+          source = make_source(base, index, locked_index, prerelease_exceptions, @unlock, fetcher)
+          return solve_with_relaxation(source, deps, prerelease_exceptions, unlocked, orchestrator: nil, fetcher: fetcher)
         end
 
         raise ex
@@ -370,7 +461,10 @@ module Celerite
         lock_deps = spec.dependencies.map do |dep|
           Lockfile::SpecDependency.new(dep.name, dep.requirement.to_lock_requirements)
         end
-        specs << ResolvedSpec.new(name, spec.version, nil, lock_deps, nil, 0)
+        source = non_gem_sources[name]?
+        source_type = source ? source.type.upcase : "GEM"
+        source_type = "PATH" if source_type == "GEMSPEC"
+        specs << ResolvedSpec.new(name, spec.version, nil, lock_deps, nil, 0, source_type, source)
       end
       specs.sort_by!(&.full_name)
       specs
@@ -409,15 +503,56 @@ module Celerite
       seen = Set(String).new
       while name = queue.shift?
         next unless seen.add?(name)
-        specs = index_specs_for(name)
-        index[name] = specs
-        specs.each do |spec|
-          spec.dependencies.each do |dep|
-            queue << dep.name unless seen.includes?(dep.name)
+        if source = non_gem_sources[name]?
+          specs = index_for_source_gem(name, source)
+          index[name] = specs
+          specs.each do |spec|
+            spec.dependencies.each do |dep|
+              queue << dep.name unless seen.includes?(dep.name)
+            end
           end
         end
+        # GEM-source specs are fetched lazily by ResolutionSource via the
+        # spec_fetcher during resolution
       end
       index
+    end
+
+    # Path/git source gems: load their gemspec from the source location.
+    # Git sources are cloned/checked out first (the reference fetches before
+    # resolving).
+    private def index_for_source_gem(name : String, source : SourceInfo) : Array(Resolver::IndexSpec)
+      dir = ensure_source_dir(name, source)
+      spec = load_source_gem_spec(name, dir, source.glob)
+      spec ? [spec] : [] of Resolver::IndexSpec
+    end
+
+    # Ensures the gemspec directory exists for the source; for git sources
+    # performs the mirror clone/checkout and records the revision.
+    def ensure_source_dir(name : String, source : SourceInfo) : String
+      case source.type
+      when "Path", "Gemspec"
+        # path sources resolve relative to the Gemfile directory
+        path = source.remote
+        path = File.expand_path(path, File.dirname(@definition.gemfile_path)) unless File.exists?(path)
+        path
+      when "Git"
+        bundle_root = File.join(install_path_root, "ruby", ruby_abi_for_git)
+        git = GitSource.new(source.remote, bundle_root)
+        revision = source.revision || git.fetch(source.branch || source.tag || source.ref)
+        source.revision = revision
+        git.checkout(revision, source.submodules == true)
+      else
+        raise Error.new("unsupported source type #{source.type} for #{name}")
+      end
+    end
+
+    def install_path_root : String
+      InstallPaths.install_path(@definition.config)
+    end
+
+    def ruby_abi_for_git : String
+      @ruby_abi_for_git ||= InstallPaths.ruby_abi(@bridge.not_nil!)
     end
 
     def build_locked_index : Hash(String, Array(Resolver::IndexSpec))
@@ -437,6 +572,9 @@ module Celerite
     # Lockfile generation
     # ------------------------------------------------------------------
 
+    property added_platforms : Array(String) = [] of String
+    property removed_platforms : Array(String) = [] of String
+
     # Install-time checksum overrides: the reference records the sha256 of
     # each downloaded package in the lockfile even for file:// sources.
     property install_checksums : Hash(String, String) = {} of String => String
@@ -446,20 +584,58 @@ module Celerite
 
       sections = [] of Lockfile::Section
 
+      # Non-GEM sources first (pinned: lock_sources = (path + git).sort_by
+      # identifier — "git..." sorts before "path..." — then rubygems sources).
+      non_gem = @resolved_specs.reject(&.source_type.==("GEM"))
+      non_gem.select(&.source_type.==("GIT")).group_by(&.source_info.not_nil!.remote).each do |remote, specs|
+        source_specs = specs.map do |spec|
+          Lockfile::Spec.new(spec.name, spec.version.to_s, spec.platform, spec.dependencies)
+        end
+        info = specs.first.source_info.not_nil!
+        options = [Lockfile::Option.new("remote", remote),
+                   Lockfile::Option.new("revision", info.revision || "")]
+        options << Lockfile::Option.new("branch", info.branch.not_nil!) if info.branch
+        options << Lockfile::Option.new("tag", info.tag.not_nil!) if info.tag
+        options << Lockfile::Option.new("ref", info.ref.not_nil!) if info.ref
+        options << Lockfile::Option.new("submodules", "true") if info.submodules == true
+        sections << Lockfile::TypedSection.new(Lockfile::SourceSection.new("GIT", options, source_specs))
+      end
+      non_gem.select(&.source_type.==("PATH")).group_by(&.source_info.not_nil!.remote).each do |remote, specs|
+        source_specs = specs.map do |spec|
+          Lockfile::Spec.new(spec.name, spec.version.to_s, spec.platform, spec.dependencies)
+        end
+        sections << Lockfile::TypedSection.new(Lockfile::SourceSection.new("PATH",
+          [Lockfile::Option.new("remote", remote)], source_specs))
+      end
+
       remote = primary_remote
-      gem_specs = @resolved_specs.map do |spec|
+      gem_specs = @resolved_specs.select(&.source_type.==("GEM")).map do |spec|
         Lockfile::Spec.new(spec.name, spec.version.to_s, spec.platform, spec.dependencies)
       end
+      gem_specs.sort_by!(&.full_name)
       sections << Lockfile::TypedSection.new(Lockfile::SourceSection.new("GEM",
         [Lockfile::Option.new("remote", remote)], gem_specs))
 
       platforms = [] of String
-      platforms << Gem::Platform.local.to_s
+      # Existing lockfile platforms persist (parity with re-lock behavior)
+      if @definition.lockfile_exists?
+        @definition.lockfile!.platforms.each do |p|
+          platforms << p unless platforms.includes?(p)
+        end
+      end
+      platforms << Gem::Platform.local.to_s unless platforms.includes?(Gem::Platform.local.to_s)
       @resolved_specs.each do |spec|
         if platform = spec.platform
           platforms << platform unless platforms.includes?(platform)
         end
       end
+      @added_platforms.each do |p|
+        platforms << p unless platforms.includes?(p)
+      end
+      @removed_platforms.each do |p|
+        platforms.delete(p)
+      end
+      platforms = platforms.reject(&.==("ruby")) + (platforms.select(&.==("ruby")))
       platforms.sort!
       sections << Lockfile::TypedSection.new(Lockfile::PlatformsSection.new(platforms))
 

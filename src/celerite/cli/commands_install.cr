@@ -20,20 +20,15 @@ module Celerite
   #   BUNDLE_GEMFILE=<abs>, and prepends the bundle bin dir to PATH
   module Commands
     def self.ruby_abi(bridge : Bridge::Client) : String
-      env = bridge.ruby_environment
-      parts = env.ruby_version.split(".")
-      "#{parts[0]}.#{parts[1]}.0"
+      InstallPaths.ruby_abi(bridge)
     end
 
     def self.install_path(config : Config) : String
-      configured = config["path"].to_s
-      base = configured.empty? ? File.join(Config.user_home || ".", ".bundle") : configured
-      File.expand_path(base)
+      InstallPaths.install_path(config)
     end
 
     def self.downloader_cache_root : String
-      home = Config.user_home || "."
-      File.join(home, ".bundle", "cache")
+      InstallPaths.downloader_cache_root
     end
 
     def self.native_suffix(bridge : Bridge::Client, gem_file : String?) : String
@@ -65,9 +60,20 @@ module Celerite
         installer = Installer.new(install_path, abi, bridge, downloader, stdout)
 
         reuse = resolution_can_reuse?(resolution)
+
+        # Git sources fetch before resolving (pinned reference behavior);
+        # their "Fetching <remote>" lines appear first.
+        resolution.non_gem_sources.each do |name, source|
+          next unless source.type == "Git"
+          # revision already pinned and checked out -> nothing to fetch
+          next if reuse && source.revision
+          stdout.puts "Fetching #{source.remote}"
+          resolution.ensure_source_dir(name, source)
+        end
+
         specs = resolution.resolve!(reuse)
 
-        pending = specs.sort_by(&.full_name).reject do |spec|
+        pending = specs.sort_by(&.full_name).select(&.source_type.==("GEM")).reject do |spec|
           installer.installed?(spec.name, spec.version.to_s, spec.platform)
         end
         # Reference output order: all "Fetching" lines (downloads) first,

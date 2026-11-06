@@ -1,0 +1,4 @@
+source "file:///@INDEX_DIR@"
+
+gemspec path: "local_gem"
+gem "gitgem", git: "./gitgem", branch: "master"

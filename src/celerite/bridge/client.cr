@@ -171,6 +171,12 @@ module Celerite
         request("write_installed_spec", {"gem_path" => gem_path, "destination" => destination, "gem_dir" => gem_dir})
       end
 
+      def load_gemspec_dir(dir : String, glob : String? = nil) : GemSpecInfo
+        payload = {"dir" => dir} of String => String
+        payload["glob"] = glob if glob
+        GemSpecInfo.from_json(request("load_gemspec_dir", payload).to_json)
+      end
+
       def build_extension(gem_dir : String, destination : String, name : String) : JSON::Any
         request("build_extension", {"gem_dir" => gem_dir, "destination" => destination, "name" => name})
       end

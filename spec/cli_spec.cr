@@ -205,15 +205,25 @@ describe Celerite::CLI do
   end
 
   describe "lock" do
-    it "rejects platform management flags as not implemented yet" do
+    it "manages platforms natively (remove then re-add is a no-op change)" do
       with_project({
         "Gemfile"      => "source \"https://rubygems.org\"\n\ngem \"json_pure\", \">= 2.0\"\n",
         "Gemfile.lock" => FIXTURE_LOCKFILE,
       }) do |dir|
-        code, out, err = run_cli(["lock", "--add-platform", "ruby"])
-        code.should eq(1)
-        err.should contain("not implemented")
-        File.read(File.join(dir, "Gemfile.lock")).should eq(FIXTURE_LOCKFILE)
+        ENV["CELERITE_BRIDGE_SERVER"] = File.expand_path("../assets/bridge/server.rb", __DIR__)
+        begin
+          # remove the local platform then re-add it: the lockfile round-trips
+          code, out, err = run_cli(["lock", "--remove-platform", "x64-mingw-ucrt"])
+          code.should eq(0)
+          lock_after_remove = File.read(File.join(dir, "Gemfile.lock"))
+          lock_after_remove.should_not contain("x64-mingw-ucrt")
+
+          code, out, err = run_cli(["lock", "--add-platform", "x64-mingw-ucrt"])
+          code.should eq(0)
+          File.read(File.join(dir, "Gemfile.lock")).should eq(FIXTURE_LOCKFILE + "\n")
+        ensure
+          ENV.delete("CELERITE_BRIDGE_SERVER")
+        end
       end
     end
   end

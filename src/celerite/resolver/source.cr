@@ -66,7 +66,8 @@ module Celerite
                      @locked_specs : Hash(String, Array(IndexSpec)),
                      @base_requirements : Hash(String, Gem::Requirement),
                      @local_platform : Gem::Platform,
-                     @unlock : Bool | Array(String) = false)
+                     @unlock : Bool | Array(String) = false,
+                     @spec_fetcher : (String -> Array(IndexSpec))? = nil)
         @root = RootPackage.new(@root_name)
         @packages = {} of String => Package
         @all_versions = {} of Package => Array(Candidate)
@@ -128,7 +129,12 @@ module Celerite
       def all_specs(name : String) : Array(IndexSpec)
         @all_specs[name] ||= begin
           locked = @locked_specs[name]? || [] of IndexSpec
-          index = @index[name]? || [] of IndexSpec
+          index = @index[name]?
+          if index.nil? && (fetcher = @spec_fetcher)
+            index = fetcher.call(name)
+            @index[name] = index
+          end
+          index ||= [] of IndexSpec
           (locked + index).uniq do |spec|
             {spec.version, spec.platform}
           end

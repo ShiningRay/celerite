@@ -183,6 +183,31 @@ rescue StandardError => e
   { "error" => e.message, "backtrace" => e.backtrace.first(4) }
 end
 
+# Load the gemspec of a directory source (path gems, git checkouts).
+def op_load_gemspec_dir(payload)
+  require "rubygems/specification"
+  dir = payload["dir"].tr("\\", "/")
+  glob = payload["glob"] || "{,*}.gemspec"
+  candidates = Dir.glob(File.join(dir, glob)).sort
+  raise "no gemspec in #{dir}" if candidates.empty?
+  spec = Gem::Specification.load(candidates.first)
+  raise "invalid gemspec in #{dir}" unless spec
+  {
+    "name" => spec.name,
+    "version" => spec.version.to_s,
+    "platform" => spec.platform.to_s,
+    "full_name" => spec.full_name,
+    "executables" => spec.executables,
+    "bindir" => spec.bindir,
+    "required_ruby_version" => spec.required_ruby_version.to_s,
+    "required_rubygems_version" => spec.required_rubygems_version.to_s,
+    "extensions" => spec.extensions,
+    "dependencies" => spec.runtime_dependencies.map { |d|
+      { "name" => d.name, "type" => d.type.to_s, "requirements" => d.requirement.as_list }
+    },
+  }
+end
+
 def serialize_source(source)
   type = source.class.name.split("::").last # Rubygems / Git / Path / Plugin / Metadata
   result = { "type" => type }
@@ -190,6 +215,9 @@ def serialize_source(source)
     result["remotes"] = source.remotes.map(&:to_s)
   elsif source.respond_to?(:uri)
     result["remote"] = source.uri.to_s
+  elsif source.respond_to?(:path) && source.path
+    # Path/Gemspec sources expose their location via #path
+    result["remote"] = source.path.to_s
   end
   %w[branch tag ref glob submodules].each do |key|
     value = source.options[key] if source.respond_to?(:options)
@@ -207,6 +235,7 @@ def bridge_dispatch(id, op, payload)
            when "read_gem_spec" then op_read_gem_spec(payload)
            when "write_installed_spec" then op_write_installed_spec(payload)
            when "build_extension" then op_build_extension(payload)
+           when "load_gemspec_dir" then op_load_gemspec_dir(payload)
            else
              return bridge_error(id, "UnknownOp", "unknown bridge op #{op.inspect}")
            end

@@ -94,6 +94,16 @@ module Celerite
       }.includes?(command)
     end
 
+    def self.platform_flag_values(rest : Array(String), flag : String) : Array(String)
+      values = [] of String
+      rest.each_with_index do |arg, index|
+        next unless arg == flag
+        value = rest[index + 1]?
+        values << value if value && !value.starts_with?("--")
+      end
+      values
+    end
+
     # Thor `word_wrap` (pinned contract: friendly-errors `wrap: true`).
     def self.word_wrap(text : String, width : Int32 = 80) : String
       pattern = Regex.new("(.{1,#{width}})(\\s+|$)")
@@ -252,10 +262,8 @@ module Celerite
     # lock (M2: native resolution + generation)
     # ------------------------------------------------------------------
     def self.lock(stdout : IO, stderr : IO, rest : Array(String)) : Int32
-      if rest.includes?("--add-platform") || rest.includes?("--remove-platform")
-        stderr.puts "The 'lock' command is not implemented yet."
-        return 1
-      end
+      add_platforms = platform_flag_values(rest, "--add-platform")
+      remove_platforms = platform_flag_values(rest, "--remove-platform")
 
       print_mode = rest.includes?("--print")
       update = rest.includes?("--update") || rest.includes?("--all")
@@ -264,6 +272,8 @@ module Celerite
       unlock : Bool | Array(String) = update ? true : false
 
       resolution = Resolution.new(definition, unlock)
+      resolution.added_platforms = add_platforms
+      resolution.removed_platforms = remove_platforms
       # Progress goes to stdout in write mode, stderr in --print mode
       # (pinned observation from the reference oracle).
       resolution.progress = print_mode ? stderr : stdout
