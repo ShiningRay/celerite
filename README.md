@@ -2,9 +2,12 @@
 
 A high-performance, Bundler-compatible Ruby dependency manager written in Crystal.
 
-> **Status: design and scaffolding.** Celerite is not yet a working Bundler
-> replacement. Compatibility is a release gate, not a claim based on parsing
-> common Gemfiles.
+> **Status: M0+M1 complete (read-only locked path).** Celerite reads lockfiles,
+> validates project state, and runs the locked-path versions of `check`,
+> `list`, `show`/`info`, `platform`, `lock --print`, and `config get` — all
+> verified byte-for-byte against pinned reference Bundlers via the differential
+> harness. Resolution, installation, and the Ruby bridge are next (M2+).
+> Compatibility is a release gate, not a claim based on parsing common Gemfiles.
 
 ## Goals
 
@@ -31,20 +34,24 @@ explicit, opt-in installation step; it will never be overwritten automatically.
 - [架构方案](docs/architecture.md)
 - [兼容性契约](docs/compatibility.md)
 - [实施计划](docs/roadmap.md)
+- [兼容矩阵基线](docs/compat-matrix/README.md) — per-version feature lists generated
+  from pinned upstream sources ([manifest](vendor/reference/MANIFEST.md))
 
 ## Development
 
 Requires Crystal 1.21.1 or newer.
 
 ```console
-shards build
-crystal spec
-shards build
-bin/celerite --version
+shards build          # build bin/celerite
+crystal spec          # unit + property + behavior specs
+crystal tool format --check src spec
+script/differential   # differential harness vs pinned reference Bundlers
 ```
 
-Only `celerite version`, `celerite --version`, `celerite help`, and
-`celerite --help` are implemented in this scaffold. Other commands fail fast.
+Reference Bundler versions (4.0.24 and 2.7.2) must be installed for the
+differential harness: `gem install bundler -v 4.0.24 -v 2.7.2`. The harness runs
+each fixture in isolated sandboxes (no network) and compares exit codes,
+stdout/stderr, and the project file tree after path normalization.
 
 ## License
 

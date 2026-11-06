@@ -1,0 +1,214 @@
+require "./errors"
+
+module Celerite
+  # Bundler-compatible configuration discovery (pinned contract:
+  # `vendor/reference/{v4.0.24,bundler-v2.7.2}/settings.rb`).
+  #
+  # Priority: CLI temporary > local (.bundle/config) > ENV (BUNDLE_*) >
+  # global > defaults. Keys are stored with dots doubled to `__` and the
+  # `BUNDLE_` prefix, exactly like the reference.
+  class Config
+    alias Value = Nil | Bool | Int32 | String
+    alias ConvertedValue = Nil | Bool | Int32 | String | Array(String)
+
+    BOOL_KEYS = [
+      "frozen", "deployment", "cache_all", "cache_all_platforms", "clean",
+      "disable_checksum_validation", "disable_exec_load", "disable_local_branch_check",
+      "disable_shared_gems", "force", "global_gem_cache", "ignore_funding_requests",
+      "lockfile_checksums", "no_install", "no_prune", "plugins", "prefer_local",
+      "prune", "redirect", "silence_deprecations", "disable_version_check",
+      "prefer_patch", "update_requires_all_flag", "forget_cli_options",
+      "allow_offline_install", "cache_command_is_package", "error_on_stderr",
+      "major_deprecations", "path.system", "default_install_uses_path",
+    ]
+
+    NUMBER_KEYS = ["jobs", "retry", "redirect", "timeout", "cooldown"]
+
+    ARRAY_KEYS = ["with", "without"]
+
+    DEFAULT_CONFIG = {
+      "BUNDLE_SILENCE_DEPRECATIONS"     => false,
+      "BUNDLE_DISABLE_VERSION_CHECK"    => true,
+      "BUNDLE_PREFER_PATCH"             => false,
+      "BUNDLE_REDIRECT"                 => 5,
+      "BUNDLE_RETRY"                    => 3,
+      "BUNDLE_TIMEOUT"                  => 10,
+      "BUNDLE_VERSION"                  => "lockfile",
+      "BUNDLE_LOCKFILE_CHECKSUMS"       => true,
+      "BUNDLE_CACHE_ALL"                => true,
+      "BUNDLE_PLUGINS"                  => true,
+      "BUNDLE_GLOBAL_GEM_CACHE"         => false,
+      "BUNDLE_UPDATE_REQUIRES_ALL_FLAG" => false,
+    }
+
+    private getter temporary : Hash(String, Value)
+    getter local_config : Hash(String, Value)
+    getter global_config : Hash(String, Value)
+    getter local_config_file : String?
+    getter global_config_file : String?
+
+    def initialize(project_root : String? = nil, temporary : Hash(String, Value) = {} of String => Value)
+      @temporary = temporary
+      ignore = ENV["BUNDLE_IGNORE_CONFIG"]?
+
+      local_root =
+        if root = project_root
+          File.expand_path(File.join(root, ".bundle"))
+        else
+          File.expand_path(".bundle")
+        end
+
+      local_file = ignore ? nil : File.join(local_root, "config")
+      @local_config_file = local_file
+      @local_config = local_file ? Config.load_config(local_file) : {} of String => Value
+
+      @env = {} of String => Value
+      ENV.each do |key, value|
+        next unless key.starts_with?("BUNDLE_")
+        next if key == "BUNDLE_"
+        @env[key] = value
+      end
+
+      global_file = ignore ? nil : Config.global_config_file
+      @global_config_file = global_file
+      @global_config = global_file ? Config.load_config(global_file) : {} of String => Value
+    end
+
+    # `Bundler::Settings#pretty_values_for` (pinned reference): per-source
+    # values in priority order, converted then inspected.
+    def pretty_values_for(name : String) : Array(String)
+      key = Config.key_for(name)
+      locations = [] of String
+
+      if v = @temporary[key]?
+        locations << "Set for the current command: #{Config.convert(v, name).inspect}"
+      end
+      if v = @local_config[key]?
+        locations << "Set for your local app (#{@local_config_file}): #{Config.convert(v, name).inspect}"
+      end
+      if v = @env[key]?
+        locations << "Set via #{key}: #{Config.convert(v, name).inspect}"
+      end
+      if v = @global_config[key]?
+        locations << "Set for the current user (#{@global_config_file}): #{Config.convert(v, name).inspect}"
+      end
+
+      return ["You have not configured a value for `#{name}`"] if locations.empty?
+      locations
+    end
+
+    # `Bundler::Settings.key_for`: dots doubled, uppercased, BUNDLE_ prefix.
+    def self.key_for(key : String) : String
+      key = key.lchop("BUNDLE_")
+      "BUNDLE_#{key.gsub(".", "__").upcase}"
+    end
+
+    def self.global_config_file : String?
+      if value = ENV["BUNDLE_CONFIG"]?
+        return value unless value.empty?
+      end
+      if value = ENV["BUNDLE_USER_CONFIG"]?
+        return value unless value.empty?
+      end
+      if value = ENV["BUNDLE_USER_HOME"]?
+        return File.join(value, "config") unless value.empty?
+      end
+      if home = user_home
+        return File.join(home, ".bundle", "config")
+      end
+      nil
+    end
+
+    def self.user_home : String?
+      {% if flag?(:windows) %}
+        ENV["USERPROFILE"]? || (ENV["HOMEDRIVE"]? && ENV["HOMEPATH"]? && File.join(ENV["HOMEDRIVE"].not_nil!, ENV["HOMEPATH"].not_nil!))
+      {% else %}
+        ENV["HOME"]?
+      {% end %}
+    end
+
+    # Loads a Bundler config file: shallow YAML mapping with the reference's
+    # key normalization (URLs get a trailing slash, dots -> `__`,
+    # `-` -> `___`, `#`-prefixed keys skipped).
+    def self.load_config(path : String) : Hash(String, Value)
+      config = {} of String => Value
+      return config unless File.file?(path)
+      text = File.read(path)
+
+      text.each_line do |line|
+        line = line.strip
+        next if line.empty? || line == "---" || line.starts_with?("#")
+
+        separator = line.index(": ")
+        if line.ends_with?(":")
+          key = line.rchop
+          value = ""
+        elsif separator
+          key = line[0...separator]
+          value = line[(separator + 2)..]
+        else
+          next
+        end
+
+        key = key.strip
+        key += "/" if key.matches?(/https?:/i) && !key.ends_with?("/") && !key.ends_with?("__FALLBACK_TIMEOUT")
+        key = key.gsub(".", "__")
+
+        # YAML values arrive quoted; strip the surrounding quotes like the
+        # reference serializer load does.
+        if value.size >= 2 && value.starts_with?('"') && value.ends_with?('"')
+          value = value[1...-1]
+        end
+
+        config[key] = value unless key.starts_with?("#")
+      end
+
+      config
+    end
+
+    def [](name : String) : ConvertedValue
+      key = Config.key_for(name)
+
+      v = @temporary[key]? || @local_config[key]? || @env[key]? || @global_config[key]? ||
+          DEFAULT_CONFIG[key]?
+
+      Config.convert(v, name)
+    end
+
+    def frozen? : Bool
+      self["frozen"] == true || self["deployment"] == true
+    end
+
+    def self.convert(value : Value, key : String) : ConvertedValue
+      normalized = key.lchop("BUNDLE_")
+
+      if Config::ARRAY_KEYS.includes?(normalized)
+        Config.to_array(value)
+      elsif value.nil?
+        nil
+      elsif Config::BOOL_KEYS.includes?(normalized) || value == "false"
+        Config.to_bool(value)
+      elsif Config::NUMBER_KEYS.includes?(normalized)
+        value.to_s.to_i? || 0
+      else
+        value.to_s
+      end
+    end
+
+    def self.to_bool(value : Value) : Bool
+      case value
+      when String
+        !(value =~ /\A(false|f|no|n|0|)\z/i)
+      when Nil, false
+        false
+      else
+        true
+      end
+    end
+
+    def self.to_array(value : Value) : Array(String)
+      return [] of String if value.nil?
+      value.to_s.tr(" ", ":").split(":")
+    end
+  end
+end

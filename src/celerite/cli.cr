@@ -1,57 +1,54 @@
 require "../celerite"
 require "./errors"
+require "./gem/platform"
+require "./lockfile/parser"
+require "./definition"
+require "./cli/commands"
 
 module Celerite
   module CLI
+    # Reference-compatible exit codes (observed from the pinned oracles and
+    # recorded in docs/compat-matrix/cli-commands.md).
+    module ExitCode
+      SUCCESS           =  0
+      GENERIC           =  1
+      GEM_NOT_FOUND     =  7
+      GEMFILE_NOT_FOUND = 10
+      UNKNOWN_COMMAND   = 15
+      CHECKSUM_MISMATCH = 37
+    end
+
     USAGE = <<-TEXT
-    Celerite #{VERSION}: Bundler-compatible dependency management in Crystal.
-
-    Status: only help and version are implemented.
-
     Usage:
-      celerite help
-      celerite version
-      celerite --help
-      celerite --version
+      celerite COMMAND [OPTIONS]
+
+    Celerite is a Bundler-compatible dependency manager written in Crystal.
+
+    Implemented (M1, locked path):
+      check, list, show, info, platform, version, lock --print, config get
+
+    Run `celerite help COMMAND` for command help.
     TEXT
 
+    # Bundler-compatible friendly error rendering: message on stderr, mapping
+    # Celerite errors to the reference exit codes.
     def self.run(args : Array(String), stdout : IO, stderr : IO) : Int32
-      if args.empty?
-        stdout.puts USAGE
-        return 0
-      end
-
-      command = args.first
-      case command
-      when "help", "--help", "-h"
-        if args.size == 1
-          stdout.puts USAGE
-          0
-        else
-          stderr.puts "Unsupported arguments: #{args.join(' ')}"
-          1
-        end
-      when "version", "--version", "-v"
-        if args.size == 1
-          stdout.puts VERSION
-          0
-        else
-          stderr.puts "Unsupported arguments: #{args.join(' ')}"
-          1
-        end
-      else
-        if args.size == 1
-          if command.starts_with?('-')
-            stderr.puts "Unknown option: #{command}"
-          else
-            stderr.puts "The '#{command}' command is not implemented yet."
-          end
-        else
-          stderr.puts "Unsupported arguments: #{args.join(' ')}"
-        end
-        stderr.puts USAGE
-        1
-      end
+      Commands.dispatch(args, stdout, stderr)
+    rescue ex : GemfileNotFound
+      stderr.puts ex.message
+      ExitCode::GEMFILE_NOT_FOUND
+    rescue ex : LockfileError
+      stderr.puts ex.message
+      ExitCode::GENERIC
+    rescue ex : VersionError | BadRequirementError
+      stderr.puts ex.message
+      ExitCode::GENERIC
+    rescue ex : UnsupportedCommandError
+      stderr.puts ex.message
+      ExitCode::GENERIC
+    rescue ex : UsageError
+      stderr.puts ex.message
+      ExitCode::UNKNOWN_COMMAND
     end
   end
 end

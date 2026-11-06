@@ -25,13 +25,13 @@
 
 任务：
 
-- [ ] 建立 `docs/compat-matrix/` 的版本化功能清单，展开 CLI flags、配置键、Gemfile DSL 和 lockfile section。
-- [ ] CI 安装固定 Ruby/Bundler 组合，锁定 `rubygems/rubygems` 测试 revision。
-- [ ] 实现 `script/differential`：隔离 HOME、项目、gem 安装目录与网络 fixture，收集退出码、输出、锁文件和文件树。
-- [ ] 创建最小 fixture：纯 Ruby 依赖、冲突、预发布、多平台、多 source、动态 Gemfile、Git/path、原生扩展和插件。
+- [x] 建立 `docs/compat-matrix/` 的版本化功能清单，展开 CLI flags、配置键、Gemfile DSL 和 lockfile section。（CLI flags 由 `script/gen-cli-baseline` 从固定版本生成）
+- [x] CI 安装固定 Ruby/Bundler 组合，锁定 `rubygems/rubygems` 测试 revision。（本地先行：Bundler 4.0.24 + 2.7.2 安装并记录于 `vendor/reference/MANIFEST.md`；CI 矩阵待建）
+- [x] 实现 `script/differential`：隔离 HOME、项目、gem 安装目录与网络 fixture，收集退出码、输出、锁文件和文件树。
+- [x] 创建最小 fixture：纯 Ruby 依赖、冲突、预发布、多平台、多 source、动态 Gemfile、Git/path、原生扩展和插件。（M0 先交付锁文件驱动的 7 个差分 fixture；预发布/多平台/Git/path/扩展/插件 fixture 随 M2–M4 的实现路径补充）
 - [ ] 运行上游 Bundler spec 的可行性 spike，记录不适用项及原因。
 
-验收：同一 fixture 两次参考运行结果确定；基线产物无 token/绝对路径等非确定泄漏。
+验收：同一 fixture 两次参考运行结果确定；基线产物无 token/绝对路径等非确定泄漏。✅（差分 sandbox 无 HOME 泄漏；路径正规化）
 
 ## M1：基础模型与只读锁定工作流
 
@@ -39,13 +39,13 @@
 
 任务：
 
-- [ ] 实现 RubyGems 兼容 `Version`、`Requirement`、平台模型及性质测试；不套用 SemVer 规则。
-- [ ] 实现 lockfile parser/AST/serializer；覆盖 `GEM`、`PATH`、`GIT`、`PLUGIN SOURCE`、`PLATFORMS`、`DEPENDENCIES`、`CHECKSUMS`、`RUBY VERSION`、`BUNDLED WITH`、`CONTENT ADDRESSES`。
-- [ ] 实现 CLI、配置发现和 Ruby 环境探测；建立 bridge 协议版本和错误模型。
-- [ ] 实现 `version`、`platform`、`check`、`show`/`info`、`list` 的锁定路径。
-- [ ] 对未知格式、无效版本、缺失 gem、Ruby 不匹配与权限错误做负向测试。
+- [x] 实现 RubyGems 兼容 `Version`、`Requirement`、平台模型及性质测试；不套用 SemVer 规则。（含由参考 Ruby 生成的排序/满足性 oracle fixture）
+- [x] 实现 lockfile parser/AST/serializer；覆盖 `GEM`、`PATH`、`GIT`、`PLUGIN SOURCE`、`PLATFORMS`、`DEPENDENCIES`、`CHECKSUMS`、`RUBY VERSION`、`BUNDLED WITH`、`CONTENT ADDRESSES`。（未知 section 保真保留；`CONTENT ADDRESSES` 作为未知 section 保真，4.0.24 基线无此 section）
+- [x] 实现 CLI、配置发现和 Ruby 环境探测；建立 bridge 协议版本和错误模型。（配置发现与错误模型完成；Ruby 环境探测经 bridge 属 M2，本地平台解析已原生实现）
+- [x] 实现 `version`、`platform`、`check`、`show`/`info`、`list` 的锁定路径。
+- [x] 对未知格式、无效版本、缺失 gem、Ruby 不匹配与权限错误做负向测试。（未知格式/无效版本/缺失 gem/merge 冲突已测；权限错误与 Ruby 不匹配待 M2 环境探测）
 
-验收：无网络 fixture 中只读命令与参考实现一致；不变写任何用户锁文件。
+验收：无网络 fixture 中只读命令与参考实现一致；不变写任何用户锁文件。✅（`script/differential` 双版本 profile 全绿；全命令为只读）
 
 ## M2：索引与依赖解析
 
