@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# bundle shim (M6): explicit opt-in `bundle` entry point backed by Celerite.
+# Never installed automatically (architecture §2.1); users opt in by copying
+# this script onto their PATH or sourcing the installer.
+#
+# Behavior contract (compatibility.md CLI baseline):
+# - delegates every command to Celerite's native engine
+# - exports the bridge environment the installed layout expects
+# - detects recursion (a Celerite exec'd command invoking `bundle` again
+#   must pass through to the real Ruby Bundler when
+#   CELERITE_BUNDLE_SHIM=0)
+set -uo pipefail
+
+if [ "${CELERITE_BUNDLE_SHIM:-1}" != "1" ]; then
+  # Shim disabled: fall through to the real bundler if present
+  exec bundle.real "$@" 2>/dev/null || exec bundle "$@"
+fi
+
+celerite_bin="${CELERITE_BIN:-$(command -v celerite)}"
+if [ -z "$celerite_bin" ]; then
+  echo "bundle shim: celerite executable not found on PATH" >&2
+  exit 1
+fi
+
+export CELERITE_BUNDLE_SHIM=1
+exec "$celerite_bin" "$@"

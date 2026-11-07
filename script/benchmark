@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Performance benchmark (M6): compares Celerite vs the pinned reference
+# Bundler on the fixture index across scenarios from roadmap M6:
+#   - cold cache lock (fresh compact-index download)
+#   - hot cache lock (warm cache, re-lock)
+#   - no-change install (locked path reuse)
+# Metrics: wall time (ms), captured per scenario per engine.
+#
+# Usage: script/benchmark [iterations]
+# Results land in docs/benchmarks/results-<date>.md via script/benchmark-report.
+set -uo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+iterations="${1:-3}"
+bundler_version="${BUNDLER_REF_VERSION:-4.0.24}"
+index_dir="$(cygpath -m "$repo_root/fixtures/gem-index" 2>/dev/null || echo "$repo_root/fixtures/gem-index")"
+
+bundler_paths="$(ruby -e 'begin
+  spec = Gem::Specification.find_by_name("bundler", ARGV[0])
+  puts File.join(spec.full_gem_path, "exe", "bundle")
+  puts File.join(spec.full_gem_path, "lib")
+rescue Gem::LoadError
+  abort "bundler #{ARGV[0]} is not installed"
+end' "$bundler_version")" || exit 2
+bundler_exe="$(echo "$bundler_paths" | head -1)"
+bundler_lib="$(echo "$bundler_paths" | tail -1)"
+
+celerite_bin="$repo_root/bin/celerite"
+[ -x "$celerite_bin" ] || (cd "$repo_root" && shards build >/dev/null)
+
+run_scenario() {
+  local engine="$1" script="$2" work="$3"
+  local home="$work/home" bundle="$work/bundle" gems="$work/gems" proj="$work/project"
+  mkdir -p "$home" "$bundle" "$gems" "$proj"
+  printf 'source "file://%s"\n\ngem "json_pure"\ngem "racc"\ngem "thor"\n' "$index_dir" > "$proj/Gemfile"
+
+  local start end
+  start="$(date +%s%N 2>/dev/null || python -c 'import time; print(time.time_ns())')"
+  (
+    cd "$proj" || exit 99
+    if [ "$engine" = "reference" ]; then
+      env HOME="$home" USERPROFILE="$home" GEM_HOME="$gems" GEM_PATH="$gems" \
+        BUNDLE_PATH="$bundle" RUBYOPT="" ruby "$bundler_exe" $script >/dev/null 2>&1
+    else
+      env HOME="$home" USERPROFILE="$home" GEM_HOME="$gems" GEM_PATH="$gems" \
+        BUNDLE_PATH="$bundle" RUBYOPT="" \
+        CELERITE_REFERENCE_BUNDLER_LIB="$bundler_lib" \
+        "$celerite_bin" $script >/dev/null 2>&1
+    fi
+  )
+  local code=$?
+  end="$(date +%s%N 2>/dev/null || python -c 'import time; print(time.time_ns())')"
+  echo $(( (end - start) / 1000000 ))
+}
+
+bench() {
+  local name="$1" script="$2" reset="$3"
+  local ref_sum=0 cel_sum=0 t ref_work cel_work
+  for i in $(seq 1 "$iterations"); do
+    ref_work="$(mktemp -d)"; cel_work="$(mktemp -d)"
+    t=$(run_scenario reference "$script" "$ref_work"); ref_sum=$((ref_sum + t))
+    t=$(run_scenario celerite "$script" "$cel_work"); cel_sum=$((cel_sum + t))
+    [ "$reset" = "keep-bundle" ] || true
+    rm -rf "$ref_work" "$cel_work"
+  done
+  echo "$name $((ref_sum / iterations)) $((cel_sum / iterations))"
+}
+
+echo "# benchmark ($bundler_version, $iterations iterations, ms = mean)"
+bench "cold-lock     " "lock"        "reset"
+bench "hot-lock      " "lock"        "keep"
+bench "no-change-lock" "lock"       "keep"
+bench "install       " "install"     "reset"
+bench "no-change-inst" "install"     "keep"
