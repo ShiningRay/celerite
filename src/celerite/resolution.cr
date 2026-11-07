@@ -324,8 +324,28 @@ module Celerite
       end
       return false unless all_ok
       return false unless sources_compatible?(lockfile)
+      # Reference parity: a lockfile that does not cover the local platform
+      # (no `ruby`, no matching entry) makes the definition re-resolve
+      # (current_platform_missing -> something_changed?), so the locked path
+      # does not apply.
+      return false unless covers_local_platform?(lockfile)
 
       ruby_compatible?(lockfile)
+    end
+
+    # Reference `current_platform_locked?`: `ruby` covers every local platform
+    # (it is the generic platform for non-Windows hosts), otherwise an exact
+    # local entry is required.
+    def covers_local_platform?(lockfile : Lockfile::Data) : Bool
+      local = Gem::Platform.local.to_s
+      lockfile.platforms.any? { |p| p == "ruby" || p == local }
+    end
+
+    # Reference `Bundler::MatchPlatform.generic_local_platform_is_ruby?`:
+    # `Gem::Platform.generic` maps non-Windows/non-Java local platforms to
+    # `ruby`.
+    def generic_local_platform_is_ruby? : Bool
+      !(Gem::Platform.local.to_s =~ /mingw|mswin|java/)
     end
 
     private def sources_compatible?(lockfile : Lockfile::Data) : Bool
@@ -659,6 +679,12 @@ module Celerite
         end
       end
       platforms << Gem::Platform.local.to_s unless platforms.includes?(Gem::Platform.local.to_s)
+      # Reference `should_add_extra_platforms?`: a fresh resolution on a host
+      # whose generic local platform is `ruby` records the ruby platform too
+      # (Linux/macOS lockfiles list `ruby`; Windows lists the mingw platform).
+      if !@definition.lockfile_exists? && generic_local_platform_is_ruby?
+        platforms << "ruby" unless platforms.includes?("ruby")
+      end
       @resolved_specs.each do |spec|
         if platform = spec.platform
           platforms << platform unless platforms.includes?(platform)

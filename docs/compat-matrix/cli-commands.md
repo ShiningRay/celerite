@@ -60,3 +60,13 @@ stdout/stderr split is asserted in differential tests, not derived from docs.
    frozen mode entirely; progress lines ("Fetching source index from <remote>",
    "Resolving dependencies...") go to stdout in write mode and stderr with
    `--print`.
+6. Platform coverage: a lockfile naming neither `ruby` nor the exact local
+   platform counts as "current platform missing" (reference
+   `current_platform_missing`) — `install` re-resolves (printing
+   "Fetching source index" then "Resolving dependencies..."), `check`/`list`/
+   `issue` print "Resolving dependencies..." before their report, and
+   `platform` appends the local platform to the locked list. A fresh
+   resolution on a host whose generic local platform is `ruby`
+   (`Gem::Platform.generic`; Linux/macOS — not mingw/java) records `ruby` in
+   the generated PLATFORMS section (reference
+   `should_add_extra_platforms?`).

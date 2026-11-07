@@ -842,6 +842,13 @@ module Celerite
         return 10
       end
 
+      # Reference parity: the doctor's check re-resolves when the lockfile
+      # does not cover the local platform (see the platform-missing note in
+      # `check`), and the resolver announces that on stdout.
+      if Commands.platform_missing?(definition)
+        stdout.puts "Resolving dependencies..."
+      end
+
       missing = lockfile.specs.sort_by(&.full_name).reject do |spec|
         installed_spec_dir?(definition, spec)
       end

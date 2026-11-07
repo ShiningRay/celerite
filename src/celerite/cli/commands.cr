@@ -168,7 +168,11 @@ module Celerite
       if parseable
         output << (ruby_version || "No ruby version specified")
       else
-        platforms = lockfile.try(&.platforms) || [] of String
+        platforms = lockfile.try(&.platforms).dup || [] of String
+        # Reference parity: the local platform always appears in the list
+        # (add_current_platform appends it when the lockfile omits it).
+        local_platform = Gem::Platform.local.to_s
+        platforms << local_platform unless platforms.includes?(local_platform)
         platform_lines = platforms.map { |p| "* #{p}" }
 
         output << "Your platform is: #{Gem::Platform.local}"
@@ -207,6 +211,14 @@ module Celerite
         return 1
       end
 
+      # Reference parity: a lockfile that does not cover the local platform
+      # makes the definition re-resolve (current_platform_missing), and the
+      # resolver announces that (platform-missing fixtures; the reference
+      # fails the unresolved-dep probe before its resolver starts).
+      if platform_missing?(definition)
+        stdout.puts "Resolving dependencies..."
+      end
+
       missing = locked_specs # locked path: no installed gems are discoverable yet
       if missing.any?
         stderr.puts "The following gems are missing"
@@ -240,6 +252,11 @@ module Celerite
         stderr.puts "Could not find gem '#{unresolved}' in rubygems repository #{remote} or installed locally."
         stderr.puts "Install missing gems with `bundle install`."
         return 1
+      end
+
+      # Reference parity: see the platform-missing note in `check`.
+      if platform_missing?(definition)
+        stdout.puts "Resolving dependencies..."
       end
 
       # Locked path: specs are not installed (M3 materializes them).
@@ -366,6 +383,16 @@ module Celerite
 
     def self.first_remote(lockfile : Lockfile::Data) : String?
       lockfile.sources.first?.try(&.remote)
+    end
+
+    # Reference `current_platform_missing`: the lockfile names neither `ruby`
+    # (the generic platform for non-Windows hosts) nor the exact local
+    # platform, so the definition re-resolves and the resolver announces it.
+    def self.platform_missing?(definition : Definition) : Bool
+      return false unless definition.lockfile_exists?
+      lockfile = definition.lockfile!
+      local = Gem::Platform.local.to_s
+      !lockfile.platforms.any? { |p| p == "ruby" || p == local }
     end
   end
 end
