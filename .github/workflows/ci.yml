@@ -72,3 +72,30 @@ jobs:
         with:
           name: upstream-spec-report
           path: docs/compat-matrix/generated/upstream-lockfile-*.md
+
+  gem-package:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: macos-latest
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: "latest"
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - name: Build platform gem (includes install smoke)
+        run: script/gem
+      - uses: actions/upload-artifact@v4
+        with:
+          name: celerite-gem-${{ matrix.os }}
+          path: pkg/*.gem
+        if-no-files-found: error

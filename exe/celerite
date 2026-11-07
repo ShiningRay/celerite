@@ -1,0 +1,57 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Celerite gem shim (roadmap M6): dispatches to the platform binary shipped
+# in this gem and exports the bridge environment. The engine itself is the
+# native (Crystal) binary; nothing here reimplements Bundler behavior.
+#
+# Bridge env policy:
+# - CELERITE_BRIDGE_SERVER points at the server.rb inside this gem
+# - CELERITE_REFERENCE_BUNDLER_LIB / CELERITE_PROFILE_BUNDLER_VERSION are
+#   located from the user's installed Bundler gem (the engine needs the
+#   reference lib for gemspec evaluation and the public Ruby API)
+# - any explicit caller export wins over the shim's defaults
+
+require "rubygems/platform"
+
+gem_dir = File.expand_path("..", __dir__)
+lib_dir = File.join(gem_dir, "lib", "celerite")
+host = Gem::Platform.local
+
+binary = nil
+if Dir.exist?(lib_dir)
+  Dir.children(lib_dir).sort.each do |dir|
+    platform = begin
+      Gem::Platform.new(dir)
+    rescue ArgumentError
+      next
+    end
+    next unless platform === host
+    bin_name = %w[mingw mswin].include?(platform.os) ? "celerite.exe" : "celerite"
+    candidate = File.join(lib_dir, dir, bin_name)
+    if File.file?(candidate)
+      binary = candidate
+      break
+    end
+  end
+end
+
+abort "celerite: no shipped binary matches platform #{host}" unless binary
+
+bridge_env = {}
+bridge_env["CELERITE_BRIDGE_SERVER"] = File.join(gem_dir, "assets", "bridge", "server.rb")
+
+begin
+  require "rubygems/specification"
+  spec = Gem::Specification.find_by_name("bundler")
+  bridge_env["CELERITE_REFERENCE_BUNDLER_LIB"] = File.join(spec.full_gem_path, "lib")
+  bridge_env["CELERITE_PROFILE_BUNDLER_VERSION"] = spec.version.to_s
+rescue Gem::LoadError
+  # No Bundler installed: the engine falls back to its own resolution.
+end
+
+bridge_env.each do |key, value|
+  bridge_env.delete(key) if ENV[key] && !ENV[key].empty?
+end
+
+exec(bridge_env, binary, *ARGV)

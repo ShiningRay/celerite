@@ -56,7 +56,13 @@ HEADER
   sha256sum "$target" bundle install-celerite.sh >> checksums.sha256
 )
 
-echo "Artifacts in $dist:"
+# Platform gem (roadmap M6): same binary, packaged for `gem install celerite`.
+# The gem is smoke-installed and must answer `celerite version` to count as an
+# artifact.
+"$repo_root/script/gem"
+
+echo "Artifacts in $dist and $repo_root/pkg:"
 ls -la "$dist"
+ls -la "$repo_root/pkg"/*.gem
 echo
 cat "$dist/checksums.sha256"

@@ -114,7 +114,7 @@
 - [ ] 建立冷/热缓存、无变化、解析、下载和扩展构建 benchmark。
 - [ ] profile 启动、分配、锁竞争、I/O 与 CPU，按数据优化 Fiber 并发及必要的多线程。
 - [ ] 完成缓存 GC、损坏恢复、诊断、脱敏、升级和卸载文档。
-- [ ] 提供构建产物、校验和、安装脚本与显式 shim；默认不替换系统 `bundle`。
+- [x] 提供构建产物、校验和、安装脚本与显式 shim；默认不替换系统 `bundle`。（script/release 产出 dist 二进制+bundle shim+install-celerite.sh+checksums；另建 rubygem 分发通道：script/gem 构建平台 gem 并冒烟安装验证，exe/celerite shim 自动定位平台二进制与用户 Bundler 并导出 bridge 环境，CI gem-package job 在 ubuntu/macos/windows 产出 gem artifact；发布 `gem push` 待 API key。gem 安装 shim 经 CELERITE_BIN 差分子集（含 bundler-inline 桥/exec 路径）双 profile 验证）
 - [ ] 发布兼容报告与基准原始结果，不以营销数字代替数据。
 
 验收：基准可复现；兼容报告对应 commit；用户可明确切换与回退，且不会丢失现有配置。

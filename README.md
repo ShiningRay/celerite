@@ -37,6 +37,22 @@ explicit, opt-in installation step; it will never be overwritten automatically.
 - [兼容矩阵基线](docs/compat-matrix/README.md) — per-version feature lists generated
   from pinned upstream sources ([manifest](vendor/reference/MANIFEST.md))
 
+## Install
+
+Platform gems are built per release (`script/release` produces both the
+dist bundle and the gem). Build the gem for the current platform locally:
+
+```console
+script/gem            # builds pkg/celerite-<version>-<platform>.gem
+gem install --local pkg/celerite-<version>-<platform>.gem
+```
+
+The gem ships the native binary plus the Ruby bridge; the installed shim
+locates your Bundler gem automatically and exports the bridge environment
+(`CELERITE_BRIDGE_SERVER`, `CELERITE_REFERENCE_BUNDLER_LIB`,
+`CELERITE_PROFILE_BUNDLER_VERSION`). A bare `gem build celerite.gemspec`
+produces a metadata-only gem — always build through `script/gem`.
+
 ## Development
 
 Requires Crystal 1.21.1 or newer.

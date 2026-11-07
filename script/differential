@@ -16,7 +16,9 @@ set -uo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 bundler_version="${BUNDLER_REF_VERSION:-4.0.24}"
-celerite_bin="$repo_root/bin/celerite"
+# CELERITE_BIN overrides the engine under test (e.g. a gem-installed shim:
+# CELERITE_BIN="$gem_home/bin/celerite" script/differential <fixture>)
+celerite_bin="${CELERITE_BIN:-$repo_root/bin/celerite}"
 fixtures_root="$repo_root/fixtures/differential"
 selected=("$@")
 

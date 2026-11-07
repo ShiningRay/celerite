@@ -6,3 +6,4 @@
 .tmp-scratch/
 dist/
 .upstream-specs/
+pkg/

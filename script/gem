@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Rubygem packaging (roadmap M6): builds the platform gem for the current host
+# from the native binary. Output: pkg/celerite-<version>-<platform>.gem
+#
+# The gem is then smoke-installed into a throwaway GEM_HOME and the installed
+# shim must answer `celerite version` — a gem that does not run is not an
+# artifact.
+#
+# For post-install parity checks run the differential harness against the
+# installed shim: CELERITE_BIN=<gem>/bin/celerite script/differential <fixture>
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+version="$(grep -o 'VERSION = ".*"' "$repo_root/src/celerite.cr" | cut -d'"' -f2)"
+pkg="$repo_root/pkg"
+mkdir -p "$pkg"
+
+binary="$repo_root/bin/celerite"
+[ -f "${binary}.exe" ] && binary="${binary}.exe"
+[ -f "$binary" ] || (cd "$repo_root" && shards build >/dev/null)
+[ -f "$binary" ] || { echo "celerite binary missing (shards build failed)" >&2; exit 2; }
+
+platform="$(ruby -r rubygems/platform -e 'print Gem::Platform.local')"
+case "$platform" in
+  *mingw* | *mswin*) bin_name="celerite.exe" ;;
+  *) bin_name="celerite" ;;
+esac
+
+staging="$pkg/stage"
+rm -rf "$staging"
+mkdir -p "$staging/exe" "$staging/assets" "$staging/lib/celerite/$platform"
+cp "$binary" "$staging/lib/celerite/$platform/$bin_name"
+chmod 0755 "$staging/lib/celerite/$platform/$bin_name" 2>/dev/null || true
+cp "$repo_root/exe/celerite" "$staging/exe/celerite"
+chmod 0755 "$staging/exe/celerite" 2>/dev/null || true
+cp -r "$repo_root/assets/bridge" "$staging/assets/bridge"
+for f in README.md LICENSE; do
+  [ -f "$repo_root/$f" ] && cp "$repo_root/$f" "$staging/$f"
+done
+
+gem_file="$pkg/celerite-$version-$platform.gem"
+rm -f "$gem_file"
+(cd "$staging" && CELERITE_GEM_PLATFORM="$platform" gem build "$repo_root/celerite.gemspec" >/dev/null)
+[ -f "$staging/celerite-$version-$platform.gem" ] || { echo "gem build produced no output" >&2; exit 2; }
+mv "$staging/celerite-$version-$platform.gem" "$gem_file"
+rm -rf "$staging"
+
+# Smoke: install into a throwaway GEM_HOME and run the shipped shim.
+smoke="$(mktemp -d)"
+gem install --local --no-document --install-dir "$smoke" "$gem_file" >/dev/null
+shim="$smoke/bin/celerite"
+[ -f "$shim" ] || shim="$shim.bat" # Windows gem wrappers
+[ -f "$shim" ] || { echo "gem install produced no executable" >&2; exit 2; }
+
+out="$(env GEM_HOME="$smoke" GEM_PATH="$smoke" "$shim" version)"
+echo "$out" | grep -q "$version" || {
+  echo "gem smoke failed: installed shim reported: $out" >&2
+  exit 2
+}
+
+echo "Built $gem_file (smoke: installed shim reports $(echo "$out" | head -1))"
+echo "For parity checks:"
+echo "  gem install --local --install-dir <gem-home> $gem_file"
+echo "  CELERITE_BIN=<gem-home>/gems/celerite-$version-$platform/exe/celerite \\"
+echo "    script/differential <fixture>"
