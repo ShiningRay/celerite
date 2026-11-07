@@ -68,7 +68,9 @@ jobs:
       # configure-rubygems-credentials action does not expose that input yet.
       - name: Configure RubyGems credentials
         env:
-          RUBYGEMS_OWNER: ShiningRay
+          # Account ID shown on the Pending Trusted Publishers page. Passing an
+          # immutable ID avoids matching a renamed or recycled handle.
+          RUBYGEMS_OWNER: "66500"
         run: |
           key="$(script/rubygems-credentials "$RUBYGEMS_OWNER")"
           echo "::add-mask::$key"
