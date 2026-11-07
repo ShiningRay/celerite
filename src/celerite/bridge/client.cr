@@ -176,8 +176,8 @@ module Celerite
         request("write_installed_spec", {"gem_path" => gem_path, "destination" => destination, "gem_dir" => gem_dir})
       end
 
-      def exec_plugin_hook(event : String, plugins_root : String) : JSON::Any
-        request("exec_plugin_hook", {"event" => event, "plugins_root" => plugins_root})
+      def exec_plugin_hook(event : String, index_path : String) : JSON::Any
+        request("exec_plugin_hook", {"event" => event, "index_path" => index_path})
       end
 
       def load_gemspec_dir(dir : String, glob : String? = nil) : GemSpecInfo

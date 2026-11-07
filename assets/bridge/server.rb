@@ -229,29 +229,42 @@ end
 def op_exec_plugin_hook(payload)
   require "bundler"
   require "bundler/plugin"
-  event = payload["event"]
-  root = payload["plugins_root"]
+  require "yaml"
+  event = payload["event"].to_s
+  index_path = payload["index_path"].to_s
+  return { "fired" => false, "reason" => "no plugin index" } unless File.exist?(index_path)
 
-  index_path = File.join(root.to_s, "plugins", "index")
-  return { "fired" => false, "reason" => "no plugin index" } unless File.exist?(index_path.to_s)
+  index = YAML.safe_load(File.read(index_path), permitted_classes: [Symbol], aliases: true) || {}
+  load_paths = index["load_paths"] || {}
+  hook_plugins = (index["hooks"] || {})[event] || []
+  return { "fired" => false, "reason" => "no plugins for event" } if hook_plugins.empty?
 
-  index = File.exist?(index_path.to_s) ? Bundler::Plugin::Index.from_file(index_path.to_s) : nil
-  plugins = index.respond_to?(:hook_plugins) ? index.hook_plugins(event.to_s) : []
-  return { "fired" => false, "reason" => "no plugins for event" } if plugins.nil? || plugins.empty?
-
-  # Load each plugin's source and register hooks with the reference API
-  plugins.each do |name|
-    source = index.plugin_path(name.to_s)
-    $LOAD_PATH.unshift(source.to_s) if source && File.directory?(source.to_s)
-    require name.to_s.tr("-", "/")
-  rescue LoadError, StandardError => e
-    return { "fired" => false, "reason" => "plugin #{name} failed to load: #{e.message}" }
+  loaded = []
+  plugin_paths = index["plugin_paths"] || {}
+  hook_plugins.each do |name|
+    paths = load_paths[name]
+    if paths.is_a?(Array)
+      paths.each { |p| $LOAD_PATH.unshift(p) unless $LOAD_PATH.include?(p) }
+    end
+    begin
+      # Reference entry point: each plugin ships a root plugins.rb
+      entry = plugin_paths[name] ? File.join(plugin_paths[name].to_s, "plugins.rb") : name.to_s.tr("-", "/")
+      require entry
+    rescue LoadError, StandardError => e
+      return { "fired" => false, "reason" => "plugin #{name} failed to load: #{e.message}" }
+    end
+    loaded << name
   end
 
-  results = []
-  Bundler::Plugin.hook(event, payload["context"] || {})
-  results << name.to_s
-  { "fired" => true, "plugins" => results }
+  # plugins.rb (or its lib) registered hooks through the reference
+  # Bundler::Plugin::API (global registry). Bundler::Plugin.hook gates on
+  # its global index; for project-local plugins we invoke the registered
+  # blocks directly (same objects the reference would call).
+  hooks = Bundler::Plugin.instance_variable_get(:@hooks_by_event) || {}
+  blocks = hooks[event] || []
+  context = payload["context"] || {}
+  blocks.each { |blk| blk.call(context) }
+  { "fired" => blocks.any?, "plugins" => loaded }
 end
 
 def serialize_source(source)

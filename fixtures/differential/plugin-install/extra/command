@@ -1,0 +1,3 @@
+plugin install my_plugin --path ./my_plugin
+plugin list
+exec ruby -e "require %(my_plugin); puts %(visible-object-ok)"

@@ -6,11 +6,7 @@ module Celerite
   # Hooks are Ruby code executed by the bridge; with no installed plugins the
   # call is a no-op (parity: `return unless plugins.any?`).
   module PluginHooks
-    EVENTS = [
-      "post-install",       # after a successful install
-      "post-Install-error", # (reference keeps this literal event name)
-      "pre-install-check",
-    ]
+    EVENTS = ["post-install"]
 
     struct HookResult
       getter fired : Bool
@@ -21,14 +17,14 @@ module Celerite
       end
     end
 
-    def self.plugins_index_path(definition : Definition) : String
-      home = Config.user_home || "."
-      File.join(home, ".bundle", "plugins")
+    # Reference layout: the plugin index is project-local
+    # (<project>/.bundle/plugin/index) — written by `plugin install`.
+    def self.index_path(definition : Definition) : String
+      File.join(File.dirname(definition.gemfile_path), ".bundle", "plugin", "index")
     end
 
     def self.call(bridge : Bridge::Client, definition : Definition, event : String) : HookResult
-      root = plugins_index_path(definition)
-      result = bridge.exec_plugin_hook(event, root)
+      result = bridge.exec_plugin_hook(event, index_path(definition))
       HookResult.new(
         result["fired"].as_bool,
         result["reason"]?.try(&.as_s?),

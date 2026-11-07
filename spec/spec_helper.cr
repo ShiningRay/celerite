@@ -53,3 +53,20 @@ def run_cli(args : Array(String)) : {Int32, String, String}
   code = Celerite::CLI.run(args, stdout, stderr)
   {code, stdout.to_s, stderr.to_s}
 end
+
+def ruby_available? : Bool
+  result = Process.run("ruby -v", shell: true)
+  result.success?
+rescue
+  false
+end
+
+def with_client(& : Celerite::Bridge::Client ->) : Nil
+  server = File.expand_path("../assets/bridge/server.rb", __DIR__)
+  client = Celerite::Bridge::Client.new(server_path: server)
+  begin
+    yield client
+  ensure
+    client.close
+  end
+end

@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Roadmap M6 profiler: startup, memory, bridge allocations for celerite vs
+# the pinned reference Bundler. Emits markdown-ready metric lines; record
+# them in docs/benchmarks/profile-results-<date>.md.
+#
+# Metrics:
+# - startup-*: mean wall ms over N runs for a version call (boot + activation)
+# - bridge-gc-allocations: Ruby GC.stat total_allocated_objects delta for one
+#   evaluate_gemfile round-trip inside the bridge process
+# - memory-celerite-kb / memory-reference-kb: peak working set via PowerShell
+#   (Windows) or max RSS via /usr/bin/time (unix) for a lock run
+set -uo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+bundler_version="${BUNDLER_REF_VERSION:-4.0.24}"
+celerite_bin="$repo_root/bin/celerite"
+[ -x "$celerite_bin" ] || (cd "$repo_root" && shards build >/dev/null)
+
+bundler_paths="$(ruby -e 'begin
+  spec = Gem::Specification.find_by_name("bundler", ARGV[0])
+  puts File.join(spec.full_gem_path, "exe", "bundle")
+  puts File.join(spec.full_gem_path, "lib")
+rescue Gem::LoadError
+  abort "bundler #{ARGV[0]} is not installed"
+end' "$bundler_version")" || exit 2
+bundler_exe="$(echo "$bundler_paths" | head -1)"
+bundler_lib="$(echo "$bundler_paths" | tail -1)"
+
+echo "# profile ($bundler_version, $(date -u +%Y-%m-%d))"
+
+# --- startup: ruby-side timing via Process.spawn + monotonic clock
+startup_measure() {
+  ruby -e '
+    require "open3"
+    cmd = ARGV
+    times = []
+    30.times do
+      t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      _o, _e, st = Open3.capture3(*cmd)
+      exit 3 unless st.success?
+      times << (Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0) * 1000
+    end
+    times.sort!
+    puts (times.sum / times.size).round
+  ' "$@"
+}
+
+echo "startup-celerite-ms $(startup_measure "$celerite_bin" --no-color version)"
+echo "startup-reference-ms $(startup_measure ruby "$bundler_exe" version)"
+
+# --- bridge GC allocations: one-shot server that reports GC delta
+work="$(mktemp -d)"
+mkdir -p "$work/project"
+index_dir="$(cygpath -m "$repo_root/fixtures/gem-index" 2>/dev/null || echo "$repo_root/fixtures/gem-index")"
+printf 'source "file://%s"\n\ngem "json_pure"\n' "$index_dir" > "$work/project/Gemfile"
+gf="$(cygpath -m "$work/project/Gemfile" 2>/dev/null || echo "$work/project/Gemfile")"
+
+bridge_alloc="$(printf '{"proto":1,"id":1,"op":"evaluate_gemfile","payload":{"gemfile":"%s"}}\n' "$gf" | ruby -e '
+  require "json"
+  $LOAD_PATH.unshift(ARGV[0])
+  before = GC.stat(:total_allocated_objects)
+  require "bundler"
+  require "bundler/dsl"
+  line = $stdin.gets
+  before = GC.stat(:total_allocated_objects)
+  request = JSON.parse(line)
+  builder = Bundler::Dsl.new
+  builder.eval_gemfile(request["payload"]["gemfile"], File.read(request["payload"]["gemfile"]))
+  after = GC.stat(:total_allocated_objects)
+  $stdout.puts JSON.generate({"proto" => 1, "id" => 1, "ok" => true,
+    "result" => {"gc_allocations" => after - before}})
+' "$bundler_lib" 2>/dev/null | grep -o '"gc_allocations":[0-9]*' | cut -d: -f2)"
+echo "bridge-gc-allocations ${bridge_alloc:-n/a}"
+rm -rf "$work"
+
+# --- reference lock GC allocations (mirror of celerite's native resolve)
+ref_work="$(mktemp -d)"
+mkdir -p "$ref_work/project"
+index_dir="$(cygpath -m "$repo_root/fixtures/gem-index" 2>/dev/null || echo "$repo_root/fixtures/gem-index")"
+printf 'source "file://%s"\n\ngem "json_pure"\n' "$index_dir" > "$ref_work/project/Gemfile"
+gf="$(cygpath -m "$ref_work/project/Gemfile" 2>/dev/null || echo "$ref_work/project/Gemfile")"
+ref_gc="$(cd "$ref_work/project" && ruby -e '
+  before_load = GC.stat(:total_allocated_objects)
+  $LOAD_PATH.unshift(ARGV[0])
+  require "bundler"
+  after_load = GC.stat(:total_allocated_objects)
+  require "bundler/cli"
+  Bundler::CLI.start(["lock"], debug: true)
+  after = GC.stat(:total_allocated_objects)
+  $stdout.puts after - after_load
+' "$bundler_lib" 2>/dev/null | tail -1)"
+echo "reference-lock-gc-allocations ${ref_gc:-n/a}"
+rm -rf "$ref_work"
+
+# --- cold-lock IO: compact-index cache bytes after first lock (celerite)
+io_work="$(mktemp -d)"
+mkdir -p "$io_work/project" "$io_work/home" "$io_work/bundle" "$io_work/gems"
+printf 'source "file://%s"\n\ngem "json_pure"\n\ngem "racc"\n\ngem "thor"\n' "$index_dir" > "$io_work/project/Gemfile"
+(
+  cd "$io_work/project" || exit 99
+  env HOME="$io_work/home" USERPROFILE="$io_work/home" \
+    GEM_HOME="$io_work/gems" GEM_PATH="$io_work/gems" \
+    BUNDLE_PATH="$io_work/bundle" RUBYOPT="" \
+    CELERITE_REFERENCE_BUNDLER_LIB="$bundler_lib" \
+    "$celerite_bin" lock >/dev/null 2>&1
+)
+cel_io="$(du -sk "$io_work/home/.bundle/cache" 2>/dev/null | cut -f1)"
+echo "cold-lock-cache-kb-celerite ${cel_io:-n/a}"
+rm -rf "$io_work"

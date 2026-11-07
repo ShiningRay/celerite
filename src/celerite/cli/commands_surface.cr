@@ -5,6 +5,7 @@ require "../lockfile/parser"
 require "../definition"
 require "../resolution"
 require "./commands_install"
+require "yaml"
 
 module Celerite
   # M5 CLI surface commands (pinned against the 4.0.24 oracle): update,
@@ -472,17 +473,66 @@ module Celerite
         if plugins.empty?
           stdout.puts "No plugins installed"
         else
-          plugins.each { |p| stdout.puts p }
+          plugins.each do |p|
+            stdout.puts p
+            stdout.puts "-----"
+          end
+          stdout.puts
         end
         0
       when "install"
-        sources = rest[1..].reject(&.starts_with?("--"))
-        if sources.empty?
+        names = rest[1..].reject(&.starts_with?("--"))
+        if names.empty?
           stderr.puts "No plugin sources specified"
           return 1
         end
-        stderr.puts "Plugin installation requires git sources; #{sources.join(", ")} could not be installed"
-        19
+
+        path = flag_value(rest, "--path")
+        if path.nil?
+          stderr.puts "Plugin installation from remote sources requires git; use --path for a local plugin directory."
+          return 19
+        end
+
+        definition = Definition.build
+        stdout.puts "Resolving dependencies..."
+
+        bridge = Bridge::Client.new
+        begin
+          info = Bridge::GemSpecInfo.from_json(bridge.load_gemspec_dir(path).to_json)
+        ensure
+          bridge.close
+        end
+
+        index_dir = File.join(File.dirname(definition.gemfile_path), ".bundle", "plugin")
+        Dir.mkdir_p(index_dir)
+        index_path = File.join(index_dir, "index")
+        index = File.file?(index_path) ? (YAML.parse(File.read(index_path)) || YAML.parse("{}")) : YAML.parse("{}")
+
+        load_paths = index["load_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any
+        plugin_paths = index["plugin_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any
+        lib_dir = File.join(File.expand_path(path), "lib").gsub(/\\/, "/")
+        root_dir = File.expand_path(path).gsub(/\\/, "/")
+        # Reference index layout: bare keys for empty collections, quoted
+        # string values, "---" document start.
+        yaml = String.build do |y|
+          y.puts "---"
+          y.puts "commands:"
+          y.puts "hooks:"
+          y.puts "load_paths:"
+          load_paths.each do |k, v|
+            y.puts "  #{k}:"
+            v.as_a.each { |p2| y.puts "  - #{p2.to_s.inspect}" }
+          end
+          y.puts "  #{info.name}:"
+          y.puts "  - #{lib_dir.inspect}"
+          y.puts "plugin_paths:"
+          plugin_paths.each { |k, v| y.puts "  #{k}: #{v.to_s.inspect}" }
+          y.puts "  #{info.name}: #{root_dir.inspect}"
+          y.puts "sources:"
+        end
+        File.write(index_path, yaml)
+        stdout.puts "Installed plugin #{info.name}"
+        0
       when "new"
         stderr.puts "The 'plugin new' command is not implemented yet."
         1
@@ -492,15 +542,27 @@ module Celerite
       end
     end
 
-    private def self.installed_plugins : Array(String)
-      plugins_index = plugin_index_path
-      return [] of String unless File.file?(plugins_index)
-      File.read_lines(plugins_index).reject(&.empty?)
+    def self.flag_value(rest : Array(String), flag : String) : String?
+      rest.each_with_index do |arg, index|
+        if arg == flag
+          value = rest[index + 1]?
+          return value unless value.nil? || value.starts_with?("--")
+        end
+        if arg.starts_with?(flag + "=")
+          return arg.split("=", 2)[1]
+        end
+      end
+      nil
     end
 
-    def self.plugin_index_path : String
-      home = Config.user_home || "."
-      File.join(home, ".bundle", "plugins", "index")
+    private def self.installed_plugins : Array(String)
+      definition = Definition.build
+      index_path = File.join(File.dirname(definition.gemfile_path), ".bundle", "plugin", "index")
+      return [] of String unless File.file?(index_path)
+
+      index = YAML.parse(File.read(index_path))
+      names = (index["load_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any).keys.map(&.to_s)
+      names.sort
     end
 
     # ------------------------------------------------------------------
