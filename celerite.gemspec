@@ -32,11 +32,17 @@ Gem::Specification.new do |spec|
   spec.bindir = "exe"
   spec.require_paths = ["lib"]
 
-  spec.files = ["exe/celerite", "assets/bridge/server.rb", "README.md", "LICENSE"]
+  spec.files = ["exe/celerite", "assets/bridge/server.rb", "THIRD_PARTY_LICENSES.md",
+                "README.md", "LICENSE"]
+  spec.files += Dir.glob("assets/licenses/*").sort
 
   if (platform = ENV["CELERITE_GEM_PLATFORM"]) && !platform.empty?
     spec.platform = Gem::Platform.new(platform)
     bin_name = platform.include?("mingw") || platform.include?("mswin") ? "celerite.exe" : "celerite"
-    spec.files += ["lib/celerite/#{platform}/#{bin_name}"]
+    platform_dir = "lib/celerite/#{platform}"
+    spec.files += ["#{platform_dir}/#{bin_name}"]
+    # script/bundle-dylibs makes the macOS binary self-contained; those dylibs
+    # are part of the platform gem too.
+    spec.files += Dir.glob("#{platform_dir}/*.dylib").sort if platform.include?("darwin")
   end
 end

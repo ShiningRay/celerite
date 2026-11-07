@@ -45,6 +45,33 @@ jobs:
             pkg/*.gem
           if-no-files-found: error
 
+  rubygems:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          merge-multiple: true
+          path: assets
+      # OIDC trusted publishing: no long-lived API key is stored in the repo.
+      - uses: rubygems/configure-rubygems-credentials@v2.1.0
+      - name: Publish platform gems
+        env:
+          # Start with the platform-family that is packaged self-contained
+          # today. Set the CELERITE_PUSH_PLATFORM_GLOB repository variable to
+          # `*` after Linux/Windows dynamic-library bundling has been verified.
+          CELERITE_PUSH_PLATFORM_GLOB: ${{ vars.CELERITE_PUSH_PLATFORM_GLOB || '*-darwin' }}
+        run: script/push-gems assets "$CELERITE_PUSH_PLATFORM_GLOB"
+
   publish:
     needs: build
     runs-on: ubuntu-latest

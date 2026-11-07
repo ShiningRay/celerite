@@ -1,0 +1,81 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Push built platform gems to rubygems.org. Safe to re-run: a version/platform
+# pair that is already published is skipped instead of failing the whole
+# release. Credentials come from rubygems/configure-rubygems-credentials
+# (GEM_HOST_API_KEY); this script never reads or prints a token.
+#
+# Usage:
+#   script/push-gems <dir> [platform-glob] [--dry-run]
+#
+# Example:
+#   script/push-gems assets '*-darwin'
+
+require "json"
+require "net/http"
+require "rubygems/package"
+require "uri"
+
+dry_run = ARGV.delete("--dry-run")
+root = ARGV[0] || abort("usage: script/push-gems <dir> [platform-glob] [--dry-run]")
+platform_glob = ARGV[1]
+gems = Dir.glob(File.join(root, "**", "*.gem")).sort
+abort "no .gem files under #{root}" if gems.empty?
+
+cache = {}
+published = lambda do |name|
+  cache[name] ||= begin
+    uri = URI("https://rubygems.org/api/v1/versions/#{name}.json")
+    response = Net::HTTP.get_response(uri)
+    case response
+    when Net::HTTPNotFound
+      []
+    when Net::HTTPSuccess
+      JSON.parse(response.body).map do |entry|
+        platform = entry["platform"]
+        platform = nil if platform == "ruby"
+        [entry["number"], platform]
+      end
+    else
+      abort "rubygems API #{response.code}: #{response.body}"
+    end
+  end
+end
+
+gems.each do |path|
+  spec = Gem::Package.new(path).spec
+  abort "refusing to push #{spec.name}: only celerite is allowed" unless spec.name == "celerite"
+
+  platform = spec.platform.to_s
+  platform = nil if platform == "ruby"
+  if platform_glob && !File.fnmatch?(platform_glob, platform.to_s)
+    puts "skip #{File.basename(path)} (platform #{platform || "ruby"} does not match #{platform_glob})"
+    next
+  end
+
+  key = [spec.version.to_s, platform]
+  if published.call(spec.name).include?(key)
+    puts "skip #{File.basename(path)} (already published)"
+    next
+  end
+
+  if dry_run
+    puts "would push #{File.basename(path)}"
+    next
+  end
+
+  puts "pushing #{File.basename(path)}"
+  output = IO.popen(["gem", "push", path], err: [:child, :out], &:read)
+  print output
+  next if $?.success?
+
+  # A previous run may have published the same artifact; re-check before
+  # treating the failure as fatal.
+  cache.delete(spec.name)
+  if published.call(spec.name).include?(key)
+    puts "skip #{File.basename(path)} (published concurrently)"
+    next
+  end
+  abort "gem push failed for #{File.basename(path)}"
+end

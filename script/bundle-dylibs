@@ -1,0 +1,60 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Make a macOS platform binary self-contained: copy every non-system dylib it
+# links against next to the binary, rewrite the install names to @loader_path,
+# and re-sign the Mach-O files ad hoc. The binary is rewritten in place.
+#
+# Usage: script/bundle-dylibs <binary>
+#
+# Linux and Windows builds do not use this script; their platform gems are
+# checked separately by the release workflow.
+
+require "fileutils"
+
+binary = File.expand_path(ARGV.fetch(0) { abort "usage: script/bundle-dylibs <binary>" })
+abort "not a file: #{binary}" unless File.file?(binary)
+abort "script/bundle-dylibs is macOS-only" unless RUBY_PLATFORM.include?("darwin")
+
+dir = File.dirname(binary)
+system_dep = ->(dep) { dep.start_with?("/usr/lib/", "/System/", "@") }
+
+queue = [binary]
+seen = {}
+
+until queue.empty?
+  file = queue.shift
+  next if seen[file]
+
+  seen[file] = true
+  output = IO.popen(["otool", "-L", file], &:read)
+  abort "otool failed for #{file}" unless $?.success?
+
+  deps = output.lines.drop(1).map { |line| line.strip.split(/\s+/).first }.compact
+  deps.each do |dep|
+    next if system_dep.call(dep)
+
+    name = File.basename(dep)
+    dest = File.join(dir, name)
+    unless File.exist?(dest)
+      FileUtils.cp(dep, dest)
+      File.chmod(0o644, dest)
+      abort "install_name_tool -id failed for #{dest}" unless
+        system("install_name_tool", "-id", "@loader_path/#{name}", dest)
+      queue << dest
+    end
+    abort "install_name_tool -change failed for #{file}" unless
+      system("install_name_tool", "-change", dep, "@loader_path/#{name}", file)
+  end
+end
+
+# Changing an install name invalidates the code signature. On Apple Silicon an
+# unsigned binary will not run at all, so re-sign everything we touched.
+Dir.glob(File.join(dir, "*")).sort.each do |path|
+  next unless File.file?(path)
+  next unless path == binary || path.end_with?(".dylib")
+
+  abort "codesign failed for #{path}" unless system("codesign", "--force", "--sign", "-", path)
+end
+
+puts "bundled dylibs for #{binary}: #{seen.keys.drop(1).map { |p| File.basename(p) }.join(", ")}"

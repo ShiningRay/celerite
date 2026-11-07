@@ -60,6 +60,13 @@ locates your Bundler gem automatically and exports the bridge environment
 (`CELERITE_BRIDGE_SERVER`, `CELERITE_REFERENCE_BUNDLER_LIB`,
 `CELERITE_PROFILE_BUNDLER_VERSION`).
 
+Darwin platform gems are self-contained: the release build bundles the
+non-system dylibs the binary links against (see `THIRD_PARTY_LICENSES.md`), so
+no Homebrew packages are required. Linux and Windows platform gems are built in
+CI but are not published until their dynamic-library bundling is verified; set
+the `CELERITE_PUSH_PLATFORM_GLOB` repository variable to widen the published
+platform set.
+
 Both channels are produced by `script/release` (dist bundle + platform gem
 with an install smoke test); releases are published from the `v*` tag
 workflow. A bare `gem build celerite.gemspec` produces a metadata-only gem —
