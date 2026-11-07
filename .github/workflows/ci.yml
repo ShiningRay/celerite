@@ -10,12 +10,22 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crystal: ["1.21.1", "latest"]
+        crystal: ["1.21.1", "1.22.1"]
     steps:
       - uses: actions/checkout@v4
       - uses: crystal-lang/install-crystal@v1
         with:
           crystal: ${{ matrix.crystal }}
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - name: Install reference Bundler
+        run: gem install bundler -v 4.0.24
+      - name: Expose bridge env
+        run: |
+          echo "CELERITE_BRIDGE_SERVER=${{ github.workspace }}/assets/bridge/server.rb" >> "$GITHUB_ENV"
+          echo "CELERITE_REFERENCE_BUNDLER_LIB=$(gem contents bundler -v 4.0.24 --show-install-dir)/lib" >> "$GITHUB_ENV"
+          echo "CELERITE_PROFILE_BUNDLER_VERSION=4.0.24" >> "$GITHUB_ENV"
       - run: shards build
       - run: crystal spec
       - run: crystal tool format --check src spec
