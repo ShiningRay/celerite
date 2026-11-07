@@ -5,6 +5,7 @@ require "../lockfile/parser"
 require "../definition"
 require "../resolution"
 require "./commands_install"
+require "./commands_surface"
 
 module Celerite
   # Read-only (M1) and resolution (M2) command implementations. Every command
@@ -53,6 +54,26 @@ module Celerite
         exec(stdout, stderr, rest)
       when "binstubs"
         binstubs(stdout, stderr, rest)
+      when "update"
+        update(stdout, stderr, rest)
+      when "add"
+        add(stdout, stderr, rest)
+      when "remove"
+        remove(stdout, stderr, rest)
+      when "env"
+        env(stdout, stderr, rest)
+      when "doctor"
+        doctor(stdout, stderr, rest)
+      when "licenses"
+        licenses(stdout, stderr, rest)
+      when "fund"
+        fund(stdout, stderr, rest)
+      when "open"
+        open(stdout, stderr, rest)
+      when "plugin"
+        plugin(stdout, stderr, rest)
+      when "pristine"
+        pristine(stdout, stderr, rest)
       when "config"
         config(stdout, stderr, rest)
       when "help", "--help", "-h"

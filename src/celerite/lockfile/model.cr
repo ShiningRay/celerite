@@ -63,6 +63,10 @@ module Celerite
         platform.nil? || platform == "ruby"
       end
 
+      def source_type_ruby? : Bool
+        true
+      end
+
       # Gem::NameTuple#full_name ordering contract.
       def full_name : String
         platform_ruby? ? "#{name}-#{version}" : "#{name}-#{version}-#{platform}"

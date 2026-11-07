@@ -41,14 +41,16 @@ def op_ruby_environment(_payload)
   require "rubygems"
   {
     "ruby_version" => RUBY_VERSION,
+    "ruby_description" => RUBY_DESCRIPTION,
+    "ruby_env_line" => "#{RUBY_VERSION}p#{RUBY_PATCHLEVEL} (#{RUBY_RELEASE_DATE} revision #{RUBY_REVISION}) [#{Gem::Platform.local}]",
     "engine" => RUBY_ENGINE,
     "engine_version" => RUBY_ENGINE_VERSION,
     "rubygems_version" => Gem::VERSION,
     "ruby_revision" => RUBY_REVISION.to_s,
     "platform" => bridge_platform_string,
     "ruby_exe" => RbConfig.ruby,
-    "gem_paths" => Gem.path,
-    "default_gem_dir" => Gem.default_dir,
+    "gem_paths" => (ENV["GEM_PATH"] ? ENV["GEM_PATH"].split(Gem.path_separator) : Gem.path),
+    "default_gem_dir" => (ENV["GEM_HOME"] || Gem.default_dir),
     "user_gem_dir" => (Gem.user_dir rescue nil),
     "loaded_bundler_version" => (defined?(Bundler) ? Bundler::VERSION : (Gem.loaded_specs["bundler"]&.version.to_s)),
   }
@@ -136,6 +138,8 @@ def op_read_gem_spec(payload)
     "required_ruby_version" => spec.required_ruby_version.to_s,
     "required_rubygems_version" => spec.required_rubygems_version.to_s,
     "extensions" => spec.extensions,
+    "license" => (spec.license if spec.respond_to?(:license)),
+    "licenses" => (spec.licenses if spec.respond_to?(:licenses)),
     "dependencies" => spec.runtime_dependencies.map { |d|
       { "name" => d.name, "type" => d.type.to_s, "requirements" => d.requirement.as_list }
     },
@@ -168,13 +172,23 @@ end
 # (architecture §2.1: extensions run through the Ruby toolchain, not native code).
 def op_build_extension(payload)
   require "rubygems/ext"
+  require "rubygems/package"
+  require "rubygems/user_interaction"
   require "fileutils"
+  # Builder output would corrupt the JSON Lines protocol on stdout; silence it
+  Gem::DefaultUserInteraction.ui = Gem::SilentUI.new
   gem_dir = payload["gem_dir"]
   destination = payload["destination"] # extensions/<platform>/<abi>/<full_name>
-  spec = Gem::Specification.load(File.join(gem_dir, "#{payload["name"]}.gemspec"))
+  # The payload may not contain a .gemspec; load the spec from the cached .gem
+  spec = if payload["gem_path"] && File.exist?(payload["gem_path"])
+    Gem::Package.new(payload["gem_path"]).spec
+  else
+    Gem::Specification.load(File.join(gem_dir, "#{payload["name"]}.gemspec"))
+  end
   raise "gemspec not found in #{gem_dir}" unless spec
   gem_build_complete = File.join(destination, "gem.build_complete")
   FileUtils.mkdir_p(destination)
+  spec.full_gem_path = gem_dir
   spec.extension_dir = destination
   Gem::Ext::Builder.new(spec).build_extensions
   File.write(gem_build_complete, "")

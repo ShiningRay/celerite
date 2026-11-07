@@ -18,6 +18,8 @@ module Celerite
     struct RubyEnvironment
       include JSON::Serializable
       getter ruby_version : String
+      getter ruby_description : String
+      getter ruby_env_line : String
       getter engine : String
       getter engine_version : String
       getter rubygems_version : String
@@ -77,6 +79,8 @@ module Celerite
       getter required_rubygems_version : String
       getter extensions : Array(String)
       getter dependencies : Array(JSON::Any)?
+      getter license : String?
+      getter licenses : Array(String)?
     end
 
     struct GemfileEvaluation
@@ -177,8 +181,8 @@ module Celerite
         GemSpecInfo.from_json(request("load_gemspec_dir", payload).to_json)
       end
 
-      def build_extension(gem_dir : String, destination : String, name : String) : JSON::Any
-        request("build_extension", {"gem_dir" => gem_dir, "destination" => destination, "name" => name})
+      def build_extension(gem_dir : String, destination : String, name : String, gem_path : String) : JSON::Any
+        request("build_extension", {"gem_dir" => gem_dir, "destination" => destination, "name" => name, "gem_path" => gem_path})
       end
 
       def bundler_cache_file(version : String) : String?

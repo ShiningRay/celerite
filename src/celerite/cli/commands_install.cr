@@ -42,7 +42,7 @@ module Celerite
     # ------------------------------------------------------------------
     # install
     # ------------------------------------------------------------------
-    def self.install(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+    def self.install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false) : Int32
       definition = Definition.build
       config = definition.config
       if config.frozen? && !definition.lockfile_exists?
@@ -59,7 +59,8 @@ module Celerite
         downloader = Downloader.new(resolution.primary_remote, downloader_cache_root)
         installer = Installer.new(install_path, abi, bridge, downloader, stdout)
 
-        reuse = resolution_can_reuse?(resolution)
+        reuse = no_reuse ? false : resolution_can_reuse?(resolution)
+        resolution.show_resolving = show_resolving
 
         # Git sources fetch before resolving (pinned reference behavior);
         # their "Fetching <remote>" lines appear first.
@@ -73,21 +74,29 @@ module Celerite
 
         specs = resolution.resolve!(reuse)
 
+        previous_versions = definition.lockfile_exists? ? definition.lockfile!.specs.to_h { |s| {s.name, s.version} } : {} of String => String
         pending = specs.sort_by(&.full_name).select(&.source_type.==("GEM")).reject do |spec|
           installer.installed?(spec.name, spec.version.to_s, spec.platform)
         end
         # Reference output order: all "Fetching" lines (downloads) first,
-        # then all "Installing" lines.
+        # then all "Installing" lines. Updated gems show "(was <old>)".
+        was_suffix = ->(spec : Resolution::ResolvedSpec) do
+          if old = previous_versions[spec.name]?
+            old != spec.version.to_s ? " (was #{old})" : ""
+          else
+            ""
+          end
+        end
         cached_paths = {} of String => String
         pending.each do |spec|
-          stdout.puts "Fetching #{spec.name} #{spec.version}"
+          stdout.puts "Fetching #{spec.name} #{spec.version}#{was_suffix.call(spec)}"
           cached_paths[spec.full_name] = downloader.fetch(
             spec.name, spec.version.to_s, spec.platform, spec.checksum
           )
         end
         pending.each do |spec|
           cached = cached_paths[spec.full_name]?
-          stdout.puts "Installing #{spec.name} #{spec.version}#{native_suffix(bridge, cached)}"
+          stdout.puts "Installing #{spec.name} #{spec.version}#{was_suffix.call(spec)}#{native_suffix(bridge, cached)}"
           installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum)
           # The reference records the installed package's sha256 in CHECKSUMS
           # even for file:// sources.
@@ -97,12 +106,14 @@ module Celerite
           end
         end
 
-        deps_count = resolution.evaluation.dependencies.count { |d| !d.gemspec_dev_dep }
-        gems_count = specs.size
-        # 2.7.x counts the running Bundler in "gems now installed"
-        gems_count += 1 if resolution.bridge_bundler_version.starts_with?("2.")
-        stdout.puts "Bundle complete! #{deps_count} Gemfile dependencies, #{gems_count} gems now installed."
-        stdout.puts "Bundled gems are installed into `#{install_path.gsub(/\\\\/, "/").gsub(/\\/, "/")}`"
+        if summary
+          deps_count = resolution.evaluation.dependencies.count { |d| !d.gemspec_dev_dep }
+          gems_count = specs.size
+          # 2.7.x counts the running Bundler in "gems now installed"
+          gems_count += 1 if resolution.bridge_bundler_version.starts_with?("2.")
+          stdout.puts "Bundle complete! #{deps_count} Gemfile dependenc#{deps_count == 1 ? "y" : "ies"}, #{gems_count} gem#{gems_count == 1 ? "" : "s"} now installed."
+          stdout.puts "Bundled gems are installed into `#{install_path.gsub(/\\\\/, "/").gsub(/\\/, "/")}`"
+        end
 
         unless rest.includes?("--no-lock") || config.frozen?
           text = resolution.generated_lockfile.to_lock

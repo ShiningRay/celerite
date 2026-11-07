@@ -78,7 +78,12 @@ module Celerite
       FileUtils.mkdir_p(target_gems)
       FileUtils.mkdir_p(target_specs)
 
-      File.rename(File.join(cache_dir, "#{full_name}.gem"), File.join(target_cache, "#{full_name}.gem"))
+      # Windows renames fail over existing directories; clear stale targets
+      # from interrupted installs first.
+      target_gem_file = File.join(target_cache, "#{full_name}.gem")
+      File.delete(target_gem_file) if File.file?(target_gem_file)
+      FileUtils.rm_rf(File.join(target_gems, full_name))
+      File.rename(File.join(cache_dir, "#{full_name}.gem"), target_gem_file)
       File.rename(gem_dir, File.join(target_gems, full_name))
 
       # native extensions (Ruby toolchain via the bridge, architecture §2.1)
@@ -86,14 +91,16 @@ module Celerite
         extension_dir = File.join(@install_root, "extensions", Gem::Platform.local.to_s,
           @ruby_abi, full_name)
         build_result = @bridge.build_extension(
-          File.join(target_gems, full_name), extension_dir, name
+          File.join(target_gems, full_name), extension_dir, name, gem_file
         )
         if build_result["error"]?
           raise Error.new("extension build failed for #{full_name}: #{build_result["error"].as_s}")
         end
       end
 
-      File.rename(spec_destination, File.join(target_specs, "#{full_name}.gemspec"))
+      target_spec = File.join(target_specs, "#{full_name}.gemspec")
+      File.delete(target_spec) if File.file?(target_spec)
+      File.rename(spec_destination, target_spec)
       if Dir.exists?(bin_dir) && !Dir.empty?(bin_dir)
         FileUtils.mkdir_p(target_bin)
         Dir.children(bin_dir).each do |child|

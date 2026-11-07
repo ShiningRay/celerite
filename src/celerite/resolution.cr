@@ -173,7 +173,7 @@ module Celerite
         ""
     end
 
-    private def compact_index_client : CompactIndex::Client
+    def compact_index_client : CompactIndex::Client
       @compact_index_client ||= CompactIndex::Client.new(primary_remote, user_cache_root)
     end
 
@@ -273,6 +273,10 @@ module Celerite
       @resolved_specs
     end
 
+    # Suppressed on locked-path installs (the reference prints no
+    # "Resolving dependencies..." there).
+    property show_resolving : Bool = true
+
     private def top_level_deps : Array(Resolver::DepSpec)
       deps = [] of Resolver::DepSpec
       seen = Set(String).new
@@ -364,7 +368,7 @@ module Celerite
       source = make_source(base_requirements, index, locked_index, prerelease_exceptions, @unlock, fetcher)
 
       orchestrator = Resolver::Orchestrator.new(source, deps)
-      @progress.puts "Resolving dependencies..."
+      @progress.puts "Resolving dependencies..." if @show_resolving
       decisions = solve_with_relaxation(source, deps, prerelease_exceptions, unlocked, orchestrator)
       decisions_to_specs(decisions, index, locked_index)
     end
