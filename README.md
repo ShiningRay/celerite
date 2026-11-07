@@ -39,19 +39,31 @@ explicit, opt-in installation step; it will never be overwritten automatically.
 
 ## Install
 
-Platform gems are built per release (`script/release` produces both the
-dist bundle and the gem). Build the gem for the current platform locally:
+One-liner (downloads the platform binary from GitHub Releases, verifies it
+against `checksums.sha256`, installs to `~/.local/bin`; never replaces an
+existing `bundle` — the shim lands as `celerite-bundle` instead):
 
 ```console
-script/gem            # builds pkg/celerite-<version>-<platform>.gem
-gem install --local pkg/celerite-<version>-<platform>.gem
+curl -fsSL https://github.com/ShiningRay/celerite/releases/latest/download/install.sh | bash
+```
+
+Options: `PREFIX=<dir>`, pin a version with an argument (`... | bash -s -- 0.1.0`).
+
+Via RubyGems (platform gems built per release):
+
+```console
+gem install celerite
 ```
 
 The gem ships the native binary plus the Ruby bridge; the installed shim
 locates your Bundler gem automatically and exports the bridge environment
 (`CELERITE_BRIDGE_SERVER`, `CELERITE_REFERENCE_BUNDLER_LIB`,
-`CELERITE_PROFILE_BUNDLER_VERSION`). A bare `gem build celerite.gemspec`
-produces a metadata-only gem — always build through `script/gem`.
+`CELERITE_PROFILE_BUNDLER_VERSION`).
+
+Both channels are produced by `script/release` (dist bundle + platform gem
+with an install smoke test); releases are published from the `v*` tag
+workflow. A bare `gem build celerite.gemspec` produces a metadata-only gem —
+always build through `script/gem`.
 
 ## Development
 

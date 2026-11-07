@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Release artifacts (roadmap M6): builds the celerite binary for the current
 # platform, emits SHA-256 checksums, and packages a self-contained install
-# bundle (binary + bundle shim + install script) under dist/.
+# bundle (binary + bundle shim + install scripts) under dist/. Asset names use
+# the canonical <os>-<arch> triple consumed by install.sh (curl | bash).
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -14,11 +15,23 @@ echo "Building celerite $version..."
 
 binary="$repo_root/bin/celerite"
 [ -f "${binary}.exe" ] && binary="${binary}.exe"
-target="celerite-${version}-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
 [ -f "$binary" ] || { echo "binary missing" >&2; exit 2; }
+
+# Canonical platform triple (must match install.sh platform detection)
+case "$(uname -s)" in
+  Linux) os="linux" ;;
+  Darwin) os="macos" ;;
+  MINGW* | MSYS* | CYGWIN*) os="windows" ;;
+  *) os="$(uname -s | tr '[:upper:]' '[:lower:]')" ;;
+esac
+target="celerite-${version}-${os}-$(uname -m)"
 
 cp "$binary" "$dist/$target"
 cp "$repo_root/script/bundle" "$dist/bundle"
+# The curl|bash installer is itself a release asset: it is fetched from
+# releases/latest/download/install.sh by the user's one-liner.
+cp "$repo_root/install.sh" "$dist/install.sh"
+chmod 0755 "$dist/install.sh" 2>/dev/null || true
 
 cat > "$dist/install-celerite.sh" <<'INSTALL'
 #!/usr/bin/env bash
@@ -53,7 +66,9 @@ cat > "$dist/checksums.sha256" <<HEADER
 HEADER
 (
   cd "$dist"
-  sha256sum "$target" bundle install-celerite.sh >> checksums.sha256
+  # normalize Git Bash binary-mode markers (<hash> *name) to the coreutils
+  # text form (<hash>  name) that install.sh and POSIX tools expect
+  sha256sum "$target" bundle install-celerite.sh install.sh | sed 's/ \*/  /' >> checksums.sha256
 )
 
 # Platform gem (roadmap M6): same binary, packaged for `gem install celerite`.

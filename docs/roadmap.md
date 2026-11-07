@@ -114,7 +114,7 @@
 - [ ] 建立冷/热缓存、无变化、解析、下载和扩展构建 benchmark。
 - [ ] profile 启动、分配、锁竞争、I/O 与 CPU，按数据优化 Fiber 并发及必要的多线程。
 - [ ] 完成缓存 GC、损坏恢复、诊断、脱敏、升级和卸载文档。
-- [x] 提供构建产物、校验和、安装脚本与显式 shim；默认不替换系统 `bundle`。（script/release 产出 dist 二进制+bundle shim+install-celerite.sh+checksums；另建 rubygem 分发通道：script/gem 构建平台 gem 并冒烟安装验证，exe/celerite shim 自动定位平台二进制与用户 Bundler 并导出 bridge 环境，CI gem-package job 在 ubuntu/macos/windows 产出 gem artifact；发布 `gem push` 待 API key。gem 安装 shim 经 CELERITE_BIN 差分子集（含 bundler-inline 桥/exec 路径）双 profile 验证）
+- [x] 提供构建产物、校验和、安装脚本与显式 shim；默认不替换系统 `bundle`。（script/release 产出 dist 二进制+bundle shim+install-celerite.sh+checksums，资产名规范化为 celerite-<version>-<os>-<arch> 三元组；curl|bash 安装通道：install.sh 由 releases/latest/download 分发——平台探测、从 checksums 发现最新版本、SHA-256 验证后才安装、bundle shim 仅在无系统 bundle 时落盘（否则 celerite-bundle）；已本地 file:// 假 release 端到端验证（latest/pinned/篡改拒绝三探针）；script/publish + tag 触发 release.yml（三平台构建、按平台 checksums 合并后 gh release 上传）；另建 rubygem 分发通道：script/gem 平台 gem 冒烟验证，exe/celerite shim 自动导出 bridge 环境，CI gem-package job 三平台产物，gem shim 经 CELERITE_BIN 差分子集双 profile 验证；实际发布（tag 推送/gem push）待用户执行）
 - [ ] 发布兼容报告与基准原始结果，不以营销数字代替数据。
 
 验收：基准可复现；兼容报告对应 commit；用户可明确切换与回退，且不会丢失现有配置。

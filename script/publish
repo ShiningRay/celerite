@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Publish (roadmap M6): creates/updates the GitHub release v<version> and
+# uploads the release assets produced by script/release (and script/gem).
+#
+# Usage:
+#   script/publish [assets-dir]     # default: repo dist/ (+ pkg/*.gem)
+#
+# Requires the gh CLI authenticated with a token that can create releases
+# (CI: GITHUB_TOKEN with contents:write). Safe to re-run: an existing release
+# is reused and assets are overwritten (--clobber).
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+version="$(grep -o 'VERSION = ".*"' "$repo_root/src/celerite.cr" | cut -d'"' -f2)"
+tag="v$version"
+assets_dir="${1:-$repo_root/dist}"
+[ -d "$assets_dir" ] || { echo "assets dir missing: $assets_dir" >&2; exit 2; }
+
+command -v gh >/dev/null 2>&1 || { echo "gh CLI required" >&2; exit 2; }
+
+staging="$(mktemp -d)"
+trap 'rm -rf "$staging"' EXIT
+cp -r "$assets_dir/." "$staging/"
+# Gems are produced per platform by script/gem / CI gem-package jobs
+for gem in "$repo_root"/pkg/*.gem; do
+  [ -f "$gem" ] && cp "$gem" "$staging/"
+done
+
+notes="Celerite $version
+
+Install:
+
+    curl -fsSL https://github.com/ShiningRay/celerite/releases/latest/download/install.sh | bash
+
+Or via RubyGems:
+
+    gem install celerite -v $version
+
+Assets are named \`celerite-<version>-<os>-<arch>\`; checksums.sha256 lists
+SHA-256 digests for every artifact. The \`install.sh\` asset verifies the
+binary against it before installing. \`bundle\` is an explicit opt-in shim —
+nothing on your PATH is replaced."
+
+if gh release view "$tag" --repo ShiningRay/celerite >/dev/null 2>&1; then
+  echo "Release $tag exists — uploading assets (clobber)"
+  gh release upload "$tag" "$staging"/* --repo ShiningRay/celerite --clobber
+else
+  echo "Creating release $tag"
+  gh release create "$tag" "$staging"/* \
+    --repo ShiningRay/celerite \
+    --title "celerite $version" \
+    --notes "$notes"
+fi
+
+gh release view "$tag" --repo ShiningRay/celerite --json assets \
+  --jq '.assets[].name' 2>/dev/null || true
