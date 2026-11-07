@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-export CELERITE_BRIDGE_SERVER="/c/Users/ShiningRay/projects/ShiningRay/celerite/assets/bridge/server.rb"
-exec "/c/Users/ShiningRay/projects/ShiningRay/celerite/bin/celerite" "$@"

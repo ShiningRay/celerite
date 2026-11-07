@@ -5,3 +5,4 @@
 *.dwarf
 .tmp-scratch/
 dist/
+.upstream-specs/
