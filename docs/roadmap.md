@@ -29,7 +29,7 @@
 - [x] CI 安装固定 Ruby/Bundler 组合，锁定 `rubygems/rubygems` 测试 revision。（本地先行：Bundler 4.0.24 + 2.7.2 安装并记录于 `vendor/reference/MANIFEST.md`；CI 矩阵已建（.github/workflows/ci.yml））
 - [x] 实现 `script/differential`：隔离 HOME、项目、gem 安装目录与网络 fixture，收集退出码、输出、锁文件和文件树。
 - [x] 创建最小 fixture：纯 Ruby 依赖、冲突、预发布、多平台、多 source、动态 Gemfile、Git/path、原生扩展和插件。（M0 先交付锁文件驱动的 7 个差分 fixture；预发布/多平台/Git/path/扩展/插件 fixture 随 M2–M4 的实现路径补充）
-- [ ] 运行上游 Bundler spec 的可行性 spike，记录不适用项及原因。
+- [x] 运行上游 Bundler spec 的可行性 spike，记录不适用项及原因。（spike 记录见 docs/upstream-spec-spike.md；锁文件族经 script/upstream-specs 常态化运行，64 例记录于 docs/compat-matrix/generated/upstream-lockfile-v4.0.24.md）
 
 验收：同一 fixture 两次参考运行结果确定；基线产物无 token/绝对路径等非确定泄漏。✅（差分 sandbox 无 HOME 泄漏；路径正规化）
 

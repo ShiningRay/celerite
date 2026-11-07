@@ -114,6 +114,37 @@ run_fixture() {
     done
   fi
 
+  # Git-source fixtures: nested .git directories cannot be committed, so each
+  # directory listed in the fixture's `git-init` manifest is materialized here
+  # as a real repo. One staging init per side keeps both runs on the same
+  # commit SHA (deterministic author/committer env pins the SHA).
+  if [ -f "$fixture_dir/git-init" ]; then
+    staging="$(mktemp -d)"
+    while IFS= read -r rel; do
+      [ -d "$fixture_dir/extra/$rel" ] || continue
+      rm -rf "$staging/$rel"
+      mkdir -p "$staging/$rel"
+      cp -r "$fixture_dir/extra/$rel/." "$staging/$rel/"
+      rm -rf "$staging/$rel/.git"
+      GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.test \
+      GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.test \
+      GIT_AUTHOR_DATE="2026-01-01T00:00:00Z" GIT_COMMITTER_DATE="2026-01-01T00:00:00Z" \
+        git -C "$staging/$rel" -c core.autocrlf=false -c commit.gpgsign=false \
+        init -q -b master >/dev/null
+      git -C "$staging/$rel" -c core.autocrlf=false add -A
+      GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.test \
+      GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.test \
+      GIT_AUTHOR_DATE="2026-01-01T00:00:00Z" GIT_COMMITTER_DATE="2026-01-01T00:00:00Z" \
+        git -C "$staging/$rel" -c commit.gpgsign=false commit -q -m init
+      for side in ref cel; do
+        sandbox="$ref_sandbox"; [ "$side" = "cel" ] && sandbox="$cel_sandbox"
+        rm -rf "$sandbox/project/$rel"
+        cp -r "$staging/$rel" "$sandbox/project/$rel"
+      done
+    done < "$fixture_dir/git-init"
+    rm -rf "$staging"
+  fi
+
   local isolated_env=(
     HOME="$ref_sandbox/home" USERPROFILE="$ref_sandbox/home"
     GEM_HOME="$ref_sandbox/gems" GEM_PATH="$ref_sandbox/gems"

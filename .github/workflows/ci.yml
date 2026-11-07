@@ -63,7 +63,7 @@ jobs:
         with:
           ruby-version: "4.0"
       - name: Install reference Bundler + rspec
-        run: gem install bundler -v 4.0.24 rspec
+        run: gem install bundler:4.0.24 rspec
       - name: Build
         run: shards build
       - name: Upstream lockfile spec family
