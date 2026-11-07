@@ -68,7 +68,8 @@ module Celerite
     end
 
     it "exposes info via the client cache flow" do
-      remote = "file:///#{File.expand_path(File.join(__DIR__, "..", "..", "fixtures", "gem-index")).gsub(/\\\\/, "/")}"
+      idx = File.expand_path(File.join(__DIR__, "..", "..", "fixtures", "gem-index"))
+      remote = file_source_url(idx)
       client = CompactIndex::Client.new(remote, File.tempname("celerite-ci", "root"))
       versions = client.versions
       versions["json_pure"].map(&.version).sort.should eq(["2.6.0", "2.8.1"])

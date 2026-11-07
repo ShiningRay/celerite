@@ -61,6 +61,13 @@ rescue
   false
 end
 
+# Builds a file:// URL for an absolute local path on any platform:
+# POSIX "/a/b" -> "file:///a/b", Windows "C:/a" -> "file:///C:/a".
+def file_source_url(path : String) : String
+  normalized = path.gsub(/\\/, "/")
+  normalized.starts_with?("/") ? "file://#{normalized}" : "file:///#{normalized}"
+end
+
 def with_client(& : Celerite::Bridge::Client ->) : Nil
   server = File.expand_path("../assets/bridge/server.rb", __DIR__)
   client = Celerite::Bridge::Client.new(server_path: server)

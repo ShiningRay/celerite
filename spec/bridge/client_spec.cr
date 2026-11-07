@@ -74,9 +74,10 @@ module Celerite
 
     it "resolves and generates a lockfile against the local file:// index" do
       pending! "ruby not available" unless ruby_available?
-      index = File.expand_path(File.join(__DIR__, "..", "..", "fixtures", "gem-index")).gsub(/\\/, "/")
+      index = File.expand_path(File.join(__DIR__, "..", "..", "fixtures", "gem-index"))
+      remote = file_source_url(index)
       with_project({
-        "Gemfile" => "source \"file:///#{index}\"\n\ngem \"json_pure\"\ngem \"racc\"\n",
+        "Gemfile" => "source \"#{remote}\"\n\ngem \"json_pure\"\ngem \"racc\"\n",
       }) do |dir|
         with_client do |client|
           definition = Definition.build
@@ -86,7 +87,7 @@ module Celerite
           text = data.to_lock
           text.should contain("    json_pure (2.8.1)")
           text.should contain("    racc (1.8.1)")
-          text.should contain("  remote: file:///#{index}/")
+          text.should contain("  remote: #{remote}/")
           text.should contain("BUNDLED WITH")
           # read-only guarantee
           File.exists?(File.join(dir, "Gemfile.lock")).should be_false
@@ -96,10 +97,11 @@ module Celerite
 
     it "applies version constraints with lockfile relaxation" do
       pending! "ruby not available" unless ruby_available?
-      index = File.expand_path(File.join(__DIR__, "..", "..", "fixtures", "gem-index")).gsub(/\\/, "/")
+      index = File.expand_path(File.join(__DIR__, "..", "..", "fixtures", "gem-index"))
+      remote = file_source_url(index)
       with_project({
-        "Gemfile"      => "source \"file:///#{index}\"\n\ngem \"json_pure\", \"2.6.0\"\ngem \"racc\"\n",
-        "Gemfile.lock" => "GEM\n  remote: file:///#{index}/\n  specs:\n    json_pure (2.8.1)\n    racc (1.8.1)\n\nPLATFORMS\n  ruby\n\nDEPENDENCIES\n  json_pure\n  racc\n\nBUNDLED WITH\n  4.0.24\n",
+        "Gemfile"      => "source \"#{remote}\"\n\ngem \"json_pure\", \"2.6.0\"\ngem \"racc\"\n",
+        "Gemfile.lock" => "GEM\n  remote: #{remote}/\n  specs:\n    json_pure (2.8.1)\n    racc (1.8.1)\n\nPLATFORMS\n  ruby\n\nDEPENDENCIES\n  json_pure\n  racc\n\nBUNDLED WITH\n  4.0.24\n",
       }) do
         with_client do |client|
           definition = Definition.build

@@ -122,8 +122,20 @@ module Celerite
       remote_path = "/gems/#{full_name}.gem"
 
       if @remote.starts_with?("file:")
-        root = @remote.lchop("file:").lstrip('/')
-        root += "/" unless root.ends_with?("/")
+        # URI parsing keeps absolute POSIX paths intact (file:///home/...)
+        # and folds Windows drive paths (file:///C:/...)
+        uri = URI.parse(@remote)
+        root = uri.path || ""
+        if (h = uri.host) && !h.empty? && !h.includes?(".") && !root.includes?(":")
+          root = "/#{h}#{root}"
+        end
+        # collapse a doubled leading slash (file:////abs) before expand:
+        # POSIX expand keeps "//" (UNC on Windows)
+        root = root.gsub(/\\/, "/").sub(%r{^/{2,}}, "/")
+        # file:///C:/... leaves a leading slash before the drive letter
+        root = root.sub(/^\/[A-Za-z]:\//) { |m| m[1..] }
+        root = root.sub(/^\/[A-Za-z]:\//) { |m| m[1..] }
+        root = File.expand_path(root)
         source = File.expand_path(remote_path.lstrip('/'), root)
         raise Error.new("gem file not found: #{full_name}.gem") unless File.file?(source)
         File.write(path, File.read(source))

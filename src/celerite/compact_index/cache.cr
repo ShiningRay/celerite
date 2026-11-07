@@ -448,9 +448,21 @@ module Celerite
 
       private def make_fetcher(remote : String, credentials : {String, String}?) : Fetcher
         if remote.starts_with?("file:")
-          # handle file://C:/..., file:///C:/... and file:/C:/... alike
-          path = remote.lchop("file:").lstrip('/')
-          # Bundler normalizes the remote; keep trailing slash for info joining
+          # Use URI parsing so file:///C:/..., file:///home/... and
+          # file:/C:/... all resolve to an absolute local path.
+          uri = URI.parse(remote)
+          path = uri.path || ""
+          if (h = uri.host) && !h.empty? && !path.includes?(":")
+            # file://host/path with a non-drive host — fold host into path
+            path = "/#{h}#{path}"
+          end
+          path = path.gsub(/\\/, "/")
+          # collapse a doubled leading slash (file:////abs) before expand:
+          # POSIX expand keeps "//" (UNC on Windows)
+          path = path.sub(%r{^/{2,}}, "/")
+          # file:///C:/... leaves a leading slash before the drive letter
+          path = path.sub(/^\/[A-Za-z]:\//) { |m| m[1..] }
+          path = File.expand_path(path)
           path += "/" unless path.ends_with?("/")
           FileFetcher.new(path)
         else
