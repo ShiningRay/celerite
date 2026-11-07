@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  specs:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        crystal: ["1.21.1", "latest"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: ${{ matrix.crystal }}
+      - run: shards build
+      - run: crystal spec
+      - run: crystal tool format --check src spec
+
+  differential:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        bundler_ref: ["4.0.24", "2.7.2"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: "latest"
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - name: Install reference Bundler
+        run: gem install bundler -v ${{ matrix.bundler_ref }}
+      - name: Build
+        run: shards build
+      - name: Differential (${{ matrix.bundler_ref }})
+        env:
+          BUNDLER_REF_VERSION: ${{ matrix.bundler_ref }}
+        run: script/differential
+
+  upstream-specs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: "latest"
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - name: Install reference Bundler + rspec
+        run: gem install bundler -v 4.0.24 rspec
+      - name: Build
+        run: shards build
+      - name: Upstream lockfile spec family
+        run: script/upstream-specs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upstream-spec-report
+          path: docs/compat-matrix/generated/upstream-lockfile-*.md
