@@ -124,10 +124,13 @@ module Celerite
       version_requirement = latest_requirement_for(definition, name, stdout)
       gem_line = "gem \"#{name}\"#{version_requirement}"
 
-      lines = gemfile.chomp.split("\n")
+      # Ruby's text mode on Windows rewrites the Gemfile with CRLF (reference
+      # parity: the file is normalized, not preserved).
+      lines = gemfile.gsub(/\r\n/, "\n").chomp.split("\n")
       insert_at = lines.rindex { |l| l.strip.starts_with?("gem ") } || (lines.size - 1)
       lines.insert(insert_at + 1, gem_line)
-      File.write(gemfile_path, lines.join("\n") + "\n")
+      eol = {{ flag?(:windows) }} ? "\r\n" : "\n"
+      File.write(gemfile_path, lines.join(eol) + eol)
 
       # Reference add prints a second "Fetching source index" (once from the
       # requirement probe, once from the re-resolve) and never shows the
@@ -135,16 +138,19 @@ module Celerite
       code = install(stdout, stderr,
         rest.reject { |a| a == name || a.starts_with?("--") } + rest.select(&.starts_with?("--")),
         summary: false, no_reuse: true)
-      return code if code != 0
-      stdout.puts gem_line
-      0
+      code
     end
 
     private def self.latest_requirement_for(definition : Definition, name : String, stdout : IO) : String
       bridge = Bridge::Client.new
       begin
         resolution = Resolution.new(definition, false, bridge)
-        resolution.progress = IO::Memory.new # probe is silent; install prints the fetch lines
+        resolution.progress = stdout # probe resolves first: prints fetch+Resolving
+        resolution.show_resolving = true
+        resolution.resolve! # lines 1-2 of the reference add output
+
+        # requirement comes from the compact index, not the current-bundle
+        # resolution (racc is not a Gemfile dependency yet)
         entries = resolution.compact_index_client.info(name)
         versions = entries.map { |e| Gem::Version.new(e.version) }.reject(&.prerelease?)
         return "" if versions.empty?
@@ -173,7 +179,7 @@ module Celerite
 
       definition = Definition.build
       gemfile_path = definition.gemfile_path
-      lines = File.read(gemfile_path).chomp.split("\n")
+      lines = File.read(gemfile_path).gsub(/\r\n/, "\n").chomp.split("\n")
 
       removed = [] of String
       kept = lines.select do |line|
@@ -188,7 +194,8 @@ module Celerite
       end
 
       stdout.puts "Removing gems from #{gemfile_path.gsub(/\\/, "/")}"
-      File.write(gemfile_path, kept.join("\n") + "\n")
+      eol = {{ flag?(:windows) }} ? "\r\n" : "\n"
+      File.write(gemfile_path, kept.join(eol) + eol)
       removed.each do |line|
         label = line.sub(/^gem\s+/, "").gsub(/['"]/, "").split(",")[0].strip
         req_label = definition.lockfile!.dependencies.find(&.name.==(label)).try do |dep|

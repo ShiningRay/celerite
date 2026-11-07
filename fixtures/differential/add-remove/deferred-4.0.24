@@ -1,1 +1,0 @@
-gem-line placement and probe fetch-line count differ; end state verified identical via fresh-bundle manual run (install/add/remove leaves the same Gemfile, lockfile and bundle tree). M6 will revisit with the exact probe-vs-install progress split.

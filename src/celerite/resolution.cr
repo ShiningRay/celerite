@@ -659,13 +659,23 @@ module Celerite
 
       if checksums_enabled?
         checksum_section = Lockfile::ChecksumsSection.new
+        # Checksum precedence: installed-package digest (this run) > existing
+        # lockfile entry (the reference keeps locked checksums on re-lock) >
+        # index checksum.
+        existing_checksums = @definition.lockfile_exists? ? @definition.lockfile!.checksums : [] of Lockfile::ChecksumEntry
         @resolved_specs.each do |spec|
           installed = @install_checksums["#{spec.name}-#{spec.version}"]?
-          checksum = installed || spec.checksum
+          existing = existing_checksums.find do |c|
+            c.name == spec.name && c.version == spec.version.to_s &&
+              (c.platform.nil? || c.platform == "ruby") && !c.checksums.empty?
+          end
+          checksum = installed || existing.try(&.checksums.first?) || spec.checksum
           checksums = checksum ? [checksum.not_nil!] : [] of String
           checksum_section.entries << Lockfile::ChecksumEntry.new(spec.name, spec.version.to_s, spec.platform, checksums)
         end
-        if path = @bundler_cache_path
+        # The bundler self-checksum entry is 4.0.24-only (2.7.x never records
+        # one — pinned generator diff, vendor/reference/MANIFEST.md).
+        if !profile_is_2_x? && (path = @bundler_cache_path)
           if File.file?(path)
             sha = Digest::SHA256.hexdigest(File.read(path))
             checksum_section.entries << Lockfile::ChecksumEntry.new("bundler", @bridge_bundler_version, nil, ["sha256=#{sha}"])

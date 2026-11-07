@@ -61,6 +61,14 @@ module Celerite
 
         reuse = no_reuse ? false : resolution_can_reuse?(resolution)
         resolution.show_resolving = show_resolving
+        # no_reuse (add): the reference prints the source-index fetch up front
+        # (its resolve runs before the resolution's lazy fetch would).
+        if no_reuse
+          # reference order: probe resolves (fetch+Resolving), then the install
+          # fetches once more without a second Resolving line (its lazy fetch
+          # lands after the probe's lines)
+          resolution.show_resolving = false
+        end
 
         # Git sources fetch before resolving (pinned reference behavior);
         # their "Fetching <remote>" lines appear first.
