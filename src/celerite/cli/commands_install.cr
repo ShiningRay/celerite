@@ -306,9 +306,25 @@ module Celerite
 
     private def self.executable_binary?(path : String) : Bool
       return false unless File.file?(path)
-      header = Bytes.new(2)
-      File.open(path, "rb") { |io| io.read(header) }
-      header[0] == 0x4D && header[1] == 0x5A # MZ
+      header = Bytes.new(4)
+      read = File.open(path, "rb") { |io| io.read(header) }
+      return false if read < 2
+      # PE/COFF (MZ) — Windows executables
+      return true if header[0] == 0x4D && header[1] == 0x5A
+      return false if read < 4
+      # ELF — Linux executables
+      if header[0] == 0x7F && header[1] == 0x45 && header[2] == 0x4C && header[3] == 0x46
+        return true
+      end
+      # Mach-O 32/64 and fat variants — macOS executables
+      mach_o = {0xCE, 0xCF, 0xCA, 0xBE}.any? do |first|
+        header[0] == first && header[1] == 0xFA
+      end
+      mach_o ||=
+        header[0] == 0xCA && header[1] == 0xFE && header[2] == 0xBA && header[3] == 0xBE
+      mach_o ||=
+        header[0] == 0xBE && header[1] == 0xBA && header[2] == 0xFE && header[3] == 0xCA
+      mach_o
     end
 
     # Reference auto-switch trace (2.7.x profile on a 4.0.24 lockfile):

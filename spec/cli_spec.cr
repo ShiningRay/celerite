@@ -1,4 +1,5 @@
 require "./spec_helper"
+require "../src/celerite"
 
 describe Celerite::CLI do
   it "prints its version" do
@@ -168,27 +169,22 @@ describe Celerite::CLI do
 
   describe "platform" do
     it "prints local and locked platforms with the reference format" do
-      ENV["CELERITE_LOCAL_PLATFORM"] = "x64-mingw-ucrt"
-      begin
-        with_project({
-          "Gemfile"      => "source \"https://rubygems.org\"\n\ngem \"json_pure\", \">= 2.0\"\n",
-          "Gemfile.lock" => FIXTURE_LOCKFILE,
-        }) do
-          code, out, err = run_cli(["platform"])
-          code.should eq(0)
-          err.should be_empty
-          out.should eq <<-TEXT
-          Your platform is: x64-mingw-ucrt
+      with_project({
+        "Gemfile"      => "source \"https://rubygems.org\"\n\ngem \"json_pure\", \">= 2.0\"\n",
+        "Gemfile.lock" => FIXTURE_LOCKFILE,
+      }) do
+        code, out, err = run_cli(["platform"])
+        code.should eq(0)
+        err.should be_empty
+        out.should eq <<-TEXT
+        Your platform is: #{Celerite::Gem::Platform.local}
 
-          Your app has gems that work on these platforms:
-          * x64-mingw-ucrt
+        Your app has gems that work on these platforms:
+        * #{Celerite::Gem::Platform.local}
 
-          Your Gemfile does not specify a Ruby version requirement.
+        Your Gemfile does not specify a Ruby version requirement.
 
-          TEXT
-        end
-      ensure
-        ENV.delete("CELERITE_LOCAL_PLATFORM")
+        TEXT
       end
     end
 
@@ -206,6 +202,7 @@ describe Celerite::CLI do
 
   describe "lock" do
     it "manages platforms natively (remove then re-add is a no-op change)" do
+      local_platform = Celerite::Gem::Platform.local.to_s
       with_project({
         "Gemfile"      => "source \"https://rubygems.org\"\n\ngem \"json_pure\", \">= 2.0\"\n",
         "Gemfile.lock" => FIXTURE_LOCKFILE,
@@ -213,12 +210,12 @@ describe Celerite::CLI do
         ENV["CELERITE_BRIDGE_SERVER"] = File.expand_path("../assets/bridge/server.rb", __DIR__)
         begin
           # remove the local platform then re-add it: the lockfile round-trips
-          code, out, err = run_cli(["lock", "--remove-platform", "x64-mingw-ucrt"])
+          code, out, err = run_cli(["lock", "--remove-platform", local_platform])
           code.should eq(0)
           lock_after_remove = File.read(File.join(dir, "Gemfile.lock"))
-          lock_after_remove.should_not contain("x64-mingw-ucrt")
+          lock_after_remove.should_not contain(local_platform)
 
-          code, out, err = run_cli(["lock", "--add-platform", "x64-mingw-ucrt"])
+          code, out, err = run_cli(["lock", "--add-platform", local_platform])
           code.should eq(0)
           File.read(File.join(dir, "Gemfile.lock")).should eq(FIXTURE_LOCKFILE + "\n")
         ensure
@@ -284,7 +281,7 @@ GEM
     json_pure (2.8.1)
 
 PLATFORMS
-  x64-mingw-ucrt
+  #{Celerite::Gem::Platform.local}
 
 DEPENDENCIES
   json_pure (>= 2.0)
