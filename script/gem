@@ -42,9 +42,7 @@ rm -rf "$staging"
 mkdir -p "$staging/exe" "$staging/assets" "$staging/lib/celerite/$platform"
 cp "$binary" "$staging/lib/celerite/$platform/$bin_name"
 chmod 0755 "$staging/lib/celerite/$platform/$bin_name" 2>/dev/null || true
-if [ "$(uname -s)" = "Darwin" ]; then
-  "$repo_root/script/bundle-dylibs" "$staging/lib/celerite/$platform/$bin_name"
-fi
+ruby "$repo_root/script/bundle-libs" "$staging/lib/celerite/$platform/$bin_name"
 cp "$repo_root/exe/celerite" "$staging/exe/celerite"
 chmod 0755 "$staging/exe/celerite" 2>/dev/null || true
 cp -r "$repo_root/assets/." "$staging/assets/"

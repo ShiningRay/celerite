@@ -15,6 +15,7 @@ jobs:
         include:
           - os: ubuntu-latest
           - os: macos-latest
+          - os: macos-15-intel
           - os: windows-latest
     runs-on: ${{ matrix.os }}
     defaults:
@@ -28,6 +29,9 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "4.0"
+      - name: Install patchelf (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y patchelf
       # Each OS carries a platform-scoped checksums file so the artifacts can
       # be merged without clobbering each other (publish reassembles the
       # single checksums.sha256 install.sh verifies against).
@@ -48,7 +52,7 @@ jobs:
   rubygems:
     needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
@@ -77,16 +81,14 @@ jobs:
           echo "GEM_HOST_API_KEY=$key" >> "$GITHUB_ENV"
       - name: Publish platform gems
         env:
-          # Start with the platform-family that is packaged self-contained
-          # today. Set the CELERITE_PUSH_PLATFORM_GLOB repository variable to
-          # `*` after Linux/Windows dynamic-library bundling has been verified.
-          CELERITE_PUSH_PLATFORM_GLOB: ${{ vars.CELERITE_PUSH_PLATFORM_GLOB || '*-darwin' }}
+          # Every platform gem is self-contained after script/bundle-libs.
+          CELERITE_PUSH_PLATFORM_GLOB: ${{ vars.CELERITE_PUSH_PLATFORM_GLOB || '*' }}
         run: script/push-gems assets "$CELERITE_PUSH_PLATFORM_GLOB"
 
   publish:
     needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

@@ -49,7 +49,11 @@ gems.each do |path|
 
   platform = spec.platform.to_s
   platform = nil if platform == "ruby"
-  if platform_glob && !File.fnmatch?(platform_glob, platform.to_s)
+  if platform.nil?
+    puts "skip #{File.basename(path)} (ruby platform is metadata-only)"
+    next
+  end
+  if platform_glob && !File.fnmatch?(platform_glob, platform)
     puts "skip #{File.basename(path)} (platform #{platform || "ruby"} does not match #{platform_glob})"
     next
   end

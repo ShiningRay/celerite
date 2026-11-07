@@ -40,9 +40,10 @@ Gem::Specification.new do |spec|
     spec.platform = Gem::Platform.new(platform)
     bin_name = platform.include?("mingw") || platform.include?("mswin") ? "celerite.exe" : "celerite"
     platform_dir = "lib/celerite/#{platform}"
-    spec.files += ["#{platform_dir}/#{bin_name}"]
-    # script/bundle-dylibs makes the macOS binary self-contained; those dylibs
-    # are part of the platform gem too.
-    spec.files += Dir.glob("#{platform_dir}/*.dylib").sort if platform.include?("darwin")
+    binary = "#{platform_dir}/#{bin_name}"
+    raise "missing #{binary}" unless File.file?(binary)
+    # The binary plus the shared libraries script/bundle-libs copied next to it
+    # (.dylib, .so, .dll), so the gem is self-contained on each platform.
+    spec.files += Dir.glob("#{platform_dir}/*").select { |path| File.file?(path) }.sort
   end
 end
