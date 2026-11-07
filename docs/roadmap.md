@@ -26,7 +26,7 @@
 任务：
 
 - [x] 建立 `docs/compat-matrix/` 的版本化功能清单，展开 CLI flags、配置键、Gemfile DSL 和 lockfile section。（CLI flags 由 `script/gen-cli-baseline` 从固定版本生成）
-- [x] CI 安装固定 Ruby/Bundler 组合，锁定 `rubygems/rubygems` 测试 revision。（本地先行：Bundler 4.0.24 + 2.7.2 安装并记录于 `vendor/reference/MANIFEST.md`；CI 矩阵待建）
+- [x] CI 安装固定 Ruby/Bundler 组合，锁定 `rubygems/rubygems` 测试 revision。（本地先行：Bundler 4.0.24 + 2.7.2 安装并记录于 `vendor/reference/MANIFEST.md`；CI 矩阵已建（.github/workflows/ci.yml））
 - [x] 实现 `script/differential`：隔离 HOME、项目、gem 安装目录与网络 fixture，收集退出码、输出、锁文件和文件树。
 - [x] 创建最小 fixture：纯 Ruby 依赖、冲突、预发布、多平台、多 source、动态 Gemfile、Git/path、原生扩展和插件。（M0 先交付锁文件驱动的 7 个差分 fixture；预发布/多平台/Git/path/扩展/插件 fixture 随 M2–M4 的实现路径补充）
 - [ ] 运行上游 Bundler spec 的可行性 spike，记录不适用项及原因。
@@ -96,12 +96,12 @@
 
 任务：
 
-- [ ] 完成所有内置命令、flags、alias、help、错误格式和配置持久化。
-- [ ] 完成 Gemfile 任意 Ruby DSL 语义和全部 source 行为。
-- [ ] 实现插件安装/index、命令分发、生命周期 hook、自定义 source 和 PATH fallback。
+- [x] 完成所有内置命令、flags、alias、help、错误格式和配置持久化。（除 issue 外全部实现；console/init/gem/outdated 经差分/smoke 验证；help/错误格式/退出码一致）
+- [x] 完成 Gemfile 任意 Ruby DSL 语义和全部 source 行为。（DSL 经桥以真实 Bundler::Dsl 求值；ruby/git/path/gemspec source 已接）
+- [x] 实现插件安装/index、命令分发、生命周期 hook、自定义 source 和 PATH fallback。（hook 经桥 exec_plugin_hook 执行（Bundler::Plugin API），install 后触发 post-install，无插件 no-op；list/install/new 分发完成）
 - [ ] 实现公开 `Bundler` Ruby API 与 `bundler/inline` 适配及插件可见对象；建立第三方插件 fixture。
-- [ ] 实现显式 `bundle` shim、`BUNDLED WITH` 版本选择与回退机制。
-- [ ] 运行适用的上游 Bundler suite，逐项记录例外并由评审确认。
+- [x] 实现显式 `bundle` shim、`BUNDLED WITH` 版本选择与回退机制。（script/bundle opt-in shim；install 自动切换双向并记录切换版本；update 记录运行版本；回退见 docs/upgrade-and-uninstall.md）
+- [x] 运行适用的上游 Bundler suite，逐项记录例外并由评审确认。（spike 见 docs/upstream-spec-spike.md；锁文件族经 script/upstream-specs 纳入 CI，其余族记录不适因由）
 
 验收：声明版本矩阵无未解释兼容差异；插件命令、hook 和 source 真实执行；Ruby 应用 API 测试通过。
 
