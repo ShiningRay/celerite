@@ -10,4 +10,4 @@ DEPENDENCIES
   json_pure (= 2.6.0)
 
 BUNDLED WITH
-  4.0.24
+  @BUNDLER_VERSION@

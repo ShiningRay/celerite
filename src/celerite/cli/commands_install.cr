@@ -148,7 +148,12 @@ module Celerite
         unless rest.includes?("--no-lock") || config.frozen?
           text = resolution.generated_lockfile.to_lock
           existing = File.file?(definition.lockfile_path) ? File.read(definition.lockfile_path) : nil
-          File.write(definition.lockfile_path, text) if existing != text
+          # Reference parity: install leaves the lockfile untouched when the
+          # semantic content is unchanged — formatting-only deltas (BUNDLED
+          # WITH indent across profiles) do not trigger a rewrite.
+          if existing.nil? || semantic_content(existing) != semantic_content(text)
+            File.write(definition.lockfile_path, text)
+          end
         end
 
         # Plugin lifecycle hook (architecture §2.2); no-op without plugins
@@ -336,6 +341,17 @@ module Celerite
       ensure
         bridge.close
       end
+    end
+
+    # Reference parity: install leaves the lockfile untouched when the
+    # semantic content is unchanged — formatting-only deltas (BUNDLED WITH
+    # indent across profiles) do not trigger a rewrite. Comparison strips
+    # blank lines, the BUNDLED WITH heading and its version line.
+    private def self.semantic_content(text : String) : String
+      text.gsub(/\r\n/, "\n").lines.reject do |line|
+        stripped = line.strip
+        stripped.empty? || stripped == "BUNDLED WITH" || stripped.matches?(/^\d+\.\d+\.\d+/)
+      end.join("\n")
     end
 
     private def self.find_executable(command : String, search_path : String) : String?
