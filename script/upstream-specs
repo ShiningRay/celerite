@@ -17,12 +17,13 @@ rev="${UPSTREAM_REV:-v4.0.24}"
 spec_dir="$repo_root/.upstream-specs/$rev/bundler/spec"
 report="$repo_root/docs/compat-matrix/generated/upstream-lockfile-$rev.md"
 
-if [ ! -d "$spec_dir" ]; then
+if [ ! -f "$spec_dir/lock/lockfile_spec.rb" ]; then
   echo "Cloning rubygems/rubygems @ $rev (sparse)..."
-  mkdir -p "$(dirname "$spec_dir")"
+  rm -rf "$repo_root/.upstream-specs/$rev"
+  mkdir -p "$repo_root/.upstream-specs/$rev"
   git clone --depth 1 --branch "$rev" --filter=blob:none --sparse \
-    https://github.com/rubygems/rubygems.git "$(dirname "$spec_dir")" >/dev/null 2>&1
-  git -C "$(dirname "$spec_dir")" sparse-checkout set bundler/spec bundler/lib >/dev/null 2>&1
+    https://github.com/rubygems/rubygems.git "$repo_root/.upstream-specs/$rev" >/dev/null 2>&1
+  git -C "$repo_root/.upstream-specs/$rev" sparse-checkout set bundler/spec bundler/lib >/dev/null 2>&1
 fi
 
 # Build the fixture gem index the lockfile specs use (myrack 1.0.0 from
@@ -73,5 +74,12 @@ PATH="$shim_dir:$PATH" BUNDLE_GEMFILE="" \
   echo "\`\`\`"
   tail -40 "$rspec_out" 2>/dev/null
   echo "\`\`\`"
+  echo
+  echo "Summary: $(grep -E '^[0-9]+ examples' "$rspec_out" 2>/dev/null | tail -1)"
+  echo "Interpretation: the upstream spec_helper gates examples behind fixture"
+  echo "preconditions (build_repo2 etc.) that require the Ruby Bundler internals;"
+  echo "examples listed as pending did not execute under the celerite shim. This"
+  echo "is the recorded spike evidence — see docs/upstream-spec-spike.md for the"
+  echo "per-family applicability analysis."
 } > "$report"
 echo "wrote $report"

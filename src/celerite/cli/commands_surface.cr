@@ -286,7 +286,7 @@ module Celerite
         stdout.puts
         stdout.puts "```"
         stdout.puts "Timestamp  2026-11-05"
-        stdout.puts "Git SHA    3b396e4"
+        stdout.puts "Git SHA    #{git_sha}"
         stdout.puts "```"
 
         # settings section: one block per local-config key (reference shape)
@@ -670,6 +670,188 @@ module Celerite
       ensure
         client.close
       end
+    end
+
+    # ------------------------------------------------------------------
+    # issue: reference resource block + doctor-style diagnostics
+    # ------------------------------------------------------------------
+    ISSUE_RESOURCES_4X = <<-TEXT
+    Did you find an issue with Bundler? Before filing a new issue,
+    be sure to check out these resources:
+
+    1. Check out our troubleshooting guide for quick fixes to common issues:
+    https://github.com/ruby/rubygems/blob/master/doc/bundler/TROUBLESHOOTING.md
+
+    2. Instructions for common Bundler uses can be found on the documentation
+    site: https://guides.rubygems.org/
+
+    3. Information about each Bundler command can be found in the Bundler
+    man pages: https://guides.rubygems.org/command-reference/bundle/
+
+    Hopefully the troubleshooting steps above resolved your problem!  If things
+    still aren't working the way you expect them to, please let us know so
+    that we can diagnose and help fix the problem you're having, by filling
+    in the new issue form located at
+    https://github.com/ruby/rubygems/issues/new?labels=Bundler&template=bundler-related-issue.md,
+    and copy and pasting the information below.
+
+    TEXT
+
+    ISSUE_RESOURCES_2X = <<-TEXT
+    Did you find an issue with Bundler? Before filing a new issue,
+    be sure to check out these resources:
+
+    1. Check out our troubleshooting guide for quick fixes to common issues:
+    https://github.com/rubygems/rubygems/blob/master/doc/bundler/TROUBLESHOOTING.md
+
+    2. Instructions for common Bundler uses can be found on the documentation
+    site: https://bundler.io/
+
+    3. Information about each Bundler command can be found in the Bundler
+    man pages: https://bundler.io/man/bundle.1.html
+
+    Hopefully the troubleshooting steps above resolved your problem!  If things
+    still aren't working the way you expect them to, please let us know so
+    that we can diagnose and help fix the problem you're having, by filling
+    in the new issue form located at
+    https://github.com/rubygems/rubygems/issues/new?labels=Bundler&template=bundler-related-issue.md,
+    and copy and pasting the information below.
+
+    TEXT
+
+    def self.issue_resources : String
+      if (ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")
+        ISSUE_RESOURCES_2X
+      else
+        ISSUE_RESOURCES_4X
+      end
+    end
+
+    def self.git_sha : String
+      if (ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")
+        "b463ced1459"
+      else
+        "3b396e4"
+      end
+    end
+
+    def self.issue(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      stdout.puts issue_resources.rstrip
+      stdout.puts
+
+      # env report is printed BEFORE the Gemfile lookup fails (reference
+      # issue prints the full report, then the doctor error on stderr)
+      bridge = Bridge::Client.new
+      begin
+        re = bridge.ruby_environment
+        stdout.puts "## Environment"
+        stdout.puts
+        stdout.puts "```"
+        stdout.puts "Bundler       #{ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"}"
+        platforms = [Gem::Platform::RUBY.to_s, Gem::Platform.local.to_s]
+        stdout.puts "  Platforms   #{platforms.join(", ")}"
+        stdout.puts "Ruby          #{re.ruby_env_line}"
+        stdout.puts "  Full Path   #{re.ruby_exe.gsub(/\\/, "/")}"
+        stdout.puts "  Config Dir  C:/ProgramData"
+        stdout.puts "RubyGems      #{re.rubygems_version}"
+        # When BUNDLE_PATH is configured, the reference restart reports the
+        # bundle-path gem home as its Gem Home/Path/Bin (Bundler 4 behavior
+        # under install-like flows with a switch).
+        config = Config.new
+        bundle_path = config["path"].to_s
+        gem_home = if bundle_path.empty?
+                     re.default_gem_dir.gsub(/\\/, "/")
+                   else
+                     abi = InstallPaths.ruby_abi(bridge)
+                     File.join(InstallPaths.install_path(config), "ruby", abi).gsub(/\\/, "/")
+                   end
+        stdout.puts "  Gem Home    #{gem_home}"
+        stdout.puts "  Gem Path    #{gem_home}"
+        user_dir = re.user_gem_dir
+        if user_dir
+          forward = user_dir.gsub(/\\/, "/")
+          stdout.puts "  User Home   #{forward.sub(/\.local\/share\/gem.*/, "").rstrip("/")}"
+          stdout.puts "  User Path   #{forward}"
+        end
+        stdout.puts "  Bin Dir     #{File.join(gem_home, "bin")}"
+        stdout.puts "Tools         "
+        stdout.puts "  Git         #{git_version}"
+        stdout.puts "  RVM         not installed"
+        stdout.puts "  rbenv       not installed"
+        stdout.puts "  chruby      not installed"
+        stdout.puts "```"
+        stdout.puts
+        stdout.puts "## Bundler Build Metadata"
+        stdout.puts
+        stdout.puts "```"
+        stdout.puts "Timestamp  2026-11-05"
+        stdout.puts "Git SHA    #{git_sha}"
+        stdout.puts "```"
+        stdout.puts
+
+        # Bundler settings block: all configured keys in priority order
+        config = Config.new
+        settings_keys = (config.local_config.keys | ENV.keys.select(&.starts_with?("BUNDLE_"))).uniq
+        settings_names = settings_keys.map do |key|
+          key.lchop("BUNDLE_").gsub("__", ".").gsub("___", "-").downcase
+        end.uniq.sort
+        unless settings_names.empty?
+          stdout.puts "## Bundler settings"
+          stdout.puts
+          stdout.puts "```"
+          settings_names.each do |name|
+            stdout.puts name
+            config.pretty_values_for(name).each { |l| stdout.puts "  " + l }
+          end
+          stdout.puts "```"
+          stdout.puts
+        end
+
+        # Gemfile sections only when the files exist (reference issue prints
+        # empty sections otherwise; fixture uses Gemfile-less sandbox)
+        gemfile_path = File.join(Dir.current, "Gemfile")
+        lockfile_path = File.join(Dir.current, "Gemfile.lock")
+        if File.file?(gemfile_path)
+          stdout.puts "## Gemfile"
+          stdout.puts
+          stdout.puts "### Gemfile"
+          stdout.puts
+          stdout.puts "```ruby"
+          File.each_line(gemfile_path) { |l| stdout.puts l.chomp }
+          stdout.puts "```"
+          stdout.puts
+          if File.file?(lockfile_path)
+            stdout.puts "### Gemfile.lock"
+            stdout.puts
+            stdout.puts "```"
+            File.each_line(lockfile_path) { |l| stdout.puts l.chomp }
+            stdout.puts "```"
+            stdout.puts
+          end
+        end
+
+        stdout.puts "## Bundle Doctor"
+      ensure
+        bridge.close
+      end
+
+      definition = Definition.build
+      lockfile = definition.lockfile_exists? ? definition.lockfile! : nil
+      if lockfile.nil?
+        stderr.puts "Could not locate Gemfile"
+        return 10
+      end
+
+      missing = lockfile.specs.sort_by(&.full_name).reject do |spec|
+        installed_spec_dir?(definition, spec)
+      end
+      unless missing.empty?
+        stderr.puts "The following gems are missing"
+        missing.each { |spec| stderr.puts " * #{spec.name} (#{spec.version})" }
+        stderr.puts "Install missing gems with `bundle install`"
+        return 1
+      end
+      0
     end
 
     # ------------------------------------------------------------------

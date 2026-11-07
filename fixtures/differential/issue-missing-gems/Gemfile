@@ -1,0 +1,3 @@
+source "file:///@INDEX_DIR@"
+
+gem "json_pure"

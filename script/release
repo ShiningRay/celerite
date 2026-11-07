@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Release artifacts (roadmap M6): builds the celerite binary for the current
+# platform, emits SHA-256 checksums, and packages a self-contained install
+# bundle (binary + bundle shim + install script) under dist/.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+version="$(grep -o 'VERSION = ".*"' "$repo_root/src/celerite.cr" | cut -d'"' -f2)"
+dist="$repo_root/dist"
+mkdir -p "$dist"
+
+echo "Building celerite $version..."
+(cd "$repo_root" && shards build --release >/dev/null)
+
+binary="$repo_root/bin/celerite"
+[ -f "${binary}.exe" ] && binary="${binary}.exe"
+target="celerite-${version}-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+[ -f "$binary" ] || { echo "binary missing" >&2; exit 2; }
+
+cp "$binary" "$dist/$target"
+cp "$repo_root/script/bundle" "$dist/bundle"
+
+cat > "$dist/install-celerite.sh" <<'INSTALL'
+#!/usr/bin/env bash
+# Celerite installer (opt-in): copies the binary and the bundle shim into
+# ~/.local/bin (or PREFIX/bin). NEVER replaces an existing `bundle` — the shim
+# is written as `bundle` only if no bundle exists on PATH; otherwise it is
+# installed as `celerite-bundle` with instructions.
+set -euo pipefail
+
+prefix="${PREFIX:-$HOME/.local/bin}"
+mkdir -p "$prefix"
+here="$(cd "$(dirname "$0")" && pwd)"
+
+install -m 0755 "$here/$(ls "$here" | grep '^celerite-' | head -1)" "$prefix/celerite"
+
+if command -v bundle >/dev/null 2>&1; then
+  install -m 0755 "$here/bundle" "$prefix/celerite-bundle"
+  echo "NOTE: an existing \`bundle\` was found on PATH — the celerite shim was"
+  echo "installed as \`celerite-bundle\` (opt-in only, nothing replaced)."
+  echo "To use it as \`bundle\`, place $prefix BEFORE the existing bundle on PATH."
+else
+  install -m 0755 "$here/bundle" "$prefix/bundle"
+  echo "Installed celerite bundle shim as \`$prefix/bundle\`."
+fi
+echo "Installed celerite as \`$prefix/celerite\`."
+echo "Verify with: celerite version"
+INSTALL
+chmod +x "$dist/install-celerite.sh"
+
+cat > "$dist/checksums.sha256" <<HEADER
+# SHA-256 checksums for celerite $version
+HEADER
+(
+  cd "$dist"
+  sha256sum "$target" bundle install-celerite.sh >> checksums.sha256
+)
+
+echo "Artifacts in $dist:"
+ls -la "$dist"
+echo
+cat "$dist/checksums.sha256"

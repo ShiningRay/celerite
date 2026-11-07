@@ -82,6 +82,8 @@ module Celerite
         console(stdout, stderr, rest)
       when "gem"
         gem(stdout, stderr, rest)
+      when "issue"
+        issue(stdout, stderr, rest)
       when "config"
         config(stdout, stderr, rest)
       when "help", "--help", "-h"
@@ -118,8 +120,7 @@ module Celerite
     def self.known_unimplemented?(command : String) : Bool
       {
         "update", "add", "remove", "outdated", "init", "gem", "pristine",
-        "doctor", "env", "issue", "licenses", "fund", "open", "console",
-        "plugin", "version-bump",
+        "doctor", "env", "licenses", "fund", "open", "console",
       }.includes?(command)
     end
 
