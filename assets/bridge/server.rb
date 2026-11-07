@@ -138,6 +138,7 @@ def op_read_gem_spec(payload)
     "required_ruby_version" => spec.required_ruby_version.to_s,
     "required_rubygems_version" => spec.required_rubygems_version.to_s,
     "extensions" => spec.extensions,
+    "date" => (spec.date.to_s if spec.respond_to?(:date)),
     "license" => (spec.license if spec.respond_to?(:license)),
     "licenses" => (spec.licenses if spec.respond_to?(:licenses)),
     "dependencies" => spec.runtime_dependencies.map { |d|
@@ -222,6 +223,37 @@ def op_load_gemspec_dir(payload)
   }
 end
 
+# Execute a plugin lifecycle hook through the reference Bundler::Plugin API
+# (architecture §2.2: plugin hooks are Ruby code, executed by the bridge).
+# payload: event, plugins_root (dir holding the plugins index), context (hash).
+def op_exec_plugin_hook(payload)
+  require "bundler"
+  require "bundler/plugin"
+  event = payload["event"]
+  root = payload["plugins_root"]
+
+  index_path = File.join(root.to_s, "plugins", "index")
+  return { "fired" => false, "reason" => "no plugin index" } unless File.exist?(index_path.to_s)
+
+  index = File.exist?(index_path.to_s) ? Bundler::Plugin::Index.from_file(index_path.to_s) : nil
+  plugins = index.respond_to?(:hook_plugins) ? index.hook_plugins(event.to_s) : []
+  return { "fired" => false, "reason" => "no plugins for event" } if plugins.nil? || plugins.empty?
+
+  # Load each plugin's source and register hooks with the reference API
+  plugins.each do |name|
+    source = index.plugin_path(name.to_s)
+    $LOAD_PATH.unshift(source.to_s) if source && File.directory?(source.to_s)
+    require name.to_s.tr("-", "/")
+  rescue LoadError, StandardError => e
+    return { "fired" => false, "reason" => "plugin #{name} failed to load: #{e.message}" }
+  end
+
+  results = []
+  Bundler::Plugin.hook(event, payload["context"] || {})
+  results << name.to_s
+  { "fired" => true, "plugins" => results }
+end
+
 def serialize_source(source)
   type = source.class.name.split("::").last # Rubygems / Git / Path / Plugin / Metadata
   result = { "type" => type }
@@ -250,6 +282,7 @@ def bridge_dispatch(id, op, payload)
            when "write_installed_spec" then op_write_installed_spec(payload)
            when "build_extension" then op_build_extension(payload)
            when "load_gemspec_dir" then op_load_gemspec_dir(payload)
+           when "exec_plugin_hook" then op_exec_plugin_hook(payload)
            else
              return bridge_error(id, "UnknownOp", "unknown bridge op #{op.inspect}")
            end
