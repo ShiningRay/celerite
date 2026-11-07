@@ -42,6 +42,11 @@ module Celerite
         resolution = Resolution.new(definition, all ? true : gems, bridge)
         resolution.progress = stdout
 
+        # BUNDLED WITH semantics: update does not auto-switch — it records
+        # the running bundler version in the rewritten lockfile (pinned
+        # 2.7.2 reference: update on a 4.0.24 lockfile rewrote BUNDLED WITH
+        # to its own version with 2.x indentation).
+
         install_path = InstallPaths.install_path(config)
         abi = InstallPaths.ruby_abi(bridge)
         downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root)

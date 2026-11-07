@@ -6,6 +6,7 @@ require "../definition"
 require "../resolution"
 require "../installer"
 require "../downloader"
+require "../plugin_hooks"
 require "digest/sha256"
 
 module Celerite
@@ -148,6 +149,13 @@ module Celerite
           text = resolution.generated_lockfile.to_lock
           existing = File.file?(definition.lockfile_path) ? File.read(definition.lockfile_path) : nil
           File.write(definition.lockfile_path, text) if existing != text
+        end
+
+        # Plugin lifecycle hook (architecture §2.2); no-op without plugins
+        begin
+          PluginHooks.call(bridge, definition, "post-install")
+        rescue Bridge::BridgeError
+          # hook failures must not fail the install (reference: friendly error)
         end
         0
       ensure
@@ -305,7 +313,7 @@ module Celerite
     #   Fetching gem metadata from https://rubygems.org/.
     #   Installing bundler 4.0.24
     # The bundler gem comes from rubygems.org (the reference's switch source).
-    private def self.auto_switch_bundler(definition : Definition, stdout : IO, stderr : IO, resolution : Resolution) : Nil
+    def self.auto_switch_bundler(definition : Definition, stdout : IO, stderr : IO, resolution : Resolution) : Nil
       locked = definition.lockfile!.bundler_version.not_nil!
       stdout.puts "Bundler #{resolution.bridge_bundler_version} is running, but your lockfile was generated with #{locked}. Installing Bundler #{locked} and restarting using that version."
       stdout.puts "Fetching bundler #{locked}"

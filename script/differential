@@ -97,7 +97,7 @@ run_fixture() {
     sandbox="$ref_sandbox"; [ "$side" = "cel" ] && sandbox="$cel_sandbox"
     for f in Gemfile Gemfile.lock; do
       [ -f "$fixture_dir/$f" ] || continue
-      sed "s|@INDEX_DIR@|$index_dir|" "$fixture_dir/$f" > "$sandbox/project/$f"
+      sed -e "s|@INDEX_DIR@|$index_dir|" -e "s|@BUNDLER_VERSION@|$bundler_version|"         "$fixture_dir/$f" > "$sandbox/project/$f"
     done
   done
   # extra files, if any
@@ -169,7 +169,6 @@ run_fixture() {
     echo "$detail" | sed 's/^/    /'
     fail=$((fail + 1))
   fi
-  echo "  workdir: $work"
 }
 
 fixtures=()
