@@ -1,0 +1,596 @@
+
+the lockfile format
+  generates a simple lockfile for a single source, gem (FAILED - 1)
+  updates the lockfile's bundler version if current ver. is newer, and version was forced through BUNDLER_VERSION (FAILED - 2)
+  does not update the lockfile's bundler version if nothing changed during bundle install, but uses the locked version (FAILED - 3)
+  adds the BUNDLED WITH section if not present (FAILED - 4)
+  update the bundler major version just fine (FAILED - 5)
+  generates a simple lockfile for a single source, gem with dependencies (FAILED - 6)
+  generates a simple lockfile for a single source, gem with a version requirement (FAILED - 7)
+  generates a lockfile without credentials (FAILED - 8)
+  does not add credentials to lockfile when it does not have them already (FAILED - 9)
+  keeps credentials in lockfile if already there (FAILED - 10)
+  generates lockfiles with multiple requirements (FAILED - 11)
+  generates a simple lockfile for a single pinned source, gem with a version requirement (FAILED - 12)
+  does not asplode when a platform specific dependency is present and the Gemfile has not been resolved on that platform (FAILED - 13)
+  serializes global git sources (FAILED - 14)
+  generates a lockfile with a ref for a single pinned source, git gem with a branch requirement (FAILED - 15)
+  generates a lockfile with a ref for a single pinned source, git gem with a tag requirement (FAILED - 16)
+  is conservative with dependencies of git gems (FAILED - 17)
+  serializes pinned path sources to the lockfile (FAILED - 18)
+  serializes pinned path sources to the lockfile even when packaging (FAILED - 19)
+  sorts serialized sources by type (FAILED - 20)
+  removes redundant sources (FAILED - 21)
+  lists gems alphabetically (FAILED - 22)
+  orders dependencies' dependencies in alphabetical order (FAILED - 23)
+  orders dependencies by version (FAILED - 24)
+  does not add the :require option to the lockfile (FAILED - 25)
+  does not add the :group option to the lockfile (FAILED - 26)
+  stores relative paths when the path is provided in a relative fashion and in Gemfile dir (FAILED - 27)
+  stores relative paths when the path is provided in a relative fashion and is above Gemfile dir (FAILED - 28)
+  stores relative paths when the path is provided in an absolute fashion but is relative (FAILED - 29)
+  stores relative paths when the path is provided for gemspec (FAILED - 30)
+  keeps existing platforms in the lockfile (FAILED - 31)
+  adds compatible platform specific variants to the lockfile, even if resolution fallback to ruby due to some other incompatible platform specific variant (FAILED - 32)
+  persists the spec's specific platform to the lockfile (FAILED - 33)
+  does not add duplicate gems (FAILED - 34)
+  does not add duplicate dependencies (FAILED - 35)
+  does not add duplicate dependencies with versions (FAILED - 36)
+  does not add duplicate dependencies in different groups (FAILED - 37)
+  raises if two different versions are used (FAILED - 38)
+  raises if two different sources are used (FAILED - 39)
+  works correctly with multiple version dependencies (FAILED - 40)
+  captures the Ruby version in the lockfile (FAILED - 41)
+  automatically fixes the lockfile when it's missing deps (FAILED - 42)
+  raises a clear error when frozen mode is set and lockfile is missing deps, and does not install any gems (FAILED - 43)
+  raises a clear error when frozen mode is set and lockfile is missing entries in CHECKSUMS section, and does not install any gems (FAILED - 44)
+  raises a clear error when frozen mode is set and lockfile has empty checksums in CHECKSUMS section, and does not install any gems (FAILED - 45)
+  fills empty CHECKSUMS entries when not frozen, even if every gem is already installed (FAILED - 46)
+  automatically fixes the lockfile when it's missing deps, they conflict with other locked deps, but conflicts are fixable (FAILED - 47)
+  automatically fixes the lockfile when it's missing multiple deps, they conflict with other locked deps, but conflicts are fixable (FAILED - 48)
+  raises a resolution error when lockfile is missing deps, they conflict with other locked deps, and conflicts are not fixable (FAILED - 49)
+  regenerates a lockfile with no specs (FAILED - 50)
+  automatically fixes the lockfile when it's missing deps and the full index is in use (FAILED - 51)
+  automatically fixes the lockfile when it includes a gem under the correct GIT section, but also under an incorrect GEM section, with a higher version, and with no explicit Gemfile requirement (FAILED - 52)
+  automatically fixes the lockfile when it includes a gem under the correct GIT section, but also under an incorrect GEM section, with a higher version (FAILED - 53)
+  automatically fixes the lockfile when it has incorrect deps, keeping the locked version (FAILED - 54)
+  successfully updates the lockfile when a new gem is added in the Gemfile includes a gem that shouldn't be included (FAILED - 55)
+  auto-heals when the lockfile is missing specs (FAILED - 56)
+  refuses to install if Gemfile.lock contains conflict markers (FAILED - 57)
+  with just specific platform
+    behaves like a lockfile missing dependent specs
+      auto-heals (FAILED - 58)
+  with both ruby and specific platform
+    behaves like a lockfile missing dependent specs
+      auto-heals (FAILED - 59)
+  a line ending
+    generates Gemfile.lock with \n line endings (FAILED - 60)
+    during updates
+      preserves Gemfile.lock \n line endings (FAILED - 61)
+      preserves Gemfile.lock \r\n line endings (FAILED - 62)
+    when nothing changes
+      preserves Gemfile.lock \n line endings (FAILED - 63)
+      preserves Gemfile.lock \r\n line endings (FAILED - 64)
+
+Failures:
+
+  1) the lockfile format generates a simple lockfile for a single source, gem
+     Failure/Error: build_repo2
+
+     NameError:
+       undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32abb8c0>
+     # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  2) the lockfile format updates the lockfile's bundler version if current ver. is newer, and version was forced through BUNDLER_VERSION
+     Failure/Error: build_repo2
+
+     NameError:
+       undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32ab82d8>
+     # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  3) the lockfile format does not update the lockfile's bundler version if nothing changed during bundle install, but uses the locked version
+     Failure/Error: build_repo2
+
+     NameError:
+       undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32ab55d8>
+     # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  4) the lockfile format adds the BUNDLED WITH section if not present
+     Failure/Error: build_repo2
+
+     NameError:
+       undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32ab3698>
+     # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  5) the lockfile format update the bundler major version just fine
+     Failure/Error: build_repo2
+
+     NameError:
+       undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32ab0718>
+     # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  6) the lockfile format generates a simple lockfile for a single source, gem with dependencies
+     Failure/Error: build_repo2
+
+     NameError:
+       undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c3290cda8>
+     # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  7) the lockfile format generates a simple lockfile for a single source, gem with a version requirement
+     Failure/Error: build_repo2
+
+     NameError:
+       undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32906e58>
+     # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  8) the lockfile format generates a lockfile without credentials
+     Failure/Error: build_repo2
+
+     NameError:
+       undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32902740>
+     # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  9) the lockfile format does not add credentials to lockfile when it does not have them already
+     Failure/Error: build_repo2
+
+     NameError:
+       undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c328ef280>
+     # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  10) the lockfile format keeps credentials in lockfile if already there
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c328e79e0>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  11) the lockfile format generates lockfiles with multiple requirements
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c328e4c40>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  12) the lockfile format generates a simple lockfile for a single pinned source, gem with a version requirement
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c327f5b90>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  13) the lockfile format does not asplode when a platform specific dependency is present and the Gemfile has not been resolved on that platform
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c3276cca0>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  14) the lockfile format serializes global git sources
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32764578>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  15) the lockfile format generates a lockfile with a ref for a single pinned source, git gem with a branch requirement
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32760158>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  16) the lockfile format generates a lockfile with a ref for a single pinned source, git gem with a tag requirement
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c3271b1c0>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  17) the lockfile format is conservative with dependencies of git gems
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32710950>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  18) the lockfile format serializes pinned path sources to the lockfile
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c325f4a08>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  19) the lockfile format serializes pinned path sources to the lockfile even when packaging
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32a1f7b8>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  20) the lockfile format sorts serialized sources by type
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32a1e548>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  21) the lockfile format removes redundant sources
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32a1d2d8>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  22) the lockfile format lists gems alphabetically
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32a1c068>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  23) the lockfile format orders dependencies' dependencies in alphabetical order
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32a1adf8>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  24) the lockfile format orders dependencies by version
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32a19b88>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  25) the lockfile format does not add the :require option to the lockfile
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32a18918>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  26) the lockfile format does not add the :group option to the lockfile
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32a176a8>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  27) the lockfile format stores relative paths when the path is provided in a relative fashion and in Gemfile dir
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32a16438>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  28) the lockfile format stores relative paths when the path is provided in a relative fashion and is above Gemfile dir
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32a151c8>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  29) the lockfile format stores relative paths when the path is provided in an absolute fashion but is relative
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32a13f58>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  30) the lockfile format stores relative paths when the path is provided for gemspec
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32a12ce8>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  31) the lockfile format keeps existing platforms in the lockfile
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32a11a78>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  32) the lockfile format adds compatible platform specific variants to the lockfile, even if resolution fallback to ruby due to some other incompatible platform specific variant
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c32a10808>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  33) the lockfile format persists the spec's specific platform to the lockfile
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329ff580>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  34) the lockfile format does not add duplicate gems
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329fe310>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  35) the lockfile format does not add duplicate dependencies
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329fd0a0>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  36) the lockfile format does not add duplicate dependencies with versions
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329fbe30>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  37) the lockfile format does not add duplicate dependencies in different groups
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329fabc0>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  38) the lockfile format raises if two different versions are used
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329f9950>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  39) the lockfile format raises if two different sources are used
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329f86e0>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  40) the lockfile format works correctly with multiple version dependencies
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329f7470>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  41) the lockfile format captures the Ruby version in the lockfile
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329f6200>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  42) the lockfile format automatically fixes the lockfile when it's missing deps
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329f4f90>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  43) the lockfile format raises a clear error when frozen mode is set and lockfile is missing deps, and does not install any gems
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329f3d20>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  44) the lockfile format raises a clear error when frozen mode is set and lockfile is missing entries in CHECKSUMS section, and does not install any gems
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329f2ab0>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  45) the lockfile format raises a clear error when frozen mode is set and lockfile has empty checksums in CHECKSUMS section, and does not install any gems
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329f1840>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  46) the lockfile format fills empty CHECKSUMS entries when not frozen, even if every gem is already installed
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329f05d0>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  47) the lockfile format automatically fixes the lockfile when it's missing deps, they conflict with other locked deps, but conflicts are fixable
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329df348>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  48) the lockfile format automatically fixes the lockfile when it's missing multiple deps, they conflict with other locked deps, but conflicts are fixable
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329de0d8>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  49) the lockfile format raises a resolution error when lockfile is missing deps, they conflict with other locked deps, and conflicts are not fixable
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329dce68>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  50) the lockfile format regenerates a lockfile with no specs
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329dbbf8>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  51) the lockfile format automatically fixes the lockfile when it's missing deps and the full index is in use
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329da988>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  52) the lockfile format automatically fixes the lockfile when it includes a gem under the correct GIT section, but also under an incorrect GEM section, with a higher version, and with no explicit Gemfile requirement
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329d9718>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  53) the lockfile format automatically fixes the lockfile when it includes a gem under the correct GIT section, but also under an incorrect GEM section, with a higher version
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329d84a8>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  54) the lockfile format automatically fixes the lockfile when it has incorrect deps, keeping the locked version
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329d7238>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  55) the lockfile format successfully updates the lockfile when a new gem is added in the Gemfile includes a gem that shouldn't be included
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329d5fc8>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  56) the lockfile format auto-heals when the lockfile is missing specs
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329d4d58>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  57) the lockfile format refuses to install if Gemfile.lock contains conflict markers
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat:0x0000010c329d3ae8>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  58) the lockfile format with just specific platform behaves like a lockfile missing dependent specs auto-heals
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat::WithJustSpecificPlatform::BehavesLikeALockfileMissingDependentSpecs:0x0000010c329d1a40>
+      Shared Example Group: "a lockfile missing dependent specs" called from ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:2272
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  59) the lockfile format with both ruby and specific platform behaves like a lockfile missing dependent specs auto-heals
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat::WithBothRubyAndSpecificPlatform::BehavesLikeALockfileMissingDependentSpecs:0x0000010c32cce540>
+      Shared Example Group: "a lockfile missing dependent specs" called from ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:2278
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  60) the lockfile format a line ending generates Gemfile.lock with \n line endings
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat::ALineEnding:0x0000010c32cca670>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  61) the lockfile format a line ending during updates preserves Gemfile.lock \n line endings
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat::ALineEnding::DuringUpdates:0x0000010c32cc7808>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  62) the lockfile format a line ending during updates preserves Gemfile.lock \r\n line endings
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat::ALineEnding::DuringUpdates:0x0000010c32cc5490>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  63) the lockfile format a line ending when nothing changes preserves Gemfile.lock \n line endings
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat::ALineEnding::WhenNothingChanges:0x0000010c32cc2bf0>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+  64) the lockfile format a line ending when nothing changes preserves Gemfile.lock \r\n line endings
+      Failure/Error: build_repo2
+
+      NameError:
+        undefined local variable or method 'build_repo2' for #<RSpec::ExampleGroups::TheLockfileFormat::ALineEnding::WhenNothingChanges:0x0000010c32cc0bc0>
+      # ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:5:in 'block (2 levels) in <top (required)>'
+
+Finished in 0.00978 seconds (files took 0.43413 seconds to load)
+64 examples, 64 failures
+
+Failed examples:
+
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:8 # the lockfile format generates a simple lockfile for a single source, gem
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:36 # the lockfile format updates the lockfile's bundler version if current ver. is newer, and version was forced through BUNDLER_VERSION
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:87 # the lockfile format does not update the lockfile's bundler version if nothing changed during bundle install, but uses the locked version
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:138 # the lockfile format adds the BUNDLED WITH section if not present
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:175 # the lockfile format update the bundler major version just fine
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:222 # the lockfile format generates a simple lockfile for a single source, gem with dependencies
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:253 # the lockfile format generates a simple lockfile for a single source, gem with a version requirement
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:284 # the lockfile format generates a lockfile without credentials
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:331 # the lockfile format does not add credentials to lockfile when it does not have them already
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:392 # the lockfile format keeps credentials in lockfile if already there
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:445 # the lockfile format generates lockfiles with multiple requirements
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:477 # the lockfile format generates a simple lockfile for a single pinned source, gem with a version requirement
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:511 # the lockfile format does not asplode when a platform specific dependency is present and the Gemfile has not been resolved on that platform
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:550 # the lockfile format serializes global git sources
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:586 # the lockfile format generates a lockfile with a ref for a single pinned source, git gem with a branch requirement
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:622 # the lockfile format generates a lockfile with a ref for a single pinned source, git gem with a tag requirement
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:658 # the lockfile format is conservative with dependencies of git gems
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:744 # the lockfile format serializes pinned path sources to the lockfile
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:777 # the lockfile format serializes pinned path sources to the lockfile even when packaging
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:813 # the lockfile format sorts serialized sources by type
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:861 # the lockfile format removes redundant sources
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:889 # the lockfile format lists gems alphabetically
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:932 # the lockfile format orders dependencies' dependencies in alphabetical order
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:981 # the lockfile format orders dependencies by version
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1022 # the lockfile format does not add the :require option to the lockfile
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1053 # the lockfile format does not add the :group option to the lockfile
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1084 # the lockfile format stores relative paths when the path is provided in a relative fashion and in Gemfile dir
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1119 # the lockfile format stores relative paths when the path is provided in a relative fashion and is above Gemfile dir
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1154 # the lockfile format stores relative paths when the path is provided in an absolute fashion but is relative
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1189 # the lockfile format stores relative paths when the path is provided for gemspec
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1222 # the lockfile format keeps existing platforms in the lockfile
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1268 # the lockfile format adds compatible platform specific variants to the lockfile, even if resolution fallback to ruby due to some other incompatible platform specific variant
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1313 # the lockfile format persists the spec's specific platform to the lockfile
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1348 # the lockfile format does not add duplicate gems
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1384 # the lockfile format does not add duplicate dependencies
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1412 # the lockfile format does not add duplicate dependencies with versions
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1440 # the lockfile format does not add duplicate dependencies in different groups
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1468 # the lockfile format raises if two different versions are used
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1479 # the lockfile format raises if two different sources are used
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1490 # the lockfile format works correctly with multiple version dependencies
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1517 # the lockfile format captures the Ruby version in the lockfile
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1548 # the lockfile format automatically fixes the lockfile when it's missing deps
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1589 # the lockfile format raises a clear error when frozen mode is set and lockfile is missing deps, and does not install any gems
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1615 # the lockfile format raises a clear error when frozen mode is set and lockfile is missing entries in CHECKSUMS section, and does not install any gems
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1648 # the lockfile format raises a clear error when frozen mode is set and lockfile has empty checksums in CHECKSUMS section, and does not install any gems
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1682 # the lockfile format fills empty CHECKSUMS entries when not frozen, even if every gem is already installed
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1712 # the lockfile format automatically fixes the lockfile when it's missing deps, they conflict with other locked deps, but conflicts are fixable
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1771 # the lockfile format automatically fixes the lockfile when it's missing multiple deps, they conflict with other locked deps, but conflicts are fixable
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1834 # the lockfile format raises a resolution error when lockfile is missing deps, they conflict with other locked deps, and conflicts are not fixable
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1882 # the lockfile format regenerates a lockfile with no specs
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1933 # the lockfile format automatically fixes the lockfile when it's missing deps and the full index is in use
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:1974 # the lockfile format automatically fixes the lockfile when it includes a gem under the correct GIT section, but also under an incorrect GEM section, with a higher version, and with no explicit Gemfile requirement
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:2031 # the lockfile format automatically fixes the lockfile when it includes a gem under the correct GIT section, but also under an incorrect GEM section, with a higher version
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:2088 # the lockfile format automatically fixes the lockfile when it has incorrect deps, keeping the locked version
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:2144 # the lockfile format successfully updates the lockfile when a new gem is added in the Gemfile includes a gem that shouldn't be included
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:2281 # the lockfile format auto-heals when the lockfile is missing specs
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:2410 # the lockfile format refuses to install if Gemfile.lock contains conflict markers
+rspec './.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb[1:56:1:1]' # the lockfile format with just specific platform behaves like a lockfile missing dependent specs auto-heals
+rspec './.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb[1:57:1:1]' # the lockfile format with both ruby and specific platform behaves like a lockfile missing dependent specs auto-heals
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:2349 # the lockfile format a line ending generates Gemfile.lock with \n line endings
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:2355 # the lockfile format a line ending during updates preserves Gemfile.lock \n line endings
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:2367 # the lockfile format a line ending during updates preserves Gemfile.lock \r\n line endings
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:2386 # the lockfile format a line ending when nothing changes preserves Gemfile.lock \n line endings
+rspec ./.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:2395 # the lockfile format a line ending when nothing changes preserves Gemfile.lock \r\n line endings
+
