@@ -86,7 +86,10 @@ jobs:
       - name: Merge per-platform checksums
         run: |
           cd assets
-          if ls checksums-*.sha256 >/dev/null 2>&1; then
+          if ls dist/checksums-*.sha256 >/dev/null 2>&1; then
+            cat dist/checksums-*.sha256 | sort -u > checksums.sha256
+            rm -f dist/checksums-*.sha256
+          elif ls checksums-*.sha256 >/dev/null 2>&1; then
             cat checksums-*.sha256 | sort -u > checksums.sha256
             rm -f checksums-*.sha256
           fi
