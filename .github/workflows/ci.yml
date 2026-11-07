@@ -98,4 +98,4 @@ jobs:
         with:
           name: celerite-gem-${{ matrix.os }}
           path: pkg/*.gem
-        if-no-files-found: error
+          if-no-files-found: error
