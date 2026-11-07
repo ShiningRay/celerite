@@ -79,6 +79,7 @@ module Celerite
       getter required_rubygems_version : String
       getter extensions : Array(String)
       getter dependencies : Array(JSON::Any)?
+      getter date : String?
       getter license : String?
       getter licenses : Array(String)?
     end

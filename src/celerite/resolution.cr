@@ -87,6 +87,15 @@ module Celerite
     getter bridge_bundler_version : String
     getter bundler_cache_path : String?
 
+    # BUNDLED WITH version selection: after an auto-switch, the lockfile must
+    # record the switched-to version.
+    @bundler_cache_path : String?
+
+    def bridge_bundler_version=(v : String)
+      @bridge_bundler_version = v
+      @bundler_cache_path = query_bundler_cache_path
+    end
+
     @non_gem_sources : Hash(String, SourceInfo)?
     @locked_specs : Array(LockedSpec)?
     @locked_by_name : Hash(String, Array(LockedSpec))?
@@ -577,6 +586,7 @@ module Celerite
     # Lockfile generation
     # ------------------------------------------------------------------
 
+    property switched_bundler : Bool = false
     property added_platforms : Array(String) = [] of String
     property removed_platforms : Array(String) = [] of String
 

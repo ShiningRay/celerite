@@ -505,5 +505,161 @@ module Celerite
       stderr.puts "The 'pristine' command is not implemented yet."
       1
     end
+
+    # ------------------------------------------------------------------
+    # init: create a Gemfile skeleton (pinned reference template)
+    # ------------------------------------------------------------------
+    INIT_TEMPLATE = <<-TEXT
+    # frozen_string_literal: true
+
+    source "https://rubygems.org"
+
+    # gem "rails"
+
+    TEXT
+
+    def self.init(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      gemfile_path = File.join(Dir.current, rest.select(&.starts_with?("--gemfile")).first?.try { |f| f.split("=")[1]? } || "Gemfile")
+      if File.file?(gemfile_path)
+        stderr.puts "Gemfile already exists at #{gemfile_path.gsub(/\\/, "/")}"
+        return 1
+      end
+      File.write(gemfile_path, INIT_TEMPLATE)
+      stdout.puts "Writing new Gemfile to #{gemfile_path.gsub(/\\/, "/")}"
+      0
+    end
+
+    # ------------------------------------------------------------------
+    # outdated: table of gems with newer versions (pinned reference columns)
+    # ------------------------------------------------------------------
+    def self.outdated(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      definition = Definition.build
+      bridge = Bridge::Client.new
+      begin
+        resolution = Resolution.new(definition, false, bridge)
+        resolution.progress = stdout
+        specs = resolution.resolve!
+
+        rows = [] of Array(String)
+        lockfile = definition.lockfile_exists? ? definition.lockfile! : nil
+        specs.each do |spec|
+          entries = resolution.compact_index_client.info(spec.name)
+          versions = entries.map { |e| Gem::Version.new(e.version) }.reject(&.prerelease?)
+          latest = versions.max?
+          next if latest.nil? || (latest <=> spec.version) <= 0
+
+          dep = lockfile.try(&.dependencies.find(&.name.==(spec.name)))
+          requested = if dep && (reqs = dep.requirements) && !reqs.empty?
+                        reqs.join(", ")
+                      else
+                        ">= 0"
+                      end
+          groups = "default"
+          row = [spec.name, spec.version.to_s, latest.to_s, requested, groups]
+          # Release Date column is 4.0.24-only (2.7.x reference has 5 columns)
+          unless resolution.bridge_bundler_version.starts_with?("2.")
+            row << release_date_for(definition, resolution, spec.name, latest.to_s, spec.checksum)
+          end
+          rows << row
+        end
+
+        if rows.empty?
+          stdout.puts
+          stdout.puts "Bundle up to date!"
+          return 0
+        end
+
+        # Release Date column is 4.0.24-only (2.7.x reference has 5 columns)
+        header = ["Gem", "Current", "Latest", "Requested", "Groups"]
+        header << "Release Date" unless resolution.bridge_bundler_version.starts_with?("2.")
+        widths = header.map_with_index do |h, i|
+          Math.max(h.size, rows.max_of { |row| row[i]? ? row[i].size : 0 }) + 2
+        end
+        stdout.puts
+        stdout.puts header.map_with_index { |h, i| h.ljust(widths[i]) }.join.rstrip
+        rows.each do |row|
+          stdout.puts row.map_with_index { |cell, i| cell.ljust(widths[i]) }.join.rstrip
+        end
+        # Reference exits 1 when outdated gems exist
+        1
+      ensure
+        bridge.close
+      end
+    end
+
+    private def self.release_date_for(definition : Definition, resolution : Resolution, name : String, version : String, checksum : String?) : String
+      downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root)
+      path = downloader.fetch(name, version, nil, checksum)
+      info = Bridge::GemSpecInfo.from_json(bridge_read_spec_json(path).to_json)
+      info.date.to_s.split(" ")[0]
+    rescue
+      ""
+    end
+
+    private def self.bridge_read_spec_json(path : String) : JSON::Any
+      client = Bridge::Client.new
+      begin
+        client.read_gem_spec(path)
+      ensure
+        client.close
+      end
+    end
+
+    # ------------------------------------------------------------------
+    # console: exec an IRB session inside the bundle environment
+    # ------------------------------------------------------------------
+    def self.console(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      # delegate to exec semantics (irb missing -> the underlying ruby fails
+      # exactly like the reference's activation error path)
+      exec(stdout, stderr, ["irb"] + rest)
+    end
+
+    # ------------------------------------------------------------------
+    # gem: project skeleton (bundle gem NAME)
+    # ------------------------------------------------------------------
+    def self.gem(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      name = rest.reject(&.starts_with?("--")).first?
+      if name.nil?
+        stderr.puts "Please provide a gem name"
+        return 1
+      end
+      dir = File.join(Dir.current, name)
+      if Dir.exists?(dir)
+        stderr.puts "Directory #{name} already exists"
+        return 1
+      end
+      Dir.mkdir_p(File.join(dir, "lib"))
+      File.write(File.join(dir, "#{name}.gemspec"), <<-SPEC
+      # frozen_string_literal: true
+
+      Gem::Specification.new do |spec|
+        spec.name = #{name.inspect}
+        spec.version = "0.1.0"
+        spec.authors = []
+        spec.summary = "TODO: Write a short summary"
+        spec.required_ruby_version = ">= 3.2.0"
+
+        spec.files = Dir["lib/**/*.rb"]
+        spec.bindir = "exe"
+        spec.executables = []
+        spec.require_paths = ["lib"]
+      end
+      SPEC
+      )
+      File.write(File.join(dir, "lib", "#{name}.rb"), <<-LIB
+      # frozen_string_literal: true
+
+      module #{name.split("_").map(&.capitalize).join}
+        VERSION = "0.1.0"
+      end
+      LIB
+      )
+      File.write(File.join(dir, "Gemfile"), "source \"https://rubygems.org\"
+
+gemspec
+")
+      stdout.puts "Creating gem #{name}..."
+      0
+    end
   end
 end

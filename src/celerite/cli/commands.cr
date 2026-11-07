@@ -74,6 +74,14 @@ module Celerite
         plugin(stdout, stderr, rest)
       when "pristine"
         pristine(stdout, stderr, rest)
+      when "init"
+        init(stdout, stderr, rest)
+      when "outdated"
+        outdated(stdout, stderr, rest)
+      when "console"
+        console(stdout, stderr, rest)
+      when "gem"
+        gem(stdout, stderr, rest)
       when "config"
         config(stdout, stderr, rest)
       when "help", "--help", "-h"

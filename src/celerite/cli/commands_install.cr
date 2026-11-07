@@ -133,8 +133,13 @@ module Celerite
         if summary
           deps_count = resolution.evaluation.dependencies.count { |d| !d.gemspec_dev_dep }
           gems_count = specs.size
-          # 2.7.x counts the running Bundler in "gems now installed"
-          gems_count += 1 if resolution.bridge_bundler_version.starts_with?("2.")
+          # 2.7.x counts the running Bundler; a switched run counts the
+          # switched-to bundler instead
+          if resolution.switched_bundler
+            gems_count += 1
+          elsif resolution.bridge_bundler_version.starts_with?("2.")
+            gems_count += 1
+          end
           stdout.puts "Bundle complete! #{deps_count} Gemfile dependenc#{deps_count == 1 ? "y" : "ies"}, #{gems_count} gem#{gems_count == 1 ? "" : "s"} now installed."
           stdout.puts "Bundled gems are installed into `#{install_path.gsub(/\\\\/, "/").gsub(/\\/, "/")}`"
         end
@@ -315,6 +320,11 @@ module Celerite
         installer = Installer.new(InstallPaths.install_path(definition.config), abi, bridge, downloader, stdout)
         stdout.puts "Installing bundler #{locked}"
         installer.install("bundler", locked, nil, nil)
+        # The reference restarts under the installed version; the lockfile
+        # records the switched-to version from this point on, and the
+        # "gems now installed" count includes the switched bundler.
+        resolution.bridge_bundler_version = locked
+        resolution.switched_bundler = true
       ensure
         bridge.close
       end
