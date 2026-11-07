@@ -63,7 +63,16 @@ jobs:
           merge-multiple: true
           path: assets
       # OIDC trusted publishing: no long-lived API key is stored in the repo.
-      - uses: rubygems/configure-rubygems-credentials@v2.1.0
+      # The direct exchange passes `owner`, which RubyGems requires when a
+      # workflow creates a gem for the first time. The pinned
+      # configure-rubygems-credentials action does not expose that input yet.
+      - name: Configure RubyGems credentials
+        env:
+          RUBYGEMS_OWNER: ShiningRay
+        run: |
+          key="$(script/rubygems-credentials "$RUBYGEMS_OWNER")"
+          echo "::add-mask::$key"
+          echo "GEM_HOST_API_KEY=$key" >> "$GITHUB_ENV"
       - name: Publish platform gems
         env:
           # Start with the platform-family that is packaged self-contained
