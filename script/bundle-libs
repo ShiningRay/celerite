@@ -99,7 +99,8 @@ when /linux/
   bundled = []
   deps.each do |dep|
     name = File.basename(dep)
-    next if name.match?(core)
+    # The dynamic loader must come from the host; bundling it would be wrong.
+    next if name.match?(core) || name.start_with?("ld-linux")
 
     dest = File.join(dir, name)
     unless File.exist?(dest)
