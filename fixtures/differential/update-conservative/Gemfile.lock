@@ -1,0 +1,15 @@
+GEM
+  remote: file:///@INDEX_DIR@/
+  specs:
+    json_pure (2.6.0)
+    thor (1.3.2)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  json_pure (= 2.6.0)
+  thor
+
+BUNDLED WITH
+  4.0.24

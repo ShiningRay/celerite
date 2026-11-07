@@ -67,7 +67,8 @@ module Celerite
                      @base_requirements : Hash(String, Gem::Requirement),
                      @local_platform : Gem::Platform,
                      @unlock : Bool | Array(String) = false,
-                     @spec_fetcher : (String -> Array(IndexSpec))? = nil)
+                     @spec_fetcher : (String -> Array(IndexSpec))? = nil,
+                     @resolution_platforms : Array(Gem::Platform)? = nil)
         @root = RootPackage.new(@root_name)
         @packages = {} of String => Package
         @all_versions = {} of Package => Array(Candidate)
@@ -83,10 +84,16 @@ module Celerite
         unless pkg
           prerelease_specified = dependency.requirement.prerelease?
           locked_version = @locked_specs[dependency.name]?.try(&.first?).try(&.version)
-          pkg = Package.new(dependency.name, [@local_platform], locked_version, @unlock, dependency, prerelease_specified)
+          platforms = top_level ? resolution_platforms : [@local_platform]
+          pkg = Package.new(dependency.name, platforms, locked_version, @unlock, dependency, prerelease_specified)
           @packages[dependency.name] = pkg
         end
         pkg
+      end
+
+      # All platforms the resolution covers: local + lockfile + added.
+      def resolution_platforms : Array(Gem::Platform)
+        @resolution_platforms || [@local_platform]
       end
 
       def root_dependencies(requirements : Array(DepSpec)) : Hash(Package, Constraint)
@@ -105,14 +112,40 @@ module Celerite
       # matching versions (simplified: no platform/cooldown hints yet).
       def raise_not_found!(package : Package) : NoReturn
         name = package.name
-        label = begin
-          requirement = package.dependency.try(&.requirement)
-          if requirement.nil? || requirement.none?
-            name
-          else
-            "#{name} (#{requirement})"
-          end
+        requirement = package.dependency.try(&.requirement)
+        label = requirement.nil? || requirement.none? ? name : "#{name} (#{requirement})"
+
+        # Reference message selection (pinned Resolver#raise_not_found!):
+        # specs matching the requirement exist but not installable on every
+        # resolution platform -> "gems matching ... valid for all resolution
+        # platforms (plist)"; single-platform match -> "gem 'label' with
+        # platform 'plat'"; otherwise the plain not-found line.
+        matching = all_specs(name).select do |spec|
+          requirement.nil? || requirement.none? || requirement.satisfied_by?(spec.version)
         end
+        platforms = package.platforms
+        if matching.any?
+          # reference appends the matching-variants list to every not-found path
+          listing = String.build do |b|
+            b << "
+
+"
+            b << "The source contains the following gems matching '#{label}':
+"
+            matching.each { |spec| b << "  * #{spec.full_name}
+" }
+          end
+
+          if platforms.size > 1
+            raise GemNotFoundError.new(
+              "Could not find gems matching '#{label}' valid for all resolution platforms (#{platforms.join(", ")}) in #{source_description(package)}." + listing
+            )
+          end
+          raise GemNotFoundError.new(
+            "Could not find gem '#{label}' with platform '#{platforms.first}' in #{source_description(package)}." + listing
+          )
+        end
+
         raise GemNotFoundError.new(
           "Could not find gem '#{label}' in #{source_description(package)}."
         )
@@ -158,11 +191,15 @@ module Celerite
 
         groups = [] of Candidate
         results.group_by(&.version).each do |version, group_specs|
-          platform_specs = group_specs.select do |spec|
-            package.platforms.any? { |platform| installable?(spec, platform) }
+          # Reference parity: one group per resolution platform; a top-level
+          # gem must have a variant on EVERY platform, otherwise the version
+          # is not a candidate at all.
+          per_platform = package.platforms.map do |platform|
+            group_specs.select { |spec| installable?(spec, platform) }
           end
+          platform_specs = per_platform.flatten.uniq
 
-          next if package.top_level? && platform_specs.empty?
+          next if package.top_level? && per_platform.any?(&.empty?)
 
           ruby_specs = group_specs.select(&.platform_ruby?)
           if ruby_specs.empty?
@@ -393,7 +430,7 @@ module Celerite
           package ||= begin
             prerelease_specified = dep.requirement.prerelease?
             locked_version = @locked_specs[dep.name]?.try(&.first?).try(&.version)
-            Package.new(dep.name, [@local_platform], locked_version, @unlock, dep, prerelease_specified).tap do |pkg|
+            Package.new(dep.name, resolution_platforms, locked_version, @unlock, dep, prerelease_specified).tap do |pkg|
               @packages[dep.name] = pkg
             end
           end

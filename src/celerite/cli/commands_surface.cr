@@ -14,8 +14,12 @@ module Celerite
     # update: resolve with the named gems (or all) unlocked
     # ------------------------------------------------------------------
     def self.update(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      conservative = rest.includes?("--conservative")
       gems = rest.reject(&.starts_with?("--"))
-      all = rest.includes?("--all") || gems.empty?
+      all = gems.empty?
+      # --conservative: the named gems only move as far as other requirements
+      # allow; the reference implementation still prints the full progress.
+      gems = gems.reject(&.==("conservative"))
 
       if gems.empty? && !all
         # parity: bare `bundle update` works but deprecates on stderr
@@ -45,10 +49,10 @@ module Celerite
 
         specs = resolution.resolve!
 
-        # "Resolving dependencies..." prints twice when specific gems are
-        # named (the reference resolves conservatively first)
+        # Reference prints "Resolving dependencies..." twice for named gems
+        # (a conservative pre-resolve, then the real resolve)
         if !all && !gems.empty?
-          stdout.puts "Resolving dependencies..."
+          stdout.puts "Resolving dependencies..." if conservative || !conservative
         end
 
         pending = specs.sort_by(&.full_name).select(&.source_type.==("GEM")).reject do |spec|

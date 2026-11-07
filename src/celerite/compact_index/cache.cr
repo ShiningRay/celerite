@@ -308,12 +308,12 @@ module Celerite
         requirements.find(&.key.==("checksum")).try(&.values.first?)
       end
 
-      def required_ruby_version : String?
-        requirements.find(&.key.==("ruby")).try(&.values.join("&"))
+      def required_ruby_version_list : Array(String)
+        requirements.find(&.key.==("ruby")).try(&.values) || [] of String
       end
 
-      def required_rubygems_version : String?
-        requirements.find(&.key.==("rubygems")).try(&.values.join("&"))
+      def required_rubygems_version_list : Array(String)
+        requirements.find(&.key.==("rubygems")).try(&.values) || [] of String
       end
 
       # platform-less entries are the virtual ruby platform

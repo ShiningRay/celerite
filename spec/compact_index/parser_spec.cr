@@ -50,8 +50,8 @@ module Celerite
         "racc:>= 1.4&< 2.0",
         "rack:",
       ])
-      entry.required_ruby_version.should eq(">= 3.0")
-      entry.required_rubygems_version.should eq(">= 3.4")
+      entry.required_ruby_version_list.should eq([">= 3.0"])
+      entry.required_rubygems_version_list.should eq([">= 3.4"])
       entry.checksum.should eq("abc123")
     end
 

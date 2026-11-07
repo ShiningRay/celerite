@@ -61,6 +61,16 @@ module Celerite
 
         reuse = no_reuse ? false : resolution_can_reuse?(resolution)
         resolution.show_resolving = show_resolving
+
+        # BUNDLED WITH version selection (pinned reference behavior): when the
+        # running profile differs from the lockfile's BUNDLED WITH, install
+        # the target bundler into GEM_HOME and continue under it.
+        if definition.lockfile_exists?
+          locked_bundler = definition.lockfile!.bundler_version
+          if locked_bundler && !resolution.bridge_bundler_version.starts_with?(locked_bundler.split(".")[0] + "." + (locked_bundler.split(".")[1]? || "0"))
+            auto_switch_bundler(definition, stdout, stderr, resolution)
+          end
+        end
         # no_reuse (add): the reference prints the source-index fetch up front
         # (its resolve runs before the resolution's lazy fetch would).
         if no_reuse
@@ -85,6 +95,12 @@ module Celerite
         previous_versions = definition.lockfile_exists? ? definition.lockfile!.specs.to_h { |s| {s.name, s.version} } : {} of String => String
         pending = specs.sort_by(&.full_name).select(&.source_type.==("GEM")).reject do |spec|
           installer.installed?(spec.name, spec.version.to_s, spec.platform)
+        end
+        # Locked-path installs print the source-index line when downloads are
+        # pending, but never a Resolving line (pinned reference behavior,
+        # update-conservative fixture).
+        if reuse && pending.any?
+          stdout.puts "Fetching source index from #{resolution.primary_remote}"
         end
         # Reference output order: all "Fetching" lines (downloads) first,
         # then all "Installing" lines. Updated gems show "(was <old>)".
@@ -275,6 +291,33 @@ module Celerite
       header = Bytes.new(2)
       File.open(path, "rb") { |io| io.read(header) }
       header[0] == 0x4D && header[1] == 0x5A # MZ
+    end
+
+    # Reference auto-switch trace (2.7.x profile on a 4.0.24 lockfile):
+    #   Bundler 2.7.2 is running, but your lockfile was generated with 4.0.24.
+    #     Installing Bundler 4.0.24 and restarting using that version.
+    #   Fetching bundler 4.0.24
+    #   Fetching gem metadata from https://rubygems.org/.
+    #   Installing bundler 4.0.24
+    # The bundler gem comes from rubygems.org (the reference's switch source).
+    private def self.auto_switch_bundler(definition : Definition, stdout : IO, stderr : IO, resolution : Resolution) : Nil
+      locked = definition.lockfile!.bundler_version.not_nil!
+      stdout.puts "Bundler #{resolution.bridge_bundler_version} is running, but your lockfile was generated with #{locked}. Installing Bundler #{locked} and restarting using that version."
+      stdout.puts "Fetching bundler #{locked}"
+
+      downloader = Downloader.new("https://rubygems.org/", InstallPaths.downloader_cache_root)
+      cached = downloader.fetch("bundler", locked, nil, nil)
+      stdout.puts "Fetching gem metadata from https://rubygems.org/."
+
+      bridge = Bridge::Client.new
+      begin
+        abi = InstallPaths.ruby_abi(bridge)
+        installer = Installer.new(InstallPaths.install_path(definition.config), abi, bridge, downloader, stdout)
+        stdout.puts "Installing bundler #{locked}"
+        installer.install("bundler", locked, nil, nil)
+      ensure
+        bridge.close
+      end
     end
 
     private def self.find_executable(command : String, search_path : String) : String?

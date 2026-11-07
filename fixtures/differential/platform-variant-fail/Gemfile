@@ -1,0 +1,4 @@
+source "file:///@INDEX_DIR@"
+
+gem "racc"
+gem "nokogiri"

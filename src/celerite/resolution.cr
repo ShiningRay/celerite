@@ -243,7 +243,7 @@ module Celerite
               Resolver::DepSpec.new(d.name, Gem::Requirement.new(d.requirements))
             end
           end
-          ruby_req = entry.required_ruby_version ? Gem::Requirement.new(entry.required_ruby_version.not_nil!) : Gem::Requirement.new
+          ruby_req = Gem::Requirement.new(entry.required_ruby_version_list)
           # Parity: the reference only records per-gem checksums from remote
           # API sources; file:// indexes install without them.
           checksum = primary_remote.starts_with?("file:") ? nil : entry.checksum
@@ -388,6 +388,7 @@ module Celerite
         Gem::Platform.local,
         unlock,
         spec_fetcher,
+        resolution_platforms,
       )
       prerelease_exceptions.each { |name| source.package_consider_prereleases(name) }
       source
@@ -578,6 +579,26 @@ module Celerite
 
     property added_platforms : Array(String) = [] of String
     property removed_platforms : Array(String) = [] of String
+
+    # Resolution platform set: local + existing lockfile platforms + added.
+    def resolution_platforms : Array(Gem::Platform)
+      platforms = [Gem::Platform.local]
+      if @definition.lockfile_exists?
+        @definition.lockfile!.platforms.each do |p|
+          platform = Gem::Platform.new(p)
+          platforms << platform unless platforms.any?(&.==(platform))
+        end
+      end
+      @added_platforms.each do |p|
+        platform = Gem::Platform.new(p)
+        platforms << platform unless platforms.any?(&.==(platform))
+      end
+      @removed_platforms.each do |p|
+        platform = Gem::Platform.new(p)
+        platforms.reject!(&.==(platform))
+      end
+      platforms
+    end
 
     # Install-time checksum overrides: the reference records the sha256 of
     # each downloaded package in the lockfile even for file:// sources.
