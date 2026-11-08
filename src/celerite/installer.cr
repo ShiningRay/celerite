@@ -35,6 +35,45 @@ module Celerite
       full_name = (platform.nil? || platform == "ruby") ? "#{name}-#{version}" : "#{name}-#{version}-#{platform}"
 
       gem_file = @downloader.fetch(name, version, platform, checksum)
+      install_file(gem_file, name, version, platform, full_name)
+    end
+
+    # Reinstalls an installed gem from its cached package (pristine). The
+    # package is re-downloaded when the install cache no longer holds it.
+    def reinstall(name : String, version : String, platform : String?, checksum : String?) : Nil
+      full_name = (platform.nil? || platform == "ruby") ? "#{name}-#{version}" : "#{name}-#{version}-#{platform}"
+      cached = File.join(@install_root, "cache", "#{full_name}.gem")
+      gem_file = if File.file?(cached)
+                    cached
+                  else
+                    @downloader.fetch(name, version, platform, checksum)
+                  end
+
+      remove_installed(name, version, platform, gem_file)
+      install_file(gem_file, name, version, platform, full_name)
+    end
+
+    # Removes the installed artifacts for a gem before a pristine reinstall.
+    def remove_installed(name : String, version : String, platform : String?, gem_file : String?) : Nil
+      full_name = (platform.nil? || platform == "ruby") ? "#{name}-#{version}" : "#{name}-#{version}-#{platform}"
+      FileUtils.rm_rf(File.join(@install_root, "gems", full_name))
+      FileUtils.rm_rf(File.join(@install_root, "extensions", Gem::Platform.local.to_s, @ruby_abi, full_name))
+      spec_path = File.join(@install_root, "specifications", "#{full_name}.gemspec")
+      File.delete(spec_path) if File.file?(spec_path)
+      if gem_file && File.file?(gem_file)
+        info = read_spec(gem_file)
+        bindir = File.join(@install_root, "bin")
+        info.executables.each do |executable|
+          path = File.join(bindir, executable)
+          File.delete(path) if File.file?(path)
+          bat = File.join(bindir, "#{executable}.bat")
+          File.delete(bat) if File.file?(bat)
+        end
+      end
+    end
+
+    private def install_file(gem_file : String, name : String, version : String,
+                             platform : String?, full_name : String) : Bool
       read_spec(gem_file)
 
       # extraction root (temp, renamed per part at the end)
@@ -47,69 +86,84 @@ module Celerite
       Dir.mkdir_p(cache_dir)
       Dir.mkdir_p(spec_dir)
 
-      # cache copy + payload extraction
-      FileUtils.cp(gem_file, File.join(cache_dir, "#{full_name}.gem"))
-      extract_payload(gem_file, gem_dir)
+      begin
+        # cache copy + payload extraction
+        FileUtils.cp(gem_file, File.join(cache_dir, "#{full_name}.gem"))
+        extract_payload(gem_file, gem_dir)
 
-      # installed specification (Marshal, written by the Ruby bridge)
-      spec_destination = File.join(spec_dir, "#{full_name}.gemspec")
-      written = Bridge::WrittenSpec.from_json(
-        @bridge.write_installed_spec(gem_file, spec_destination, gem_dir).to_json
-      )
-
-      # executables
-      unless written.executables.empty?
-        Dir.mkdir_p(bin_dir)
-        bindir = written.bindir.empty? ? "bin" : written.bindir
-        written.executables.each do |executable|
-          source = File.join(gem_dir, bindir, executable)
-          next unless File.file?(source)
-          copy_executable(source, File.join(bin_dir, executable), full_name)
-          write_windows_stub(File.join(bin_dir, "#{executable}.bat"), executable, full_name) if windows?
-        end
-      end
-
-      # publish atomically: move each part into place
-      target_cache = File.join(@install_root, "cache")
-      target_gems = File.join(@install_root, "gems")
-      target_specs = File.join(@install_root, "specifications")
-      target_bin = File.join(@install_root, "bin")
-      FileUtils.mkdir_p(target_cache)
-      FileUtils.mkdir_p(target_gems)
-      FileUtils.mkdir_p(target_specs)
-
-      # Windows renames fail over existing directories; clear stale targets
-      # from interrupted installs first.
-      target_gem_file = File.join(target_cache, "#{full_name}.gem")
-      File.delete(target_gem_file) if File.file?(target_gem_file)
-      FileUtils.rm_rf(File.join(target_gems, full_name))
-      File.rename(File.join(cache_dir, "#{full_name}.gem"), target_gem_file)
-      File.rename(gem_dir, File.join(target_gems, full_name))
-
-      # native extensions (Ruby toolchain via the bridge, architecture §2.1)
-      unless written.extensions.empty?
-        extension_dir = File.join(@install_root, "extensions", Gem::Platform.local.to_s,
-          @ruby_abi, full_name)
-        build_result = @bridge.build_extension(
-          File.join(target_gems, full_name), extension_dir, name, gem_file
+        # installed specification (Marshal, written by the Ruby bridge)
+        spec_destination = File.join(spec_dir, "#{full_name}.gemspec")
+        written = Bridge::WrittenSpec.from_json(
+          @bridge.write_installed_spec(gem_file, spec_destination, gem_dir).to_json
         )
-        if build_result["error"]?
-          raise Error.new("extension build failed for #{full_name}: #{build_result["error"].as_s}")
-        end
-      end
 
-      target_spec = File.join(target_specs, "#{full_name}.gemspec")
-      File.delete(target_spec) if File.file?(target_spec)
-      File.rename(spec_destination, target_spec)
-      if Dir.exists?(bin_dir) && !Dir.empty?(bin_dir)
-        FileUtils.mkdir_p(target_bin)
-        Dir.children(bin_dir).each do |child|
-          File.rename(File.join(bin_dir, child), File.join(target_bin, child))
+        # executables
+        unless written.executables.empty?
+          Dir.mkdir_p(bin_dir)
+          bindir = written.bindir.empty? ? "bin" : written.bindir
+          written.executables.each do |executable|
+            source = File.join(gem_dir, bindir, executable)
+            next unless File.file?(source)
+            copy_executable(source, File.join(bin_dir, executable), full_name)
+            write_windows_stub(File.join(bin_dir, "#{executable}.bat"), executable, full_name) if windows?
+          end
         end
-      end
 
-      FileUtils.rm_rf(work)
-      true
+        # publish atomically: move each part into place
+        target_cache = File.join(@install_root, "cache")
+        target_gems = File.join(@install_root, "gems")
+        target_specs = File.join(@install_root, "specifications")
+        target_bin = File.join(@install_root, "bin")
+        FileUtils.mkdir_p(target_cache)
+        FileUtils.mkdir_p(target_gems)
+        FileUtils.mkdir_p(target_specs)
+
+        # Windows renames fail over existing directories; clear stale targets
+        # from interrupted installs first.
+        target_gem_file = File.join(target_cache, "#{full_name}.gem")
+        File.delete(target_gem_file) if File.file?(target_gem_file)
+        FileUtils.rm_rf(File.join(target_gems, full_name))
+        File.rename(File.join(cache_dir, "#{full_name}.gem"), target_gem_file)
+        File.rename(gem_dir, File.join(target_gems, full_name))
+
+        # native extensions (Ruby toolchain via the bridge, architecture §2.1)
+        unless written.extensions.empty?
+          extension_dir = File.join(@install_root, "extensions", Gem::Platform.local.to_s,
+            @ruby_abi, full_name)
+          build_result = @bridge.build_extension(
+            File.join(target_gems, full_name), extension_dir, name, gem_file
+          )
+          if build_result["error"]?
+            raise Error.new("extension build failed for #{full_name}: #{build_result["error"].as_s}")
+          end
+        end
+
+        target_spec = File.join(target_specs, "#{full_name}.gemspec")
+        File.delete(target_spec) if File.file?(target_spec)
+        File.rename(spec_destination, target_spec)
+        if Dir.exists?(bin_dir) && !Dir.empty?(bin_dir)
+          FileUtils.mkdir_p(target_bin)
+          Dir.children(bin_dir).each do |child|
+            File.rename(File.join(bin_dir, child), File.join(target_bin, child))
+          end
+        end
+
+        true
+      rescue ex
+        # Failure cleanup: no partially installed artifact may satisfy
+        # `installed?` after a failed extraction/extension build.
+        clean_partial(name, version, platform, full_name)
+        raise ex
+      ensure
+        FileUtils.rm_rf(work)
+      end
+    end
+
+    private def clean_partial(name : String, version : String, platform : String?, full_name : String) : Nil
+      FileUtils.rm_rf(File.join(@install_root, "gems", full_name))
+      FileUtils.rm_rf(File.join(@install_root, "extensions", Gem::Platform.local.to_s, @ruby_abi, full_name))
+      spec_path = File.join(@install_root, "specifications", "#{full_name}.gemspec")
+      File.delete(spec_path) if File.file?(spec_path)
     end
 
     private def windows? : Bool

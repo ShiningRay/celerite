@@ -47,6 +47,67 @@ module Celerite
     getter local_config_file : String?
     getter global_config_file : String?
 
+    # Keys visible across all configuration sources (the reference `all`
+    # excludes defaults: `config list` never shows default-only values).
+    def all : Array(String)
+      keys = (@temporary.keys | @local_config.keys | @env.keys | @global_config.keys)
+      keys.map! do |key|
+        key = key.lchop("BUNDLE_")
+        key = key.gsub("___", "-").gsub("__", ".")
+        key.downcase
+      end
+      keys.sort
+    end
+
+    # `Bundler::Settings#set_local` / `#set_global` + the YAML config write.
+    def set_value(name : String, value : String, global : Bool) : Nil
+      key = Config.key_for(name)
+      hash = global ? @global_config : @local_config
+      file = global ? @global_config_file : @local_config_file
+      hash[key] = Config.storage_value(name, value)
+      Config.write_config(file, hash) if file
+    end
+
+    def unset_value(name : String, global : Bool) : Nil
+      key = Config.key_for(name)
+      hash = global ? @global_config : @local_config
+      file = global ? @global_config_file : @local_config_file
+      return unless hash.delete(key)
+      Config.write_config(file, hash) if file
+    end
+
+    # Storage representation: arrays join with `:`; everything else is the
+    # raw CLI string (the reference's YAML serializer stores strings).
+    def self.storage_value(name : String, value : String) : String
+      normalized = name.lchop("BUNDLE_")
+      if ARRAY_KEYS.includes?(normalized)
+        value.tr(" ", ":")
+      else
+        value
+      end
+    end
+
+    def self.write_config(file : String, hash : Hash(String, Value)) : Nil
+      Dir.mkdir_p(File.dirname(file))
+      text = String.build do |yaml|
+        yaml.puts "---"
+        hash.each do |key, value|
+          next if value.nil?
+          yaml.puts "#{key}: #{yaml_string(value.to_s)}"
+        end
+      end
+      temp = "#{file}.#{Process.pid}.tmp"
+      File.write(temp, text)
+      File.rename(temp, file)
+    ensure
+      File.delete(temp) if temp && File.file?(temp)
+    end
+
+    private def self.yaml_string(value : String) : String
+      escaped = value.gsub("\\", "\\\\").gsub("\"", "\\\"")
+      "\"#{escaped}\""
+    end
+
     def initialize(project_root : String? = nil, temporary : Hash(String, Value) = {} of String => Value)
       @temporary = temporary
       ignore = ENV["BUNDLE_IGNORE_CONFIG"]?
@@ -97,10 +158,14 @@ module Celerite
       locations
     end
 
-    # `Bundler::Settings.key_for`: dots doubled, uppercased, BUNDLE_ prefix.
+    # `Bundler::Settings.key_for`: dots doubled, dashes tripled, uppercased,
+    # BUNDLE_ prefix; URI-style keys get the reference's trailing slash.
     def self.key_for(key : String) : String
       key = key.lchop("BUNDLE_")
-      "BUNDLE_#{key.gsub(".", "__").upcase}"
+      key += "/" if key.matches?(/https?:/i) && !key.ends_with?("/") && !key.ends_with?("__FALLBACK_TIMEOUT")
+      key = key.gsub(".", "__")
+      key = key.gsub("-", "___")
+      "BUNDLE_#{key.upcase}"
     end
 
     def self.global_config_file : String?

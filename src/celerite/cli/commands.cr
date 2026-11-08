@@ -342,27 +342,87 @@ module Celerite
     end
 
     # ------------------------------------------------------------------
-    # config (read-only: get/list)
+    # config: get/list/set/unset (pinned 4.0.24 output)
     # ------------------------------------------------------------------
     def self.config(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       sub = rest.first?
       case sub
+      when nil
+        stderr.puts "[DEPRECATED] Using the `config` command without a subcommand [list, get, set, unset] is deprecated and will be removed in the future. Use `bundle config list` instead."
+        config_list(stdout)
       when "get"
         name = rest[1]?
         if name.nil?
-          stderr.puts "Please provide the name of the configuration settings you want to retrieve."
-          return 1
+          return config_argument_error(stderr, "get", "NAME")
         end
-        definition = Definition.build
+        config = config_for_command
         stdout.puts "Settings for `#{name}` in order of priority. The top value will be used"
-        definition.config.pretty_values_for(name).each do |line|
+        config.pretty_values_for(name).each do |line|
           stdout.puts line
         end
         0
+      when "list"
+        config_list(stdout)
+      when "set"
+        return config_argument_error(stderr, "set", "NAME VALUE", rest[1..]) if rest.size < 3
+        # Without a project (no Gemfile in scope) the reference defaults
+        # `config set/unset` to the global config.
+        global = config_global_flag?(rest) || config_project_root.nil?
+        name = rest[1..].reject(&.starts_with?("--")).first?
+        value = rest[1..].reject(&.starts_with?("--")).skip(1).first?
+        return config_argument_error(stderr, "set", "NAME VALUE", rest[1..]) if name.nil? || value.nil?
+        config_for_command.set_value(name, value, global)
+        0
+      when "unset"
+        return config_argument_error(stderr, "unset", "NAME") if rest.size < 2
+        global = config_global_flag?(rest) || config_project_root.nil?
+        name = rest[1..].reject(&.starts_with?("--")).first?
+        return config_argument_error(stderr, "unset", "NAME") if name.nil?
+        config_for_command.unset_value(name, global)
+        0
       else
-        stderr.puts "The 'config' command is not implemented yet."
-        1
+        stderr.puts "Could not find command \"config #{sub}\"."
+        15
       end
+    end
+
+    private def self.config_list(stdout : IO) : Int32
+      config = config_for_command
+      stdout.puts "Settings are listed in order of priority. The top value will be used."
+      config.all.each do |name|
+        stdout.puts name
+        config.pretty_values_for(name).each { |line| stdout.puts line }
+        stdout.puts
+      end
+      0
+    end
+
+    # Config commands work without a Gemfile (the reference resolves the
+    # local `.bundle/config` from Bundler.root, falling back to the cwd).
+    private def self.config_project_root : String?
+      if given = ENV["BUNDLE_GEMFILE"]?
+        return File.dirname(File.expand_path(given)) unless given.empty?
+      end
+      gemfile = Definition.search_up("Gemfile") || Definition.search_up("gems.rb")
+      gemfile ? File.dirname(gemfile) : nil
+    end
+
+    private def self.config_for_command : Config
+      Config.new(config_project_root || Dir.current)
+    end
+
+    private def self.config_global_flag?(rest : Array(String)) : Bool
+      rest.includes?("--global") || rest.includes?("-g")
+    end
+
+    private def self.config_argument_error(stderr : IO, sub : String, usage : String, args : Array(String) = [] of String) : Int32
+      if args.empty?
+        stderr.puts %(ERROR: "bundle config #{sub}" was called with no arguments)
+      else
+        stderr.puts %(ERROR: "bundle config #{sub}" was called with arguments [#{args.map(&.inspect).join(", ")}])
+      end
+      stderr.puts %(Usage: "bundle config #{sub} #{usage}")
+      15
     end
 
     # ------------------------------------------------------------------

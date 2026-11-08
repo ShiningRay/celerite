@@ -251,8 +251,8 @@ module Celerite
     def self.exec(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       command = rest.first?
       if command.nil? || command.empty?
-        stderr.puts "executable not specified"
-        return 1
+        stderr.puts "bundler: exec needs a command to run"
+        return 128
       end
 
       definition = Definition.build
@@ -263,14 +263,30 @@ module Celerite
         if bundler_lib.nil? || bundler_lib.empty?
           bundler_lib = File.expand_path("../lib", File.dirname(env.ruby_exe))
         end
+        bundler_lib = bundler_lib.not_nil!
 
         abi = ruby_abi(bridge)
         bin_dir = File.join(install_path(definition.config), "ruby", abi, "bin")
 
         process_env = ENV.to_h
-        process_env["RUBYOPT"] = "-r#{File.join(bundler_lib.not_nil!, "bundler/setup")}"
-        process_env["RUBYLIB"] = bundler_lib.not_nil!
+        setup_path = File.join(bundler_lib, "bundler/setup")
+        setup_require = setup_path.includes?(" ") ? "-rbundler/setup" : "-r#{setup_path}"
+        existing_rubyopt = (process_env["RUBYOPT"]? || "").split(" ").reject(&.empty?)
+        unless existing_rubyopt.includes?(setup_require)
+          existing_rubyopt.unshift(setup_require)
+        end
+        process_env["RUBYOPT"] = existing_rubyopt.join(" ")
+        rubylib = (process_env["RUBYLIB"]? || "").split(path_delimiter_static).reject(&.empty?)
+        rubylib.unshift(bundler_lib) unless rubylib.includes?(bundler_lib)
+        process_env["RUBYLIB"] = rubylib.join(path_delimiter_static)
         process_env["BUNDLE_GEMFILE"] = File.expand_path(definition.gemfile_path).gsub(/\\/, "/")
+        process_env["BUNDLE_LOCKFILE"] = File.expand_path(definition.lockfile_path).gsub(/\\/, "/")
+        if bundler_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]?
+          process_env["BUNDLER_VERSION"] = bundler_version
+        end
+        process_env["BUNDLER_SETUP"] = setup_path
+        exe_candidate = File.join(bundler_lib, "..", "exe", "bundle")
+        process_env["BUNDLE_BIN_PATH"] = File.expand_path(exe_candidate).gsub(/\\/, "/") if File.file?(exe_candidate)
         path_delimiter = {{ flag?(:windows) }} ? ";" : ":"
         process_env["PATH"] = "#{bin_dir.gsub(/\\/, "/")}#{path_delimiter}#{process_env["PATH"]? || ""}"
 
@@ -282,26 +298,69 @@ module Celerite
         search_path = "#{bin_forward}#{path_delimiter}#{process_env["PATH"]? || ""}"
         resolved = find_executable(command, search_path)
         if resolved.nil?
-          stderr.puts "Could not find executable '#{command}' in the bundle or on PATH."
+          stderr.puts "bundler: command not found: #{command}"
+          stderr.puts "Install missing gem executables with `bundle install`"
           return 127
         end
 
+        executable : String
+        exec_args : Array(String)
+        via_shell = false
         if resolved.downcase.ends_with?(".bat") || resolved.downcase.ends_with?(".cmd")
-          # invoke through cmd so the wrapper resolves its ruby
-          process = Process.run("cmd", ["/c", resolved] + args, env: process_env,
-            output: :inherit, error: :inherit, input: :inherit)
+          executable = "cmd"
+          exec_args = ["/c", resolved] + args
+          via_shell = true
         elsif resolved.downcase.ends_with?(".exe") || executable_binary?(resolved)
-          process = Process.run(resolved, args, env: process_env,
-            output: :inherit, error: :inherit, input: :inherit)
+          executable = resolved
+          exec_args = args
+        elsif ruby_shebang?(resolved)
+          # Parity with the reference's directly-loadable path: a Ruby
+          # executable still runs under the bundle's RUBYOPT/RUBYLIB.
+          executable = "ruby"
+          exec_args = [resolved] + args
+        elsif File.executable?(resolved) || {{ flag?(:windows) }}
+          executable = resolved
+          exec_args = args
         else
-          # extensionless ruby script (bin stub) — must run via its shebang
-          process = Process.run("ruby", [resolved] + args, env: process_env,
-            output: :inherit, error: :inherit, input: :inherit)
+          stderr.puts "bundler: not executable: #{command}"
+          return 126
         end
-        process.exit_code
+
+        run_with_forwarded_signals(executable, exec_args, process_env, via_shell)
       ensure
         bridge.close
       end
+    end
+
+    private def self.path_delimiter_static : String
+      {{ flag?(:windows) }} ? ";" : ":"
+    end
+
+    # Runs the child and forwards SIGINT (the reference's only trapped
+    # signal) so `bundle exec` behaves like the same-process Kernel.load path.
+    private def self.run_with_forwarded_signals(executable : String, args : Array(String),
+                                                env : Hash(String, String), via_shell : Bool) : Int32
+      process = Process.new(executable, args, env: env,
+        input: :inherit, output: :inherit, error: :inherit, shell: via_shell)
+      {% unless flag?(:windows) %}
+        Signal::INT.trap { process.signal(Signal::INT) }
+      {% end %}
+      process.wait.exit_code
+    ensure
+      {% unless flag?(:windows) %}
+        Signal::INT.reset
+      {% end %}
+    end
+
+    private def self.ruby_shebang?(path : String) : Bool
+      return false unless File.file?(path)
+      return false if File.size(path) == 0
+      first_line = File.open(path, "rb") { |io| io.gets_to_end }.lines.first? || ""
+      first_line == "#!/usr/bin/env ruby" ||
+        first_line == "#!/usr/bin/env ruby -w" ||
+        first_line == "#!/usr/bin/env jruby" ||
+        first_line == "#!/usr/bin/env truffleruby" ||
+        first_line.starts_with?("#!#{ENV["RUBY"]? || "/usr/bin/ruby"}")
     end
 
     private def self.executable_binary?(path : String) : Bool

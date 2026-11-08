@@ -566,11 +566,49 @@ module Celerite
     end
 
     # ------------------------------------------------------------------
-    # pristine
+    # pristine: reinstall gems from their cached packages
     # ------------------------------------------------------------------
     def self.pristine(stdout : IO, stderr : IO, rest : Array(String)) : Int32
-      stderr.puts "The 'pristine' command is not implemented yet."
-      1
+      names = rest.reject(&.starts_with?("--"))
+      definition = Definition.build
+      lockfile = definition.lockfile!
+
+      if names.empty?
+        selected = lockfile.specs.sort_by(&.full_name)
+      else
+        selected = [] of Lockfile::Spec
+        names.each do |name|
+          spec = lockfile.specs.find(&.name.==(name))
+          unless spec
+            stderr.puts "Could not find gem '#{name}'."
+            return 7
+          end
+          selected << spec
+        end
+      end
+
+      bridge = Bridge::Client.new
+      begin
+        config = definition.config
+        install_root_base = install_path(config)
+        abi = ruby_abi(bridge)
+        install_root = File.join(install_root_base, "ruby", abi)
+        remote = lockfile.sources.find(&.type.==("GEM")).try(&.remote) || "https://rubygems.org/"
+        downloader = Downloader.new(remote, downloader_cache_root)
+        installer = Installer.new(install_root_base, abi, bridge, downloader, stdout)
+
+        selected.each do |spec|
+          gem_file = File.join(install_root, "cache", "#{spec.full_name}.gem")
+          stdout.puts "Installing #{spec.name} #{spec.version}#{native_suffix(bridge, gem_file)}"
+          checksum = lockfile.checksums.find do |c|
+            c.name == spec.name && c.version == spec.version
+          end.try(&.checksums.first?)
+          installer.reinstall(spec.name, spec.version, spec.platform, checksum)
+        end
+        0
+      ensure
+        bridge.close
+      end
     end
 
     # ------------------------------------------------------------------

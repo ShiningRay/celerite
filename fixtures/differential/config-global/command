@@ -1,0 +1,5 @@
+config set retry 5
+config get retry
+config list
+config unset retry
+config list
