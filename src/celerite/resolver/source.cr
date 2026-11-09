@@ -120,22 +120,28 @@ module Celerite
         # resolution platform -> "gems matching ... valid for all resolution
         # platforms (plist)"; single-platform match -> "gem 'label' with
         # platform 'plat'"; otherwise the plain not-found line.
-        matching = all_specs(name).select do |spec|
+        specs = all_specs(name)
+        matching = specs.select do |spec|
           requirement.nil? || requirement.none? || requirement.satisfied_by?(spec.version)
         end
-        platforms = package.platforms
-        if matching.any?
-          # reference appends the matching-variants list to every not-found path
-          listing = String.build do |b|
+        # Pinned `Resolver#raise_not_found!`: list requirement-matching
+        # variants when any exist; otherwise list all variants for the gem
+        # name. The listing heading uses the name in the latter case.
+        listing_specs = matching.empty? ? specs : matching
+        listing_label = matching.empty? ? name : label
+        listing = String.build do |b|
+          unless listing_specs.empty?
             b << "
 
 "
-            b << "The source contains the following gems matching '#{label}':
+            b << "The source contains the following gems matching '#{listing_label}':
 "
-            matching.each { |spec| b << "  * #{spec.full_name}
+            listing_specs.each { |spec| b << "  * #{spec.full_name}
 " }
           end
-
+        end
+        platforms = package.platforms
+        if matching.any?
           if platforms.size > 1
             raise GemNotFoundError.new(
               "Could not find gems matching '#{label}' valid for all resolution platforms (#{platforms.join(", ")}) in #{source_description(package)}." + listing
@@ -147,7 +153,7 @@ module Celerite
         end
 
         raise GemNotFoundError.new(
-          "Could not find gem '#{label}' in #{source_description(package)}."
+          "Could not find gem '#{label}' in #{source_description(package)}." + listing
         )
       end
 

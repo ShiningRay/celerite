@@ -1,0 +1,5 @@
+config set --global retry 7
+config set --global retry 9
+config list
+config unset --global retry
+config list

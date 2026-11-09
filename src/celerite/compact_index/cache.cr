@@ -82,7 +82,8 @@ module Celerite
         request_headers = HTTP::Headers.new
         headers.each { |k, v| request_headers[k] = v }
 
-        response = client.get(remote_path, headers: request_headers)
+        path = remote_path.starts_with?("/") ? remote_path : "/#{remote_path}"
+        response = client.get(path, headers: request_headers)
         response_headers = {} of String => String
         response.headers.each do |name, values|
           response_headers[name.downcase] = values.first? || ""
@@ -306,6 +307,25 @@ module Celerite
 
       def checksum : String?
         requirements.find(&.key.==("checksum")).try(&.values.first?)
+      end
+
+      # Per-version release time in Unix seconds, when the /info entry carries
+      # a `created_at` metadata requirement (the 4.0.24 cooldown input, parsed
+      # with Time.new like the reference EndpointSpecification).
+      def created_at : Int64?
+        value = requirements.find(&.key.==("created_at")).try(&.values.first?)
+        return nil unless value
+        formats = [] of String
+        formats << "%Y-%m-%d %H:%M:%S %Z"
+        formats << "%Y-%m-%dT%H:%M:%S"
+        formats.each do |format|
+          begin
+            return Time.parse(value, format, Time::Location::UTC).to_unix
+          rescue
+            next
+          end
+        end
+        nil
       end
 
       def required_ruby_version_list : Array(String)

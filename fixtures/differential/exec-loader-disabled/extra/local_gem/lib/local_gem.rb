@@ -1,0 +1,1 @@
+module LocalGem; end

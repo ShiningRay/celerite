@@ -1,4 +1,5 @@
 require "../celerite"
+require "base64"
 require "digest/sha256"
 require "./bridge/client"
 require "./compact_index/cache"
@@ -31,6 +32,13 @@ module Celerite
   # -> PubGrub resolution -> lockfile generation (pinned contracts:
   # `Bundler::Definition` + `Bundler::Resolver`).
   class Resolution
+    # The compact-index `checksum` requirement is base64-encoded SHA-256 of
+    # the .gem bytes; lockfiles render `sha256=<hex>` (reference
+    # `Checksum::API_SHA256_HEX`).
+    def self.info_checksum_value(raw : String) : String
+      "sha256=#{Base64.decode(raw).hexstring}"
+    end
+
     struct LockedSpec
       getter name : String
       getter version : Gem::Version
@@ -101,6 +109,18 @@ module Celerite
     @locked_by_name : Hash(String, Array(LockedSpec))?
     @compact_index_client : CompactIndex::Client?
     @index_specs_cache : Hash(String, Array(Resolver::IndexSpec))?
+    # Cooldown exclusions (name, version, created_at unix seconds) recorded
+    # while building the candidate index (4.0.24 profile only).
+    @cooldown_skipped = [] of Tuple(String, String, Int64)
+
+    # Clock injection for cooldown tests (unix seconds).
+    property cooldown_now : Int64?
+    property cooldown_days : Int32?
+    # Version promotion: :patch/:minor/:major ceiling for updates.
+    property version_promotion : String?
+    property version_promotion_strict : Bool = false
+    # --ruby: rewrite the RUBY VERSION section to the running environment.
+    property ruby_update : Bool = false
 
     # Progress output for "Fetching source index..." / "Resolving dependencies..."
     # lines (stdout for `lock`, stderr for `lock --print` — pinned behavior).
@@ -233,16 +253,119 @@ module Celerite
     private def log_index_fetch : Nil
       return if @index_fetch_logged
       @index_fetch_logged = true
-      @progress.puts "Fetching source index from #{primary_remote}"
+      if primary_remote.starts_with?("file:")
+        @progress.puts "Fetching source index from #{primary_remote}"
+      else
+        @progress.puts "Fetching gem metadata from #{primary_remote}."
+      end
     end
+
+    # Gemfile per-source `cooldown:` value for a remote (nil unless declared).
+    private def source_cooldown(remote : String) : Int32?
+      @sources.each do |source|
+        next unless source.type == "Rubygems" || source.type == "Metadata"
+        if mappings = source.remote_cooldowns
+          mappings.each do |uri, days|
+            return days if normalize_remote(uri) == normalize_remote(remote)
+          end
+        end
+        next unless source.cooldown
+        match = (source.remotes || [] of String).includes?(remote) ||
+                source.remote == remote
+        return source.cooldown if match
+      end
+      nil
+    end
+
+    # Version promotion ceiling: candidate versions above the locked
+    # major/minor/patch are excluded from the request (pinned
+    # `Bundler::GemVersionPromoter` at the flag level).
+    private def promoted_out?(name : String, version : Gem::Version) : Bool
+      level = @version_promotion
+      level = (@version_promotion_strict ? "patch" : nil) if level.nil?
+      return false if level.nil?
+      locked = locked_specs_by_name[name]?.try(&.first?)
+      return false unless locked
+      locked_v = locked.version
+      case level
+      when "patch"
+        !(version.segments[0] == locked_v.segments[0] && version.segments[1] == locked_v.segments[1])
+      when "minor"
+        !(version.segments[0] == locked_v.segments[0])
+      else
+        false
+      end
+    end
+
+    # Cooldown: gem versions published less than the configured number of
+    # days ago are excluded from candidacy (4.0.24 profile, `cooldown`
+    # setting). A version already pinned in the lockfile stays exempt unless
+    # the user explicitly unlocked that gem (pinned `Resolver#cooldown_excluded?`).
+    private def cooldown_excluded?(name : String, version : Gem::Version, created_at : Int64?) : Bool
+      return false unless bridge_bundler_version.starts_with?("4.")
+      # file:// (v1 marshal) indexes never carry per-version created_at in
+      # the reference, so cooldown never applies there (bundle-config(1):
+      # versions without the metadata remain resolvable).
+      return false if primary_remote.starts_with?("file:")
+      # Precedence: CLI > config > Gemfile per-source (bundle-config(1)).
+      days = @cooldown_days || @definition.config.cooldown_days || source_cooldown(primary_remote)
+      return false if days.nil? || days <= 0
+      return false if created_at.nil?
+      return false if locked_specs_by_name[name]?.try { |list| list.any? { |s| s.version == version } } &&
+                      !explicitly_unlocked?(name)
+      now = @cooldown_now || Time.utc.to_unix
+      (now - created_at) < days.to_i64 * 86_400_i64
+    end
+
+    private def explicitly_unlocked?(name : String) : Bool
+      if @unlock == true
+        true
+      elsif unlocked_names = @unlock.as?(Array(String))
+        unlocked_names.includes?(name)
+      else
+        false
+      end
+    end
+
+    # Skipped-by-cooldown newest entries above the resolved version.
+    def cooldown_skipped_summary : Array(Tuple(String, String, String, Int32))
+      resolved = @resolved_specs.to_h { |s| {s.name, s} }
+      days = @cooldown_days || @definition.config.cooldown_days || source_cooldown(primary_remote) || 0
+      @cooldown_skipped.compact_map do |(name, version, created_at)|
+        spec = resolved[name]?
+        next if spec.nil?
+        next unless Gem::Version.new(version) > spec.version
+        requirement = @current_base_requirements[name]?
+        next unless requirement.nil? || requirement.satisfied_by?(Gem::Version.new(version))
+        remaining = (days.to_i64 * 86_400 - ((@cooldown_now || Time.utc.to_unix) - created_at))
+        days_left = [(remaining / 86_400.0).ceil.to_i32, 1].max
+        {name, version, spec.version.to_s, days_left}
+      end.sort_by { |(name, _, _, _)| name }
+    end
+
+    # Local/prefer-local installs read from locally installed gems only
+    # (pinned `install --local`; the compact index is never consulted).
+    property local_only : Bool = false
+    property prefer_local : Bool = false
 
     # Build candidate specs for one gem from the compact index.
     private def index_specs_for(name : String) : Array(Resolver::IndexSpec)
       cache = @index_specs_cache ||= {} of String => Array(Resolver::IndexSpec)
       cache[name] ||= begin
+        if @local_only
+          raise GemNotFoundError.new(
+            "Could not find gem '#{name}' in locally installed gems."
+          )
+        end
         log_index_fetch
         entries = compact_index_client.info(name)
-        entries.map do |entry|
+        entries.each do |entry|
+          version = Gem::Version.new(entry.version)
+          @cooldown_skipped << {name, entry.version, entry.created_at.not_nil!} if cooldown_excluded?(name, version, entry.created_at)
+        end
+        filtered = entries.reject { |entry| cooldown_excluded?(name, Gem::Version.new(entry.version), entry.created_at) }
+        filtered = filtered.reject { |entry| promoted_out?(name, Gem::Version.new(entry.version)) } if @version_promotion
+        filtered.map do |entry|
           version = Gem::Version.new(entry.version)
           platform = entry.platform_ruby? ? Gem::Platform::RUBY : Gem::Platform.new(entry.platform.not_nil!)
           deps = entry.dependencies.map do |d|
@@ -498,7 +621,7 @@ module Celerite
         source = non_gem_sources[name]?
         source_type = source ? source.type.upcase : "GEM"
         source_type = "PATH" if source_type == "GEMSPEC"
-        specs << ResolvedSpec.new(name, spec.version, nil, lock_deps, nil, 0, source_type, source)
+        specs << ResolvedSpec.new(name, spec.version, nil, lock_deps, spec.checksum, 0, source_type, source)
       end
       specs.sort_by!(&.full_name)
       specs
@@ -609,6 +732,7 @@ module Celerite
     property switched_bundler : Bool = false
     property added_platforms : Array(String) = [] of String
     property removed_platforms : Array(String) = [] of String
+    property normalize_platforms : Bool = false
 
     # Resolution platform set: local + existing lockfile platforms + added.
     def resolution_platforms : Array(Gem::Platform)
@@ -696,6 +820,19 @@ module Celerite
       @removed_platforms.each do |p|
         platforms.delete(p)
       end
+      # --normalize-platforms collapses versioned platforms to the generic
+      # platform when the resolved set has no variant-only specs
+      # (`Bundler::SpecSet#normalize_platforms!` for the common shapes).
+      if @normalize_platforms
+        platforms = platforms.map do |p|
+          next p if p == "ruby"
+          platform = Gem::Platform.new(p)
+          version = platform.version
+          next p if version.nil?
+          version.to_i? || next p
+          platform.cpu && platform.os ? "#{platform.cpu}-#{platform.os}" : p
+        end.uniq
+      end
       platforms = platforms.reject(&.==("ruby")) + (platforms.select(&.==("ruby")))
       platforms.sort!
       sections << Lockfile::TypedSection.new(Lockfile::PlatformsSection.new(platforms))
@@ -726,7 +863,8 @@ module Celerite
             c.name == spec.name && c.version == spec.version.to_s &&
               (c.platform.nil? || c.platform == "ruby") && !c.checksums.empty?
           end
-          checksum = installed || existing.try(&.checksums.first?) || spec.checksum
+          raw = installed || existing.try(&.checksums.first?) || spec.checksum
+          checksum = raw.try { |c| c.starts_with?("sha256=") ? c : self.class.info_checksum_value(c) }
           checksums = checksum ? [checksum.not_nil!] : [] of String
           checksum_section.entries << Lockfile::ChecksumEntry.new(spec.name, spec.version.to_s, spec.platform, checksums)
         end
@@ -742,7 +880,12 @@ module Celerite
       end
 
       indent = profile_is_2_x? ? "   " : "  "
-      if ruby_req = @evaluation.ruby
+      ruby_req = @evaluation.ruby
+      if @ruby_update
+        env = @bridge.not_nil!.ruby_environment
+        ruby_req = "#{env.ruby_version}p0"
+      end
+      if ruby_req
         sections << Lockfile::TypedSection.new(Lockfile::RubySection.new(ruby_req, indent))
       end
 

@@ -1,5 +1,6 @@
 ---
 json_pure
+my_plugin
 nokogiri
 racc
 thor

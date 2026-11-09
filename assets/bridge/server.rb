@@ -278,9 +278,17 @@ def serialize_source(source)
     # Path/Gemspec sources expose their location via #path
     result["remote"] = source.path.to_s
   end
-  %w[branch tag ref glob submodules].each do |key|
+  if source.respond_to?(:options) && source.options["name"]
+    result["name"] = source.options["name"]
+  elsif source.respond_to?(:name) && source.name && source.name.to_s != ""
+    result["name"] = source.name.to_s
+  end
+  %w[branch tag ref glob submodules cooldown].each do |key|
     value = source.options[key] if source.respond_to?(:options)
     result[key] = value if value
+  end
+  if source.respond_to?(:remote_cooldowns) && source.remote_cooldowns && !source.remote_cooldowns.empty?
+    result["remote_cooldowns"] = source.remote_cooldowns
   end
   result
 end

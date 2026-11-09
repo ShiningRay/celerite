@@ -29,8 +29,8 @@ module Celerite
 
     # Installs one gem; skips when already installed (idempotent parity).
     # Returns true when work was done.
-    def install(name : String, version : String, platform : String?, checksum : String?) : Bool
-      return false if installed?(name, version, platform)
+    def install(name : String, version : String, platform : String?, checksum : String?, force : Bool = false) : Bool
+      return false if installed?(name, version, platform) && !force
 
       full_name = (platform.nil? || platform == "ruby") ? "#{name}-#{version}" : "#{name}-#{version}-#{platform}"
 
@@ -109,6 +109,26 @@ module Celerite
       end
 
       FileUtils.rm_rf(work)
+      true
+    end
+
+    # PATH/GIT source gems are not downloaded; the reference leaves the
+    # source checkout in place and materializes only its executable stubs
+    # in the bundle bin directory (pinned by `exec-loader`).
+    def install_source_gem(name : String, version : String, platform : String?, source_dir : String) : Bool
+      full_name = (platform.nil? || platform == "ruby") ? "#{name}-#{version}" : "#{name}-#{version}-#{platform}"
+      info = Bridge::GemSpecInfo.from_json(@bridge.load_gemspec_dir(source_dir).to_json)
+      return false if info.executables.empty?
+
+      target_bin = File.join(@install_root, "bin")
+      Dir.mkdir_p(target_bin)
+      bindir = info.bindir.empty? ? "bin" : info.bindir
+      info.executables.each do |executable|
+        source = File.join(source_dir, bindir, executable)
+        next unless File.file?(source)
+        copy_executable(source, File.join(target_bin, executable), full_name)
+        write_windows_stub(File.join(target_bin, "#{executable}.bat"), executable, full_name) if windows?
+      end
       true
     end
 

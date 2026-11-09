@@ -1,0 +1,4 @@
+config set path vendor/bundle
+config get path
+config unset path
+config get path

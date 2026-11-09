@@ -46,6 +46,7 @@ module Celerite
 
     struct EvaluatedSource
       include JSON::Serializable
+      getter name : String?
       getter type : String
       getter remotes : Array(String)?
       getter remote : String?
@@ -54,6 +55,8 @@ module Celerite
       getter ref : String?
       getter glob : String?
       getter submodules : Bool?
+      getter cooldown : Int32?
+      getter remote_cooldowns : Hash(String, Int32)?
     end
 
     # Specification fields of a .gem, extracted by the bridge (Marshal side).

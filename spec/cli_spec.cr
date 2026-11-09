@@ -228,8 +228,9 @@ describe Celerite::CLI do
   describe "config get" do
     it "reports unset values" do
       with_project({"Gemfile" => "source \"https://rubygems.org\"\n"}) do
+        # Pinned reference behavior: `config get` for an unset key exits 1.
         code, out, err = run_cli(["config", "get", "retry"])
-        code.should eq(0)
+        code.should eq(1)
         out.should eq <<-TEXT
         Settings for `retry` in order of priority. The top value will be used
         You have not configured a value for `retry`

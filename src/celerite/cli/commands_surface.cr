@@ -15,15 +15,31 @@ module Celerite
     # update: resolve with the named gems (or all) unlocked
     # ------------------------------------------------------------------
     def self.update(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if rest.includes?("--frozen")
+        # Thor rejects the flag before any Gemfile validation; the exact
+        # message depends on the profile and the command (see frozen helper).
+        bundle_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+        if code = frozen_flag_exit(rest, stderr, Definition.build.lockfile_exists?, bundle_version, "update")
+          return code
+        end
+      end
       conservative = rest.includes?("--conservative")
+      # --group: only deps of these groups are unlocked (parity with
+      # `update --group dev`).
+      only_group = flag_value(rest, "--group") || flag_value(rest, "-g")
       gems = rest.reject(&.starts_with?("--"))
-      all = gems.empty?
+      all = gems.present? == false
       # --conservative: the named gems only move as far as other requirements
       # allow; the reference implementation still prints the full progress.
       gems = gems.reject(&.==("conservative"))
 
-      if gems.empty? && !all
-        # parity: bare `bundle update` works but deprecates on stderr
+      # parity: bare `bundle update` works but deprecates on stderr on 4.x
+      # (2.7.x never deprecates the bare form — observed oracle diff).
+      # `--ruby` and explicit selections/`--all` suppress the deprecation.
+      has_gems = gems.present?
+      bridge_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+      if all && !rest.includes?("--all") && !bridge_version.starts_with?("2.") &&
+         !rest.includes?("--ruby") && !rest.includes?("--group") && !rest.includes?("-g")
         stderr.puts "[DEPRECATED] Pass --all to `bundle update` to update everything"
       end
 
@@ -38,10 +54,52 @@ module Celerite
         return 1
       end
 
+      # --source=NAME: only gems from the named Gemfile source unlock; an
+      # unknown name matches nothing (reference probe: resolve, then
+      # "Bundle updated!" with no installs and no stayed-same report).
+      source_restricted = !flag_value(rest, "--source").nil?
       bridge = Bridge::Client.new
       begin
-        resolution = Resolution.new(definition, all ? true : gems, bridge)
+        unlock : Bool | Array(String) = all ? true : gems
+        if source_name = flag_value(rest, "--source")
+          evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+          matched = evaluation.sources.any? do |s|
+            s.name == source_name || s.remote == source_name ||
+              (s.remotes || [] of String).includes?(source_name)
+          end
+          unlock = matched ? unlock : ([] of String)
+        end
+        if only_group
+          # Restrict the update set to the requested groups (parity with
+          # `update --group dev`); ungrouped top-level deps are kept.
+          evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+          wanted = only_group.gsub(/\s/, ",").split(",").map(&.strip)
+          group_deps = evaluation.dependencies.select do |dep|
+            dep.groups.any? { |g| wanted.includes?(g) } || dep.groups.empty?
+          end
+          unlock = (all || only_group) ? group_deps.map(&.name) : gems
+        end
+        resolution = Resolution.new(definition, unlock, bridge)
         resolution.progress = stdout
+        resolution.ruby_update = rest.includes?("--ruby")
+        lock = ProcessLock.lock(InstallPaths.install_path(config))
+        unless cooldown_flag_valid?(rest, stderr, resolution.bridge_bundler_version)
+          return 15
+        end
+        resolution.local_only = rest.includes?("--local")
+        resolution.prefer_local = rest.includes?("--prefer-local")
+        if days = cooldown_flag_value(rest)
+          resolution.cooldown_days = days
+        end
+        level = if rest.includes?("--patch")
+                  "patch"
+                elsif rest.includes?("--minor")
+                  "minor"
+                elsif rest.includes?("--major")
+                  "major"
+                end
+        resolution.version_promotion = level
+        resolution.version_promotion_strict = rest.includes?("--strict")
 
         # BUNDLED WITH semantics: update does not auto-switch — it records
         # the running bundler version in the rewritten lockfile (pinned
@@ -57,7 +115,7 @@ module Celerite
 
         # Reference prints "Resolving dependencies..." twice for named gems
         # (a conservative pre-resolve, then the real resolve)
-        if !all && !gems.empty?
+        if !all && !gems.empty? && !source_restricted
           stdout.puts "Resolving dependencies..." if conservative || !conservative
         end
 
@@ -79,7 +137,16 @@ module Celerite
             spec.name, spec.version.to_s, spec.platform, spec.checksum
           )
         end
-        pending.each do |spec|
+        # Reference installs pure-Ruby gems first, native extensions last.
+        pure, ext = pending.partition do |spec|
+          cached = cached_paths[spec.full_name]?
+          begin
+            cached.nil? || Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(cached).to_json).extensions.empty?
+          rescue
+            true
+          end
+        end
+        (pure + ext).each do |spec|
           cached = cached_paths[spec.full_name]?
           stdout.puts "Installing #{spec.name} #{spec.version}#{was_suffix.call(spec)}#{native_suffix(bridge, cached)}"
           installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum)
@@ -95,7 +162,7 @@ module Celerite
         end
 
         # parity: specific-gem updates report unchanged versions on stderr
-        unless all
+        unless all || source_restricted
           resolved_names = specs.map(&.name).to_set
           gems.each do |gem|
             next if resolved_names.includes?(gem) && pending.any? { |s| s.name == gem }
@@ -105,8 +172,10 @@ module Celerite
         end
 
         stdout.puts "Bundle updated!"
+        print_cooldown_summary(resolution, stdout)
         0
       ensure
+        lock.not_nil!.close
         bridge.close
       end
     end
@@ -121,6 +190,12 @@ module Celerite
         return 1
       end
 
+      # Pinned by `add-git`: the reference announces the git fetch before the
+      # requirement probe's index fetch/resolve lines.
+      if git = flag_value(rest, "--git")
+        stdout.puts "Fetching #{git}"
+      end
+
       definition = Definition.build
       gemfile_path = definition.gemfile_path
       gemfile = File.read(gemfile_path)
@@ -130,9 +205,14 @@ module Celerite
         return 1
       end
 
-      # requirement from the current index: ~> latest major.minor
-      version_requirement = latest_requirement_for(definition, name, stdout)
-      gem_line = "gem \"#{name}\"#{version_requirement}"
+      # Requirement semantics pinned by add-version/add-strict/
+      # add-optimistic probes: explicit `--version` is exact; otherwise
+      # strict (`= major.minor`), optimistic (`>= major.minor`) or the
+      # default pessimistic (`~> major.minor`) form.
+      version_requirement = latest_requirement_for(definition, name, stdout, rest)
+      groups = (flag_value(rest, "--group") || flag_value(rest, "-g") || "").split(",").map(&.strip).reject(&.empty?)
+      group_line = groups.empty? ? "" : ", group: #{groups.size == 1 && !rest.join(" ").includes?(",") ? ":#{groups.first}" : groups.map { |g| ":#{g}" }.join(", ")}"
+      gem_line = "gem \"#{name}\"#{version_requirement}#{group_line}#{add_option_suffix(rest)}"
 
       # Ruby's text mode on Windows rewrites the Gemfile with CRLF (reference
       # parity: the file is normalized, not preserved).
@@ -142,16 +222,48 @@ module Celerite
       eol = {{ flag?(:windows) }} ? "\r\n" : "\n"
       File.write(gemfile_path, lines.join(eol) + eol)
 
-      # Reference add prints a second "Fetching source index" (once from the
-      # requirement probe, once from the re-resolve) and never shows the
-      # Bundle-complete summary; the injected gem line is echoed last.
+      if rest.includes?("--skip-install")
+        # Pinned by `add-skip-install`: write the Gemfile line (after the
+        # requirement probe) and stop before installation.
+        return 0
+      end
+
+      # Reference add prints two fetches (requirement probing + shared
+      # resolution); install() repeats the second fetch when the lockfile
+      # is (re)written.
       code = install(stdout, stderr,
         rest.reject { |a| a == name || a.starts_with?("--") } + rest.select(&.starts_with?("--")),
         summary: false, no_reuse: true)
       code
     end
 
-    private def self.latest_requirement_for(definition : Definition, name : String, stdout : IO) : String
+    # Gemfile options added by `bundle add` (--path/--git/--branch/--ref/
+    # --source/--require). Values are Ruby string literals; `--require`
+    # accepts the bare keyword `false`.
+    private def self.add_option_suffix(rest : Array(String)) : String
+      parts = [] of String
+      if path = flag_value(rest, "--path")
+        parts << "path: #{path.inspect}"
+      end
+      if git = flag_value(rest, "--git")
+        parts << "git: #{git.inspect}"
+      end
+      if branch = flag_value(rest, "--branch")
+        parts << "branch: #{branch.inspect}"
+      end
+      if git_ref = flag_value(rest, "--ref")
+        parts << "ref: #{git_ref.inspect}"
+      end
+      if source = flag_value(rest, "--source") || flag_value(rest, "-s")
+        parts << "source: #{source.inspect}"
+      end
+      if require_path = flag_value(rest, "--require") || flag_value(rest, "-r")
+        parts << (require_path == "false" ? "require: false" : "require: #{require_path.inspect}")
+      end
+      parts.map { |part| ", #{part}" }.join
+    end
+
+    private def self.latest_requirement_for(definition : Definition, name : String, stdout : IO, rest : Array(String)) : String
       bridge = Bridge::Client.new
       begin
         resolution = Resolution.new(definition, false, bridge)
@@ -159,17 +271,42 @@ module Celerite
         resolution.show_resolving = true
         resolution.resolve! # lines 1-2 of the reference add output
 
-        # requirement comes from the compact index, not the current-bundle
-        # resolution (racc is not a Gemfile dependency yet)
-        entries = resolution.compact_index_client.info(name)
-        versions = entries.map { |e| Gem::Version.new(e.version) }.reject(&.prerelease?)
+        if explicit = flag_value(rest, "--version") || flag_value(rest, "-v")
+          return ", \"= #{explicit}\""
+        end
+
+        versions = if local_spec_dir = flag_value(rest, "--path") || flag_value(rest, "--git")
+                     # Path and local-git sources derive the version from the
+                     # local gemspec (pinned `add-path`); index probes do not
+                     # see the gem.
+                     begin
+                       info = bridge.load_gemspec_dir(File.expand_path(local_spec_dir, Dir.current))
+                       [Gem::Version.new(info.version)]
+                     rescue
+                       [] of Gem::Version
+                     end
+                   else
+                     # requirement comes from the compact index, not the
+                     # current-bundle resolution (racc is not a Gemfile
+                     # dependency yet)
+                     entries = resolution.compact_index_client.info(name)
+                     entries.map { |e| Gem::Version.new(e.version) }.reject(&.prerelease?)
+                   end
         return "" if versions.empty?
         latest = versions.max
+        # Pinned `Injector#conservative_version`: versions < 1.0 keep three
+        # segments (0.1.0), versions >= 1.0 keep major.minor (1.8).
+        seg_end = latest >= Gem::Version.new("1.0") ? 1 : 2
         segs = latest.segments
-        while segs.size > 2
-          segs.pop
-        end
-        ", \"~> #{segs.join(".")}\""
+        segs = segs[0..seg_end] if segs.size > seg_end + 1
+        operator = if rest.includes?("--strict")
+                     "= "
+                   elsif rest.includes?("--optimistic")
+                     ">= "
+                   else
+                     "~> "
+                   end
+        ", \"#{operator}#{segs.join(".")}\""
       rescue
         ""
       ensure
@@ -488,7 +625,15 @@ module Celerite
         end
 
         path = flag_value(rest, "--path")
+        git_remote = flag_value(rest, "--git")
+        source_remote = flag_value(rest, "--source")
         if path.nil?
+          if git_remote || source_remote
+            # Remote plugin install: resolve through the same Source /
+            # PubGrub machinery as a normal Gemfile with a synthesized
+            # source list, then materialize into the plugin tree.
+            return plugin_install_remote(names, rest, stdout, stderr)
+          end
           stderr.puts "Plugin installation from remote sources requires git; use --path for a local plugin directory."
           return 19
         end
@@ -533,6 +678,31 @@ module Celerite
         File.write(index_path, yaml)
         stdout.puts "Installed plugin #{info.name}"
         0
+      when "uninstall"
+        all = rest.includes?("--all")
+        names = rest[1..].reject(&.starts_with?("--"))
+        definition = Definition.build
+        index_path = File.join(File.dirname(definition.gemfile_path), ".bundle", "plugin", "index")
+        installed = installed_plugins
+        targets = all ? installed : names
+        if targets.empty?
+          stdout.puts "No plugins installed"
+          return 0
+        end
+        index = File.file?(index_path) ? (YAML.parse(File.read(index_path)) || YAML.parse("{}")) : YAML.parse("{}")
+        changed = false
+        targets.each do |name|
+          unless installed.includes?(name)
+            stderr.puts "Plugin #{name} is not installed "
+            next
+          end
+          changed = true
+          stdout.puts "Uninstalled plugin #{name}"
+        end
+        if changed || File.file?(index_path)
+          write_plugin_index(index_path, index, targets.select { |t| installed.includes?(t) })
+        end
+        0
       when "new"
         stderr.puts "The 'plugin new' command is not implemented yet."
         1
@@ -540,6 +710,167 @@ module Celerite
         stderr.puts "Could not find command \"plugin #{sub}\"."
         15
       end
+    end
+
+    # Remote plugin install (`--source`/`--git`): synthesize a temporary
+    # Gemfile at log level and resolve the plugin the same way Phase N built
+    # it. The temporary GEMFILE is cleaned up after resolution.
+    def self.plugin_install_remote(names : Array(String), rest : Array(String), stdout : IO, stderr : IO) : Int32
+      version = flag_value(rest, "--version") || ">= 0"
+      git_remote = flag_value(rest, "--git")
+      source_remote = flag_value(rest, "--source")
+      branch = flag_value(rest, "--branch")
+      ref_flag = flag_value(rest, "--ref")
+
+      if branch && ref_flag
+        stderr.puts "You cannot specify `--branch` and `--ref` at the same time."
+        return 1
+      end
+      if (branch || ref_flag) && !git_remote
+        stderr.puts "--branch can only be used with git sources"
+        return 1
+      end
+
+      bridge = Bridge::Client.new
+      begin
+        stdout.puts "Fetching #{git_remote}" if git_remote
+        # Synthesize a captured Gemfile
+        tmp_dir = File.tempname("celerite-plugin", "proj")
+        Dir.mkdir_p(tmp_dir)
+        synthesized = if git_remote
+                        body = "source \"https://rubygems.org/\"\n\ngem \"#{names.first.not_nil!}\", git: \"#{git_remote}\""
+                        body += ", branch: \"#{branch}\"" if branch
+                        body += ", ref: \"#{ref_flag}\"" if ref_flag
+                        body
+                      else
+                        remote = (source_remote || "https://rubygems.org/").to_s
+                        "source \"#{remote}\"\n\ngem \"#{names.first.not_nil!}\", \"#{version}\""
+                      end
+        File.write(File.join(tmp_dir, "Gemfile"), synthesized)
+        old_env = ENV["BUNDLE_GEMFILE"]?
+        ENV["BUNDLE_GEMFILE"] = File.join(tmp_dir, "Gemfile")
+        begin
+          definition = Definition.build
+          resolution = Resolution.new(definition, false, bridge)
+          resolution.progress = stdout
+          stdin_specs = resolution.resolve!
+        rescue ex : Error
+          stderr.puts Commands.word_wrap(ex.message || ex.class.name, CLI.terminal_width) if ex.wrap?
+          stderr.puts ex.message if !ex.wrap?
+          return ex.status_code
+        ensure
+          if old_env
+            ENV["BUNDLE_GEMFILE"] = old_env
+          else
+            ENV.delete("BUNDLE_GEMFILE")
+          end
+        end
+
+        host_root = old_env ? Dir.current : Dir.current
+        plugin_root = File.join(host_root, ".bundle", "plugin")
+        Dir.mkdir_p(plugin_root)
+        install_path = InstallPaths.install_path(definition.config)
+        abi = InstallPaths.ruby_abi(bridge)
+        downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root)
+        installer = Installer.new(install_path, abi, bridge, downloader, stdout)
+        stdin_specs.each do |spec|
+          next unless names.includes?(spec.name)
+          # Git materialization happens during resolution (the plugin source
+          # is cloned/checked out by `ensure_source_dir`); gems stay in the
+          # bundler/gems checkout directory, like regular git gems.
+          plugin_dir = if git_remote
+                         Dir.glob(File.join(install_path, "ruby", abi, "bundler", "gems", "#{GitSource.base_name(git_remote)}-*")).first?
+                       else
+                         stdout.puts "Fetching #{spec.name} #{spec.version}"
+                         stdout.puts "Installing #{spec.name} #{spec.version}"
+                         installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum)
+                         File.join(install_path, "ruby", abi, "gems", spec.full_name)
+                       end
+          if git_remote
+            Dir.mkdir_p(File.join(plugin_root, "bundler", "gems"))
+            # The CELERITE clone lives under `<install_path>/ruby/<abi>/bundler/gems`
+            # (GitSource); copy that checkout tree for parity with the plugin
+            # materialization tree the reference uses.
+            if plugin_dir && Dir.exists?(plugin_dir)
+              dst = File.join(plugin_root, "bundler", "gems", File.basename(plugin_dir.to_s))
+              Process.run("cp", ["-r", plugin_dir.to_s, dst], output: :inherit, error: :inherit)
+            end
+            cache_root = File.join(install_path, "ruby", abi, "cache", "bundler", "git")
+            Dir.glob(File.join(cache_root, "*")).each do |dir|
+              next unless Dir.exists?(dir) && Dir.exists?(File.join(dir, "HEAD"))
+              dst = File.join(plugin_root, "cache", "bundler", "git", File.basename(dir))
+              next if Dir.exists?(dst)
+              Process.run("cp", ["-r", dir, dst], output: :inherit, error: :inherit)
+            end
+          end
+          unless git_remote
+            # Materialize the installed plugin gem into the plugin tree
+            # (Bundler::Plugin::Installer parity: gems/, specifications/,
+            # cache/ plus empty extensions/doc/build_info/plugins dirs).
+            installed_gem_dir = File.join(install_path, "ruby", abi, "gems", spec.full_name)
+            if Dir.exists?(installed_gem_dir)
+              dst = File.join(plugin_root, "gems", spec.full_name)
+              Dir.mkdir_p(File.dirname(dst))
+              Process.run("cp", ["-r", installed_gem_dir, dst], output: :inherit, error: :inherit)
+            end
+            cached_gem = File.join(install_path, "ruby", abi, "cache", "#{spec.full_name}.gem")
+            if File.file?(cached_gem)
+              Dir.mkdir_p(File.join(plugin_root, "cache"))
+              FileUtils.cp(cached_gem, File.join(plugin_root, "cache", "#{spec.full_name}.gem"))
+            end
+            installed_spec = File.join(install_path, "ruby", abi, "specifications", "#{spec.full_name}.gemspec")
+            if File.file?(installed_spec)
+              Dir.mkdir_p(File.join(plugin_root, "specifications"))
+              FileUtils.cp(installed_spec, File.join(plugin_root, "specifications", "#{spec.full_name}.gemspec"))
+            end
+            {"extensions", "doc", "build_info", "plugins"}.each { |d| Dir.mkdir_p(File.join(plugin_root, d)) }
+            plugin_dir = dst
+          end
+          unless File.file?(File.join(plugin_dir.to_s, "plugins.rb"))
+            Dir.mkdir_p(plugin_root)
+            stderr.puts "Failed to install plugin `#{spec.name}`, due to Bundler::Plugin::MalformattedPlugin"
+            stderr.puts "(plugins.rb was not found in the plugin.)"
+            return 29
+          end
+          index_path = File.join(plugin_root, "index")
+          unless File.file?(index_path)
+            File.write(index_path, "---\ncommands:\nhooks:\nload_paths:\nplugin_paths:\nsources:\n")
+          end
+          index = YAML.parse(File.read(index_path))
+          load_paths = index["load_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any
+          plugin_paths = index["plugin_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any
+          gem_dir = if git_remote
+                      File.join(install_path, "ruby", abi, "bundler", "gems", "#{GitSource.base_name(git_remote)}-#{spec.version}").gsub(/\\/, "/")
+                    else
+                      File.join(install_path, "ruby", abi, "gems", spec.full_name).gsub(/\\/, "/")
+                    end
+          lib_dir = File.join(gem_dir, "lib").gsub(/\\/, "/")
+          yaml = String.build do |y|
+            y.puts "---"
+            y.puts "commands:"
+            y.puts "hooks:"
+            y.puts "load_paths:"
+            load_paths.each do |k, v|
+              y.puts "  #{k}:"
+              v.as_a.each { |p2| y.puts "  - #{p2.to_s.inspect}" }
+            end
+            y.puts "  #{spec.name}:"
+            y.puts "  - #{lib_dir.inspect}"
+            y.puts "plugin_paths:"
+            plugin_paths.each { |k, v| y.puts "  #{k}: #{v.to_s.inspect}" }
+            y.puts "  #{spec.name}: #{gem_dir.inspect}"
+            y.puts "sources:"
+          end
+          File.write(index_path, yaml)
+          stdout.puts "Installed plugin #{spec.name}"
+        end
+      rescue ex : Error
+        stderr.puts ex.message
+        return ex.status_code
+      ensure
+        bridge.close
+      end
+      0
     end
 
     def self.flag_value(rest : Array(String), flag : String) : String?
@@ -565,12 +896,114 @@ module Celerite
       names.sort
     end
 
+    # Rewrites the plugin index without the uninstalled plugins, preserving
+    # the reference layout (`---` start, bare empty collections).
+    private def self.write_plugin_index(path : String, index : YAML::Any, removed : Array(String)) : Nil
+      render = ->(section : YAML::Any, out : String::Builder) do
+        map = section.as_h? || {} of YAML::Any => YAML::Any
+        keys = map.keys.map(&.to_s).reject { |k| removed.includes?(k) }
+        keys.each do |key|
+          value = map[key]?
+          out.puts "  #{key}:"
+          if value && value.as_a?
+            value.as_a.each { |v| out.puts "  - #{v.to_s.inspect}" }
+          elsif !value.nil?
+            out.puts "  #{value.to_s.inspect}"
+          end
+        end
+      end
+      yaml = String.build do |y|
+        y.puts "---"
+        y.puts "commands:"
+        render.call(index["commands"]? || YAML.parse("{}"), y)
+        y.puts "hooks:"
+        render.call(index["hooks"]? || YAML.parse("{}"), y)
+        y.puts "load_paths:"
+        render.call(index["load_paths"]? || YAML.parse("{}"), y)
+        y.puts "plugin_paths:"
+        render.call(index["plugin_paths"]? || YAML.parse("{}"), y)
+        y.puts "sources:"
+        render.call(index["sources"]? || YAML.parse("{}"), y)
+      end
+      File.write(path, yaml)
+    end
+
     # ------------------------------------------------------------------
     # pristine
     # ------------------------------------------------------------------
     def self.pristine(stdout : IO, stderr : IO, rest : Array(String)) : Int32
-      stderr.puts "The 'pristine' command is not implemented yet."
-      1
+      definition = Definition.build
+      gems = rest.reject(&.starts_with?("--"))
+      lockfile = definition.lockfile!
+      unless gems.empty?
+        unknown = gems.find { |g| lockfile.specs.none?(&.name.==(g)) }
+        if unknown
+          stderr.puts "Could not find gem '#{unknown}'."
+          return 7
+        end
+      end
+
+      bridge = Bridge::Client.new
+      begin
+        resolution = Resolution.new(definition, false, bridge)
+        install_path = InstallPaths.install_path(definition.config)
+        abi = InstallPaths.ruby_abi(bridge)
+        downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root)
+        installer = Installer.new(install_path, abi, bridge, downloader, stdout)
+        install_root = File.join(install_path, "ruby", abi)
+        cache_dir = File.join(install_root, "cache")
+        gems_root = File.join(install_root, "gems")
+
+        ordered = lockfile.specs.sort_by(&.full_name)
+        # Map spec name to its source section type.
+        type_of = {} of String => String
+        lockfile.sources.each do |section|
+          section.specs.each do |spec|
+            type_of[spec.full_name] = section.type
+          end
+        end
+
+        ordered.each do |spec|
+          next if spec.name == "bundler"
+          next unless gems.empty? || gems.includes?(spec.name)
+          type = type_of[spec.full_name]? || "GEM"
+          case type
+          when "GEM"
+            gem_file = File.join(cache_dir, "#{spec.full_name}.gem")
+            unless File.file?(gem_file)
+              gem_label = "#{spec.name} (#{spec.version})" + (spec.platform && !spec.platform_ruby? ? " (#{spec.platform})" : "")
+              stderr.puts "Failed to pristine #{gem_label}. Cached gem #{gem_file} does not exist."
+            end
+            FileUtils.rm_rf(File.join(gems_root, spec.full_name))
+            spec_file = File.join(install_root, "specifications", "#{spec.full_name}.gemspec")
+            File.delete(spec_file) if File.file?(spec_file)
+            stdout.puts "Installing #{spec.name} #{spec.version}#{native_suffix(bridge, File.file?(gem_file) ? gem_file : nil)}"
+            installer.install(spec.name, spec.version, spec.platform, nil)
+          when "GIT"
+            # Pinned reference behavior: git pristine removes the checkout
+            # and re-materializes it silently (no "Installing" line).
+            if definition.config["local.#{spec.name}"]
+              stderr.puts "Cannot pristine #{spec.name} (#{spec.version}). Gem is locally overridden."
+              next
+            end
+            if source = resolution.non_gem_sources[spec.name]?
+              bundle_root = File.join(install_path, "ruby", abi)
+              checkout_root = File.join(bundle_root, "bundler", "gems")
+              FileUtils.rm_rf(Dir.glob(File.join(checkout_root, "#{GitSource.base_name(source.remote)}-*")).first? || "")
+              ext_dir = File.join(install_root, "extensions", Gem::Platform.local.to_s, abi, spec.full_name)
+              FileUtils.rm_rf(ext_dir)
+              resolution.ensure_source_dir(spec.name, source)
+            end
+          when "PATH"
+            stderr.puts "Cannot pristine #{spec.name} (#{spec.version}). Gem is sourced from local path."
+          else
+            stderr.puts "Cannot pristine #{spec.name} (#{spec.version}). Gem is sourced from local path."
+          end
+        end
+      ensure
+        bridge.close
+      end
+      0
     end
 
     # ------------------------------------------------------------------
@@ -603,25 +1036,113 @@ module Celerite
       definition = Definition.build
       bridge = Bridge::Client.new
       begin
+        parseable = rest.includes?("--parseable") || rest.includes?("--porcelain")
+        local_flag = rest.includes?("--local")
         resolution = Resolution.new(definition, false, bridge)
-        resolution.progress = stdout
+        # Pinned by the `outdated-parseable` differential: parseable mode
+        # sends resolution progress to stderr; table mode writes it to stdout.
+        # Local (cache-only) resolution prints Resolving but no index fetch.
+        resolution.progress = local_flag && !parseable ? IO::Memory.new : (parseable ? stderr : stdout)
+        # Option parsing for outdated selection flags (reference
+        # `Bundler::CLI::Outdated#run`).
+        selected = [] of String
+        i = 0
+        while i < rest.size
+          arg = rest[i]
+          if %w[--group --source --cooldown].includes?(arg)
+            i += 2
+          elsif arg.starts_with?("--group=") || arg.starts_with?("--source=") || arg.starts_with?("--cooldown=")
+            i += 1
+          elsif arg.starts_with?("--")
+            i += 1
+          else
+            selected << arg
+            i += 1
+          end
+        end
         specs = resolution.resolve!
+        stdout.puts "Resolving dependencies..." if local_flag && !parseable
+        # A named-gem request makes the reference build and resolve a
+        # second (gem-scoped) definition for output.
+        stdout.puts "Resolving dependencies..." if !selected.empty? && !local_flag
+        selected.each do |gem_name|
+          unless specs.any? { |spec| spec.name == gem_name }
+            raise GemNotFoundError.new("Could not find gem '#{gem_name}'.")
+          end
+        end
+        filter_major = rest.includes?("--filter-major")
+        filter_minor = rest.includes?("--filter-minor")
+        filter_patch = rest.includes?("--filter-patch")
+        only_explicit = rest.includes?("--only-explicit")
+        include_pre = rest.includes?("--pre")
+        strict = rest.includes?("--strict") || rest.includes?("--filter-strict") ||
+                 rest.includes?("--patch") || rest.includes?("--minor") || rest.includes?("--major") ||
+                 rest.includes?("--update-strict")
+        promotion = if rest.includes?("--patch")
+                      "patch"
+                    elsif rest.includes?("--minor")
+                      "minor"
+                    elsif rest.includes?("--major")
+                      "major"
+                    end
+        group_filter = flag_value(rest, "--group")
+        groups_mode = group_filter ? "" : (rest.includes?("--groups") ? "all" : nil)
+        explicit_names = lockfile_try = definition.lockfile_exists? ? definition.lockfile!.dependencies.map(&.name) : [] of String
+        evaluation_groups = {} of String => String
+        resolution.evaluation.dependencies.each do |dep|
+          evaluation_groups[dep.name] = dep.groups.empty? ? "default" : dep.groups.join(", ")
+        end
 
         rows = [] of Array(String)
         lockfile = definition.lockfile_exists? ? definition.lockfile! : nil
+        local_cache_versions = local_flag ? local_cached_versions(definition, bridge, resolution) : {} of String => Array(Gem::Version)
         specs.each do |spec|
-          entries = resolution.compact_index_client.info(spec.name)
-          versions = entries.map { |e| Gem::Version.new(e.version) }.reject(&.prerelease?)
+          next unless selected.empty? || selected.includes?(spec.name)
+          next if only_explicit && !explicit_names.includes?(spec.name)
+
+          versions = if local_flag
+                       (local_cache_versions[spec.name]? || [] of Gem::Version).reject { |v| v.prerelease? && !include_pre }
+                     else
+                       entries = resolution.compact_index_client.info(spec.name)
+                       entries.map { |e| Gem::Version.new(e.version) }.reject { |v| v.prerelease? && !include_pre }
+                     end
+          dep = lockfile.try(&.dependencies.find(&.name.==(spec.name)))
+          reqs = dep.try(&.requirements)
+          if strict && reqs && !reqs.empty?
+            requirement = Gem::Requirement.new(reqs)
+            versions = versions.select { |v| requirement.satisfied_by?(v) }
+          end
+          if promotion
+            case promotion
+            when "patch"
+              versions = versions.select { |v| !v.prerelease? && v.segments[0] == spec.version.segments[0] && v.segments[1] == spec.version.segments[1] }
+            when "minor"
+              versions = versions.select { |v| !v.prerelease? && v.segments[0] == spec.version.segments[0] }
+            end
+          end
           latest = versions.max?
           next if latest.nil? || (latest <=> spec.version) <= 0
 
-          dep = lockfile.try(&.dependencies.find(&.name.==(spec.name)))
-          requested = if dep && (reqs = dep.requirements) && !reqs.empty?
+          if filter_major || filter_minor || filter_patch
+            current_segments = spec.version.segments
+            latest_segments = latest.segments
+            passes = false
+            if filter_major && latest_segments[0].to_i > current_segments[0].to_i
+              passes = true
+            end
+            if !passes && (filter_minor || filter_patch) && latest_segments[0] == current_segments[0]
+              passes = true if filter_minor && latest_segments[1].to_i > current_segments[1].to_i
+              passes = true if filter_patch && latest_segments[1].to_i == current_segments[1].to_i && latest_segments[2].to_i > current_segments[2].to_i
+            end
+            next unless passes
+          end
+
+          requested = if reqs && !reqs.empty?
                         reqs.join(", ")
                       else
                         ">= 0"
                       end
-          groups = "default"
+          groups = evaluation_groups[spec.name]? || "default"
           row = [spec.name, spec.version.to_s, latest.to_s, requested, groups]
           # Release Date column is 4.0.24-only (2.7.x reference has 5 columns)
           unless resolution.bridge_bundler_version.starts_with?("2.")
@@ -630,9 +1151,34 @@ module Celerite
           rows << row
         end
 
+        unless group_filter.nil? && groups_mode.nil?
+          rows = rows.select { |row| groups_mode == "all" || row[4].split(", ").includes?(group_filter) }
+          rows = rows.sort_by { |row| [row[4], row[0]] } if groups_mode
+        end
+
+        if parseable
+          # Pinned by `outdated-parseable`: a leading blank line, then one
+          # line per gem (release date only on the 4.0.24 profile).
+          stdout.puts
+          rows.each do |row|
+            message = "#{row[0]} (newest #{row[2]}, installed #{row[1]}, requested #{row[3]}"
+            message += ", released #{row[5]? || ""}" unless resolution.bridge_bundler_version.starts_with?("2.")
+            stdout.puts "#{message})"
+          end
+          return rows.empty? ? 0 : 1
+        end
+
         if rows.empty?
           stdout.puts
-          stdout.puts "Bundle up to date!"
+          if filter_major || filter_minor || filter_patch
+            display = [] of String
+            display << "major" if filter_major
+            display << "minor" if filter_minor
+            display << "patch" if filter_patch
+            stdout.puts "No #{display.join(" or ")} updates to display."
+          else
+            stdout.puts "Bundle up to date!"
+          end
           return 0
         end
 
@@ -652,6 +1198,25 @@ module Celerite
       ensure
         bridge.close
       end
+    end
+
+    private def self.local_cached_versions(definition : Definition, bridge : Bridge::Client, resolution : Resolution) : Hash(String, Array(Gem::Version))
+      abi = InstallPaths.ruby_abi(bridge)
+      cache_dir = File.join(InstallPaths.install_path(definition.config), "ruby", abi, "cache")
+      versions = {} of String => Array(Gem::Version)
+      return versions unless Dir.exists?(cache_dir)
+
+      Dir.children(cache_dir).select(&.ends_with?(".gem")).each do |gem_file|
+        full = File.join(cache_dir, gem_file)
+        next unless File.file?(full)
+        begin
+          info = Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(full).to_json)
+          (versions[info.name] ||= [] of Gem::Version) << Gem::Version.new(info.version)
+        rescue
+          nil
+        end
+      end
+      versions
     end
 
     private def self.release_date_for(definition : Definition, resolution : Resolution, name : String, version : String, checksum : String?) : String

@@ -43,6 +43,8 @@ module Celerite
       when "show", "info"
         show_info(command, stdout, stderr, rest)
       when "lock"
+        # Purist: bundler version `--bundler <ver>` expects a lockfile and
+        # forces a re-resolve regardless of flags (implementation path).
         lock(stdout, stderr, rest)
       when "install"
         install(stdout, stderr, rest)
@@ -89,7 +91,11 @@ module Celerite
       when "help", "--help", "-h"
         help(stdout, rest)
       else
-        if known_unimplemented?(command)
+        if command.starts_with?("bundler-") && !find_executable(command, ENV["PATH"]? || "").nil?
+          # Reference PATH fallback: hand the invocation to `bundler-<name>`
+          # found on PATH (or report the bare command when missing).
+          run_fallback_command(command, rest, stdout, stderr)
+        elsif known_unimplemented?(command)
           stderr.puts "The '#{command}' command is not implemented yet."
           1
         else
@@ -122,6 +128,103 @@ module Celerite
         "update", "add", "remove", "outdated", "init", "gem", "pristine",
         "doctor", "env", "licenses", "fund", "open", "console",
       }.includes?(command)
+    end
+
+    # PATH fallback plumbing (pinned `Bundler::CLI` behavior): `bundler-<name>`
+    # found on PATH is executed directly.
+    def self.run_fallback_command(command : String, rest : Array(String), stdout : IO, stderr : IO) : Int32
+      resolved = find_executable(command, ENV["PATH"]? || "")
+      if resolved.nil?
+        stderr.puts "Could not find command \"#{command}\"."
+        return 15
+      end
+      if resolved.downcase.ends_with?(".bat") || resolved.downcase.ends_with?(".cmd")
+        Process.run("cmd", ["/c", resolved] + rest, output: :inherit, error: :inherit, input: :inherit).exit_code
+      else
+        Process.run(resolved, rest, output: :inherit, error: :inherit, input: :inherit).exit_code
+      end
+    end
+
+    # Validates the `--cooldown` flag (pinned `CLI::Common.validate_cooldown!`
+    # + Thor numeric option). On failure the reference exits 15 with the
+    # pinned message.
+    def self.cooldown_flag_valid?(rest : Array(String), stderr : IO, bundler_version : String? = nil) : Bool
+      value = flag_value_ornext(rest, "--cooldown")
+      return true if value.nil?
+      if bundler_version && bundler_version.starts_with?("2.")
+        stderr.puts "Unknown switches \"--cooldown\""
+        return false
+      end
+      days = value.to_i?
+      if days.nil?
+        stderr.puts "Expected numeric value for '--cooldown'; got #{value.inspect}"
+        return false
+      end
+      if days < 0
+        stderr.puts "Expected `--cooldown` to be a non-negative integer, got #{days}"
+        return false
+      end
+      true
+    end
+
+    def self.cooldown_flag_value(rest : Array(String)) : Int32?
+      flag_value_ornext(rest, "--cooldown").try(&.to_i?)
+    end
+
+    # `--frozen` is rejected on 4.0.24 (pinned unknown-switches error) and
+    # deprecated on 2.7.x (deprecation notice + frozen lockfile check).
+    # `install --frozen` uses the removed-flag message on 4.0.24, while
+    # lock/update use Thor unknown switch messages. Returns exit code or nil.
+    def self.frozen_flag_exit(rest : Array(String), stderr : IO, lockfile_exists : Bool, bundler_version : String? = nil, command_name : String? = nil) : Int32?
+      if !rest.includes?("--frozen")
+        return nil
+      end
+      # `install --frozen`: removed-flag message (4.0.24) or the deprecated
+      # + lockfile-required diagnostic (2.7.x).
+      if command_name == "install"
+        if bundler_version && bundler_version.starts_with?("2.")
+          stderr.puts "[DEPRECATED] The `--frozen` flag is deprecated because it relies on being remembered across bundler invocations, which bundler will no longer do in future versions. Instead please use `bundle config set frozen true`, and stop using this flag"
+          if !lockfile_exists
+            stderr.puts "The --frozen flag requires a lockfile. Please make sure you have checked your"
+            stderr.puts "Gemfile.lock into version control before deploying."
+            return 16
+          end
+          nil
+        else
+          stderr.puts "The `--frozen` flag has been removed because it relied on being remembered"
+          stderr.puts "across bundler invocations, which bundler no longer does. Instead please use"
+          stderr.puts "`bundle config set frozen true`, and stop using this flag"
+          15
+        end
+      else
+        # lock/update --frozen: unknown switch (update adds a suggestion).
+        stderr.puts "Unknown switches \"--frozen\""
+        stderr.puts "Did you mean?  \"--force\"" if command_name == "update"
+        15
+      end
+    end
+
+    # Shared summary emitter (pinned `Common.output_cooldown_skipped_summary`).
+    def self.print_cooldown_summary(resolution : Resolution, stream : IO) : Nil
+      skipped = resolution.cooldown_skipped_summary
+      return if skipped.empty?
+      stream.puts "The following gem versions were skipped by the cooldown setting:"
+      skipped.each do |(name, version, resolved, days_left)|
+        stream.puts "  * #{name} #{version} (available in #{days_left} #{days_left == 1 ? "day" : "days"}), resolved #{resolved} instead"
+      end
+    end
+
+    private def self.flag_value_ornext(rest : Array(String), flag : String) : String?
+      rest.each_with_index do |arg, index|
+        if arg == flag
+          nxt = rest[index + 1]?
+          return nxt unless nxt.nil? || nxt.empty?
+        end
+        if arg.starts_with?(flag + "=")
+          return arg.split("=", 2)[1]
+        end
+      end
+      nil
     end
 
     def self.platform_flag_values(rest : Array(String), flag : String) : Array(String)
@@ -309,6 +412,17 @@ module Celerite
     # lock (M2: native resolution + generation)
     # ------------------------------------------------------------------
     def self.lock(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if rest.includes?("--frozen")
+        bundle_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+        if code = frozen_flag_exit(rest, stderr, Definition.build.lockfile_exists?, bundle_version, "lock")
+          return code
+        end
+      end
+      # --normalize-platforms is mutually exclusive with platform add/remove
+      if rest.includes?("--normalize-platforms") && (rest.includes?("--add-platform") || rest.includes?("--remove-platform"))
+        stderr.puts "Error: --normalize-platforms can't be used with --add-platform/--remove-platform"
+        return 15
+      end
       add_platforms = platform_flag_values(rest, "--add-platform")
       remove_platforms = platform_flag_values(rest, "--remove-platform")
 
@@ -319,6 +433,15 @@ module Celerite
       unlock : Bool | Array(String) = update ? true : false
 
       resolution = Resolution.new(definition, unlock)
+      unless cooldown_flag_valid?(rest, stderr, resolution.bridge_bundler_version)
+        return 15
+      end
+      if days = cooldown_flag_value(rest)
+        resolution.cooldown_days = days
+      end
+      resolution.local_only = rest.includes?("--local")
+      resolution.prefer_local = rest.includes?("--prefer-local")
+      resolution.normalize_platforms = rest.includes?("--normalize-platforms")
       resolution.added_platforms = add_platforms
       resolution.removed_platforms = remove_platforms
       # Progress goes to stdout in write mode, stderr in --print mode
@@ -326,17 +449,29 @@ module Celerite
       resolution.progress = print_mode ? stderr : stdout
 
       unless print_mode
-        stdout.puts "Writing lockfile to #{File.expand_path(definition.lockfile_path).gsub(/\\/, "/")}"
+        if rest.includes?("--normalize-platforms") || rest.includes?("--add-checksums")
+          # Reference re-resolves BEFORE writing for these flags.
+          data = resolution.generated_lockfile
+          text = data.to_lock
+          stdout.puts "Writing lockfile to #{File.expand_path(definition.lockfile_path).gsub(/\\/, "/")}"
+        else
+          stdout.puts "Writing lockfile to #{File.expand_path(definition.lockfile_path).gsub(/\\/, "/")}"
+          data = resolution.generated_lockfile
+          text = data.to_lock
+        end
+      else
+        data = resolution.generated_lockfile
+        text = data.to_lock
       end
-
-      data = resolution.generated_lockfile
-      text = data.to_lock
 
       if print_mode
         stdout.print text
       else
         File.write(definition.lockfile_path, text)
       end
+      # 4.0.24: report versions skipped by the cooldown setting (stderr in
+      # --print mode, stdout in write mode — pinned reference stream split).
+      print_cooldown_summary(resolution, print_mode ? stderr : stdout)
       resolution.close
       0
     end
@@ -348,21 +483,116 @@ module Celerite
       sub = rest.first?
       case sub
       when "get"
-        name = rest[1]?
-        if name.nil?
-          stderr.puts "Please provide the name of the configuration settings you want to retrieve."
-          return 1
-        end
+        config_get(stdout, rest)
+      when "list"
         definition = Definition.build
-        stdout.puts "Settings for `#{name}` in order of priority. The top value will be used"
-        definition.config.pretty_values_for(name).each do |line|
+        config_list(stdout, definition.config)
+        0
+      when "set"
+        config_set(stdout, rest)
+      when "unset"
+        config_unset(rest, stderr)
+      else
+        # Legacy `config` base interface: bare `config` runs list with a
+        # deprecation note (pinned `Bundler::CLI::Config#base`).
+        stderr.puts "Using the `config` command without a subcommand [list, get, set, unset] is deprecated and will be removed in the future. Use `bundle config list` instead."
+        definition = Definition.build
+        config_list(stdout, definition.config)
+        0
+      end
+    end
+
+    def self.config_get(stdout : IO, rest : Array(String)) : Int32
+      parseable = rest.includes?("--parseable")
+      name = rest.find { |arg| !arg.starts_with?("--") && arg != "get" }
+      if name.nil?
+        stdout.puts "Please provide the name of the configuration settings you want to retrieve."
+        return 1
+      end
+      definition = Definition.build
+      config = definition.config
+      if parseable
+        value = config[name]
+        stdout.puts "#{name}=#{value}" unless value.nil?
+        return value.nil? ? 1 : 0
+      end
+      stdout.puts "Settings for `#{name}` in order of priority. The top value will be used"
+      config.pretty_values_for(name).each do |line|
+        stdout.puts line
+      end
+      config.has?(name) ? 0 : 1
+    end
+
+    def self.config_list(stdout : IO, config : Config) : Nil
+      stdout.puts "Settings are listed in order of priority. The top value will be used."
+      config.all.each do |name|
+        stdout.puts name
+        config.pretty_values_for(name).each do |line|
           stdout.puts line
         end
-        0
-      else
-        stderr.puts "The 'config' command is not implemented yet."
-        1
+        stdout.puts
       end
+    end
+
+    def self.config_set(stdout : IO, rest : Array(String)) : Int32
+      explicit = rest.includes?("--global") ? "global" : (rest.includes?("--local") ? "local" : nil)
+      scope = explicit || "local"
+      args = rest.reject(&.starts_with?("--")).reject(&.==("set"))
+      name = args[0]?
+      value = args[1..].join(" ")
+      if name.nil? || value.empty?
+        stdout.puts "Please provide the name of the configuration settings you want to set, and a value."
+        return 1
+      end
+      definition = Definition.build
+      config = definition.config
+      new_value = value
+      # Reference `new_value`: `local.<gem>` values that are directories are
+      # stored expanded.
+      if name.starts_with?("local.") && Dir.exists?(value)
+        new_value = File.expand_path(value).gsub(/\\/, "/")
+      end
+      if scope == "global"
+        local_value = config.local_config[Config.key_for(name)]?
+        if !local_value.nil?
+          stdout.puts "Your application has set #{name} to #{local_value.inspect}. This will override the global value you are currently setting"
+        elsif (env_value = ENV[Config.key_for(name)]?)
+          stdout.puts "You have a bundler environment variable for #{name} set to #{env_value.inspect}. This will take precedence over the global value you are setting"
+        else
+          current = config.global_config[Config.key_for(name)]?
+          if !current.nil? && Config.convert(current, name).to_s != new_value
+            stdout.puts "You are replacing the current global value of #{name}, which is currently #{current.inspect}"
+          end
+        end
+        config.set_global(name, new_value)
+      else
+        current = config.local_config[Config.key_for(name)]?
+        if !current.nil? && Config.convert(current, name).to_s != new_value
+          stdout.puts "You are replacing the current local value of #{name}, which is currently #{current.inspect}"
+        end
+        config.set_local(name, new_value)
+      end
+      0
+    end
+
+    def self.config_unset(rest : Array(String), stderr : IO) : Int32
+      explicit = rest.includes?("--global") ? "global" : (rest.includes?("--local") ? "local" : nil)
+      args = rest.reject(&.starts_with?("--")).reject(&.==("unset"))
+      name = args[0]?
+      if name.nil?
+        stderr.puts "Please provide the name of the configuration settings you want to unset."
+        return 1
+      end
+      definition = Definition.build
+      config = definition.config
+      # Reference: unset removes from local and global unless a scope is given.
+      if explicit != "global"
+        config.set_local(name, nil)
+      end
+      if explicit != "local"
+        config.set_global(name, nil)
+      end
+      0
     end
 
     # ------------------------------------------------------------------

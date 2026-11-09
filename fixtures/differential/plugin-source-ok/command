@@ -1,0 +1,1 @@
+plugin install my_plugin --source http://127.0.0.1:8765/

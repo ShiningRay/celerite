@@ -1,0 +1,4 @@
+install --force
+install --local --prefer-local
+install --no-lock
+install --trust-policy=BAD

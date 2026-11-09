@@ -84,13 +84,13 @@ module Celerite
         locations << "Set for the current command: #{Config.convert(v, name).inspect}"
       end
       if v = @local_config[key]?
-        locations << "Set for your local app (#{@local_config_file}): #{Config.convert(v, name).inspect}"
+        locations << "Set for your local app (#{(@local_config_file || "").gsub(/\\/, "/")}): #{Config.convert(v, name).inspect}"
       end
       if v = @env[key]?
         locations << "Set via #{key}: #{Config.convert(v, name).inspect}"
       end
       if v = @global_config[key]?
-        locations << "Set for the current user (#{@global_config_file}): #{Config.convert(v, name).inspect}"
+        locations << "Set for the current user (#{(@global_config_file || "").gsub(/\\/, "/")}): #{Config.convert(v, name).inspect}"
       end
 
       return ["You have not configured a value for `#{name}`"] if locations.empty?
@@ -166,6 +166,63 @@ module Celerite
       config
     end
 
+    # All configured setting names (dotted display names), sorted; the union
+    # across temporary/local/env/global, mirroring the reference's
+    # `Settings#all` used by `config list`.
+    def all : Array(String)
+      keys = @local_config.keys | @global_config.keys | @env.keys | @temporary.keys
+      keys.map { |k| Config.display_name(k) }.uniq.sort
+    end
+
+    def has?(name : String) : Bool
+      key = Config.key_for(name)
+      @temporary.has_key?(key) || @local_config.has_key?(key) ||
+        @env.has_key?(key) || @global_config.has_key?(key)
+    end
+
+    def set_local(name : String, value : String?) : Nil
+      set_in(@local_config_file, @local_config, name, value)
+    end
+
+    def set_global(name : String, value : String?) : Nil
+      set_in(@global_config_file, @global_config, name, value)
+    end
+
+    private def set_in(path : String?, store : Hash(String, Value), name : String, value : String?) : Nil
+      return if path.nil?
+      key = Config.key_for(name)
+      if value.nil?
+        store.delete(key)
+      else
+        store[key] = value
+      end
+      Config.write_config(path, store)
+    end
+
+    # Reference `Settings#key_for` display inverse (`BUNDLE_PATH` -> `path`,
+    # `BUNDLE_GEM__GITHUB_USERNAME` -> `gem.github_username`).
+    def self.display_name(key : String) : String
+      key.lchop("BUNDLE_").downcase.gsub("__", ".")
+    end
+
+    # Writes the config file the way the reference does: `---` document start,
+    # one `KEY: "value"` line per entry in insertion order.
+    def self.write_config(path : String, store : Hash(String, Value)) : Nil
+      Dir.mkdir_p(File.dirname(path)) unless File.dirname(path).empty?
+      text = String.build do |io|
+        io.puts "---"
+        store.each do |key, value|
+          io.puts "#{key}: #{quote_yaml(value.to_s)}"
+        end
+      end
+      File.write(path, text)
+    end
+
+    def self.quote_yaml(value : String) : String
+      escaped = value.gsub("\\", "\\\\").gsub("\"", "\\\"").gsub("\n", "\\n").gsub("\r", "\\r").gsub("\t", "\\t")
+      "\"#{escaped}\""
+    end
+
     def [](name : String) : ConvertedValue
       key = Config.key_for(name)
 
@@ -177,6 +234,14 @@ module Celerite
 
     def frozen? : Bool
       self["frozen"] == true || self["deployment"] == true
+    end
+
+    # Number of cooldown days (4.0.24 `cooldown` setting); nil unless set.
+    def cooldown_days : Int32?
+      value = self["cooldown"]
+      return nil if value.nil?
+      return value if value.is_a?(Int32)
+      value.to_s.to_i?
     end
 
     def self.convert(value : Value, key : String) : ConvertedValue

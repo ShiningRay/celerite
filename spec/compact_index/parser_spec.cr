@@ -55,6 +55,21 @@ module Celerite
       entry.checksum.should eq("abc123")
     end
 
+    it "parses created_at metadata for cooldown filtering" do
+      parser = parser_with(
+        "---\ngem-with-platform 1.0.0 abc\n",
+        {
+          "gem-with-platform" => "---\n1.0.0 |checksum:abc123,ruby:>= 3.0,created_at:2026-11-01 10:00:00 UTC\n",
+        }
+      )
+      created = parser.info("gem-with-platform")[0].created_at
+      created.should_not be_nil
+      Time.unix(created.not_nil!).year.should eq(2026)
+      Time.unix(created.not_nil!).month.should eq(11)
+      entry_checksum = parser.info("gem-with-platform")[0].checksum
+      entry_checksum.should eq("abc123")
+    end
+
     it "parses platform-specific info entries" do
       parser = parser_with(
         "---\ngem-with-platform 1.0.0 abc\n",

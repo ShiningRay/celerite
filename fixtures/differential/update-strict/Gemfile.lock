@@ -1,0 +1,17 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    json_pure (2.6.0)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  json_pure
+
+CHECKSUMS
+  bundler (4.0.24) sha256=16ca64e20816a0cf151a948fb141d788602996d2b4d73577b74388fe84fa98bc
+  json_pure (2.6.0) sha256=0xGE4AaCYUQL69S/rEq06ySMuzBElRNDZ/YAoDoV8MU=
+
+BUNDLED WITH
+  4.0.24

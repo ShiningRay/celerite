@@ -1,0 +1,4 @@
+plugin install my_plugin --path ./my_plugin
+plugin uninstall my_plugin
+plugin uninstall nonexistent
+plugin list

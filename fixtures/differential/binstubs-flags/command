@@ -1,0 +1,4 @@
+install
+binstubs thor
+binstubs --all
+binstubs thor --all

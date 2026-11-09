@@ -1,0 +1,2 @@
+lock --print --cooldown 7
+lock --print --cooldown foo

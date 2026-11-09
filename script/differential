@@ -96,6 +96,7 @@ run_fixture() {
 
   # Ruby (native Windows) needs a Windows path for file:// sources
   index_dir="$(cygpath -m "$repo_root/fixtures/gem-index" 2>/dev/null || echo "$repo_root/fixtures/gem-index")"
+  index_url="file://$index_dir"
   for side in ref cel; do
     sandbox="$ref_sandbox"; [ "$side" = "cel" ] && sandbox="$cel_sandbox"
     for f in Gemfile Gemfile.lock; do
@@ -103,8 +104,9 @@ run_fixture() {
       sed -e "s|@INDEX_DIR@|$index_dir|" -e "s|@BUNDLER_VERSION@|$bundler_version|"         "$fixture_dir/$f" > "$sandbox/project/$f"
     done
   done
-  # extra files, if any
-  if compgen -G "$fixture_dir/extra/*" > /dev/null; then
+  # extra files, if any (including dotfiles such as .bundle/config: `*` glob
+  # would miss them, so gate on directory existence instead)
+  if [ -d "$fixture_dir/extra" ]; then
     cp -r "$fixture_dir/extra/." "$ref_sandbox/project/"
     cp -r "$fixture_dir/extra/." "$cel_sandbox/project/"
     # substitute placeholders in extra text files (scripts, configs)
@@ -153,6 +155,15 @@ run_fixture() {
     BUNDLE_PATH="$ref_sandbox/bundle" RUBYOPT=""
   )
 
+  # HTTP-index fixtures (http-index marker): serve fixtures/gem-index as a
+  # v2 compact-index HTTP root so cooldown/ETag behavior matches rubygems.org
+  # semantics that file:// marshal indexes never exercise.
+  http_server_pid=""
+  if [ -f "$fixture_dir/http-index" ]; then
+    node "$repo_root/script/http_index_server.js" "$repo_root/fixtures/gem-index" 8765 >/dev/null 2>&1 &
+    http_server_pid=$!
+  fi
+
   # Reference run(s): one per command line (multi-line command files run the
   # commands in sequence), outputs concatenated, last exit code kept. Loops
   # use dedicated fds so the sandboxed commands cannot eat the command list.
@@ -182,6 +193,10 @@ run_fixture() {
     cel_code=$?
   done 4< "$fixture_dir/command"
 
+  if [ -n "$http_server_pid" ]; then
+    kill "$http_server_pid" 2>/dev/null || true
+  fi
+
   normalize "$ref_sandbox" "$cel_sandbox" < "$work/ref.out" > "$work/ref.out.n"
   normalize "$ref_sandbox" "$cel_sandbox" < "$work/cel.out" > "$work/cel.out.n"
   normalize "$ref_sandbox" "$cel_sandbox" < "$work/ref.err" > "$work/ref.err.n"
@@ -206,6 +221,29 @@ run_fixture() {
   norm_tree="$(diff -r --brief "$ref_sandbox/project" "$cel_sandbox/project" 2>/dev/null | normalize "$ref_sandbox" "$cel_sandbox" | grep -v "^Files .* differ$")"
   if [ -n "$norm_tree" ]; then
     ok=0; detail+="  project tree differs:"$'\n'"$norm_tree"$'\n'
+  fi
+  # Optional `first-line` marker: first line of the named project file must
+  # match (content probe — the tree compare above is path-only, e.g.
+  # binstub shebangs).
+  if [ -f "$fixture_dir/first-line" ]; then
+    rel="$(tr -d '\r' < "$fixture_dir/first-line" | head -1)"
+    ref_line="$(head -1 "$ref_sandbox/project/$rel" 2>/dev/null)"
+    cel_line="$(head -1 "$cel_sandbox/project/$rel" 2>/dev/null)"
+    if [ "$ref_line" != "$cel_line" ]; then
+      ok=0; detail+="  first-line differs ($rel): ref=$ref_line cel=$cel_line"$'\n'
+    fi
+  fi
+  # Optional `file-contains` marker: each TSV line is `<path>\t<needle>` and
+  # the needle must appear verbatim in that project file on both sides
+  # (content probe for Gemfile lines emitted by `bundle add`).
+  if [ -f "$fixture_dir/file-contains" ]; then
+    while IFS=$'\t' read -r rel needle; do
+      [ -z "$rel" ] && continue
+      if ! grep -Fq -- "$needle" "$ref_sandbox/project/$rel" 2>/dev/null || \
+         ! grep -Fq -- "$needle" "$cel_sandbox/project/$rel" 2>/dev/null; then
+        ok=0; detail+="  file-contains differs ($rel): needle=$needle"$'\n'
+      fi
+    done < "$fixture_dir/file-contains"
   fi
 
   if [ "$ok" = 1 ]; then

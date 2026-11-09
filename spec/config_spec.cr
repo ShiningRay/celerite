@@ -89,6 +89,28 @@ module Celerite
       Config.convert("vendor/bundle", "path").should eq("vendor/bundle")
     end
 
+    it "writes config set/unset round-trip like the reference" do
+      dir = File.tempname("celerite-spec", "cfg")
+      Dir.mkdir_p(dir)
+      begin
+        config = Config.new(dir)
+        config.set_local("path", "vendor/bundle")
+        File.read(File.join(dir, ".bundle", "config")).should eq("---\nBUNDLE_PATH: \"vendor/bundle\"\n")
+        config.set_local("jobs", "3")
+        File.read(File.join(dir, ".bundle", "config")).should eq("---\nBUNDLE_PATH: \"vendor/bundle\"\nBUNDLE_JOBS: \"3\"\n")
+        config.set_local("jobs", nil)
+        File.read(File.join(dir, ".bundle", "config")).should eq("---\nBUNDLE_PATH: \"vendor/bundle\"\n")
+        config.set_local("path", nil)
+        File.read(File.join(dir, ".bundle", "config")).should eq("---\n")
+
+        reloaded = Config.new(dir)
+        reloaded.has?("path").should eq(false)
+        reloaded.all.should eq([] of String)
+      ensure
+        FileUtils.rm_rf(dir)
+      end
+    end
+
     it "reports pretty values per source" do
       dir = File.tempname("celerite-spec", "cfg")
       Dir.mkdir_p(dir)

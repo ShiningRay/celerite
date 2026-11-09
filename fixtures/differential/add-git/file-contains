@@ -1,0 +1,1 @@
+Gemfile	gem "gitgem", "~> 0.2.0", git: "./gitgem", branch: "master"

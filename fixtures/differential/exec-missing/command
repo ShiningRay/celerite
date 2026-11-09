@@ -1,0 +1,4 @@
+install
+exec nope-gem-command
+exec ./bin/nope
+exec bin/nope

@@ -1,0 +1,2 @@
+install --local
+install --local --prefer-local
