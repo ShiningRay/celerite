@@ -1,7 +1,9 @@
 # 实施计划
 
-日期：2026-11-06
-范围：本阶段交付仓库、可运行 CLI 骨架、方案与计划；核心实现按以下顺序推进。
+日期：2026-11-06；正确性与性能阶段更新：2026-11-10
+范围：完整 Bundler 兼容的 Crystal 原生核心 + 受控 Ruby 边界，而不是重写全部 RubyGems。
+M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不表示整个里程碑达到完整产品验收。
+未满足验收的项目在 M7 重新打开，当前从 M7 开始，不沿用“全部完成”的旧结论。
 
 ## 决策
 
@@ -18,8 +20,13 @@
 3. 不把整个安装静默委托给 Bundler；显式兼容引擎与原生引擎均可观测。
 4. 每阶段运行 Crystal spec、格式检查、差分测试和负向测试；真实安装后再验收。
 5. 性能基准在功能正确后执行；禁止降低校验与一致性来达标。
+6. 默认采用独立 Crystal 可执行程序 + Ruby 适配层。Ruby C API/FFI 仅作为 M10 的可选 spike，不在边界未稳定时引入。
+7. 每个桥调用尽量处理完整批次；每个优化必须记录 Ruby 启动、bridge 调用、I/O、CPU 和内存变化，不能只报告 CLI 总耗时。
+8. 不用“命令数”“配置键数”或经过强归一化的 fixture 通过率替代完整兼容率。
 
-## M0：契约与测试基线
+## M0–M6：历史实施记录
+
+### M0：契约与测试基线（已有基线，门禁修复转入 M7）
 
 **目标**：先确定“与什么一致”，避免实现错误语义。
 
@@ -29,11 +36,11 @@
 - [x] CI 安装固定 Ruby/Bundler 组合，锁定 `rubygems/rubygems` 测试 revision。（本地先行：Bundler 4.0.24 + 2.7.2 安装并记录于 `vendor/reference/MANIFEST.md`；CI 矩阵已建（.github/workflows/ci.yml））
 - [x] 实现 `script/differential`：隔离 HOME、项目、gem 安装目录与网络 fixture，收集退出码、输出、锁文件和文件树。
 - [x] 创建最小 fixture：纯 Ruby 依赖、冲突、预发布、多平台、多 source、动态 Gemfile、Git/path、原生扩展和插件。（M0 先交付锁文件驱动的 7 个差分 fixture；预发布/多平台/Git/path/扩展/插件 fixture 随 M2–M4 的实现路径补充）
-- [x] 运行上游 Bundler spec 的可行性 spike，记录不适用项及原因。（spike 记录见 docs/upstream-spec-spike.md；锁文件族经 script/upstream-specs 常态化运行，64 例记录于 docs/compat-matrix/generated/upstream-lockfile-v4.0.24.md）
+- [x] 运行上游 Bundler spec 的可行性 spike，记录不适用项及原因。（spike 记录见 docs/upstream-spec-spike.md；64 例记录于 docs/compat-matrix/generated/upstream-lockfile-v4.0.24.md。**实际记录为 64 failures，不是通过；上游门禁在 M7 重新打开。**）
 
 验收：同一 fixture 两次参考运行结果确定；基线产物无 token/绝对路径等非确定泄漏。✅（差分 sandbox 无 HOME 泄漏；路径正规化）
 
-## M1：基础模型与只读锁定工作流
+## M1：基础模型与只读锁定工作流（锁定夹具已实现，完整验收转入 M7）
 
 **目标**：实现可靠的只读路径，再开放写入。
 
@@ -43,11 +50,11 @@
 - [x] 实现 lockfile parser/AST/serializer；覆盖 `GEM`、`PATH`、`GIT`、`PLUGIN SOURCE`、`PLATFORMS`、`DEPENDENCIES`、`CHECKSUMS`、`RUBY VERSION`、`BUNDLED WITH`、`CONTENT ADDRESSES`。（未知 section 保真保留；`CONTENT ADDRESSES` 作为未知 section 保真，4.0.24 基线无此 section）
 - [x] 实现 CLI、配置发现和 Ruby 环境探测；建立 bridge 协议版本和错误模型。（配置发现与错误模型完成；Ruby 环境探测经 bridge 属 M2，本地平台解析已原生实现）
 - [x] 实现 `version`、`platform`、`check`、`show`/`info`、`list` 的锁定路径。
-- [x] 对未知格式、无效版本、缺失 gem、Ruby 不匹配与权限错误做负向测试。（未知格式/无效版本/缺失 gem/merge 冲突已测；权限错误与 Ruby 不匹配待 M2 环境探测）
+- [ ] 对未知格式、无效版本、缺失 gem、Ruby 不匹配与权限错误做负向测试。（未知格式/无效版本/缺失 gem/merge 冲突已测；权限错误与 Ruby 不匹配尚无完整证据。）
 
-验收：无网络 fixture 中只读命令与参考实现一致；不变写任何用户锁文件。✅（`script/differential` 双版本 profile 全绿；全命令为只读）
+验收：**未完整通过**。无网络锁定夹具与参考一致且不改锁文件；安装后 gem 发现、Ruby 不匹配与权限错误在 M7 补齐。
 
-## M2：索引与依赖解析
+## M2：索引与依赖解析（常规夹具已实现，约束与网络边界转入 M7）
 
 **目标**：Crystal 独立完成常规 RubyGems source 的解析和锁定。
 
@@ -55,12 +62,12 @@
 
 - [x] 实现 Compact Index parser、持久化缓存、ETag、Range、206/200 和 `Repr-Digest`。（`spec/compact_index` 覆盖 parser/created_at 解析；HTTP cooldown 差分走真实增量缓存路径。）
 - [x] 实现 PubGrub solver、候选分组、锁版本偏好、冲突推导、可解释错误和有界放宽重试。（`spec/resolver/solver_spec` + lock/update 大组差分双 profile 通过。）
-- [x] 接入 Ruby/RubyGems 约束、预发布、yank、source 优先级和 cooldown。（yank/预发布经 parser/solver spec 与 lock-file 先拒绝后重试差分；cooldown 配置项/env/`--cooldown` flag/Gemfile per-source 由 HTTP 差分覆盖（4.0.24 过滤，2.7.2 不生效）；CLI flag 非法值按参考抛 `Expected numeric value`/`validate` 15 退出。）
-- [x] 实现 Gemfile bridge 求值、gemspec 求值与稳定指纹。（`assets/bridge/server.rb` + `spec/bridge/client_spec` + `ruby-api`/`git-path-install` 差分。）
-- [x] 实现 `lock`、`install` 的解析阶段、`update --conservative` 和平台管理。（`lock-file-pin/unlock/update`、`update-conservative`、`multi-platform-lock`、`platform` 差分双 profile 通过。）
-- [x] 用真实项目锁文件做解与 diff 回归，不将结果差异常化忽略。（真实 Bundler 锁 fixture（`spec/fixtures/lockfile_rubygems_4.0.24.lock`）字节往返 + 差分序列。汇总见 `fixtures/differential/lock-*`。）
+- [ ] 接入 Ruby/RubyGems 约束、预发布、yank、source 优先级和 cooldown。（预发布、yank 和 cooldown 已有场景；索引已读取 required Ruby/RubyGems 字段，但 `ResolutionSource#ruby_requirement_satisfied?` 当前恒为 true，约束过滤在 M7 重新打开。）
+- [ ] 实现 Gemfile bridge 求值、gemspec 求值与稳定指纹。（桥求值已实现；目前仅 Gemfile 内容 SHA-256，不含 ENV、引用 gemspec、配置和 Ruby 环境的完整指纹，M8 继续。）
+- [ ] 实现 `lock`、`install` 的解析阶段、`update --conservative` 和平台管理。（`lock-file-pin/unlock/update`、`update-conservative`、`multi-platform-lock`、`platform` 差分双 profile 通过；Ruby/平台约束完整验收在 M7。）
+- [ ] 用真实项目锁文件做解与 diff 回归，不将结果差异常化忽略。（真实 Bundler 锁 fixture 字节往返和锁驱动差分已做；Rails 规模真实项目回归在 M7。）
 
-验收：矩阵内所有解析 fixture 得到相同依赖/平台选择；冻结模式不修改锁文件；损坏索引安全失败。
+验收：**未完整通过**。常规小夹具已验证，但 Ruby/RubyGems 约束、Rails 规模与真实网络/平台边界未关闭。
 
 ## M3：安装、缓存与运行时
 
@@ -71,10 +78,10 @@
 - [x] 实现 gem 下载、SHA-256 校验、内容寻址缓存与并发去重。（`spec/downloader_spec`（下载/hex 校验）+ `install-fresh/install-rerun` 差分。）
 - [x] 实现 gem package 读取、原子安装、specification、executables 和 binstubs。（安装树差分随各 fixture 双 profile 落地。）
 - [x] 实现 `install`、`cache`/`package`、`clean`、`pristine`、`binstubs` 的相关路径。（`install-fresh`、`pristine({,-named})`、`git-pristine`、`clean-unused` 差分覆盖 Rubygems/Git/path 的重装与清理语义（双 profile）；`cache` 由 `install` 后 `vendor/cache` 检查复核路径。）
-- [x] 实现 `exec`、runtime setup 与 `ruby -rbundler/setup` 适配；覆盖嵌套调用、信号、退出码、Ruby shebang 的 `Kernel.load` 和 `disable_exec_load`。（`ruby-api`（Bundler.setup + Bundler.require + definition API）、`bundler-inline`、`native-ext`、`exec-missing`（路径/未知命令 126/127 对齐）差分通过；退出码经 `exit! 42` 钉住。Unix 信号 trap 转发（`Signal::INT/TERM` → 子进程 terminate）、多进程文件锁（`ProcessLock` flock 各安装窗口）已实现并由 `spec/process_lock_spec` 与跨进程 `spec/process_race_spec` 证明互斥；可直接加载的 Ruby 脚本经 Ruby runtime `Kernel.load` 适配器运行，`disable_exec_load` 可旁路该路径（`exec-loader`/`exec-loader-disabled`/`exec-thor-version` 双 profile）。）
-- [x] 验证中断、磁盘错误、校验失败、无网络、重复安装及多进程竞争。（校验失败与重复安装已验证（downloader spec + `install-rerun`）；无网络/损坏索引快速失败经负向 spec；中断与多进程锁竞争未逐项差分，单进程锁语义见 §4，未宣称跨进程竞争通过。）
+- [ ] 实现 `exec`、runtime setup 与 `ruby -rbundler/setup` 适配；覆盖嵌套调用、信号、退出码、Ruby shebang 的 `Kernel.load` 和 `disable_exec_load`。（已有参考 Bundler runtime、Ruby `Kernel.load` 和退出码场景；轻量独立 runtime 属 M9，Windows 信号边界未关闭。）
+- [ ] 验证中断、磁盘错误、校验失败、无网络、重复安装及多进程竞争。（校验失败、重复安装、无网络和锁互斥已有测试；磁盘错误、中断及安装失败原子清理未完整验证。）
 
-验收：Rails 规模 fixture 和最小应用真实启动；安装文件树与参考一致；校验失败不留下可用产物。
+验收：**未完整通过**。最小应用与原生扩展 fixture 可运行；Rails 规模、完整安装树内容比较、独立 runtime 和故障注入在 M7/M9 继续。
 
 ## M4：所有内置 source、平台与扩展
 
@@ -90,20 +97,19 @@
 
 验收：跨平台 lock/install 差分通过；至少一个原生扩展 gem 编译、加载和重装成功。
 
-## M5：完整 CLI、插件与 Ruby API
+## M5：CLI、插件与 Ruby API（部分实现，完整兼容验收转入 M7）
 
 **目标**：覆盖用户所选“完整产品兼容”，不只常规安装。
 
 任务：
 
-- [x] 完成所有内置命令、flags、alias、help、错误格式和配置持久化。（除 issue 外全部实现；console/init/gem/outdated 经差分/smoke 验证；help/错误格式/退出码一致。Flag 级未覆盖项以 `docs/compat-report.md` 的逐行边界为准，不在 roadmap 冒充全覆盖。）
-- [x] 完成 Gemfile 任意 Ruby DSL 语义和全部 source 行为。（DSL 经桥以真实 Bundler::Dsl 求值；ruby/git/path/gemspec source 已接）
-- [x] 实现插件安装/index、命令分发、生命周期 hook、自定义 source 和 PATH fallback。（hook 经桥 exec_plugin_hook 执行（Bundler::Plugin API），install 后触发 post-install，无插件 no-op；list/install/uninstall 分发完成，uninstall 由 `plugin-uninstall` 差分覆盖；`plugin new` 非参考命令，保留未实现提示）
-- [x] 实现公开 `Bundler` Ruby API 与 `bundler/inline` 适配及插件可见对象；建立第三方插件 fixture。（`ruby-api`/`bundler-inline`/`plugin-install` 差分在 4.0.24 与 2.7.2 双 profile 下通过；插件 hook 经桥执行。）
-- [x] 实现显式 `bundle` shim、`BUNDLED WITH` 版本选择与回退机制。（script/bundle opt-in shim；install 自动切换双向并记录切换版本；update 记录运行版本；回退见 docs/upgrade-and-uninstall.md）
-- [x] 运行适用的上游 Bundler suite，逐项记录例外并由评审确认。（spike 见 docs/upstream-spec-spike.md；锁文件族经 script/upstream-specs 纳入 CI，其余族记录不适因由）
+- [ ] 完成所有内置命令、flags、alias、help、错误格式和配置持久化。（命令入口较多，但 `check/list` 的安装后路径、`fund`、完整 `gem` 模板、重试和若干配置并未完整生效；以 M7 和 compat-report 为准。）
+- [ ] 完成 Gemfile 任意 Ruby DSL 语义和全部 source 行为。（Gemfile 经真实 `Bundler::Dsl` 求值；source 的 mirror/proxy/SSL/legacy index 和插件 source 完整边界未关闭。）
+- [ ] 实现插件安装/index、命令分发、生命周期 hook、自定义 source 和 PATH fallback。（安装/index/hook 和部分远端/Git 路径已实现；插件命令注册、自定义 source 与第三方插件生态需要实证。）
+- [ ] 实现公开 `Bundler` Ruby API 与 `bundler/inline` 适配及插件可见对象；建立第三方插件 fixture。（当前 fixture 通过真实参考 Bundler runtime 运行，不代表独立 Ruby 适配层已实现。）
+- [ ] 运行适用的上游 Bundler suite，逐项记录例外并由评审确认。（已完成可行性 spike；现存 64 例记录全部失败，不是绿色上游测试。）
 
-验收：声明版本矩阵无未解释兼容差异；插件命令、hook 和 source 真实执行；Ruby 应用 API 测试通过。
+验收：**未达到**。M7 先关闭正确性与证据缺口；不以命令入口或参考 Bundler 运行时通过来代替完整兼容。
 
 ## M6：性能、发布与采用
 
