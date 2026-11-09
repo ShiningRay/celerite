@@ -1,13 +1,20 @@
 # Celerite
 
-A high-performance, Bundler-compatible Ruby dependency manager written in Crystal.
+A Crystal-native Bundler-compatible dependency manager, with a controlled Ruby
+compatibility boundary. Performance is a measured goal, not an unconditional claim.
 
-> **Status: M0+M1 complete (read-only locked path).** Celerite reads lockfiles,
-> validates project state, and runs the locked-path versions of `check`,
-> `list`, `show`/`info`, `platform`, `lock --print`, and `config get` — all
-> verified byte-for-byte against pinned reference Bundlers via the differential
-> harness. Resolution, installation, and the Ruby bridge are next (M2+).
-> Compatibility is a release gate, not a claim based on parsing common Gemfiles.
+> **Status: native resolution and installation paths exist; full compatibility is
+> not yet accepted.** Crystal implements the core version/requirement model,
+> PubGrub, Compact Index, lockfiles, downloads/checksums and basic installation.
+> Ruby still handles dynamic Gemfile/gemspec evaluation, native extension builds,
+> plugin hooks and parts of the runtime through the compatibility bridge.
+>
+> The current roadmap prioritizes correctness and trustworthy upstream evidence
+> (M7), then batch bridge calls and no-Ruby cache hits (M8), native install plans
+> and a lightweight runtime (M9). Embedding Crystal as a Ruby native extension is
+> an optional later spike (M10), not the default architecture. See
+> [the compatibility report](docs/compat-report.md) for measured coverage and
+> known gaps rather than treating command names as completed functionality.
 
 ## Goals
 
@@ -59,6 +66,11 @@ The gem ships the native binary plus the Ruby bridge; the installed shim
 locates your Bundler gem automatically and exports the bridge environment
 (`CELERITE_BRIDGE_SERVER`, `CELERITE_REFERENCE_BUNDLER_LIB`,
 `CELERITE_PROFILE_BUNDLER_VERSION`).
+
+Platform gems are self-contained: the release build bundles the non-system
+shared libraries the binary links against (see `THIRD_PARTY_LICENSES.md`), for
+Darwin (arm64 and x86_64), Linux x86_64, and Windows x64. No Homebrew, MSYS2, or
+extra system packages are required.
 
 Both channels are produced by `script/release` (dist bundle + platform gem
 with an install smoke test); releases are published from the `v*` tag

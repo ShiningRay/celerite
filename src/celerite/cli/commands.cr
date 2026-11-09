@@ -499,40 +499,35 @@ module Celerite
     end
 
     # ------------------------------------------------------------------
-    # config (read-only: get/list)
+    # config: get/list/set/unset (pinned 4.0.24 output)
     # ------------------------------------------------------------------
     def self.config(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       sub = rest.first?
       case sub
+      when nil
+        stderr.puts "[DEPRECATED] Using the `config` command without a subcommand [list, get, set, unset] is deprecated and will be removed in the future. Use `bundle config list` instead."
+        config_list(stdout)
       when "get"
-        config_get(stdout, rest)
+        config_get(stdout, stderr, rest)
       when "list"
-        definition = Definition.build
-        config_list(stdout, definition.config)
-        0
+        config_list(stdout)
       when "set"
-        config_set(stdout, rest)
+        config_set(stdout, stderr, rest)
       when "unset"
         config_unset(rest, stderr)
       else
-        # Legacy `config` base interface: bare `config` runs list with a
-        # deprecation note (pinned `Bundler::CLI::Config#base`).
-        stderr.puts "Using the `config` command without a subcommand [list, get, set, unset] is deprecated and will be removed in the future. Use `bundle config list` instead."
-        definition = Definition.build
-        config_list(stdout, definition.config)
-        0
+        stderr.puts "Could not find command \"config #{sub}\"."
+        15
       end
     end
 
-    def self.config_get(stdout : IO, rest : Array(String)) : Int32
+    def self.config_get(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       parseable = rest.includes?("--parseable")
-      name = rest.find { |arg| !arg.starts_with?("--") && arg != "get" }
+      name = rest.reject(&.starts_with?("--")).reject(&.==("get")).first?
       if name.nil?
-        stdout.puts "Please provide the name of the configuration settings you want to retrieve."
-        return 1
+        return config_argument_error(stderr, "get", "NAME")
       end
-      definition = Definition.build
-      config = definition.config
+      config = config_for_command
       if parseable
         value = config[name]
         stdout.puts "#{name}=#{value}" unless value.nil?
@@ -545,29 +540,55 @@ module Celerite
       config.has?(name) ? 0 : 1
     end
 
-    def self.config_list(stdout : IO, config : Config) : Nil
+    private def self.config_list(stdout : IO) : Int32
+      config = config_for_command
       stdout.puts "Settings are listed in order of priority. The top value will be used."
       config.all.each do |name|
         stdout.puts name
-        config.pretty_values_for(name).each do |line|
-          stdout.puts line
-        end
+        config.pretty_values_for(name).each { |line| stdout.puts line }
         stdout.puts
       end
+      0
     end
 
-    def self.config_set(stdout : IO, rest : Array(String)) : Int32
+    # Config commands work without a Gemfile (the reference resolves the
+    # local `.bundle/config` from Bundler.root, falling back to the cwd).
+    private def self.config_project_root : String?
+      if given = ENV["BUNDLE_GEMFILE"]?
+        return File.dirname(File.expand_path(given)) unless given.empty?
+      end
+      gemfile = Definition.search_up("Gemfile") || Definition.search_up("gems.rb")
+      gemfile ? File.dirname(gemfile) : nil
+    end
+
+    private def self.config_for_command : Config
+      Config.new(config_project_root || Dir.current)
+    end
+
+    private def self.config_global_flag?(rest : Array(String)) : Bool
+      rest.includes?("--global") || rest.includes?("-g")
+    end
+
+    private def self.config_argument_error(stderr : IO, sub : String, usage : String, args : Array(String) = [] of String) : Int32
+      if args.empty?
+        stderr.puts %(ERROR: "bundle config #{sub}" was called with no arguments)
+      else
+        stderr.puts %(ERROR: "bundle config #{sub}" was called with arguments [#{args.map(&.inspect).join(", ")}])
+      end
+      stderr.puts %(Usage: "bundle config #{sub} #{usage}")
+      15
+    end
+
+    def self.config_set(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      return config_argument_error(stderr, "set", "NAME VALUE", rest[1..]) if rest.size < 3
       explicit = rest.includes?("--global") ? "global" : (rest.includes?("--local") ? "local" : nil)
-      scope = explicit || "local"
+      # Without a project the reference defaults `config set` to global.
+      scope = explicit || (config_project_root.nil? ? "global" : "local")
       args = rest.reject(&.starts_with?("--")).reject(&.==("set"))
       name = args[0]?
       value = args[1..].join(" ")
-      if name.nil? || value.empty?
-        stdout.puts "Please provide the name of the configuration settings you want to set, and a value."
-        return 1
-      end
-      definition = Definition.build
-      config = definition.config
+      return config_argument_error(stderr, "set", "NAME VALUE", rest[1..]) if name.nil? || value.empty?
+      config = config_for_command
       new_value = value
       # Reference `new_value`: `local.<gem>` values that are directories are
       # stored expanded.
@@ -598,15 +619,12 @@ module Celerite
     end
 
     def self.config_unset(rest : Array(String), stderr : IO) : Int32
+      return config_argument_error(stderr, "unset", "NAME") if rest.size < 2
       explicit = rest.includes?("--global") ? "global" : (rest.includes?("--local") ? "local" : nil)
       args = rest.reject(&.starts_with?("--")).reject(&.==("unset"))
       name = args[0]?
-      if name.nil?
-        stderr.puts "Please provide the name of the configuration settings you want to unset."
-        return 1
-      end
-      definition = Definition.build
-      config = definition.config
+      return config_argument_error(stderr, "unset", "NAME") if name.nil?
+      config = config_for_command
       # Reference: unset removes from local and global unless a scope is given.
       if explicit != "global"
         config.set_local(name, nil)

@@ -1,0 +1,8 @@
+config set retry 5
+config get retry
+config list
+config set without test:development
+config set frozen true
+config unset retry
+config get retry
+config list

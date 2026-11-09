@@ -5,20 +5,29 @@ two pinned reference profiles in the compatibility matrix
 (`docs/compatibility.md`): **Bundler 4.0.24** and **Bundler 2.7.2** on Ruby
 4.0.6 x64-mingw-ucrt, Windows x64 (win32), x86_64.
 
-What this proves is documented **observable-behavior** equivalence — CLI
-commands, output streams, lockfile bytes/semantics, installation trees and
-exchange arguments — measured by `script/differential` fixture runs, where the
-fixtures assert exit codes, stdout/stderr, project file trees AND the
-resulting `Gemfile.lock`/`Gemfile` artifacts.
+What this proves is **observable-behavior equivalence for the enumerated fixtures
+after the harness's documented normalization**: exit codes, stdout/stderr,
+project-relative file presence and explicitly selected file-content probes.
+It is not a percentage of RubyGems or full Bundler compatibility.
+
+Current normalization includes sandbox paths, dates/timestamps, sorting `Fetching`
+lines, removing selected environment-report sections and Ruby backtrace lines.
+The general tree comparison is primarily path-based; selected markers check
+content, but it is not a general byte-for-byte comparison of the whole installed
+tree. M7 tightens these comparisons and records every normalization rule.
+
+The fixture counts below are a recorded snapshot, not a new verification run for
+this documentation update. Source and CLI changes elsewhere in the working tree
+must be rebuilt and re-run before treating them as current evidence.
 
 ## Differential evidence
 
 | Bundler | Result |
 |---|---|
-| 4.0.24 | 94 passed, 0 failed (`script/differential` full suite) |
-| 2.7.2 | 93 passed, 0 failed, 1 skipped (`add-group`, documented deferral: the 2.7.2 reference auto-installs Bundler 4.0.24 from rubygems.org, which the offline sandbox cannot prove; `BUNDLER_REF_VERSION=2.7.2 script/differential`) |
+| 4.0.24 | 97 passed, 0 failed (`script/differential` full suite) |
+| 2.7.2 | 96 passed, 0 failed, 1 skipped (`add-group`, documented deferral: the 2.7.2 reference auto-installs Bundler 4.0.24 from rubygems.org, which the offline sandbox cannot prove; `BUNDLER_REF_VERSION=2.7.2 script/differential`) |
 
-Of the 94 fixtures, the completed milestones map as follows:
+Of the 97 fixtures, the completed milestones map as follows:
 
 - **M0** (contract & differential harness): every lockfile-driven fixture is
   executed differentially — unresolved lockfile coverage (`check-*`,
@@ -55,7 +64,7 @@ Of the 94 fixtures, the completed milestones map as follows:
   `multi-platform-lock`, `platform`, `platform-install` (nokogiri
   platform-variant rejection, exit 7 both profiles), `native-ext`,
   `pristine-named`.
-- **M5** (full CLI/plugins/Ruby API): `plugin-install`, `plugin-uninstall`,
+- **M5** (partial CLI/plugins/Ruby API coverage): `plugin-install`, `plugin-uninstall`,
   `plugin-source` (remote source resolution failure path on HTTP, exit 7),
   `plugin-source-ok` (remote `--source` success: `Fetching`/`Installing`
   output + plugin-tree materialization `gems/` `specifications/` `cache/`
@@ -109,6 +118,27 @@ Of the 94 fixtures, the completed milestones map as follows:
   (pinned `cache-all-platforms` probe); this order is pinned for fresh
   installs/updates.
 
+## Additional known implementation gaps (M7)
+
+- Candidate filtering currently does not enforce the indexed required Ruby
+  version: `ResolutionSource#ruby_requirement_satisfied?` returns `true`.
+  Required RubyGems data likewise needs an enforced resolution/install contract.
+- `check` and `list` have locked/missing-gem fixture paths, not complete
+  installed-gem discovery; `fund` currently prints a fixed no-funding response.
+  The `gem` template and environment diagnostics also have partial implementations.
+- Global `--retry` is stripped rather than executing the configured retry policy.
+  Mirror, proxy, redirect, SSL and legacy/full-index configuration cannot be
+  inferred to work merely because a config key is recognized.
+- `--trust-policy` validates the policy name; that is not a claim of full RubyGems
+  signature/certificate trust-policy enforcement.
+- The Ruby runtime scenarios use the reference `bundler/setup`. They demonstrate
+  compatibility through that boundary, not an independent lightweight runtime.
+  Native extension builds and plugin hooks similarly remain Ruby operations.
+
+The implementation order for these gaps and the subsequent performance work is
+in [roadmap.md](roadmap.md): M7 correctness/evidence, M8 batch bridge and cache
+hits, M9 native install plans/runtime, M10 optional in-process extension spike.
+
 ## Flag-level boundaries (25 Bundler flags audit)
 
 These flags exist on the reference CLI but are not fully honored where noted;
@@ -128,28 +158,35 @@ documented instead of silently emulated:
 | `outdated --local/--source/--filter-strict/--update-strict/--porcelain/--group/--groups/--filter-*` | **Partial** — `--parseable`/`--porcelain` (`outdated-parseable`, dual-passed), `--filter-major/minor/patch` (`outdated-filter-*`), `--strict`/`--filter-strict` (`outdated-strict`), `--only-explicit` (`outdated-only-explicit`), `--local` cache candidates (`outdated-local`), `--group` (`outdated-group`), `--groups` (`outdated-groups`), `--update-strict` (accepted with no additional cap in `outdated`; `outdated-update-strict`), `--cooldown` annotation (`outdated-cooldown-http` parseable + `outdated-cooldown-table` table; 2.7.2 rejects the flag), `--source` candidate-index selection (`outdated-source`), deterministic diagnostic table header and `Path` column (`outdated-verbose`), and named gems (`outdated-named`) are differential-verified. Other option annotation paths remain **unsupported**. |
 | `cache --all-platforms/--cache-path/--no-install` | **Supported** — `--cache-path=<path>` honored (`cache-path` dual-passed); `--no-install` honored (skip install); `--all-platforms` copies every platform variant of locked specs from the download cache + 4.x re-fetch line / 2.7.x `BUNDLE_CACHE_ALL` remembered config (`cache-all-platforms` dual-passed). |
 | `clean --dry-run/--force` | **Supported** — `--dry-run` wired (`Would have removed`); `--force` accepted (`clean-force` dual-passed in Celerite's bundle-path mode; the Bundler system-gems mode is not used by Celerite). |
-| `config list/get/set/unset --parseable` | `--parseable` handled for `get`; `list --parseable` iterates settings instead of full pretty-print. |
+| `config list/get/set/unset --parseable` | `--parseable` handled for `get`; `config get/set/unset` work without a Gemfile (`config-local`/`config-global` dual-passed, array settings render as symbols like the reference). |
 | `plugin install --source/--version/--git/--branch/--ref` | **Supported** — `--source` remote install: failure path on HTTP v2 (`plugin-source` exit 7) and success path with plugin-tree materialization + `Fetching`/`Installing` output (`plugin-source-ok` dual-passed; fixture plugin gem `my_plugin` ships `plugins.rb`); `--git/--branch/--ref` flag validation + git checkout materialization (`plugin-git-local`/`plugin-git-local2` dual-passed, incl. malformatted 29 exit). |
 | `add --group/--version/--source/--path/--git/--branch/--ref/--skip-install/--strict/--optimistic` | **Partial** — `--group` (`add-group`), `--skip-install` (`add-skip-install`), `--version` (`add-version`), `--strict` (`add-strict`, exit 7 on the reference `= 1.8` error), `--optimistic` (`add-optimistic`), `--require` (`add-require`), `--path` (`add-path`), `--git`/`--branch` (`add-git`), and scoped `--source` (`add-source`), distinct-remotes scoped lock (`scoped-source-lock`), and `--ref` (`add-ref`) are differential-verified: requirement probes and candidate resolution use the scoped compact-index remote, installations route downloads/installers by resolved `remote_for` per gem, and generated lock GEM sections are grouped by that remote; `--github` remains suffix-only/not fixture-proven. |
 | `binstubs --force/--standalone/--all-platforms/--shebang/--all` | **Supported** — `--force`/`--all`/`--all-platforms` honored with skip message (`binstubs-flags` dual-passed); `--shebang` rewrites the stub first line (`binstubs-shebang-line` dual-passed via harness `first-line` content probe; 2.7.x remembers `shebang` in local config). |
 
 ## Upstream spec suite coverage boundary
 
-The committed `script/upstream-specs` runs only the **lockfile family** of
-the upstream Bundler spec suite (pinned `v4.0.24` revision, 64 examples
-recorded under `docs/compat-matrix/generated/upstream-lockfile-v4.0.24.md`).
-The remaining families (resolver, runtime, resource, plugins, etc.) are
-covered through differential behavior only; `docs/upstream-spec-spike.md`
-records per-family applicability reasoning and no "full upstream suite"
-claim is made.
+The committed `script/upstream-specs` targets only the **lockfile family** of
+the upstream Bundler spec suite (pinned `v4.0.24` revision). The recorded result
+under `docs/compat-matrix/generated/upstream-lockfile-v4.0.24.md` is
+**64 examples, 64 failures**, not a passing gate. It is retained as a failure
+baseline for M7; the harness must drive Celerite correctly and propagate failure
+exit codes before any passing claim can be made.
+
+The remaining families (resolver, runtime, resource, plugins, etc.) have selected
+differential behavior only; `docs/upstream-spec-spike.md` records the initial
+applicability assessment. Neither pending/unexecuted examples nor behavior
+provided by the reference Ruby runtime counts as Celerite passing upstream specs.
+No "full upstream suite" claim is made.
 
 ## Known divergences from reference (documented, not hidden)
 
 1. Installed `.gemspec` files use the RubyGems stub format (same as the
    reference mode, whose installed specs are Ruby stub files, not Marshal) —
    verified across install/exec differential fixtures.
-2. `setup` requires the `bundler/setup` autoload (`Bundler.setup`); the
-   dedicated runtime is implemented in the Ruby adapter (see `ruby-api`).
+2. `setup` currently loads the reference `bundler/setup` (`Bundler.setup`) in
+   the runtime compatibility path; an independent lightweight Ruby adapter is
+   planned for M9. The `ruby-api` fixture proves behavior through that reference
+   boundary, not a standalone Crystal-provided Ruby API.
 3. Concurrent install requests are de-duplicated in-process
    single-flight (docs/architecture.md §3); a distributed lock is not claimed.
 

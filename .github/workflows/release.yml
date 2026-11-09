@@ -15,6 +15,7 @@ jobs:
         include:
           - os: ubuntu-latest
           - os: macos-latest
+          - os: macos-15-intel
           - os: windows-latest
     runs-on: ${{ matrix.os }}
     defaults:
@@ -28,6 +29,9 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "4.0"
+      - name: Install patchelf (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y patchelf
       # Each OS carries a platform-scoped checksums file so the artifacts can
       # be merged without clobbering each other (publish reassembles the
       # single checksums.sha256 install.sh verifies against).
@@ -45,10 +49,46 @@ jobs:
             pkg/*.gem
           if-no-files-found: error
 
+  rubygems:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          merge-multiple: true
+          path: assets
+      # OIDC trusted publishing: no long-lived API key is stored in the repo.
+      # The direct exchange passes `owner`, which RubyGems requires when a
+      # workflow creates a gem for the first time. The pinned
+      # configure-rubygems-credentials action does not expose that input yet.
+      - name: Configure RubyGems credentials
+        env:
+          # Account ID shown on the Pending Trusted Publishers page. Passing an
+          # immutable ID avoids matching a renamed or recycled handle.
+          RUBYGEMS_OWNER: "66500"
+        run: |
+          key="$(script/rubygems-credentials "$RUBYGEMS_OWNER")"
+          echo "::add-mask::$key"
+          echo "GEM_HOST_API_KEY=$key" >> "$GITHUB_ENV"
+      - name: Publish platform gems
+        env:
+          # Every platform gem is self-contained after script/bundle-libs.
+          CELERITE_PUSH_PLATFORM_GLOB: ${{ vars.CELERITE_PUSH_PLATFORM_GLOB || '*' }}
+        run: script/push-gems assets "$CELERITE_PUSH_PLATFORM_GLOB"
+
   publish:
     needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -59,7 +99,10 @@ jobs:
       - name: Merge per-platform checksums
         run: |
           cd assets
-          if ls checksums-*.sha256 >/dev/null 2>&1; then
+          if ls dist/checksums-*.sha256 >/dev/null 2>&1; then
+            cat dist/checksums-*.sha256 | sort -u > checksums.sha256
+            rm -f dist/checksums-*.sha256
+          elif ls checksums-*.sha256 >/dev/null 2>&1; then
             cat checksums-*.sha256 | sort -u > checksums.sha256
             rm -f checksums-*.sha256
           fi

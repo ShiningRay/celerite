@@ -7,7 +7,9 @@ module Celerite
       Config.key_for("path").should eq("BUNDLE_PATH")
       Config.key_for("path.system").should eq("BUNDLE_PATH__SYSTEM")
       Config.key_for("BUNDLE_FROZEN").should eq("BUNDLE_FROZEN")
-      Config.key_for("mirror.https://rubygems.org").should eq("BUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG")
+      # Pinned `Bundler::Settings.key_for`: URI keys are normalized with a
+      # trailing slash before dots become `__`.
+      Config.key_for("mirror.https://rubygems.org").should eq("BUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG/")
     end
 
     it "respects priority temporary > local > env > global > default" do

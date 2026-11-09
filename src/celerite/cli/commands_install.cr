@@ -492,8 +492,8 @@ module Celerite
     def self.exec(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       command = rest.first?
       if command.nil? || command.empty?
-        stderr.puts "executable not specified"
-        return 1
+        stderr.puts "bundler: exec needs a command to run"
+        return 128
       end
 
       definition = Definition.build
@@ -504,14 +504,30 @@ module Celerite
         if bundler_lib.nil? || bundler_lib.empty?
           bundler_lib = File.expand_path("../lib", File.dirname(env.ruby_exe))
         end
+        bundler_lib = bundler_lib.not_nil!
 
         abi = ruby_abi(bridge)
         bin_dir = File.join(install_path(definition.config), "ruby", abi, "bin")
 
         process_env = ENV.to_h
-        process_env["RUBYOPT"] = "-r#{File.join(bundler_lib.not_nil!, "bundler/setup")}"
-        process_env["RUBYLIB"] = bundler_lib.not_nil!
+        setup_path = File.join(bundler_lib, "bundler/setup")
+        setup_require = setup_path.includes?(" ") ? "-rbundler/setup" : "-r#{setup_path}"
+        existing_rubyopt = (process_env["RUBYOPT"]? || "").split(" ").reject(&.empty?)
+        unless existing_rubyopt.includes?(setup_require)
+          existing_rubyopt.unshift(setup_require)
+        end
+        process_env["RUBYOPT"] = existing_rubyopt.join(" ")
+        rubylib = (process_env["RUBYLIB"]? || "").split(path_delimiter_static).reject(&.empty?)
+        rubylib.unshift(bundler_lib) unless rubylib.includes?(bundler_lib)
+        process_env["RUBYLIB"] = rubylib.join(path_delimiter_static)
         process_env["BUNDLE_GEMFILE"] = File.expand_path(definition.gemfile_path).gsub(/\\/, "/")
+        process_env["BUNDLE_LOCKFILE"] = File.expand_path(definition.lockfile_path).gsub(/\\/, "/")
+        if bundler_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]?
+          process_env["BUNDLER_VERSION"] = bundler_version
+        end
+        process_env["BUNDLER_SETUP"] = setup_path
+        exe_candidate = File.join(bundler_lib, "..", "exe", "bundle")
+        process_env["BUNDLE_BIN_PATH"] = File.expand_path(exe_candidate).gsub(/\\/, "/") if File.file?(exe_candidate)
         path_delimiter = {{ flag?(:windows) }} ? ";" : ":"
         process_env["PATH"] = "#{bin_dir.gsub(/\\/, "/")}#{path_delimiter}#{process_env["PATH"]? || ""}"
 
@@ -546,56 +562,75 @@ module Celerite
 
         disable_exec_load = definition.config["disable_exec_load"] == true
         loadable = !disable_exec_load && directly_loadable?(resolved, env.ruby_exe, stderr)
-        exe_name, exe_args = if loadable
-                               # Bundler's loadable-script optimization: run the
-                               # script through the Ruby runtime adapter's
-                               # Kernel.load entry point instead of a fresh
-                               # shebang process. The loader sets $0/ARGV and
-                               # restores SIGINT to DEFAULT exactly as
-                               # Bundler::CLI::Exec#kernel_load does.
-                               loader = <<-RUBY
-                               file = ARGV.shift
-                               $0 = file
-                               cmd = ENV["CELERITE_EXEC_COMMAND"] || file
-                               Process.setproctitle("\#{file} \#{ARGV.join(" ")}".strip) if Process.respond_to?(:setproctitle)
-                               trap("INT", "DEFAULT")
-                               begin
-                                 Kernel.load(file)
-                               rescue SystemExit, SignalException
-                                 raise
-                               rescue Exception
-                                 warn "bundler: failed to load command: \#{cmd} (\#{file})"
-                                 raise
-                               end
-                               RUBY
-                               process_env["CELERITE_EXEC_COMMAND"] = command
-                               {env.ruby_exe, ["-e", loader, File.expand_path(resolved)] + args}
-                             elsif resolved.downcase.ends_with?(".bat") || resolved.downcase.ends_with?(".cmd")
-                               {"cmd", ["/c", resolved] + args}
-                             elsif resolved.downcase.ends_with?(".exe") || executable_binary?(resolved)
-                               {resolved, args}
-                             else
-                               # extensionless ruby script (bin stub)
-                               {"ruby", [resolved] + args}
-                             end
+        executable : String
+        exec_args : Array(String)
+        via_shell = false
+        if loadable
+          # Bundler's loadable-script optimization: run the script through the
+          # Ruby runtime adapter's Kernel.load entry point instead of a fresh
+          # shebang process. The loader sets $0/ARGV and restores SIGINT to
+          # DEFAULT exactly as Bundler::CLI::Exec#kernel_load does.
+          loader = <<-RUBY
+          file = ARGV.shift
+          $0 = file
+          cmd = ENV["CELERITE_EXEC_COMMAND"] || file
+          Process.setproctitle("\#{file} \#{ARGV.join(" ")}".strip) if Process.respond_to?(:setproctitle)
+          trap("INT", "DEFAULT")
+          begin
+            Kernel.load(file)
+          rescue SystemExit, SignalException
+            raise
+          rescue Exception
+            warn "bundler: failed to load command: \#{cmd} (\#{file})"
+            raise
+          end
+          RUBY
+          process_env["CELERITE_EXEC_COMMAND"] = command
+          executable = env.ruby_exe
+          exec_args = ["-e", loader, File.expand_path(resolved)] + args
+        elsif resolved.downcase.ends_with?(".bat") || resolved.downcase.ends_with?(".cmd")
+          executable = "cmd"
+          exec_args = ["/c", resolved] + args
+          via_shell = true
+        elsif resolved.downcase.ends_with?(".exe") || executable_binary?(resolved)
+          executable = resolved
+          exec_args = args
+        elsif ruby_shebang?(resolved)
+          # Parity with the reference's directly-loadable path: a Ruby
+          # executable still runs under the bundle's RUBYOPT/RUBYLIB.
+          executable = "ruby"
+          exec_args = [resolved] + args
+        elsif File.executable?(resolved) || {{ flag?(:windows) }}
+          executable = resolved
+          exec_args = args
+        else
+          stderr.puts "bundler: not executable: #{command}"
+          return 126
+        end
 
-        child = Process.new(exe_name, exe_args, input: :inherit, output: :inherit, error: :inherit, env: process_env)
-        install_signal_forward(child)
-        child.wait.exit_code
+        run_with_forwarded_signals(executable, exec_args, process_env, via_shell)
       ensure
         bridge.close
       end
     end
 
-    # Terminate the exec'd child when this process receives SIGINT/SIGTERM,
-    # so the group exits together (Bundler traps signals on `exec`).
-    # On Windows, Signal traps are not implemented in this Crystal build and
-    # the spawn path shares the console instead.
-    private def self.install_signal_forward(child : Process) : Nil
-      {% if !flag?(:windows) %}
-        Signal::INT.trap do
-          child.terminate
-        end
+    private def self.path_delimiter_static : String
+      {{ flag?(:windows) }} ? ";" : ":"
+    end
+
+    # Runs the child and forwards SIGINT (the reference's only trapped
+    # signal) so `bundle exec` behaves like the same-process Kernel.load path.
+    private def self.run_with_forwarded_signals(executable : String, args : Array(String),
+                                                env : Hash(String, String), via_shell : Bool) : Int32
+      process = Process.new(executable, args, env: env,
+        input: :inherit, output: :inherit, error: :inherit, shell: via_shell)
+      {% unless flag?(:windows) %}
+        Signal::INT.trap { process.signal(Signal::INT) }
+      {% end %}
+      process.wait.exit_code
+    ensure
+      {% unless flag?(:windows) %}
+        Signal::INT.reset
       {% end %}
     end
 
@@ -639,6 +674,17 @@ module Celerite
       possibilities.any? { |shebang| header.starts_with?(shebang) }
     rescue
       false
+    end
+
+    private def self.ruby_shebang?(path : String) : Bool
+      return false unless File.file?(path)
+      return false if File.size(path) == 0
+      first_line = File.open(path, "rb") { |io| io.gets_to_end }.lines.first? || ""
+      first_line == "#!/usr/bin/env ruby" ||
+        first_line == "#!/usr/bin/env ruby -w" ||
+        first_line == "#!/usr/bin/env jruby" ||
+        first_line == "#!/usr/bin/env truffleruby" ||
+        first_line.starts_with?("#!#{ENV["RUBY"]? || "/usr/bin/ruby"}")
     end
 
     private def self.executable_binary?(path : String) : Bool

@@ -930,7 +930,7 @@ module Celerite
     end
 
     # ------------------------------------------------------------------
-    # pristine
+    # pristine: reinstall gems from their cached packages
     # ------------------------------------------------------------------
     def self.pristine(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       definition = Definition.build
@@ -975,11 +975,11 @@ module Celerite
               gem_label = "#{spec.name} (#{spec.version})" + (spec.platform && !spec.platform_ruby? ? " (#{spec.platform})" : "")
               stderr.puts "Failed to pristine #{gem_label}. Cached gem #{gem_file} does not exist."
             end
-            FileUtils.rm_rf(File.join(gems_root, spec.full_name))
-            spec_file = File.join(install_root, "specifications", "#{spec.full_name}.gemspec")
-            File.delete(spec_file) if File.file?(spec_file)
+            checksum = lockfile.checksums.find do |c|
+              c.name == spec.name && c.version == spec.version
+            end.try(&.checksums.first?)
             stdout.puts "Installing #{spec.name} #{spec.version}#{native_suffix(bridge, File.file?(gem_file) ? gem_file : nil)}"
-            installer.install(spec.name, spec.version, spec.platform, nil)
+            installer.reinstall(spec.name, spec.version, spec.platform, checksum)
           when "GIT"
             # Pinned reference behavior: git pristine removes the checkout
             # and re-materializes it silently (no "Installing" line).

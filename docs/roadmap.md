@@ -76,7 +76,7 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 任务：
 
 - [x] 实现 gem 下载、SHA-256 校验、内容寻址缓存与并发去重。（`spec/downloader_spec`（下载/hex 校验）+ `install-fresh/install-rerun` 差分。）
-- [x] 实现 gem package 读取、原子安装、specification、executables 和 binstubs。（安装树差分随各 fixture 双 profile 落地。）
+- [x] 实现 gem package 读取、原子安装、specification、executables 和 binstubs。（基础安装路径与固定夹具已做；通用安装文件树内容比较和完整故障清理由 M7/M9 补齐。）
 - [x] 实现 `install`、`cache`/`package`、`clean`、`pristine`、`binstubs` 的相关路径。（`install-fresh`、`pristine({,-named})`、`git-pristine`、`clean-unused` 差分覆盖 Rubygems/Git/path 的重装与清理语义（双 profile）；`cache` 由 `install` 后 `vendor/cache` 检查复核路径。）
 - [ ] 实现 `exec`、runtime setup 与 `ruby -rbundler/setup` 适配；覆盖嵌套调用、信号、退出码、Ruby shebang 的 `Kernel.load` 和 `disable_exec_load`。（已有参考 Bundler runtime、Ruby `Kernel.load` 和退出码场景；轻量独立 runtime 属 M9，Windows 信号边界未关闭。）
 - [ ] 验证中断、磁盘错误、校验失败、无网络、重复安装及多进程竞争。（校验失败、重复安装、无网络和锁互斥已有测试；磁盘错误、中断及安装失败原子清理未完整验证。）
@@ -89,13 +89,13 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 
 任务：
 
-- [x] 实现 Git 的 branch/ref/tag/revision/submodule、缓存和锁 revision。（`git-path-install`（branch 源 + revision 锁）与 `git-pristine`（重物化）差分通过；ref/tag/submodule 走既有 Git 编排，fixture 仅覆盖 branch 形态。）
-- [x] 实现 path、gemspec、monorepo 与本地变更失效策略。（`git-path-install` 的 gemspec path 源与本地依赖安装差分通过。）
-- [x] 完成平台专有 gem、多 ABI、锁平台规范化、离线 cache。（`multi-platform-lock`、`platform` 差分 + `lock-file-update`（平台规范化）通过；平台专有 gem 二进制安装在多平台 CI 矩阵下持续验证。）
-- [x] 经 bridge 执行原生扩展构建，复现 build args、Ruby ABI 隔离和失败清理。（`native-ext` fixture（racc 原生扩展编译并加载）双 profile 通过；失败清理路径经 bridge build_extension 错误面覆盖。）
-- [x] 建立 macOS/Linux 和受支持 Ruby 矩阵；评估 Windows 后单列实现计划。（CI specs/differential/gem-package 三平台矩阵（ubuntu/macos/windows）+ 本机 Windows（msvcrt/mingw）二进制已验证；Windows 支持不再单列为未评估项。）
+- [ ] 实现 Git 的 branch/ref/tag/revision/submodule、缓存和锁 revision。（branch/ref 已有 fixture；tag/submodule/glob 和离线恢复需要独立差分。）
+- [ ] 实现 path、gemspec、monorepo 与本地变更失效策略。（基础 path/gemspec 安装已做；多 gemspec、monorepo 和完整失效指纹待 M8。）
+- [ ] 完成平台专有 gem、多 ABI、锁平台规范化、离线 cache。（已有固定场景；Linux gnu/musl、多 Ruby ABI 与真实离线缓存矩阵待补。）
+- [ ] 经 bridge 执行原生扩展构建，复现 build args、Ruby ABI 隔离和失败清理。（基础 racc 构建和 target-rbconfig 已验证；`build.<gem>`、完整失败清理和跨 Ruby ABI 待补。）
+- [ ] 建立 macOS/Linux 和受支持 Ruby 矩阵；评估 Windows 后单列实现计划。（已有 CI 配置和本机证据，不等于所有组合实际通过。）
 
-验收：跨平台 lock/install 差分通过；至少一个原生扩展 gem 编译、加载和重装成功。
+验收：**未完整通过**。先保留 Ruby/RubyGems 扩展构建边界，跨平台、source 变体和失败清理由 M7/M9 收敛。
 
 ## M5：CLI、插件与 Ruby API（部分实现，完整兼容验收转入 M7）
 
@@ -107,6 +107,7 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 - [ ] 完成 Gemfile 任意 Ruby DSL 语义和全部 source 行为。（Gemfile 经真实 `Bundler::Dsl` 求值；source 的 mirror/proxy/SSL/legacy index 和插件 source 完整边界未关闭。）
 - [ ] 实现插件安装/index、命令分发、生命周期 hook、自定义 source 和 PATH fallback。（安装/index/hook 和部分远端/Git 路径已实现；插件命令注册、自定义 source 与第三方插件生态需要实证。）
 - [ ] 实现公开 `Bundler` Ruby API 与 `bundler/inline` 适配及插件可见对象；建立第三方插件 fixture。（当前 fixture 通过真实参考 Bundler runtime 运行，不代表独立 Ruby 适配层已实现。）
+- [x] 实现显式 `bundle` shim、`BUNDLED WITH` 版本选择与回退机制。（script/bundle opt-in shim；install 自动切换双向并记录切换版本；update 记录运行版本；回退见 docs/upgrade-and-uninstall.md）
 - [ ] 运行适用的上游 Bundler suite，逐项记录例外并由评审确认。（已完成可行性 spike；现存 64 例记录全部失败，不是绿色上游测试。）
 
 验收：**未达到**。M7 先关闭正确性与证据缺口；不以命令入口或参考 Bundler 运行时通过来代替完整兼容。
@@ -125,8 +126,73 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 
 验收：基准可复现；兼容报告对应 commit；用户可明确切换与回退，且不会丢失现有配置。
 
-## 第一阶段建议
+## 当前阶段：M7–M10
 
-下一步从 M0 开始，先实现差分 harness 和 Gem::Version/Gem::Requirement 的语义验证。不要先写下载器或 CLI 外壳来堆积“支持命令数”。
+### M7：正确性与兼容证据收敛（当前优先）
 
-首个可评审增量应包含：固定参考版本、5 类基础 fixture、lockfile AST、只读 parser 与一组可重复的 Bundler 差分结果。
+**目标**：修复会影响依赖选择和真实项目正确性的缺口；使兼容声明与测试证据一致。
+
+任务：
+
+- [ ] 实现当前 Ruby、RubyGems、Gemfile 目标 Ruby、engine、patchlevel 和 ABI 的约束过滤；将 `ResolutionSource#ruby_requirement_satisfied?` 的恒真实现替换为实际规则，覆盖无匹配版本、平台变体和安装复核。
+- [ ] 修复安装后 `check`、`list`、`show`/`info` 的 gem 发现，不再把所有锁定 gem 固定视为 missing；补齐 group、`with/without` 和 path/Git 安装状态。
+- [ ] 移除或实现占位路径：`fund` 的真实 metadata、`gem` 模板、完整 `console`/`env` 行为；避免硬编码 Bundler 版本、时间戳和运行环境。
+- [ ] 让 mirror、proxy、redirect、retry、SSL CA/client cert、`path.system`、`build.<gem>`、legacy/full index 回退具有真实生效路径；为不支持项快速失败，禁止只解析 flag/config 后静默忽略。
+- [ ] 补齐 Git tag/submodules/glob、多个 gemspec、monorepo、私有 source 鉴权、离线安装、磁盘错误与中断清理；验证 Linux gnu/musl 和多 Ruby ABI。
+- [ ] 插件命令注册、自定义 source、hook 异常和第三方插件 fixture 分别验证；不把 Ruby hook 能运行当作完整插件兼容。
+- [ ] 修复 `script/differential`：列出所有归一化规则；对有语义的输出禁止排序/删除；安装文件树同时比较相对路径、文件内容、可执行权限和关键 symlink；lockfile 和 Gemfile 直接比较内容。
+- [ ] 修复 `script/upstream-specs`：使锁文件族真实驱动 Celerite，退出码反映失败；保留当前 64 failures 作为失败基线，再逐项关闭。每次 re-pin 复核排除理由，不把 pending/未执行/调用参考实现记为通过。
+- [ ] 建立 Rails 规模真实项目回归，记录所有有意兼容差异及理由；未解释差异为零后才恢复“该 profile 兼容”的声明。
+- [ ] 更新 README、兼容报告、roadmap 和实际代码状态；历史报告标明对应 commit/工作树，不随新 fixture 静默改写旧结论。
+
+验收：双 profile 单元/格式/差分门禁通过；锁文件上游族真实执行且结果如实；Ruby/平台约束和安装后只读命令有正反例；没有未声明的占位命令、恒真约束或无效配置。M8 的性能改动不得先于本阶段正确性修复合入。
+
+### M8：批次桥接与无 Ruby 快路径
+
+**目标**：减少进程启动、序列化和 Ruby 对象分配，不改变 M7 已验证的依赖选择与输出。
+
+任务：
+
+- [ ] 定义版本化、批次级求值协议：一次导出完整 dependencies、groups、source、autorequire、platform、Ruby 约束和插件声明；一次提交完整候选集并返回解，禁止在 PubGrub 循环中逐版本跨桥。
+- [ ] 完成求值指纹：Gemfile/eval_gemfile、引用 gemspec、读取的 ENV、配置、Ruby/RubyGems/Bundler 版本与 ABI；任一输入变化必须使缓存失效，不使用内容哈希代替完整环境指纹。
+- [ ] 同一求值复用 bridge，加入 idle 回收、协议超时、结构化错误和批量大小控制；统计一次命令的 Ruby 进程数、RPC 次数和传输字节数。
+- [ ] 无变化 `lock`/`install` 直接使用 lockfile 和安装计划：不加载 Bundler、不启动 Ruby；有动态 DSL、插件或指纹不确定时显式走兼容路径。
+- [ ] 实现持久化、版本化的解析/安装计划缓存，键包含 source 身份、凭据隔离标识、checksum、平台、Ruby ABI 和 build 配置；缓存损坏安全回退，不把未校验产物视为可用。
+- [ ] 让 `check/list/show` 等只读命令复用已安装 gem 索引；为真实 Rails 规模冷/热/无变化运行建立性能对照，包含 Bundler + YJIT。
+
+验收：无变化 lock/install 的 Ruby 启动次数为零（明确需要 Ruby 的 source/插件除外）；指纹失效有差分反例；缓存复用前后输出、依赖、文件内容与退出码一致；基准报告包含 wall/CPU/RSS、RPC 和 I/O，而不只是加速倍数。
+
+### M9：原生安装计划与轻量 Ruby runtime
+
+**目标**：消除 `.gem` 重复解析及完整 Bundler 运行时启动成本，同时保留必要的 Ruby 扩展边界。
+
+任务：
+
+- [ ] 下载时流式 SHA-256；Crystal 读取 `.gem` 容器、解出 `metadata.gz`，对可证明静态的 gemspec YAML 子集生成一次不可变安装计划。动态 gemspec、非标准 Marshal 或安全敏感边界显式回退 Ruby，不静默降级。
+- [ ] 安装计划统一承载 spec 字段、依赖、executables、extensions、checksum、平台和文件操作；解包、binstub、installed-spec 和扩展构建共用计划，禁止同一 `.gem` 被多个 Ruby 调用重复读取。
+- [ ] 流式 gzip/tar、逐文件路径/权限/大小检查、临时目录、原子 rename、失败清理；有界 Fiber worker 处理下载/校验/解包，扩展构建独立有序执行并传递 `build.<gem>`/target-rbconfig。
+- [ ] Crystal 生成版本化 runtime manifest；小型 Ruby 适配层仅激活 gem、设置 load path 和执行 `Kernel.require`。逐步实现 `Bundler.setup`/`require`/`definition` 所需语义，避免无条件加载完整 `bundler/setup`。
+- [ ] 为 `bundler/inline`、嵌套 exec、Ruby shebang、`disable_exec_load`、信号和退出码保留差分；公开 Ruby 对象未覆盖的部分继续使用明确的参考兼容路径。
+- [ ] 基准覆盖 `bundle exec ruby app.rb`、直接 `ruby -r.../setup`、冷/热安装、原生扩展、失败恢复及磁盘写入；不能仅用 lock 解析微基准证明安装提速。
+
+验收：常规 `.gem` 安装只需要一次元数据读取；原生扩展仍由真实 Ruby 工具链构建；目标 fixture 的 Ruby 应用无需完整 Bundler 即可加载，且安装文件内容/权限、运行结果和失败清理与参考一致。任何性能下降或兼容回归均阻止合入。
+
+### M10：可选 Ruby 原生扩展嵌入 spike
+
+**目标**：仅在 M8/M9 后证明独立进程边界仍是主要瓶颈时，评估在现有 `gem`/`Bundler` API 内嵌入 Crystal，而不是立即重写全部 RubyGems。
+
+任务：
+
+- [ ] 选择单个批量热点（例如整批 lockfile 解析、版本约束归一化或安装计划）做 spike；禁止逐 Ruby 对象/逐版本的细粒度 FFI 调用。
+- [ ] 验证 Ruby C API、VALUE 生命周期与 GC 保活、异常跨边界、GVL/线程、Crystal runtime 初始化、Ruby ABI 和不同编译器/平台打包。
+- [ ] 明确纯 Ruby fallback、feature detect、失败行为和分发方式；不默认替换用户的 RubyGems，不隐藏引擎选择。
+- [ ] 对比独立进程、内嵌扩展和 Bundler + YJIT 的端到端 wall/CPU/RSS；把兼容维护、ABI 支持和分发成本纳入是否继续的决策。
+
+验收：只有当端到端收益稳定、兼容测试不退化且 ABI/分发成本可接受时才进入正式实现；否则保留独立 Crystal + Ruby 适配层并记录否决原因。
+
+## 首个可评审增量
+
+1. 修复兼容报告、上游测试退出码与归一化声明，保留可复核的失败基线。
+2. 用参考 Ruby 生成 Ruby/RubyGems 约束 oracle，实现候选过滤并覆盖不满足、平台变体和安装复核。
+3. 修复安装后 `check/list/show`，再运行双 profile 全部检查。
+4. 之后才实现 M8 的批次求值和完整指纹；每个阶段独立提交、独立 benchmark，不把正确性修复与大型性能重构混为一个变更。

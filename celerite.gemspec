@@ -32,11 +32,18 @@ Gem::Specification.new do |spec|
   spec.bindir = "exe"
   spec.require_paths = ["lib"]
 
-  spec.files = ["exe/celerite", "assets/bridge/server.rb", "README.md", "LICENSE"]
+  spec.files = ["exe/celerite", "assets/bridge/server.rb", "THIRD_PARTY_LICENSES.md",
+                "README.md", "LICENSE"]
+  spec.files += Dir.glob("assets/licenses/*").sort
 
   if (platform = ENV["CELERITE_GEM_PLATFORM"]) && !platform.empty?
     spec.platform = Gem::Platform.new(platform)
     bin_name = platform.include?("mingw") || platform.include?("mswin") ? "celerite.exe" : "celerite"
-    spec.files += ["lib/celerite/#{platform}/#{bin_name}"]
+    platform_dir = "lib/celerite/#{platform}"
+    binary = "#{platform_dir}/#{bin_name}"
+    raise "missing #{binary}" unless File.file?(binary)
+    # The binary plus the shared libraries script/bundle-libs copied next to it
+    # (.dylib, .so, .dll), so the gem is self-contained on each platform.
+    spec.files += Dir.glob("#{platform_dir}/*").select { |path| File.file?(path) }.sort
   end
 end

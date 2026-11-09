@@ -20,7 +20,18 @@ binary="$repo_root/bin/celerite"
 [ -f "$binary" ] || (cd "$repo_root" && shards build >/dev/null)
 [ -f "$binary" ] || { echo "celerite binary missing (shards build failed)" >&2; exit 2; }
 
-platform="$(ruby -r rubygems/platform -e 'print Gem::Platform.local')"
+# Normalize macOS platform names to <cpu>-darwin. Gem::Platform.local on macOS
+# includes the OS major version (e.g. arm64-darwin-25), which would make the
+# gem installable only on that exact macOS generation.
+platform="$(ruby -r rubygems/platform -rrbconfig -e '
+  p = Gem::Platform.local
+  if p.os == "darwin"
+    cpu = RbConfig::CONFIG["host_cpu"]
+    cpu = "arm64" if cpu == "aarch64"
+    p = Gem::Platform.new([cpu, "darwin"])
+  end
+  print p
+')"
 case "$platform" in
   *mingw* | *mswin*) bin_name="celerite.exe" ;;
   *) bin_name="celerite" ;;
@@ -31,10 +42,11 @@ rm -rf "$staging"
 mkdir -p "$staging/exe" "$staging/assets" "$staging/lib/celerite/$platform"
 cp "$binary" "$staging/lib/celerite/$platform/$bin_name"
 chmod 0755 "$staging/lib/celerite/$platform/$bin_name" 2>/dev/null || true
+ruby "$repo_root/script/bundle-libs" "$staging/lib/celerite/$platform/$bin_name"
 cp "$repo_root/exe/celerite" "$staging/exe/celerite"
 chmod 0755 "$staging/exe/celerite" 2>/dev/null || true
-cp -r "$repo_root/assets/bridge" "$staging/assets/bridge"
-for f in README.md LICENSE; do
+cp -r "$repo_root/assets/." "$staging/assets/"
+for f in README.md LICENSE THIRD_PARTY_LICENSES.md; do
   [ -f "$repo_root/$f" ] && cp "$repo_root/$f" "$staging/$f"
 done
 

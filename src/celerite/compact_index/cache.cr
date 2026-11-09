@@ -118,7 +118,11 @@ module Celerite
           body = response.body
           return false if body.bytesize < 1
           tail = body.byte_slice(1)
-          CacheFile.append(local_path, tail, digests)
+          # CacheFile.append cannot verify without digests; fall back to the
+          # full replace so the cache never keeps unverified partial data.
+          return false unless CacheFile.append(local_path, tail, digests)
+          write_etag(etag_path, response)
+          true
         else
           # server may ignore Range and return the full response
           CacheFile.write(local_path, response.body, digests)

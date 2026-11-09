@@ -1,0 +1,197 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Bundle the non-system shared libraries a platform binary needs so the gem is
+# self-contained. Invoked by script/gem after the binary is copied into the
+# staging tree.
+#
+#   macOS:   copied next to the binary, install names rewritten to @loader_path
+#   Linux:   copied next to the binary, ELF RUNPATH set to $ORIGIN
+#   Windows: copied next to the .exe (the default DLL search starts there)
+
+require "fileutils"
+
+# Minimal PE import-table reader; avoids depending on dumpbin/objdump being
+# installed in the runner's PATH.
+def pe_imports(path)
+  data = File.binread(path)
+  pe = data[0x3c, 4].unpack1("V")
+  return [] unless pe && data[pe, 4] == "PE\x00\x00".b
+
+  coff = pe + 4
+  sections = data[coff + 2, 2].unpack1("v")
+  optional_size = data[coff + 16, 2].unpack1("v")
+  optional = coff + 20
+  magic = data[optional, 2].unpack1("v")
+  directory_offset = optional + (magic == 0x20b ? 112 : 96)
+  import_rva, = data[directory_offset + 8, 8].unpack("V2")
+  return [] if import_rva.nil? || import_rva.zero?
+
+  section_offset = optional + optional_size
+  section_ranges = (0...sections).map do |index|
+    base = section_offset + index * 40
+    virtual_size, virtual_address, raw_size, raw_pointer = data[base + 8, 16].unpack("V4")
+    [virtual_address, [virtual_size, raw_size].max, raw_pointer]
+  end
+
+  rva_to_offset = lambda do |rva|
+    section = section_ranges.find { |va, size, _| rva >= va && rva < va + size }
+    section ? rva - section[0] + section[2] : nil
+  end
+
+  offset = rva_to_offset.call(import_rva)
+  return [] unless offset
+
+  imports = []
+  loop do
+    descriptor = data[offset, 20]
+    break if descriptor.nil? || descriptor.bytes.all?(&:zero?)
+
+    name_rva = descriptor[12, 4].unpack1("V")
+    name_offset = rva_to_offset.call(name_rva)
+    if name_offset
+      name = data[name_offset..].split("\0", 2).first
+      imports << name if name && !name.empty?
+    end
+    offset += 20
+  end
+  imports.uniq
+end
+
+if ARGV[0] == "--pe-imports"
+  path = ARGV[1] or abort "usage: script/bundle-libs --pe-imports <exe>"
+  puts pe_imports(File.expand_path(path))
+  exit
+end
+
+binary = File.expand_path(ARGV.fetch(0) { abort "usage: script/bundle-libs <binary>" })
+abort "not a file: #{binary}" unless File.file?(binary)
+dir = File.dirname(binary)
+
+def run!(*cmd)
+  system(*cmd) or abort "command failed: #{cmd.join(" ")}"
+end
+
+def capture(*cmd)
+  output = IO.popen(cmd, &:read)
+  abort "command failed: #{cmd.join(" ")}" unless $?.success?
+  output
+end
+
+case RUBY_PLATFORM
+when /darwin/
+  require "rbconfig"
+  exec(RbConfig.ruby, File.expand_path("bundle-dylibs", __dir__), binary)
+
+when /linux/
+  core = /\A(libc|libm|libpthread|libdl|librt|libresolv|libnsl|libutil|libgcc_s|libstdc\+\+|ld-linux)\.so/
+  output = capture("ldd", binary)
+  abort "ldd reported missing dependencies for #{binary}" if output.include?("not found")
+
+  deps = output.lines.map do |line|
+    if line =~ /=>\s+(\/\S+)/
+      $1
+    elsif line =~ /^\s*(\/\S+\.so\S*)/
+      $1
+    end
+  end.compact.uniq
+
+  bundled = []
+  deps.each do |dep|
+    name = File.basename(dep)
+    # The dynamic loader must come from the host; bundling it would be wrong.
+    next if name.match?(core) || name.start_with?("ld-linux")
+
+    dest = File.join(dir, name)
+    unless File.exist?(dest)
+      FileUtils.cp(dep, dest)
+      File.chmod(0o644, dest)
+    end
+    bundled << name
+  end
+
+  unless system("patchelf", "--version", out: File::NULL, err: File::NULL)
+    abort "patchelf is required to bundle Linux libraries (install it on the build runner)"
+  end
+
+  ([binary] + Dir.glob(File.join(dir, "*.so*"))).uniq.each do |file|
+    run!("patchelf", "--set-rpath", "$ORIGIN", file)
+  end
+
+  missing = bundled.sort.reject { |name| File.file?(File.join(dir, name)) }
+  abort "missing bundled libraries: #{missing.join(", ")}" unless missing.empty?
+  puts "bundled libraries for #{binary}: #{bundled.sort.join(", ")}"
+
+when /mingw|mswin/
+  system_dlls = %w[
+    kernel32.dll user32.dll advapi32.dll shell32.dll ole32.dll oleaut32.dll
+    ws2_32.dll crypt32.dll dbghelp.dll ntdll.dll vcruntime140.dll
+    vcruntime140_1.dll msvcp140.dll ucrtbase.dll kernelbase.dll combase.dll
+    rpcrt4.dll secur32.dll bcrypt.dll iphlpapi.dll dnsapi.dll userenv.dll
+    version.dll winmm.dll psapi.dll shlwapi.dll gdi32.dll imm32.dll
+    setupapi.dll cfgmgr32.dll powrprof.dll mswsock.dll wldap32.dll
+    normaliz.dll winhttp.dll wininet.dll wintrust.dll cryptbase.dll
+    sspicli.dll profapi.dll msasn1.dll ncrypt.dll bcryptprimitives.dll
+    cryptsp.dll sechost.dll comctl32.dll uxtheme.dll dwmapi.dll
+    wtsapi32.dll netapi32.dll d3d11.dll dxgi.dll opengl32.dll glu32.dll
+    gdiplus.dll msimg32.dll winspool.drv mpr.dll urlmon.dll iertutil.dll
+    imagehlp.dll
+  ]
+
+  find_dll = lambda do |name|
+    candidates = []
+    begin
+      IO.popen(["where.exe", name], err: File::NULL) do |io|
+        candidates.concat(io.read.lines.map(&:strip))
+      end
+    rescue Errno::ENOENT
+      # where.exe is absent on non-Windows hosts; only called on Windows.
+    end
+
+    roots = [
+      ENV["MSYSTEM_PREFIX"],
+      "C:/msys64/mingw64/bin",
+      "C:/Program Files/Git/mingw64/bin",
+      "C:/Program Files/Crystal/bin",
+      "C:/hostedtoolcache/windows/crystal",
+    ].compact
+    roots.each do |root|
+      next unless File.directory?(root)
+      candidates.concat(Dir.glob(File.join(root, "**", name)))
+    end
+
+    candidates.find do |path|
+      File.file?(path) && !path.match?(%r{\A[A-Za-z]:[/\\]Windows[/\\]}i)
+    end
+  end
+
+  queue = [binary]
+  seen = {}
+  bundled = []
+  until queue.empty?
+    file = queue.shift
+    next if seen[file]
+    seen[file] = true
+
+    pe_imports(file).each do |dll|
+      lower = dll.downcase
+      next if lower.start_with?("api-ms-win-") || system_dlls.include?(lower)
+
+      source = find_dll.call(dll)
+      abort "cannot locate #{dll} required by #{File.basename(file)}" unless source
+
+      dest = File.join(dir, dll)
+      unless File.exist?(dest)
+        FileUtils.cp(source, dest)
+        File.chmod(0o644, dest)
+        queue << dest
+      end
+      bundled << dll
+    end
+  end
+
+  puts "bundled libraries for #{binary}: #{bundled.sort.uniq.join(", ")}"
+
+else
+  abort "unsupported platform: #{RUBY_PLATFORM}"
+end

@@ -20,11 +20,26 @@ command -v gh >/dev/null 2>&1 || { echo "gh CLI required" >&2; exit 2; }
 
 staging="$(mktemp -d)"
 trap 'rm -rf "$staging"' EXIT
-cp -r "$assets_dir/." "$staging/"
+
+# actions/upload-artifact keeps the dist/ and pkg/ path components when the
+# artifact is downloaded with merge-multiple. Accept that layout as well as a
+# flat directory (local `script/publish dist`).
+for sub in dist pkg; do
+  [ -d "$assets_dir/$sub" ] && cp -r "$assets_dir/$sub/." "$staging/"
+done
+find "$assets_dir" -maxdepth 1 -type f -exec cp {} "$staging/" \;
 # Gems are produced per platform by script/gem / CI gem-package jobs
 for gem in "$repo_root"/pkg/*.gem; do
   [ -f "$gem" ] && cp "$gem" "$staging/"
 done
+
+# Only files are release assets; never pass directories to gh (a nested
+# staging tree would make gh try to upload a directory as an asset).
+files=()
+while IFS= read -r file; do
+  files+=("$file")
+done < <(find "$staging" -maxdepth 1 -type f | sort)
+[ "${#files[@]}" -gt 0 ] || { echo "no release assets in $staging" >&2; exit 2; }
 
 notes="Celerite $version
 
@@ -43,10 +58,10 @@ nothing on your PATH is replaced."
 
 if gh release view "$tag" --repo ShiningRay/celerite >/dev/null 2>&1; then
   echo "Release $tag exists — uploading assets (clobber)"
-  gh release upload "$tag" "$staging"/* --repo ShiningRay/celerite --clobber
+  gh release upload "$tag" "${files[@]}" --repo ShiningRay/celerite --clobber
 else
   echo "Creating release $tag"
-  gh release create "$tag" "$staging"/* \
+  gh release create "$tag" "${files[@]}" \
     --repo ShiningRay/celerite \
     --title "celerite $version" \
     --notes "$notes"
