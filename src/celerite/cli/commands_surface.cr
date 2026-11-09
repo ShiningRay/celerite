@@ -286,10 +286,11 @@ module Celerite
                        [] of Gem::Version
                      end
                    else
-                     # requirement comes from the compact index, not the
-                     # current-bundle resolution (racc is not a Gemfile
-                     # dependency yet)
-                     entries = resolution.compact_index_client.info(name)
+                     # When scoped `--source` is used, resolve the requirement
+                     # from that source rather than the primary remote.
+                     source_remote = flag_value(rest, "--source") || flag_value(rest, "-s")
+                     client = source_remote ? resolution.compact_index_client_for(source_remote) : resolution.compact_index_client
+                     entries = client.info(name)
                      entries.map { |e| Gem::Version.new(e.version) }.reject(&.prerelease?)
                    end
         return "" if versions.empty?

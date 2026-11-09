@@ -15,10 +15,10 @@ resulting `Gemfile.lock`/`Gemfile` artifacts.
 
 | Bundler | Result |
 |---|---|
-| 4.0.24 | 91 passed, 0 failed (`script/differential` full suite) |
-| 2.7.2 | 90 passed, 0 failed, 1 skipped (`add-group`, documented deferral: the 2.7.2 reference auto-installs Bundler 4.0.24 from rubygems.org, which the offline sandbox cannot prove; `BUNDLER_REF_VERSION=2.7.2 script/differential`) |
+| 4.0.24 | 92 passed, 0 failed (`script/differential` full suite) |
+| 2.7.2 | 91 passed, 0 failed, 1 skipped (`add-group`, documented deferral: the 2.7.2 reference auto-installs Bundler 4.0.24 from rubygems.org, which the offline sandbox cannot prove; `BUNDLER_REF_VERSION=2.7.2 script/differential`) |
 
-Of the 91 fixtures, the completed milestones map as follows:
+Of the 92 fixtures, the completed milestones map as follows:
 
 - **M0** (contract & differential harness): every lockfile-driven fixture is
   executed differentially — unresolved lockfile coverage (`check-*`,
@@ -68,7 +68,7 @@ Of the 91 fixtures, the completed milestones map as follows:
   `outdated-cooldown-http`, `outdated-cooldown-table`, `outdated-source`,
   `outdated-verbose`,
   `outdated-strict`, `outdated-update-strict`, `outdated-only-explicit`, `outdated-local`,
-  `outdated-group`, `outdated-named`, `outdated-groups`, config set/get/
+  `outdated-group`, `outdated-named`, `outdated-groups`, `add-source`, config set/get/
   unset fixtures. `add` feature fixtures: `add-skip-install`, `add-version`,
   `add-strict`, `add-optimistic`, `add-require`, `add-path`, `add-git`
   (Gemfile lines pinned by the harness `file-contains` content probe).
@@ -130,7 +130,7 @@ documented instead of silently emulated:
 | `clean --dry-run/--force` | **Supported** — `--dry-run` wired (`Would have removed`); `--force` accepted (`clean-force` dual-passed in Celerite's bundle-path mode; the Bundler system-gems mode is not used by Celerite). |
 | `config list/get/set/unset --parseable` | `--parseable` handled for `get`; `list --parseable` iterates settings instead of full pretty-print. |
 | `plugin install --source/--version/--git/--branch/--ref` | **Supported** — `--source` remote install: failure path on HTTP v2 (`plugin-source` exit 7) and success path with plugin-tree materialization + `Fetching`/`Installing` output (`plugin-source-ok` dual-passed; fixture plugin gem `my_plugin` ships `plugins.rb`); `--git/--branch/--ref` flag validation + git checkout materialization (`plugin-git-local`/`plugin-git-local2` dual-passed, incl. malformatted 29 exit). |
-| `add --group/--version/--source/--path/--git/--branch/--ref/--skip-install/--strict/--optimistic` | **Partial** — `--group` (`add-group`), `--skip-install` (`add-skip-install`), `--version` (`add-version`), `--strict` (`add-strict`, exit 7 on the reference `= 1.8` error), `--optimistic` (`add-optimistic`), `--require` (`add-require`), `--path` (`add-path`), `--git`/`--branch` (`add-git`) are differential-verified with Gemfile-line content probes; `--source` writes the `source:` suffix but scoped-source resolution is not implemented; `--ref` and `--github` are suffix-only/not fixture-proven. |
+| `add --group/--version/--source/--path/--git/--branch/--ref/--skip-install/--strict/--optimistic` | **Partial** — `--group` (`add-group`), `--skip-install` (`add-skip-install`), `--version` (`add-version`), `--strict` (`add-strict`, exit 7 on the reference `= 1.8` error), `--optimistic` (`add-optimistic`), `--require` (`add-require`), `--path` (`add-path`), `--git`/`--branch` (`add-git`), and scoped `--source` requirement resolution (`add-source`) are differential-verified; lock-generation source sharding remains a known remaining gap; `--ref` and `--github` are suffix-only/not fixture-proven. |
 | `binstubs --force/--standalone/--all-platforms/--shebang/--all` | **Supported** — `--force`/`--all`/`--all-platforms` honored with skip message (`binstubs-flags` dual-passed); `--shebang` rewrites the stub first line (`binstubs-shebang-line` dual-passed via harness `first-line` content probe; 2.7.x remembers `shebang` in local config). |
 
 ## Upstream spec suite coverage boundary

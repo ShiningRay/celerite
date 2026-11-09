@@ -1,0 +1,1 @@
+add racc --skip-install --source=file:///@INDEX_DIR@
