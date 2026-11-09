@@ -96,12 +96,13 @@ run_fixture() {
 
   # Ruby (native Windows) needs a Windows path for file:// sources
   index_dir="$(cygpath -m "$repo_root/fixtures/gem-index" 2>/dev/null || echo "$repo_root/fixtures/gem-index")"
+  scoped_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-scoped" 2>/dev/null || echo "$repo_root/fixtures/gem-index-scoped")"
   index_url="file://$index_dir"
   for side in ref cel; do
     sandbox="$ref_sandbox"; [ "$side" = "cel" ] && sandbox="$cel_sandbox"
     for f in Gemfile Gemfile.lock; do
       [ -f "$fixture_dir/$f" ] || continue
-      sed -e "s|@INDEX_DIR@|$index_dir|" -e "s|@BUNDLER_VERSION@|$bundler_version|"         "$fixture_dir/$f" > "$sandbox/project/$f"
+      sed -e "s|@INDEX_DIR@|$index_dir|" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|" -e "s|@BUNDLER_VERSION@|$bundler_version|"         "$fixture_dir/$f" > "$sandbox/project/$f"
     done
   done
   # extra files, if any (including dotfiles such as .bundle/config: `*` glob
@@ -113,7 +114,7 @@ run_fixture() {
     for side in ref cel; do
       sandbox="$ref_sandbox"; [ "$side" = "cel" ] && sandbox="$cel_sandbox"
       while IFS= read -r ef; do
-        sed -i -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g" "$ef"
+        sed -i -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g" "$ef"
       done < <(find "$sandbox/project" -type f \( -name "*.rb" -o -name "*.txt" \) 2>/dev/null)
     done
   fi
@@ -170,7 +171,7 @@ run_fixture() {
   : > "$work/ref.out"; : > "$work/ref.err"; ref_code=0
   while IFS= read -r cmd <&3; do
     [ -z "$cmd" ] && continue
-    cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+    cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
     (
       cd "$ref_sandbox/project" || exit 99
       env "${isolated_env[@]}" ruby "$bundler_exe" $cmd
@@ -182,7 +183,7 @@ run_fixture() {
   : > "$work/cel.out"; : > "$work/cel.err"; cel_code=0
   while IFS= read -r cmd <&4; do
     [ -z "$cmd" ] && continue
-    cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+    cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
     (
       cd "$cel_sandbox/project" || exit 99
       env HOME="$cel_sandbox/home" USERPROFILE="$cel_sandbox/home" \
@@ -241,7 +242,7 @@ run_fixture() {
   if [ -f "$fixture_dir/file-contains" ]; then
     while IFS=$'\t' read -r rel needle; do
       [ -z "$rel" ] && continue
-      needle="$(printf '%s' "$needle" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+      needle="$(printf '%s' "$needle" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
       if ! grep -Fq -- "$needle" "$ref_sandbox/project/$rel" 2>/dev/null || \
          ! grep -Fq -- "$needle" "$cel_sandbox/project/$rel" 2>/dev/null; then
         ok=0; detail+="  file-contains differs ($rel): needle=$needle"$'\n'

@@ -60,11 +60,12 @@ module Celerite
       getter source_index : Int32
       getter source_type : String # GEM / PATH / GIT
       getter source_info : SourceInfo?
+      getter source_remote : String?
 
       def initialize(@name : String, @version : Gem::Version, @platform : String?,
                      @dependencies : Array(Lockfile::SpecDependency), @checksum : String?,
                      @source_index : Int32, @source_type : String = "GEM",
-                     @source_info : SourceInfo? = nil)
+                     @source_info : SourceInfo? = nil, @source_remote : String? = nil)
       end
 
       def platform_ruby? : Bool
@@ -208,6 +209,22 @@ module Celerite
 
     def compact_index_client_for(remote : String) : CompactIndex::Client
       CompactIndex::Client.new(remote, user_cache_root)
+    end
+
+    # Scoped Rubygems source (`gem "x", source: <remote>`), normalized like
+    # the lockfile remotes.
+    def scoped_remote_for(name : String) : String?
+      dep = @evaluation.dependencies.find(&.name.==(name))
+      src = dep.try(&.source)
+      return nil unless src && (src.type == "Rubygems" || src.type == "Metadata")
+      remote = src.remotes.try(&.first?) || src.remote
+      return nil unless remote && !remote.empty?
+      remote += "/" unless remote.ends_with?("/")
+      remote
+    end
+
+    def remote_for(name : String) : String
+      scoped_remote_for(name) || primary_remote
     end
 
     private def user_cache_root : String
@@ -362,7 +379,9 @@ module Celerite
           )
         end
         log_index_fetch
-        entries = compact_index_client.info(name)
+        remote = remote_for(name)
+        client = remote == primary_remote ? compact_index_client : compact_index_client_for(remote)
+        entries = client.info(name)
         entries.each do |entry|
           version = Gem::Version.new(entry.version)
           @cooldown_skipped << {name, entry.version, entry.created_at.not_nil!} if cooldown_excluded?(name, version, entry.created_at)
@@ -382,7 +401,7 @@ module Celerite
           ruby_req = Gem::Requirement.new(entry.required_ruby_version_list)
           # Parity: the reference only records per-gem checksums from remote
           # API sources; file:// indexes install without them.
-          checksum = primary_remote.starts_with?("file:") ? nil : entry.checksum
+          checksum = remote.starts_with?("file:") ? nil : entry.checksum
           Resolver::IndexSpec.new(name, version, platform, deps, ruby_req, checksum)
         end
       rescue ex : CompactIndex::Error
@@ -625,7 +644,7 @@ module Celerite
         source = non_gem_sources[name]?
         source_type = source ? source.type.upcase : "GEM"
         source_type = "PATH" if source_type == "GEMSPEC"
-        specs << ResolvedSpec.new(name, spec.version, nil, lock_deps, spec.checksum, 0, source_type, source)
+        specs << ResolvedSpec.new(name, spec.version, nil, lock_deps, spec.checksum, 0, source_type, source, remote_for(name))
       end
       specs.sort_by!(&.full_name)
       specs
@@ -667,6 +686,13 @@ module Celerite
         if source = non_gem_sources[name]?
           specs = index_for_source_gem(name, source)
           index[name] = specs
+          specs.each do |spec|
+            spec.dependencies.each do |dep|
+              queue << dep.name unless seen.includes?(dep.name)
+            end
+          end
+        elsif scoped_remote_for(name)
+          index[name] = specs = index_specs_for(name)
           specs.each do |spec|
             spec.dependencies.each do |dep|
               queue << dep.name unless seen.includes?(dep.name)
@@ -791,13 +817,16 @@ module Celerite
           [Lockfile::Option.new("remote", remote)], source_specs))
       end
 
-      remote = primary_remote
-      gem_specs = @resolved_specs.select(&.source_type.==("GEM")).map do |spec|
-        Lockfile::Spec.new(spec.name, spec.version.to_s, spec.platform, spec.dependencies)
+      @resolved_specs.select(&.source_type.==("GEM")).group_by { |spec|
+        spec.source_remote || primary_remote
+      }.each do |remote, specs|
+        gem_specs = specs.map do |spec|
+          Lockfile::Spec.new(spec.name, spec.version.to_s, spec.platform, spec.dependencies)
+        end
+        gem_specs.sort_by!(&.full_name)
+        sections << Lockfile::TypedSection.new(Lockfile::SourceSection.new("GEM",
+          [Lockfile::Option.new("remote", remote)], gem_specs))
       end
-      gem_specs.sort_by!(&.full_name)
-      sections << Lockfile::TypedSection.new(Lockfile::SourceSection.new("GEM",
-        [Lockfile::Option.new("remote", remote)], gem_specs))
 
       platforms = [] of String
       # Existing lockfile platforms persist (parity with re-lock behavior)

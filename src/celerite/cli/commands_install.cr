@@ -100,6 +100,7 @@ module Celerite
         abi = ruby_abi(bridge)
         downloader = Downloader.new(resolution.primary_remote, downloader_cache_root)
         installer = Installer.new(install_path, abi, bridge, downloader, stdout)
+        installers_by_remote = {resolution.primary_remote => installer}
         if target_rbconfig = flag_value(rest, "--target-rbconfig")
           installer.target_rbconfig = File.expand_path(target_rbconfig, Dir.current)
         end
@@ -193,7 +194,9 @@ module Celerite
         cached_paths = {} of String => String
         pending.each do |spec|
           stdout.puts "Fetching #{spec.name} #{spec.version}#{was_suffix.call(spec)}"
-          cached_paths[spec.full_name] = downloader.fetch(
+          remote = resolution.remote_for(spec.name)
+          spec_downloader = remote == resolution.primary_remote ? downloader : (installers_by_remote[remote]?.try(&.downloader) || Downloader.new(remote, downloader_cache_root))
+          cached_paths[spec.full_name] = spec_downloader.fetch(
             spec.name, spec.version.to_s, spec.platform, spec.checksum
           )
         end
@@ -210,7 +213,14 @@ module Celerite
         (pure + ext).each do |spec|
           cached = cached_paths[spec.full_name]?
           stdout.puts "Installing #{spec.name} #{spec.version}#{was_suffix.call(spec)}#{native_suffix(bridge, cached)}"
-          installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum)
+          remote = resolution.remote_for(spec.name)
+          spec_installer = installers_by_remote[remote]? || begin
+            remote_downloader = Downloader.new(remote, downloader_cache_root)
+            next_installer = Installer.new(install_path, abi, bridge, remote_downloader, stdout)
+            installers_by_remote[remote] = next_installer
+            next_installer
+          end
+          spec_installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum)
           # The reference records the installed package's sha256 in CHECKSUMS
           # even for file:// sources.
           if cached && File.file?(cached)

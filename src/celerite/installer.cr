@@ -13,6 +13,7 @@ module Celerite
   class Installer
     getter install_path : String
     getter ruby_abi : String
+    getter downloader : Downloader
     property target_rbconfig : String?
 
     def initialize(@install_path : String, @ruby_abi : String, @bridge : Bridge::Client,
