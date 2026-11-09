@@ -178,6 +178,9 @@ def op_build_extension(payload)
   require "fileutils"
   # Builder output would corrupt the JSON Lines protocol on stdout; silence it
   Gem::DefaultUserInteraction.ui = Gem::SilentUI.new
+  if target_rbconfig = payload["target_rbconfig"]
+    Gem.set_target_rbconfig(target_rbconfig)
+  end
   gem_dir = payload["gem_dir"]
   destination = payload["destination"] # extensions/<platform>/<abi>/<full_name>
   # The payload may not contain a .gemspec; load the spec from the cached .gem

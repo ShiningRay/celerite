@@ -1076,8 +1076,7 @@ module Celerite
         only_explicit = rest.includes?("--only-explicit")
         include_pre = rest.includes?("--pre")
         strict = rest.includes?("--strict") || rest.includes?("--filter-strict") ||
-                 rest.includes?("--patch") || rest.includes?("--minor") || rest.includes?("--major") ||
-                 rest.includes?("--update-strict")
+                 rest.includes?("--patch") || rest.includes?("--minor") || rest.includes?("--major")
         promotion = if rest.includes?("--patch")
                       "patch"
                     elsif rest.includes?("--minor")

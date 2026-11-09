@@ -13,6 +13,7 @@ module Celerite
   class Installer
     getter install_path : String
     getter ruby_abi : String
+    property target_rbconfig : String?
 
     def initialize(@install_path : String, @ruby_abi : String, @bridge : Bridge::Client,
                    @downloader : Downloader, progress : IO)
@@ -91,7 +92,7 @@ module Celerite
         extension_dir = File.join(@install_root, "extensions", Gem::Platform.local.to_s,
           @ruby_abi, full_name)
         build_result = @bridge.build_extension(
-          File.join(target_gems, full_name), extension_dir, name, gem_file
+          File.join(target_gems, full_name), extension_dir, name, gem_file, target_rbconfig
         )
         if build_result["error"]?
           raise Error.new("extension build failed for #{full_name}: #{build_result["error"].as_s}")

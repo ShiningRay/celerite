@@ -100,6 +100,9 @@ module Celerite
         abi = ruby_abi(bridge)
         downloader = Downloader.new(resolution.primary_remote, downloader_cache_root)
         installer = Installer.new(install_path, abi, bridge, downloader, stdout)
+        if target_rbconfig = flag_value(rest, "--target-rbconfig")
+          installer.target_rbconfig = File.expand_path(target_rbconfig, Dir.current)
+        end
 
         # --no-lock: resolve from scratch every run (no reuse, no write).
         no_lock = rest.includes?("--no-lock")

@@ -15,10 +15,10 @@ resulting `Gemfile.lock`/`Gemfile` artifacts.
 
 | Bundler | Result |
 |---|---|
-| 4.0.24 | 83 passed, 0 failed (`script/differential` full suite) |
-| 2.7.2 | 82 passed, 0 failed, 1 skipped (`add-group`, documented deferral: the 2.7.2 reference auto-installs Bundler 4.0.24 from rubygems.org, which the offline sandbox cannot prove; `BUNDLER_REF_VERSION=2.7.2 script/differential`) |
+| 4.0.24 | 87 passed, 0 failed (`script/differential` full suite) |
+| 2.7.2 | 86 passed, 0 failed, 1 skipped (`add-group`, documented deferral: the 2.7.2 reference auto-installs Bundler 4.0.24 from rubygems.org, which the offline sandbox cannot prove; `BUNDLER_REF_VERSION=2.7.2 script/differential`) |
 
-Of the 83 fixtures, the completed milestones map as follows:
+Of the 87 fixtures, the completed milestones map as follows:
 
 - **M0** (contract & differential harness): every lockfile-driven fixture is
   executed differentially — unresolved lockfile coverage (`check-*`,
@@ -32,7 +32,8 @@ Of the 83 fixtures, the completed milestones map as follows:
   nothing), `update-ruby` (`--ruby` rewrite),
   `multi-platform-lock`, `platform-variant-fail`, `cooldown`,
   `cooldown-flag`, `cooldown-source` (HTTP v2 `created_at`, 4.0.24-only;
-  2.7.2 rejects `--cooldown` with `Unknown switches "--cooldown"`).
+  2.7.2 rejects `--cooldown` with `Unknown switches "--cooldown"`), `lock-bundler-bare`
+  (bare `--bundler` no-op in the pinned fixture source).
 - **M3** (install/cache/runtime): `install-fresh`, `install-rerun`,
   `install-standalone`, `install-frozen` (flag rejection per profile),
   `install-flag-frozen` (`--force/--local/--prefer-local/--no-lock/--trust-policy`),
@@ -43,7 +44,8 @@ Of the 83 fixtures, the completed milestones map as follows:
   `lock-normalize` (`--normalize-platforms` rewrite ordering),
   `binstubs-flags`, `binstubs-shebang`, `binstubs-shebang-line` (`--shebang`
   first-line content proof via harness `first-line` marker, incl. 2.7.x remembered `shebang` config),
-  `pristine(-named)`, `git-pristine`, `clean-unused`, `native-ext`,
+  `pristine(-named)`, `git-pristine`, `clean-unused`, `clean-force`, `native-ext`,
+  `native-ext-target`,
   `ruby-api`, `bundler-inline`, `exec-missing` (105-127 evidence),
   `exec-loader`, `exec-loader-disabled`, `exec-thor-version`
   (directly loadable Ruby scripts via the `Kernel.load` runtime adapter;
@@ -63,7 +65,7 @@ Of the 83 fixtures, the completed milestones map as follows:
   `add-group`, `binstubs-*`,
   `ruby-api`, `bundler-inline`, `init-fresh`, `outdated-list`,
   `outdated-parseable`, `outdated-parseable-current`, `outdated-filter-*`,
-  `outdated-strict`, `outdated-only-explicit`, `outdated-local`,
+  `outdated-strict`, `outdated-update-strict`, `outdated-only-explicit`, `outdated-local`,
   `outdated-group`, `outdated-named`, `outdated-groups`, config set/get/
   unset fixtures. `add` feature fixtures: `add-skip-install`, `add-version`,
   `add-strict`, `add-optimistic`, `add-require`, `add-path`, `add-git`
@@ -115,15 +117,15 @@ documented instead of silently emulated:
 |---|---|
 | `install --force` / `--redownload` | **Supported** — `install-force` differential-verified forced reinstall (Installed already-installed_specs) on both profiles. |
 | `install --standalone[=GROUP]` | **Supported** — `install-standalone` differential (setup.rb byte parity) on both profiles. |
-| `install --local/--prefer-local/--no-cache/--no-lock/--trust-policy/--target-rbconfig` | `--local`/`--prefer-local` local-gem rejection; `--no-lock` no-reuse; `--trust-policy` validation; `--target-rbconfig` **unsupported**. |
+| `install --local/--prefer-local/--no-cache/--no-lock/--trust-policy/--target-rbconfig` | `--local`/`--prefer-local` local-gem rejection; `--no-lock` no-reuse; `--trust-policy` validation; `--target-rbconfig` **supported** (`native-ext-target` dual-passed; bridge passes the target rbconfig to `Gem.set_target_rbconfig` before `Gem::Ext::Builder`). |
 | `lock --add-checksums` | **Supported** — differential-covered on both profiles. |
 | `lock --normalize-platforms` | **Supported** — `lock-normalize` differential dual-passed. |
 | `lock --bundler[=VERSION]` | **Unsupported** — documented; bare form does not re-lock without update. |
 | `update --bundler[=VERSION]` | **Unsupported** — requires network version fetch; offline probes exit 17. |
 | `update --major/--minor/--patch/--strict/--ruby/--group/--source` | **Supported** — `--patch/--minor/--major` candidate ceiling (`update-patch` dual-passed); `--strict` patch ceiling + stayed-same report (`update-strict` dual-passed); `--source <name>` named-source filter, unknown name unlocks nothing (`update-source` dual-passed); `--ruby` ruby-rewrite + group-limit (`update-ruby` dual-passed). |
-| `outdated --local/--source/--filter-strict/--update-strict/--porcelain/--group/--groups/--filter-*` | **Partial** — `--parseable`/`--porcelain` (`outdated-parseable`, dual-passed), `--filter-major/minor/patch` (`outdated-filter-*`), `--strict`/`--filter-strict` (`outdated-strict`), `--only-explicit` (`outdated-only-explicit`), `--local` cache candidates (`outdated-local`), `--group` (`outdated-group`), `--groups` (`outdated-groups`), and named gems (`outdated-named`) are differential-verified. `--source`, `--update-strict`, `--cooldown`, and `--verbose` annotation paths remain **unsupported**. |
+| `outdated --local/--source/--filter-strict/--update-strict/--porcelain/--group/--groups/--filter-*` | **Partial** — `--parseable`/`--porcelain` (`outdated-parseable`, dual-passed), `--filter-major/minor/patch` (`outdated-filter-*`), `--strict`/`--filter-strict` (`outdated-strict`), `--only-explicit` (`outdated-only-explicit`), `--local` cache candidates (`outdated-local`), `--group` (`outdated-group`), `--groups` (`outdated-groups`), `--update-strict` (accepted with no additional cap in `outdated`; `outdated-update-strict`), and named gems (`outdated-named`) are differential-verified. `--source`, `--cooldown`, and `--verbose` annotation paths remain **unsupported**. |
 | `cache --all-platforms/--cache-path/--no-install` | **Supported** — `--cache-path=<path>` honored (`cache-path` dual-passed); `--no-install` honored (skip install); `--all-platforms` copies every platform variant of locked specs from the download cache + 4.x re-fetch line / 2.7.x `BUNDLE_CACHE_ALL` remembered config (`cache-all-platforms` dual-passed). |
-| `clean --dry-run/--force` | `--dry-run` wired (`Would have removed`); `--force` (system gems wipe) **unsupported** by design. |
+| `clean --dry-run/--force` | **Supported** — `--dry-run` wired (`Would have removed`); `--force` accepted (`clean-force` dual-passed in Celerite's bundle-path mode; the Bundler system-gems mode is not used by Celerite). |
 | `config list/get/set/unset --parseable` | `--parseable` handled for `get`; `list --parseable` iterates settings instead of full pretty-print. |
 | `plugin install --source/--version/--git/--branch/--ref` | **Supported** — `--source` remote install: failure path on HTTP v2 (`plugin-source` exit 7) and success path with plugin-tree materialization + `Fetching`/`Installing` output (`plugin-source-ok` dual-passed; fixture plugin gem `my_plugin` ships `plugins.rb`); `--git/--branch/--ref` flag validation + git checkout materialization (`plugin-git-local`/`plugin-git-local2` dual-passed, incl. malformatted 29 exit). |
 | `add --group/--version/--source/--path/--git/--branch/--ref/--skip-install/--strict/--optimistic` | **Partial** — `--group` (`add-group`), `--skip-install` (`add-skip-install`), `--version` (`add-version`), `--strict` (`add-strict`, exit 7 on the reference `= 1.8` error), `--optimistic` (`add-optimistic`), `--require` (`add-require`), `--path` (`add-path`), `--git`/`--branch` (`add-git`) are differential-verified with Gemfile-line content probes; `--source` writes the `source:` suffix but scoped-source resolution is not implemented; `--ref` and `--github` are suffix-only/not fixture-proven. |
