@@ -15,10 +15,10 @@ resulting `Gemfile.lock`/`Gemfile` artifacts.
 
 | Bundler | Result |
 |---|---|
-| 4.0.24 | 89 passed, 0 failed (`script/differential` full suite) |
-| 2.7.2 | 88 passed, 0 failed, 1 skipped (`add-group`, documented deferral: the 2.7.2 reference auto-installs Bundler 4.0.24 from rubygems.org, which the offline sandbox cannot prove; `BUNDLER_REF_VERSION=2.7.2 script/differential`) |
+| 4.0.24 | 91 passed, 0 failed (`script/differential` full suite) |
+| 2.7.2 | 90 passed, 0 failed, 1 skipped (`add-group`, documented deferral: the 2.7.2 reference auto-installs Bundler 4.0.24 from rubygems.org, which the offline sandbox cannot prove; `BUNDLER_REF_VERSION=2.7.2 script/differential`) |
 
-Of the 89 fixtures, the completed milestones map as follows:
+Of the 91 fixtures, the completed milestones map as follows:
 
 - **M0** (contract & differential harness): every lockfile-driven fixture is
   executed differentially — unresolved lockfile coverage (`check-*`,
@@ -65,7 +65,8 @@ Of the 89 fixtures, the completed milestones map as follows:
   `add-group`, `binstubs-*`,
   `ruby-api`, `bundler-inline`, `init-fresh`, `outdated-list`,
   `outdated-parseable`, `outdated-parseable-current`, `outdated-filter-*`,
-  `outdated-cooldown-http`, `outdated-cooldown-table`,
+  `outdated-cooldown-http`, `outdated-cooldown-table`, `outdated-source`,
+  `outdated-verbose`,
   `outdated-strict`, `outdated-update-strict`, `outdated-only-explicit`, `outdated-local`,
   `outdated-group`, `outdated-named`, `outdated-groups`, config set/get/
   unset fixtures. `add` feature fixtures: `add-skip-install`, `add-version`,
@@ -124,7 +125,7 @@ documented instead of silently emulated:
 | `lock --bundler[=VERSION]` | **Unsupported** — documented; bare form does not re-lock without update. |
 | `update --bundler[=VERSION]` | **Unsupported** — requires network version fetch; offline probes exit 17. |
 | `update --major/--minor/--patch/--strict/--ruby/--group/--source` | **Supported** — `--patch/--minor/--major` candidate ceiling (`update-patch` dual-passed); `--strict` patch ceiling + stayed-same report (`update-strict` dual-passed); `--source <name>` named-source filter, unknown name unlocks nothing (`update-source` dual-passed); `--ruby` ruby-rewrite + group-limit (`update-ruby` dual-passed). |
-| `outdated --local/--source/--filter-strict/--update-strict/--porcelain/--group/--groups/--filter-*` | **Partial** — `--parseable`/`--porcelain` (`outdated-parseable`, dual-passed), `--filter-major/minor/patch` (`outdated-filter-*`), `--strict`/`--filter-strict` (`outdated-strict`), `--only-explicit` (`outdated-only-explicit`), `--local` cache candidates (`outdated-local`), `--group` (`outdated-group`), `--groups` (`outdated-groups`), `--update-strict` (accepted with no additional cap in `outdated`; `outdated-update-strict`), `--cooldown` annotation (`outdated-cooldown-http` parseable + `outdated-cooldown-table` table; 2.7.2 rejects the flag), and named gems (`outdated-named`) are differential-verified. `--source` and `--verbose` annotation paths remain **unsupported**. |
+| `outdated --local/--source/--filter-strict/--update-strict/--porcelain/--group/--groups/--filter-*` | **Partial** — `--parseable`/`--porcelain` (`outdated-parseable`, dual-passed), `--filter-major/minor/patch` (`outdated-filter-*`), `--strict`/`--filter-strict` (`outdated-strict`), `--only-explicit` (`outdated-only-explicit`), `--local` cache candidates (`outdated-local`), `--group` (`outdated-group`), `--groups` (`outdated-groups`), `--update-strict` (accepted with no additional cap in `outdated`; `outdated-update-strict`), `--cooldown` annotation (`outdated-cooldown-http` parseable + `outdated-cooldown-table` table; 2.7.2 rejects the flag), `--source` candidate-index selection (`outdated-source`), deterministic diagnostic table header and `Path` column (`outdated-verbose`), and named gems (`outdated-named`) are differential-verified. Other option annotation paths remain **unsupported**. |
 | `cache --all-platforms/--cache-path/--no-install` | **Supported** — `--cache-path=<path>` honored (`cache-path` dual-passed); `--no-install` honored (skip install); `--all-platforms` copies every platform variant of locked specs from the download cache + 4.x re-fetch line / 2.7.x `BUNDLE_CACHE_ALL` remembered config (`cache-all-platforms` dual-passed). |
 | `clean --dry-run/--force` | **Supported** — `--dry-run` wired (`Would have removed`); `--force` accepted (`clean-force` dual-passed in Celerite's bundle-path mode; the Bundler system-gems mode is not used by Celerite). |
 | `config list/get/set/unset --parseable` | `--parseable` handled for `get`; `list --parseable` iterates settings instead of full pretty-print. |

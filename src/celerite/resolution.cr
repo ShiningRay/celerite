@@ -206,6 +206,10 @@ module Celerite
       @compact_index_client ||= CompactIndex::Client.new(primary_remote, user_cache_root)
     end
 
+    def compact_index_client_for(remote : String) : CompactIndex::Client
+      CompactIndex::Client.new(remote, user_cache_root)
+    end
+
     private def user_cache_root : String
       home = Config.user_home || "."
       File.join(home, ".bundle", "cache", "compact_index")

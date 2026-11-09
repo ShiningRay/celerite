@@ -117,6 +117,10 @@ module Celerite
           skip_next = true
           next
         end
+        if arg == "--verbose"
+          ENV["CELERITE_VERBOSE"] = "1"
+          next
+        end
         next if GLOBAL_FLAGS.includes?(arg) && index < 2
         result << arg
       end

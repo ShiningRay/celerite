@@ -1042,6 +1042,14 @@ module Celerite
         unless cooldown_flag_valid?(rest, stderr, resolution.bridge_bundler_version)
           return 15
         end
+        verbose = ENV["CELERITE_VERBOSE"]? == "1"
+        if verbose
+          stdout.puts "Running `bundle outdated --verbose` with bundler #{resolution.bridge_bundler_version}"
+          primary = resolution.primary_remote
+          if primary.starts_with?("file:") || primary.includes?("127.0.0.1") || primary.includes?("localhost")
+            stdout.puts "Re-resolving dependencies because bundler is unlocking Using a local server, bundler won't use the CompactIndex API"
+          end
+        end
         # Pinned by the `outdated-parseable` differential: parseable mode
         # sends resolution progress to stderr; table mode writes it to stdout.
         # Local (cache-only) resolution prints Resolving but no index fetch.
@@ -1093,6 +1101,18 @@ module Celerite
                     end
         group_filter = flag_value(rest, "--group")
         groups_mode = group_filter ? "" : (rest.includes?("--groups") ? "all" : nil)
+        source_flag = flag_value(rest, "--source")
+        source_client = if source_flag
+                          matched = resolution.evaluation.sources.find do |source|
+                            candidate = source.remotes.try(&.first?) || source.remote
+                            (source.name && source.name == source_flag) ||
+                              (candidate && candidate.chomp('/').downcase == source_flag.chomp('/').downcase)
+                          end
+                          source_remote = matched ? (matched.remotes.try(&.first?) || matched.remote || source_flag) : source_flag
+                          resolution.compact_index_client_for(source_remote)
+                        else
+                          resolution.compact_index_client
+                        end
         explicit_names = lockfile_try = definition.lockfile_exists? ? definition.lockfile!.dependencies.map(&.name) : [] of String
         evaluation_groups = {} of String => String
         resolution.evaluation.dependencies.each do |dep|
@@ -1110,7 +1130,7 @@ module Celerite
           versions = if local_flag
                        (local_cache_versions[spec.name]? || [] of Gem::Version).reject { |v| v.prerelease? && !include_pre }
                      else
-                       entries = resolution.compact_index_client.info(spec.name)
+                       entries = source_client.info(spec.name)
                        entries.each do |entry|
                          if created = entry.created_at
                            created_at_by_version[Gem::Version.new(entry.version)] = created
@@ -1184,6 +1204,11 @@ module Celerite
           unless resolution.bridge_bundler_version.starts_with?("2.")
             row << release_date_for(definition, resolution, spec.name, latest.to_s, spec.checksum)
           end
+          if verbose
+            abi = InstallPaths.ruby_abi(bridge)
+            path = File.join(InstallPaths.install_path(definition.config), "ruby", abi, "specifications", "#{spec.name}-#{latest}.gemspec")
+            row << (File.file?(path) ? path.gsub(/\\/, "/") : "")
+          end
           rows << row
         end
 
@@ -1227,6 +1252,7 @@ module Celerite
         # Release Date column is 4.0.24-only (2.7.x reference has 5 columns)
         header = ["Gem", "Current", "Latest", "Requested", "Groups"]
         header << "Release Date" unless resolution.bridge_bundler_version.starts_with?("2.")
+        header << "Path" if verbose
         widths = header.map_with_index do |h, i|
           Math.max(h.size, rows.max_of { |row| row[i]? ? row[i].size : 0 }) + 2
         end
