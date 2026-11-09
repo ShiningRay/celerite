@@ -175,7 +175,11 @@ module Celerite
         # pending, but never a Resolving line (pinned reference behavior,
         # update-conservative fixture).
         if reuse && pending.any?
-          stdout.puts "Fetching source index from #{resolution.primary_remote}"
+          if resolution.primary_remote.starts_with?("file:")
+            stdout.puts "Fetching source index from #{resolution.primary_remote}"
+          else
+            stdout.puts "Fetching gem metadata from #{resolution.primary_remote}."
+          end
         end
         # Reference output order: all "Fetching" lines (downloads) first,
         # then all "Installing" lines. Updated gems show "(was <old>)".

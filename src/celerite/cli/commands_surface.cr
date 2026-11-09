@@ -1039,6 +1039,9 @@ module Celerite
         parseable = rest.includes?("--parseable") || rest.includes?("--porcelain")
         local_flag = rest.includes?("--local")
         resolution = Resolution.new(definition, false, bridge)
+        unless cooldown_flag_valid?(rest, stderr, resolution.bridge_bundler_version)
+          return 15
+        end
         # Pinned by the `outdated-parseable` differential: parseable mode
         # sends resolution progress to stderr; table mode writes it to stdout.
         # Local (cache-only) resolution prints Resolving but no index fetch.
@@ -1061,6 +1064,10 @@ module Celerite
           end
         end
         specs = resolution.resolve!
+        cooldown_days = cooldown_flag_value(rest)
+        cooldown_now = resolution.cooldown_now || Time.utc.to_unix
+        cooldown_notes = {} of String => Int32
+        cooldown_adoptable = {} of String => Gem::Version
         stdout.puts "Resolving dependencies..." if local_flag && !parseable
         # A named-gem request makes the reference build and resolve a
         # second (gem-scoped) definition for output.
@@ -1095,6 +1102,7 @@ module Celerite
         rows = [] of Array(String)
         lockfile = definition.lockfile_exists? ? definition.lockfile! : nil
         local_cache_versions = local_flag ? local_cached_versions(definition, bridge, resolution) : {} of String => Array(Gem::Version)
+        created_at_by_version = {} of Gem::Version => Int64
         specs.each do |spec|
           next unless selected.empty? || selected.includes?(spec.name)
           next if only_explicit && !explicit_names.includes?(spec.name)
@@ -1103,6 +1111,11 @@ module Celerite
                        (local_cache_versions[spec.name]? || [] of Gem::Version).reject { |v| v.prerelease? && !include_pre }
                      else
                        entries = resolution.compact_index_client.info(spec.name)
+                       entries.each do |entry|
+                         if created = entry.created_at
+                           created_at_by_version[Gem::Version.new(entry.version)] = created
+                         end
+                       end
                        entries.map { |e| Gem::Version.new(e.version) }.reject { |v| v.prerelease? && !include_pre }
                      end
           dep = lockfile.try(&.dependencies.find(&.name.==(spec.name)))
@@ -1121,6 +1134,24 @@ module Celerite
           end
           latest = versions.max?
           next if latest.nil? || (latest <=> spec.version) <= 0
+
+          if cooldown_days && !strict && !promotion
+            if created = created_at_by_version[latest]
+              remaining_seconds = cooldown_days.to_i64 * 86_400_i64 - (cooldown_now - created)
+              if remaining_seconds > 0
+                remaining_days = (remaining_seconds / 86_400.0).ceil.to_i32
+                if remaining_days > 0
+                  cooldown_notes[spec.name] = remaining_days
+                  adoptable = versions.select do |candidate|
+                    created_at = created_at_by_version[candidate]?
+                    next false unless created_at
+                    (cooldown_days.to_i64 * 86_400_i64 - (cooldown_now - created_at)) <= 0
+                  end.select { |candidate| candidate > spec.version && candidate < latest }.max?
+                  cooldown_adoptable[spec.name] = adoptable if adoptable
+                end
+              end
+            end
+          end
 
           if filter_major || filter_minor || filter_patch
             current_segments = spec.version.segments
@@ -1143,6 +1174,12 @@ module Celerite
                       end
           groups = evaluation_groups[spec.name]? || "default"
           row = [spec.name, spec.version.to_s, latest.to_s, requested, groups]
+          if !parseable && (remaining = cooldown_notes[spec.name]?)
+            table_suffix = " (cooldown #{remaining}d"
+            table_suffix += ", #{cooldown_adoptable[spec.name]} out of cooldown" if cooldown_adoptable[spec.name]?
+            table_suffix += ")"
+            row[2] = latest.to_s + table_suffix
+          end
           # Release Date column is 4.0.24-only (2.7.x reference has 5 columns)
           unless resolution.bridge_bundler_version.starts_with?("2.")
             row << release_date_for(definition, resolution, spec.name, latest.to_s, spec.checksum)
@@ -1161,7 +1198,13 @@ module Celerite
           stdout.puts
           rows.each do |row|
             message = "#{row[0]} (newest #{row[2]}, installed #{row[1]}, requested #{row[3]}"
-            message += ", released #{row[5]? || ""}" unless resolution.bridge_bundler_version.starts_with?("2.")
+            if date = row[5]?
+              message += ", released #{date}" unless date.strip.empty?
+            end
+            if remaining = cooldown_notes[row[0]]?
+              message += ", in cooldown for #{remaining} more day#{remaining == 1 ? "" : "s"}"
+              message += ", newest out of cooldown #{cooldown_adoptable[row[0]]}" if cooldown_adoptable[row[0]]?
+            end
             stdout.puts "#{message})"
           end
           return rows.empty? ? 0 : 1
