@@ -197,7 +197,18 @@ module Celerite
     end
 
     private def rubygem_source_remote : String
-      rubygem_source = @sources.find(&.type.==("Rubygems"))
+      scoped_remotes = @evaluation.dependencies.compact_map do |dep|
+        source = dep.source
+        next unless source && (source.type == "Rubygems" || source.type == "Metadata")
+        remote = source.remotes.try(&.first?) || source.remote
+        remote ? remote.chomp('/') : nil
+      end.to_set
+
+      rubygem_source = @sources.select(&.type.==("Rubygems")).find do |source|
+        remote = source.remotes.try(&.first?) || source.remote
+        remote.nil? || !scoped_remotes.includes?(remote.chomp('/'))
+      end
+      rubygem_source ||= @sources.find(&.type.==("Rubygems"))
       rubygem_source.try(&.remotes.try(&.first?)) ||
         rubygem_source.try(&.remote) ||
         ""
@@ -272,12 +283,19 @@ module Celerite
     @index_fetch_logged = false
 
     private def log_index_fetch : Nil
-      return if @index_fetch_logged
-      @index_fetch_logged = true
-      if primary_remote.starts_with?("file:")
-        @progress.puts "Fetching source index from #{primary_remote}"
+      log_fetch_for(primary_remote)
+    end
+
+    @fetch_logged_remotes = Set(String).new
+
+    private def log_fetch_for(remote : String) : Nil
+      return unless @fetch_logged_remotes.add?(remote)
+      return if remote == primary_remote && @index_fetch_logged
+      @index_fetch_logged = true if remote == primary_remote
+      if remote.starts_with?("file:")
+        @progress.puts "Fetching source index from #{remote}"
       else
-        @progress.puts "Fetching gem metadata from #{primary_remote}."
+        @progress.puts "Fetching gem metadata from #{remote}."
       end
     end
 
@@ -378,8 +396,8 @@ module Celerite
             "Could not find gem '#{name}' in locally installed gems."
           )
         end
-        log_index_fetch
         remote = remote_for(name)
+        log_fetch_for(remote)
         client = remote == primary_remote ? compact_index_client : compact_index_client_for(remote)
         entries = client.info(name)
         entries.each do |entry|

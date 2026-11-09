@@ -437,6 +437,24 @@ module Celerite
       unlock : Bool | Array(String) = update ? true : false
 
       resolution = Resolution.new(definition, unlock)
+      # The Bundler dependency API warning for scoped Rubygems sources
+      # without one is printed by the reference before resolution.
+      scoped_remotes = [] of String
+      resolution.evaluation.dependencies.each do |dep|
+        source = dep.source
+        next unless source && (source.type == "Rubygems" || source.type == "Metadata")
+        remote = source.remotes.try(&.first?) || source.remote
+        next unless remote && !remote.empty?
+        scoped_remotes << remote.chomp('/')
+      end
+      unless scoped_remotes.empty? || resolution.bridge_bundler_version.starts_with?("2.")
+        stderr.puts "Your Gemfile contains scoped sources that don't implement a dependency API, namely:"
+        stderr.puts
+        scoped_remotes.uniq.each { |remote| stderr.puts "  * rubygems repository #{remote}/" }
+        stderr.puts
+        stderr.puts "Using the above gem servers may result in installing unexpected gems. To resolve this warning, make sure you use gem servers that implement dependency APIs, such as gemstash or geminabox gem servers."
+      end
+
       unless cooldown_flag_valid?(rest, stderr, resolution.bridge_bundler_version)
         return 15
       end

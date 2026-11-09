@@ -1,0 +1,4 @@
+source "file:///@INDEX_DIR@/"
+
+gem "thor"
+gem "json_pure", source: "file:///@SCOPED_INDEX_DIR@/"
