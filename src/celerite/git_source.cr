@@ -45,24 +45,36 @@ module Celerite
     end
 
     # Clones/updates the bare mirror and returns the revision for the ref.
-    def fetch(ref : String?) : String
+    #
+    # Branch/tag names are resolved against the mirror's namespaced refs so a
+    # tag or branch with the same name as a local ref cannot be picked up by
+    # accident (reference: `Bundler::Source::Git#revision_for`).
+    def fetch(branch : String? = nil, tag : String? = nil, ref : String? = nil) : String
       FileUtils.mkdir_p(File.dirname(mirror))
       unless Dir.exists?(mirror)
         run("git", ["clone", "--mirror", @remote, mirror])
       else
         run("git", ["fetch", "--quiet", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"], mirror)
       end
-      revision_for(ref)
+      revision_for(branch: branch, tag: tag, ref: ref)
     end
 
-    private def remote_ref_argument : String
-      # read from the original remote captured at construction
-      @remote
-    end
-
-    def revision_for(ref : String?) : String
-      args = ["rev-parse", ref || "HEAD"]
-      run("git", args, mirror).strip
+    # Resolves a revision without fetching (used when the lockfile already
+    # pins a revision and the mirror is present).
+    def revision_for(branch : String? = nil, tag : String? = nil, ref : String? = nil) : String
+      target =
+        if branch
+          "refs/heads/#{branch}"
+        elsif tag
+          "refs/tags/#{tag}"
+        elsif ref
+          ref
+        else
+          "HEAD"
+        end
+      output = run("git", ["rev-parse", "--verify", "#{target}^{commit}"], mirror).strip
+      raise Error.new("git revision not found for #{target} in #{@remote}") if output.empty?
+      output
     end
 
     # Ensures the checkout for the revision exists; returns its directory.

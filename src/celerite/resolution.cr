@@ -753,7 +753,7 @@ module Celerite
       when "Git"
         bundle_root = File.join(install_path_root, "ruby", ruby_abi_for_git)
         git = GitSource.new(source.remote, bundle_root)
-        revision = source.revision || git.fetch(source.branch || source.tag || source.ref)
+        revision = source.revision || git.fetch(branch: source.branch, tag: source.tag, ref: source.ref)
         source.revision = revision
         git.checkout(revision, source.submodules == true)
       else
