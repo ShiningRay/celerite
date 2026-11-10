@@ -517,9 +517,11 @@ module Celerite
         return 0
       else
         if gem_dir = installed_gem_dir(definition, spec, lockfile)
+          # Read installed gemspec for summary/homepage when available.
+          summary, homepage = read_gemspec_summary_homepage(gem_dir, spec.full_name)
           stdout.puts "#{spec.name} (#{spec.version})"
-          stdout.puts "  Summary: #{spec.name}"
-          stdout.puts "  Homepage:"
+          stdout.puts "  Summary: #{summary || spec.name}"
+          stdout.puts "  Homepage: #{homepage}" if homepage
           stdout.puts "  Path: #{gem_dir}"
           stdout.puts "  Default Gem: no"
           # For git specs, append short revision if available.
@@ -536,6 +538,29 @@ module Celerite
       end
       stderr.puts "Could not find #{spec.full_name} in locally installed gems"
       7
+    end
+
+    private def self.read_gemspec_summary_homepage(gem_dir : String, full_name : String) : {String?, String?}
+      # Try installed specifications first.
+      install_root = File.dirname(File.dirname(gem_dir))
+      spec_path = File.join(install_root, "specifications", "#{full_name}.gemspec")
+      text = File.file?(spec_path) ? File.read(spec_path) : nil
+      # Fallback: search abi directories.
+      if text.nil?
+        ruby_root = File.dirname(install_root)
+        Dir.each_child(ruby_root) do |abi|
+          candidate = File.join(ruby_root, abi, "specifications", "#{full_name}.gemspec")
+          if File.file?(candidate)
+            text = File.read(candidate)
+            break
+          end
+        end
+      end
+      return {nil, nil} unless text
+
+      summary = text.match(/spec\.summary\s*=\s*["']([^"']*)["']/).try(&.[1])
+      homepage = text.match(/spec\.homepage\s*=\s*["']([^"']*)["']/).try(&.[1])
+      {summary, homepage}
     end
 
     # ------------------------------------------------------------------
