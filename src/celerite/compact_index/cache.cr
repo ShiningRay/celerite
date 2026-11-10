@@ -61,34 +61,48 @@ module Celerite
 
     # HTTP(S) fetcher over stdlib HTTP::Client with optional credentials.
     class HttpFetcher < Fetcher
-      def initialize(@uri : URI, @user : String? = nil, @password : String? = nil, @timeout : Time::Span = 30.seconds)
+      def initialize(@uri : URI, @user : String? = nil, @password : String? = nil, @timeout : Time::Span = 30.seconds, @retries : Int32 = 3)
+        @retries = @retries < 0 ? 0 : @retries
       end
 
-      def self.for(remote : String, credentials : {String, String}? = nil) : HttpFetcher
+      def self.for(remote : String, credentials : {String, String}? = nil, retries : Int32 = 3) : HttpFetcher
         uri = URI.parse(remote)
         user = credentials.try(&.[0]) || uri.user
         password = credentials.try(&.[1]) || uri.password
-        new(uri, user, password)
+        new(uri, user, password, retries: retries)
       end
 
       def call(remote_path : String, headers : Hash(String, String)) : FetchResponse
-        client = HTTP::Client.new(@uri)
-        client.connect_timeout = @timeout
-        client.read_timeout = @timeout
-        if @user || @password
-          client.basic_auth(@user || "", @password || "")
-        end
-
         request_headers = HTTP::Headers.new
         headers.each { |k, v| request_headers[k] = v }
 
         path = remote_path.starts_with?("/") ? remote_path : "/#{remote_path}"
-        response = client.get(path, headers: request_headers)
-        response_headers = {} of String => String
-        response.headers.each do |name, values|
-          response_headers[name.downcase] = values.first? || ""
+        max_attempts = {@retries + 1, 1}.max
+        attempt = 0
+        loop do
+          attempt += 1
+          begin
+            client = HTTP::Client.new(@uri)
+            client.connect_timeout = @timeout
+            client.read_timeout = @timeout
+            if @user || @password
+              client.basic_auth(@user || "", @password || "")
+            end
+            response = client.get(path, headers: request_headers)
+            client.close rescue nil
+            response_headers = {} of String => String
+            response.headers.each do |name, values|
+              response_headers[name.downcase] = values.first? || ""
+            end
+            return FetchResponse.new(response.status_code, response.body, response_headers)
+          rescue ex
+            if attempt < max_attempts
+              sleep (0.5 * (2 ** (attempt - 1))).seconds
+              next
+            end
+            raise ex
+          end
         end
-        FetchResponse.new(response.status_code, response.body, response_headers)
       end
     end
 
@@ -452,8 +466,8 @@ module Celerite
     class Client
       @parser : Parser
 
-      def initialize(remote : String, cache_root : String, credentials : {String, String}? = nil)
-        fetcher = make_fetcher(remote, credentials)
+      def initialize(remote : String, cache_root : String, credentials : {String, String}? = nil, retries : Int32 = 3)
+        fetcher = make_fetcher(remote, credentials, retries)
         cache_dir = File.join(cache_root, cache_key(remote))
         @parser = Parser.new(Cache.new(cache_dir, Updater.new(fetcher)))
       end
@@ -470,7 +484,7 @@ module Celerite
         @parser.info(name)
       end
 
-      private def make_fetcher(remote : String, credentials : {String, String}?) : Fetcher
+      private def make_fetcher(remote : String, credentials : {String, String}?, retries : Int32) : Fetcher
         if remote.starts_with?("file:")
           # Use URI parsing so file:///C:/..., file:///home/... and
           # file:/C:/... all resolve to an absolute local path.
@@ -490,7 +504,7 @@ module Celerite
           path += "/" unless path.ends_with?("/")
           FileFetcher.new(path)
         else
-          HttpFetcher.for(remote, credentials)
+          HttpFetcher.for(remote, credentials, retries)
         end
       end
 
