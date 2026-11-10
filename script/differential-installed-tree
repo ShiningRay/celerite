@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Helpers for the optional `installed-tree` differential marker.
+# Sourced by script/differential; all functions operate on the two sandbox
+# roots and reuse the harness `normalize` function (N1-N6 text normalization).
+#
+# Marker format: each line is a glob relative to BUNDLE_PATH, e.g.
+#   ruby/*/gems
+#   ruby/*/specifications
+#   ruby/*/bin
+#
+# Rules:
+# - The set of matching directories must be identical on both sides.
+# - The relative path set below each matched directory must be identical.
+# - Files are compared after `normalize` (installed specs embed sandbox paths);
+#   binary files compare byte-for-byte (normalize is a no-op for them because
+#   the substitution strings never appear).
+# - Executable-bit differences are reported (POSIX only; Windows git does not
+#   preserve the bit).
+
+# compare_installed_tree <ref_sandbox> <cel_sandbox> <marker_file> <ref_dir> <cel_dir>
+# Prints a human-readable diff description; returns 1 when trees differ.
+compare_installed_tree() {
+  local ref_sandbox="$1"
+  local cel_sandbox="$2"
+  local marker_file="$3"
+  local ref_bundle="$4"
+  local cel_bundle="$5"
+
+  local problems=""
+  local pattern
+  while IFS= read -r pattern; do
+    [ -z "$pattern" ] && continue
+    local ref_matches cel_matches
+    ref_matches="$(cd "$ref_bundle" 2>/dev/null && ls -d $pattern 2>/dev/null | sort || true)"
+    cel_matches="$(cd "$cel_bundle" 2>/dev/null && ls -d $pattern 2>/dev/null | sort || true)"
+    if [ "$ref_matches" != "$cel_matches" ]; then
+      problems+="  pattern '$pattern' matched different directories"$'\n'
+      problems+="    reference: $(echo "$ref_matches" | tr '\n' ' ')"$'\n'
+      problems+="    celerite:  $(echo "$cel_matches" | tr '\n' ' ')"$'\n'
+      continue
+    fi
+
+    local rel
+    while IFS= read -r rel; do
+      [ -z "$rel" ] && continue
+      local ref_dir="$ref_bundle/$rel"
+      local cel_dir="$cel_bundle/$rel"
+
+      # Path-set comparison (missing/extra entries only).
+      local only
+      only="$(diff -r --brief "$ref_dir" "$cel_dir" 2>/dev/null \
+              | normalize "$ref_sandbox" "$cel_sandbox" \
+              | grep -v '^Files .* differ$' || true)"
+      if [ -n "$only" ]; then
+        problems+="  $rel path set differs:"$'\n'$(echo "$only" | sed 's/^/    /')$'\n'
+        continue
+      fi
+
+      # Content comparison for files diff reports as differing.
+      local rel_file
+      while IFS= read -r rel_file; do
+        [ -z "$rel_file" ] && continue
+        local ref_file="$ref_dir/$rel_file"
+        local cel_file="$cel_dir/$rel_file"
+        if ! diff -q \
+              <(normalize "$ref_sandbox" "$cel_sandbox" < "$ref_file") \
+              <(normalize "$ref_sandbox" "$cel_sandbox" < "$cel_file") >/dev/null 2>&1; then
+          problems+="  $rel/$rel_file content differs after normalization"$'\n'
+          continue
+        fi
+        # Executable bit (POSIX only).
+        if [ "$(uname -s)" != "MINGW"* ] && [ "$(uname -s)" != "MSYS"* ]; then
+          local ref_exec cel_exec
+          [ -x "$ref_file" ] && ref_exec=1 || ref_exec=0
+          [ -x "$cel_file" ] && cel_exec=1 || cel_exec=0
+          if [ "$ref_exec" != "$cel_exec" ]; then
+            problems+="  $rel/$rel_file executable bit differs"$'\n'
+          fi
+        fi
+      done < <(diff -r --brief "$ref_dir" "$cel_dir" 2>/dev/null \
+               | sed -n 's/^Files .* and \(.*\) differ$/\1/p' \
+               | sed -e "s|^$ref_dir/||" -e "s|^$cel_dir/||")
+    done <<< "$ref_matches"
+  done < "$marker_file"
+
+  if [ -n "$problems" ]; then
+    printf '%s' "$problems"
+    return 1
+  fi
+  return 0
+}

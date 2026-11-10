@@ -185,6 +185,11 @@ module Celerite
         request("exec_plugin_hook", {"event" => event, "index_path" => index_path})
       end
 
+      # Generates RubyGems-compatible executable wrappers for one installed gem.
+      def generate_bin_stubs(gem_path : String, destination : String, gem_dir : String) : JSON::Any
+        request("generate_bin_stubs", {"gem_path" => gem_path, "destination" => destination, "gem_dir" => gem_dir})
+      end
+
       def load_gemspec_dir(dir : String, glob : String? = nil) : GemSpecInfo
         payload = {"dir" => dir} of String => String
         payload["glob"] = glob if glob

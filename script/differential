@@ -46,6 +46,9 @@ end' "$bundler_version")" || exit 2
 bundler_exe="$(echo "$bundler_paths" | head -1)"
 bundler_lib="$(echo "$bundler_paths" | tail -1)"
 
+# Optional installed-tree comparison helper (see docs/differential-normalization.md).
+. "$repo_root/script/differential-installed-tree"
+
 normalize() {
   # $1 = reference sandbox, $2 = celerite sandbox
   # Program output uses Windows paths; the sandbox vars are MSYS paths, so
@@ -215,6 +218,12 @@ run_fixture() {
   normalize "$ref_sandbox" "$cel_sandbox" < "$work/ref.err" > "$work/ref.err.n"
   normalize "$ref_sandbox" "$cel_sandbox" < "$work/cel.err" > "$work/cel.err.n"
 
+  # Preserve sandboxes for post-mortem inspection on failure:
+  #   KEEP_DIFFERENTIAL=1 script/differential <fixture>
+  if [ "${KEEP_DIFFERENTIAL:-0}" != "1" ]; then
+    :
+  fi
+
   local ok=1
   local detail=""
   if [ "$ref_code" != "$cel_code" ]; then
@@ -235,6 +244,17 @@ run_fixture() {
   if [ -n "$norm_tree" ]; then
     ok=0; detail+="  project tree differs:"$'\n'"$norm_tree"$'\n'
   fi
+  # Optional `installed-tree` marker: compare the bundle install tree
+  # (relative path sets, file contents and POSIX executable bits). See
+  # script/differential-installed-tree for the exact rules.
+  if [ -f "$fixture_dir/installed-tree" ]; then
+    local installed_diff
+    if ! installed_diff="$(compare_installed_tree "$ref_sandbox" "$cel_sandbox" "$fixture_dir/installed-tree" "$ref_sandbox/bundle" "$cel_sandbox/bundle")"; then
+      ok=0; detail+="  installed tree differs:"$'
+'"$installed_diff"
+    fi
+  fi
+
   # Optional `first-line` marker: first line of the named project file must
   # match (content probe — the tree compare above is path-only, e.g.
   # binstub shebangs).
@@ -263,9 +283,15 @@ run_fixture() {
   if [ "$ok" = 1 ]; then
     echo "PASS $name (exit=$ref_code)"
     pass=$((pass + 1))
+    [ "${KEEP_DIFFERENTIAL:-0}" = "1" ] || rm -rf "$work"
   else
     echo "FAIL $name ($command_line)"
     echo "$detail" | sed 's/^/    /'
+    if [ "${KEEP_DIFFERENTIAL:-0}" = "1" ]; then
+      echo "    sandboxes kept at: $work"
+    else
+      rm -rf "$work"
+    fi
     fail=$((fail + 1))
   fi
 }

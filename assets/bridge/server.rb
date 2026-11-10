@@ -160,9 +160,12 @@ def op_write_installed_spec(payload)
   spec = Gem::Package.new(gem_path).spec
   # Recording the install path keeps parity with RubyGems-installed specs
   spec.full_gem_path = payload["gem_dir"] if payload["gem_dir"]
+  # RubyGems stamps the RubyGems version that performed the install; without
+  # it the generated stub lacks `s.installed_by_version` (reference parity).
+  spec.installed_by_version = Gem::VERSION if spec.respond_to?(:installed_by_version=)
   FileUtils.mkdir_p(File.dirname(destination))
   # RubyGems writes Ruby-format stub specifications (not Marshal)
-  File.write(destination, spec.to_ruby_for_cache)
+  File.binwrite(destination, spec.to_ruby_for_cache)
   {
     "name" => spec.name,
     "full_name" => spec.full_name,
@@ -170,6 +173,45 @@ def op_write_installed_spec(payload)
     "bindir" => spec.bindir,
     "extensions" => spec.extensions,
   }
+end
+
+# Generate RubyGems-compatible executable wrappers (app script + Windows .bat
+# stub) exactly like `Gem::Installer#generate_bin_script`, so the installed
+# bin tree matches the reference byte-for-byte after path normalization.
+def op_generate_bin_stubs(payload)
+  require "rubygems/installer"
+  require "rubygems/package"
+  require "fileutils"
+  gem_path = payload["gem_path"]
+  destination = payload["destination"] # <install_root>/bin
+  gem_dir = payload["gem_dir"]
+  spec = Gem::Package.new(gem_path).spec
+  spec.full_gem_path = gem_dir if gem_dir
+  FileUtils.mkdir_p(destination)
+  installer = Gem::Installer.at(gem_path,
+                                install_dir: File.dirname(destination),
+                                bin_dir: destination,
+                                wrappers: true,
+                                generate_binstubs: false,
+                                ignore_dependencies: true,
+                                env_shebang: true,
+                                document: [])
+  spec.bindir = "bin" if spec.bindir.nil? || spec.bindir.empty?
+  installer.instance_variable_set(:@spec, spec)
+  written = []
+  spec.executables.each do |executable|
+    script_path = File.join(destination, installer.send(:formatted_program_filename, executable))
+    File.binwrite(script_path, installer.send(:app_script_text, executable))
+    File.chmod(script_path, 0o755) unless Gem.win_platform?
+    if Gem.win_platform?
+      bat_path = "#{script_path}.bat"
+      File.binwrite(bat_path, installer.send(:windows_stub_script, destination, executable))
+    end
+    written << executable
+  end
+  { "executables" => written }
+rescue StandardError => e
+  { "error" => e.message, "backtrace" => e.backtrace.first(4) }
 end
 
 # Build native extensions with the reference Ruby/RubyGems toolchain
@@ -308,6 +350,7 @@ def bridge_dispatch(id, op, payload)
            when "bundler_cache_file" then op_bundler_cache_file(payload)
            when "read_gem_spec" then op_read_gem_spec(payload)
            when "write_installed_spec" then op_write_installed_spec(payload)
+           when "generate_bin_stubs" then op_generate_bin_stubs(payload)
            when "build_extension" then op_build_extension(payload)
            when "load_gemspec_dir" then op_load_gemspec_dir(payload)
            when "exec_plugin_hook" then op_exec_plugin_hook(payload)
