@@ -390,7 +390,7 @@ module Celerite
       begin
         re = bridge.ruby_environment
         config = definition.config
-        bundler_version = "4.0.24"
+        bundler_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
 
         stdout.puts "## Environment"
         stdout.puts
@@ -424,7 +424,7 @@ module Celerite
         stdout.puts "## Bundler Build Metadata"
         stdout.puts
         stdout.puts "```"
-        stdout.puts "Timestamp  2026-11-05"
+        stdout.puts "Timestamp  #{Time.utc.to_s("%Y-%m-%d")}"
         stdout.puts "Git SHA    #{git_sha}"
         stdout.puts "```"
 
@@ -1469,7 +1469,7 @@ module Celerite
         stdout.puts "## Bundler Build Metadata"
         stdout.puts
         stdout.puts "```"
-        stdout.puts "Timestamp  2026-11-05"
+        stdout.puts "Timestamp  #{Time.utc.to_s("%Y-%m-%d")}"
         stdout.puts "Git SHA    #{git_sha}"
         stdout.puts "```"
         stdout.puts
