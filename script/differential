@@ -12,6 +12,16 @@
 # Reference Bundler versions must be installed with `gem install bundler -v <v>`
 # (see vendor/reference/MANIFEST.md). The harness requires no network: fixtures
 # are lockfile-driven and every command runs with empty isolated gem homes.
+# Normalization rules applied to both sides (complete list; see
+# docs/differential-normalization.md):
+#   N1 sandbox paths (native + MSYS spelling) -> {SANDBOX}
+#   N2 CRLF -> LF
+#   N3 ISO timestamps -> {TIMESTAMP}
+#   N4 calendar dates -> {DATE}
+#   N5 `## Environment` body (until `## Bundle Doctor`) dropped
+#   N6 Ruby backtrace `   from ...` frames dropped
+#   N7 runs of consecutive `Fetching ` lines sorted (parallel download order)
+# Exit codes, all other line ordering, trees and file contents must match.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
