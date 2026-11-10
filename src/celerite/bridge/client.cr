@@ -24,6 +24,7 @@ module Celerite
       getter engine_version : String
       getter rubygems_version : String
       getter ruby_revision : String
+      getter patchlevel : String?
       getter platform : String
       getter ruby_exe : String
       getter gem_paths : Array(String)

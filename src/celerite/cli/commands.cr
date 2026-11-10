@@ -319,10 +319,35 @@ module Celerite
         output << "Your platform is: #{Gem::Platform.local}"
         output << "Your app has gems that work on these platforms:\n#{platform_lines.join("\n")}"
 
+        mismatch_message = nil
         if ruby_version
-          # Runtime validation (validate_runtime!) needs the system Ruby and is
-          # an M3 bridge concern; fixtures use lockfiles without RUBY VERSION.
+          # Runtime validation: Bundler prints a mismatch message but exits 0
+          # for platform when the Gemfile ruby requirement does not match.
+          if bridge_available?
+            begin
+              bridge = Bridge::Client.new
+              begin
+                evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+                if req_str = evaluation.ruby
+                  env = bridge.ruby_environment
+                  diff = RubyRuntime.diff(req_str, env)
+                  if diff
+                    requested = Celerite::RubyVersion.parse_requirement(req_str) || Celerite::RubyVersion.from_string(req_str)
+                    if requested
+                      system = Celerite::RubyVersion.system_from_env(env)
+                      mismatch_message = Celerite::RubyVersion.mismatch_message(diff[0], diff[1], diff[2], requested, system)
+                    end
+                  end
+                end
+              rescue
+              ensure
+                bridge.close
+              end
+            rescue
+            end
+          end
           output << "Your Gemfile specifies a Ruby version requirement:\n* #{ruby_version}"
+          output << mismatch_message.not_nil! if mismatch_message
         else
           output << "Your Gemfile does not specify a Ruby version requirement."
         end
@@ -332,11 +357,33 @@ module Celerite
       0
     end
 
+    # Validates Gemfile ruby requirement against the running Ruby when
+    # evaluation is available (Bundler validate_runtime!/validate_ruby!).
+    def self.validate_ruby_runtime!(definition : Definition, bridge : Bridge::Client? = nil) : Nil
+      return unless bridge_available?
+      client = bridge || Bridge::Client.new
+      begin
+        evaluation = client.evaluate_gemfile(definition.gemfile_path)
+        return unless evaluation.ruby
+        env = client.ruby_environment
+        RubyRuntime.validate!(evaluation.ruby, env)
+      ensure
+        client.close if bridge.nil?
+      end
+    rescue ex : Error
+      raise ex
+    rescue
+      # Best-effort: if evaluation/env is unavailable, do not block commands
+      # that historically worked without runtime validation.
+      nil
+    end
+
     # ------------------------------------------------------------------
     # check
     # ------------------------------------------------------------------
     def self.check(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       definition = Definition.build
+      validate_ruby_runtime!(definition)
       config = definition.config
 
       if config.frozen? && !definition.lockfile_exists?
@@ -402,6 +449,8 @@ module Celerite
       only_group = flag_value(rest, "--only-group")
       without_group = flag_value(rest, "--without-group")
       definition = Definition.build
+      # Reference Bundler 4.0.24: `bundle list` does not run validate_runtime!
+      # on Ruby mismatch in installed-bundle scenarios; keep listing behavior.
       config = definition.config
       lockfile = definition.lockfile!
 
@@ -477,6 +526,7 @@ module Celerite
     # ------------------------------------------------------------------
     def self.show_info(command : String, stdout : IO, stderr : IO, rest : Array(String)) : Int32
       definition = Definition.build
+      validate_ruby_runtime!(definition)
       lockfile = definition.lockfile!
       locked_specs = lockfile.specs.sort_by(&.full_name)
 

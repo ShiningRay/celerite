@@ -84,6 +84,16 @@ module Celerite
 
       bridge = Bridge::Client.new
       begin
+        # Runtime Ruby requirement validation (Bundler validate_runtime!/validate_ruby!)
+        # for install flows when evaluation is available.
+        begin
+          evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+          RubyRuntime.validate!(evaluation.ruby, bridge.ruby_environment) if evaluation.ruby
+        rescue ex : Error
+          raise ex
+        rescue
+        end
+
         resolution = Resolution.new(definition, false, bridge)
         resolution.progress = stdout
         lock = ProcessLock.lock(install_path(config))
@@ -361,6 +371,7 @@ module Celerite
       end
 
       definition = Definition.build
+      Commands.validate_ruby_runtime!(definition)
       Dir.mkdir_p(cache_target)
       # 2.7.x: cache options are remembered in .bundle/config (pinned probe:
       # plain `cache` writes BUNDLE_CACHE_ALL "false").
@@ -415,6 +426,13 @@ module Celerite
       definition = Definition.build
       bridge = Bridge::Client.new
       begin
+        begin
+          evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+          RubyRuntime.validate!(evaluation.ruby, bridge.ruby_environment) if evaluation.ruby
+        rescue ex : Error
+          raise ex
+        rescue
+        end
         abi = ruby_abi(bridge)
         install_root = File.join(install_path(definition.config), "ruby", abi)
         lockfile = definition.lockfile!
@@ -502,6 +520,14 @@ module Celerite
       bridge = Bridge::Client.new
       begin
         env = bridge.ruby_environment
+        # Reference Bundler.setup validates Ruby requirements during exec.
+        begin
+          evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+          RubyRuntime.validate!(evaluation.ruby, env) if evaluation.ruby
+        rescue ex : Error
+          raise ex
+        rescue
+        end
         bundler_lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]?
         if bundler_lib.nil? || bundler_lib.empty?
           bundler_lib = File.expand_path("../lib", File.dirname(env.ruby_exe))

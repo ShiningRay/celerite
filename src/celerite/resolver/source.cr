@@ -72,7 +72,10 @@ module Celerite
                      @spec_fetcher : (String -> Array(IndexSpec))? = nil,
                      @resolution_platforms : Array(Gem::Platform)? = nil,
                      @bridge_ruby_version : String = "4.0.6",
-                     @bridge_rubygems_version : String = "4.0.16")
+                     @bridge_rubygems_version : String = "4.0.16",
+                     @bridge_ruby_engine : String = "ruby",
+                     @bridge_ruby_engine_version : String = "4.0.6",
+                     @bridge_ruby_patchlevel : String? = nil)
         @root = RootPackage.new(@root_name)
         @packages = {} of String => Package
         @all_versions = {} of Package => Array(Candidate)
@@ -263,9 +266,18 @@ module Celerite
       end
 
       private def ruby_requirement_satisfied?(spec : IndexSpec) : Bool
-        return false unless spec.required_ruby_version.satisfied_by?(Gem::Version.new(running_ruby_version))
+        return false unless spec.required_ruby_version.satisfied_by?(Gem::Version.new(running_ruby_version_for_gem))
         return false unless spec.required_rubygems_version.satisfied_by?(Gem::Version.new(running_rubygems_version))
         true
+      end
+
+      private def running_ruby_version_for_gem : String
+        # For gems that encode patchlevel in required_ruby_version (rare), prefer
+        # a version string including patchlevel when available.
+        if pl = @bridge_ruby_patchlevel
+          return "#{@bridge_ruby_version}p#{pl}" unless pl.empty? || pl == "-1"
+        end
+        @bridge_ruby_version
       end
 
       private def running_ruby_version : String
@@ -274,6 +286,15 @@ module Celerite
 
       private def running_rubygems_version : String
         @bridge_rubygems_version
+      end
+
+      def system_ruby_version : Celerite::RubyVersion
+        Celerite::RubyVersion.system(
+          @bridge_ruby_engine,
+          @bridge_ruby_version,
+          @bridge_ruby_engine_version,
+          @bridge_ruby_patchlevel,
+        )
       end
 
       private def installable?(spec : IndexSpec, platform : Gem::Platform) : Bool

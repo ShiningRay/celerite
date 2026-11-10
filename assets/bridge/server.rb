@@ -47,6 +47,7 @@ def op_ruby_environment(_payload)
     "engine_version" => RUBY_ENGINE_VERSION,
     "rubygems_version" => Gem::VERSION,
     "ruby_revision" => RUBY_REVISION.to_s,
+    "patchlevel" => RUBY_PATCHLEVEL.to_s,
     "platform" => bridge_platform_string,
     "ruby_exe" => RbConfig.ruby,
     "gem_paths" => (ENV["GEM_PATH"] ? ENV["GEM_PATH"].split(Gem.path_separator) : Gem.path),

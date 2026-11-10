@@ -88,4 +88,12 @@ module Celerite
       true
     end
   end
+
+  # Raised when the running Ruby does not satisfy the Gemfile/lockfile Ruby
+  # requirement (mirrors Bundler::RubyVersionMismatch).
+  class RubyVersionMismatch < Error
+    def status_code : Int32
+      18
+    end
+  end
 end

@@ -533,6 +533,19 @@ module Celerite
     end
 
     private def ruby_compatible?(lockfile : Lockfile::Data) : Bool
+      # If Gemfile declares a Ruby requirement, lockfile ruby must be compatible.
+      return true if @evaluation.ruby.nil? && lockfile.ruby_version.nil?
+      return false if @evaluation.ruby.nil? != lockfile.ruby_version.nil?
+      return false unless @evaluation.ruby && lockfile.ruby_version
+
+      requested = Celerite::RubyVersion.parse_requirement(@evaluation.ruby.not_nil!)
+      locked = Celerite::RubyVersion.from_string(lockfile.ruby_version.not_nil!) ||
+               Celerite::RubyVersion.parse_requirement(lockfile.ruby_version.not_nil!)
+      return lockfile.ruby_version == @evaluation.ruby unless requested && locked
+
+      # Locked ruby must satisfy the requested declaration (Bundler-style diff).
+      requested.diff(locked).nil?
+    rescue
       lockfile.ruby_version == @evaluation.ruby
     end
 
@@ -591,6 +604,9 @@ module Celerite
         resolution_platforms,
         env.ruby_version,
         env.rubygems_version,
+        env.engine,
+        env.engine_version,
+        env.patchlevel,
       )
       prerelease_exceptions.each { |name| source.package_consider_prereleases(name) }
       source
@@ -943,7 +959,12 @@ module Celerite
       ruby_req = @evaluation.ruby
       if @ruby_update
         env = @bridge.not_nil!.ruby_environment
-        ruby_req = "#{env.ruby_version}p0"
+        patch = env.patchlevel
+        ruby_req = if patch && !patch.empty?
+                     "#{env.ruby_version}p#{patch}"
+                   else
+                     env.ruby_version
+                   end
       end
       if ruby_req
         sections << Lockfile::TypedSection.new(Lockfile::RubySection.new(ruby_req, indent))

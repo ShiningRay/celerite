@@ -35,7 +35,7 @@ module Celerite
       gems = gems.reject(&.==("conservative"))
 
       # parity: bare `bundle update` works but deprecates on stderr on 4.x
-      # (2.7.x never deprecates the bare form — observed oracle diff).
+      # (2.7.x never deprecates the bare form -observed oracle diff).
       # `--ruby` and explicit selections/`--all` suppress the deprecation.
       has_gems = gems.present?
       bridge_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
@@ -45,6 +45,7 @@ module Celerite
       end
 
       definition = Definition.build
+      Commands.validate_ruby_runtime!(definition)
       config = definition.config
       if config.frozen? && !definition.lockfile_exists?
         raise ProductionError.new("Frozen mode is set, but there's no lockfile")
@@ -102,7 +103,7 @@ module Celerite
         resolution.version_promotion = level
         resolution.version_promotion_strict = rest.includes?("--strict")
 
-        # BUNDLED WITH semantics: update does not auto-switch — it records
+        # BUNDLED WITH semantics: update does not auto-switch -it records
         # the running bundler version in the rewritten lockfile (pinned
         # 2.7.2 reference: update on a 4.0.24 lockfile rewrote BUNDLED WITH
         # to its own version with 2.x indentation).
@@ -382,6 +383,20 @@ module Celerite
       0
     end
 
+    private def self.build_timestamp : String
+      begin
+        output = IO::Memory.new
+        result = Process.run("git", ["rev-parse", "--format=%cs", "-s", "HEAD"],
+          output: output, error: Process::Redirect::Close)
+        if result.success?
+          ts = output.to_s.strip
+          return ts unless ts.empty?
+        end
+      rescue
+      end
+      "unknown"
+    end
+
     # ------------------------------------------------------------------
     # env: full environment dump (pinned reference sections)
     # ------------------------------------------------------------------
@@ -396,7 +411,7 @@ module Celerite
         stdout.puts "## Environment"
         stdout.puts
         stdout.puts "```"
-        stdout.puts "Bundler       #{bundler_version}"
+        stdout.puts "Bundler       #{bundler_version} (Celerite #{Celerite::VERSION}, compatibility profile)"
         platforms = [Gem::Platform::RUBY.to_s, Gem::Platform.local.to_s]
         stdout.puts "  Platforms   #{platforms.join(", ")}"
         stdout.puts "Ruby          #{re.ruby_env_line}"
@@ -425,7 +440,7 @@ module Celerite
         stdout.puts "## Bundler Build Metadata"
         stdout.puts
         stdout.puts "```"
-        stdout.puts "Timestamp  #{Time.utc.to_s("%Y-%m-%d")}"
+        stdout.puts "Timestamp  #{build_timestamp}"
         stdout.puts "Git SHA    #{git_sha}"
         stdout.puts "```"
 
@@ -503,6 +518,7 @@ module Celerite
     # ------------------------------------------------------------------
     def self.doctor(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       definition = Definition.build
+      Commands.validate_ruby_runtime!(definition)
       lockfile = definition.lockfile!
       locked_specs = lockfile.specs.sort_by(&.full_name)
 
@@ -554,10 +570,10 @@ module Celerite
 
       Dir.each_child(ruby_root) do |abi|
         gem_dir = File.join(ruby_root, abi, "gems", spec.full_name)
-        spec_file = File.join(ruby_root, abi, "specifications", "#{spec.full_name}.gemspec")
-        if File.file?(spec_file) && Dir.exists?(gem_dir)
-          return gem_dir
-        end
+        # For read-only commands (check/list/show/info/doctor), treat extracted
+        # gem contents as installed even if the installed specification file is
+        # missing from this layout.
+        return gem_dir if Dir.exists?(gem_dir)
       end
       nil
     end
@@ -588,6 +604,7 @@ module Celerite
     # ------------------------------------------------------------------
     def self.licenses(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       definition = Definition.build
+      Commands.validate_ruby_runtime!(definition)
       bridge = Bridge::Client.new
       begin
         abi = InstallPaths.ruby_abi(bridge)
@@ -615,6 +632,7 @@ module Celerite
 
     def self.fund(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       definition = Definition.build
+      Commands.validate_ruby_runtime!(definition)
       lockfile = definition.lockfile!
       bridge = Bridge::Client.new
       begin
@@ -1058,6 +1076,7 @@ module Celerite
     # ------------------------------------------------------------------
     def self.pristine(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       definition = Definition.build
+      Commands.validate_ruby_runtime!(definition)
       gems = rest.reject(&.starts_with?("--"))
       lockfile = definition.lockfile!
       unless gems.empty?
@@ -1161,6 +1180,14 @@ module Celerite
     def self.outdated(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       definition = Definition.build
       bridge = Bridge::Client.new
+      begin
+        evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+        RubyRuntime.validate!(evaluation.ruby, bridge.ruby_environment) if evaluation.ruby
+      rescue ex : Error
+        bridge.close
+        raise ex
+      rescue
+      end
       begin
         parseable = rest.includes?("--parseable") || rest.includes?("--porcelain")
         local_flag = rest.includes?("--local")
@@ -1487,11 +1514,31 @@ module Celerite
     end
 
     def self.git_sha : String
-      if (ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")
-        "b463ced1459"
-      else
-        "3b396e4"
+      # Prefer actual source/checkout git SHA; avoid misleading hardcoded
+      # reference Bundler build SHAs.
+      begin
+        if exe = Process.executable_path
+          dir = File.dirname(exe)
+          repo = File.expand_path("..", dir)
+          if Dir.exists?(File.join(repo, ".git"))
+            output = IO::Memory.new
+            result = Process.run("git", ["-C", repo, "rev-parse", "--short=7", "HEAD"],
+              output: output, error: Process::Redirect::Close)
+            if result.success?
+              sha = output.to_s.strip
+              return sha unless sha.empty?
+            end
+          end
+        end
+        output = IO::Memory.new
+        result = Process.run("git", ["rev-parse", "--short=7", "HEAD"], output: output, error: Process::Redirect::Close)
+        if result.success?
+          sha = output.to_s.strip
+          return sha unless sha.empty?
+        end
+      rescue
       end
+      "unknown"
     end
 
     def self.issue(stdout : IO, stderr : IO, rest : Array(String)) : Int32
@@ -1506,7 +1553,8 @@ module Celerite
         stdout.puts "## Environment"
         stdout.puts
         stdout.puts "```"
-        stdout.puts "Bundler       #{ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"}"
+        bundler_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+        stdout.puts "Bundler       #{bundler_version} (Celerite #{Celerite::VERSION}, compatibility profile)"
         platforms = [Gem::Platform::RUBY.to_s, Gem::Platform.local.to_s]
         stdout.puts "  Platforms   #{platforms.join(", ")}"
         stdout.puts "Ruby          #{re.ruby_env_line}"
@@ -1543,7 +1591,7 @@ module Celerite
         stdout.puts "## Bundler Build Metadata"
         stdout.puts
         stdout.puts "```"
-        stdout.puts "Timestamp  #{Time.utc.to_s("%Y-%m-%d")}"
+        stdout.puts "Timestamp  #{build_timestamp}"
         stdout.puts "Git SHA    #{git_sha}"
         stdout.puts "```"
         stdout.puts
@@ -1644,36 +1692,68 @@ module Celerite
         return 1
       end
       Dir.mkdir_p(File.join(dir, "lib"))
-      File.write(File.join(dir, "#{name}.gemspec"), <<-SPEC
-      # frozen_string_literal: true
+      module_name = name.split(/[-_]/).map(&.capitalize).join
+      # Reasonable scaffold aligned with `bundle gem`: README + MIT license +
+      # gemspec + lib; option flags are accepted but scaffold content is the
+      # documented minimum.
+      File.write(File.join(dir, "#{name}.gemspec"), <<-SPEC)
+        # frozen_string_literal: true
 
-      Gem::Specification.new do |spec|
-        spec.name = #{name.inspect}
-        spec.version = "0.1.0"
-        spec.authors = []
-        spec.summary = "TODO: Write a short summary"
-        spec.required_ruby_version = ">= 3.2.0"
+        Gem::Specification.new do |spec|
+          spec.name = #{name.inspect}
+          spec.version = "#{module_name}::VERSION"
+          spec.summary = "Ruby gem #{name}"
+          spec.required_ruby_version = ">= 3.0.0"
 
-        spec.files = Dir["lib/**/*.rb"]
-        spec.bindir = "exe"
-        spec.executables = []
-        spec.require_paths = ["lib"]
-      end
+          spec.files = Dir["lib/**/*.rb"] + Dir["exe/*"] + Dir["README*"] + Dir["LICENSE*"] + Dir["CHANGELOG*"]
+          spec.bindir = "exe"
+          spec.executables = []
+          spec.require_paths = ["lib"]
+        end
       SPEC
-      )
-      File.write(File.join(dir, "lib", "#{name}.rb"), <<-LIB
-      # frozen_string_literal: true
+      File.write(File.join(dir, "lib", "#{name}.rb"), <<-LIB)
+        # frozen_string_literal: true
 
-      module #{name.split("_").map(&.capitalize).join}
-        VERSION = "0.1.0"
-      end
+        module #{module_name}
+          VERSION = "0.1.0"
+        end
       LIB
-      )
-      File.write(File.join(dir, "Gemfile"), "source \"https://rubygems.org\"
+      File.write(File.join(dir, "Gemfile"), <<-GEMFILE)
+        # frozen_string_literal: true
 
-gemspec
-")
-      stdout.puts "Creating gem #{name}..."
+        source "https://rubygems.org"
+
+        gemspec
+      GEMFILE
+      File.write(File.join(dir, "README.md"), <<-README)
+        # #{name}
+
+        TODO: Write a gem description.
+      README
+      File.write(File.join(dir, "LICENSE.txt"), <<-LICENSE)
+        The MIT License (MIT)
+
+        Copyright (c) #{Time.utc.year}
+
+        Permission is hereby granted, free of charge, to any person obtaining a copy
+        of this software and associated documentation files (the "Software"), to deal
+        in the Software without restriction, including without limitation the rights
+        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+        copies of the Software, and to permit persons to whom the Software is
+        furnished to do so, subject to the following conditions:
+
+        The above copyright notice and this permission notice shall be included in
+        all copies or substantial portions of the Software.
+
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+        THE SOFTWARE.
+      LICENSE
+      stdout.puts "Creating gem '#{name}'..."
       0
     end
   end
