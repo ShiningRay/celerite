@@ -274,4 +274,88 @@ describe "M7 group/with-without filtering" do
       end
     end
   end
+
+  it "check honors BUNDLE_WITH=test and reports the missing optional gem" do
+    with_bridge_server do
+      with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
+        ".bundle/config"                                                 => "---\nBUNDLE_PATH: \"vendor/bundle\"\nBUNDLE_WITH: \"test\"\n",
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
+      })) do
+        code, _out, err = capture_command { |o, e| Celerite::Commands.check(o, e, [] of String) }
+        code.should eq(1)
+        err.should contain("rake (13.4.2)")
+      end
+    end
+  end
+
+  it "check honors BUNDLE_WITH=test when the optional gem is installed" do
+    with_bridge_server do
+      with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
+        ".bundle/config"                                                 => "---\nBUNDLE_PATH: \"vendor/bundle\"\nBUNDLE_WITH: \"test\"\n",
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
+        "vendor/bundle/ruby/3.4.0/gems/rake-13.4.2/lib/rake.rb"          => "",
+      })) do
+        code, out, err = capture_command { |o, e| Celerite::Commands.check(o, e, [] of String) }
+        err.should eq("")
+        out.should eq("The Gemfile's dependencies are satisfied\n")
+        code.should eq(0)
+      end
+    end
+  end
+end
+
+PLATFORM_LOCKFILE_TEXT = <<-LOCK
+GEM
+  remote: https://rubygems.org/
+  specs:
+    nokogiri (1.18.10-x64-mingw-ucrt)
+      racc (~> 1.4)
+    racc (1.8.1)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  nokogiri
+
+BUNDLED WITH
+   4.0.24
+LOCK
+
+PLATFORM_GEMFILE = <<-GEMFILE
+source "https://rubygems.org"
+
+gem "nokogiri"
+GEMFILE
+
+describe "M7 platform-specific installed gem discovery" do
+  it "check and list resolve the platform-specific gem directory" do
+    with_project(project_files_for(PLATFORM_LOCKFILE_TEXT, PLATFORM_GEMFILE, {
+      "vendor/bundle/ruby/3.4.0/gems/nokogiri-1.18.10-x64-mingw-ucrt/lib/nokogiri.rb" => "",
+      "vendor/bundle/ruby/3.4.0/gems/racc-1.8.1/lib/racc.rb"                          => "",
+    })) do
+      code, out, err = capture_command { |o, e| Celerite::Commands.check(o, e, [] of String) }
+      err.should eq("")
+      out.should eq("The Gemfile's dependencies are satisfied\n")
+      code.should eq(0)
+
+      code, out, err = capture_command { |o, e| Celerite::Commands.list(o, e, [] of String) }
+      err.should eq("")
+      out.should contain("nokogiri-1.18.10-x64-mingw-ucrt")
+      code.should eq(0)
+    end
+  end
+
+  it "show reports the platform-specific installed gem" do
+    with_project(project_files_for(PLATFORM_LOCKFILE_TEXT, PLATFORM_GEMFILE, {
+      "vendor/bundle/ruby/3.4.0/gems/nokogiri-1.18.10-x64-mingw-ucrt/lib/nokogiri.rb" => "",
+      "vendor/bundle/ruby/3.4.0/gems/racc-1.8.1/lib/racc.rb"                          => "",
+    })) do
+      code, out, err = capture_command { |o, e| Celerite::Commands.show_info("show", o, e, ["nokogiri"]) }
+      code.should eq(0)
+      err.should eq("")
+      out.should contain("nokogiri (1.18.10)")
+      out.should contain("nokogiri-1.18.10-x64-mingw-ucrt")
+    end
+  end
 end
