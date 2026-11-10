@@ -134,9 +134,9 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 
 任务：
 
-- [ ] 实现当前 Ruby、RubyGems、Gemfile 目标 Ruby、engine、patchlevel 和 ABI 的约束过滤；将 `ResolutionSource#ruby_requirement_satisfied?` 完整实现并验证（代码进展：`src/celerite/resolver/source.cr:265-277` 已做 required_ruby/rubygems 版本 `satisfied_by?` 判断，非恒真；仍缺 engine/patchlevel/ABI/Gemfile 目标 Ruby、安装复核及正反例/差分证据，未达验收）。
-- [ ] 修复安装后 `check`、`list`、`show`/`info` 的 gem 发现，不再把所有锁定 gem 固定视为 missing；补齐 group、`with/without` 和 path/Git 安装状态。
-- [ ] 移除或实现占位路径：`fund` 的真实 metadata、`gem` 模板、完整 `console`/`env` 行为；避免硬编码 Bundler 版本、时间戳和运行环境。
+- [ ] 实现当前 Ruby、RubyGems、Gemfile 目标 Ruby、engine、patchlevel 和 ABI 的约束过滤；将 `ResolutionSource#ruby_requirement_satisfied?` 完整实现并验证（进展 032a531+本迭代：新增 `RubyVersion`/`RubyRuntime`、`RubyVersionMismatch` exit 18、bridge patchlevel、运行时校验接线与 `platform` mismatch 文案语义、`ruby_compatible?`/lock reuse/ruby_update patchlevel 处理；`spec/ruby_version_spec.cr`+`spec/m7_ruby_runtime_spec.cr` 轻量验证通过。**未达验收**：仍缺 engine/patchlevel/ABI/Gemfile 目标 Ruby 全矩阵正反例与安装复核、无匹配版本/平台变体差分证据；bridge 不可用时校验 best-effort 跳过，**不得视为通过**；依赖 bridge 环境时需复核；`spec/m7_platform_spec.cr`/CLI 集成与 differential 因 Windows/MSYS OpenSSL `EVP_MD_size` codegen 链接阻塞未跑，未重建二进制）。
+- [ ] 修复安装后 `check`、`list`、`show`/`info` 的 gem 发现，不再把所有锁定 gem 固定视为 missing；补齐 group、`with/without` 和 path/Git 安装状态（进展：`installed_gem_dir` 容忍缺 specifications 文件；`spec/m7_installed_discovery_spec.cr` 已编写但同上链接阻塞未跑。未达验收：缺 path/Git/group/with/without 等场景证据与 differential）。
+- [ ] 移除或实现占位路径：`fund` 的真实 metadata、`gem` 模板、完整 `console`/`env` 行为；避免硬编码 Bundler 版本、时间戳和运行环境（进展：fund 继续读取已安装 metadata；gem 最小 scaffold+选项显式 unsupported 提示；console 校验 ruby 并在无 irb 时明确失败/unsupported；env/issue Build Metadata 使用 `Celerite <version>, compatibility profile` + 真实 checkout SHA/Timestamp 且失败回落 `unknown`，不伪装上游 Bundler 构建。未达验收：缺更多行为/差分证据）。
 - [ ] 让 mirror、proxy、redirect、retry、SSL CA/client cert、`path.system`、`build.<gem>`、legacy/full index 回退具有真实生效路径；为不支持项快速失败，禁止只解析 flag/config 后静默忽略。
 - [ ] 补齐 Git tag/submodules/glob、多个 gemspec、monorepo、私有 source 鉴权、离线安装、磁盘错误与中断清理；验证 Linux gnu/musl 和多 Ruby ABI。
 - [ ] 插件命令注册、自定义 source、hook 异常和第三方插件 fixture 分别验证；不把 Ruby hook 能运行当作完整插件兼容。

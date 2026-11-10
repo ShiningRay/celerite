@@ -1672,8 +1672,15 @@ module Celerite
     # console: exec an IRB session inside the bundle environment
     # ------------------------------------------------------------------
     def self.console(stdout : IO, stderr : IO, rest : Array(String)) : Int32
-      # delegate to exec semantics (irb missing -> the underlying ruby fails
-      # exactly like the reference's activation error path)
+      definition = Definition.build
+      Commands.validate_ruby_runtime!(definition)
+      # Best-effort: reference Bundler loads bundler/setup in IRB with bundle
+      # context. Full interactive console parity is not implemented in Celerite;
+      # exec irb with bundle environment when available, else fail clearly.
+      unless Process.find_executable("irb") || Process.find_executable("irb.bat") || Process.find_executable("irb.cmd")
+        stderr.puts "bundle console requires IRB (`irb`) in PATH; IRB not found. (Celerite: full interactive bundle console not implemented; install IRB to exec irb in bundle context)"
+        return 127
+      end
       exec(stdout, stderr, ["irb"] + rest)
     end
 
@@ -1681,6 +1688,11 @@ module Celerite
     # gem: project skeleton (bundle gem NAME)
     # ------------------------------------------------------------------
     def self.gem(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      unsupported = rest.select { |a| a.starts_with?("--test") || a.starts_with?("--ci") || a.starts_with?("--coc") || a.starts_with?("--mit") || a.starts_with?("--changelog") || a.starts_with?("--edit") || a == "-t" || a == "--exe" || a == "--bin" || a == "--ext" || a.starts_with?("--linter") }
+      unless unsupported.empty?
+        stderr.puts "bundle gem options not fully supported by Celerite: #{unsupported.join(", ")}"
+        stderr.puts "Generating a minimal scaffold only (no option-specific files/config)."
+      end
       name = rest.reject(&.starts_with?("--")).first?
       if name.nil?
         stderr.puts "Please provide a gem name"
@@ -1697,62 +1709,62 @@ module Celerite
       # gemspec + lib; option flags are accepted but scaffold content is the
       # documented minimum.
       File.write(File.join(dir, "#{name}.gemspec"), <<-SPEC)
-        # frozen_string_literal: true
+# frozen_string_literal: true
 
-        Gem::Specification.new do |spec|
-          spec.name = #{name.inspect}
-          spec.version = "#{module_name}::VERSION"
-          spec.summary = "Ruby gem #{name}"
-          spec.required_ruby_version = ">= 3.0.0"
+Gem::Specification.new do |spec|
+  spec.name = #{name.inspect}
+  spec.version = "#{module_name}::VERSION"
+  spec.summary = "Ruby gem #{name}"
+  spec.required_ruby_version = ">= 3.0.0"
 
-          spec.files = Dir["lib/**/*.rb"] + Dir["exe/*"] + Dir["README*"] + Dir["LICENSE*"] + Dir["CHANGELOG*"]
-          spec.bindir = "exe"
-          spec.executables = []
-          spec.require_paths = ["lib"]
-        end
-      SPEC
+  spec.files = Dir["lib/**/*.rb"] + Dir["exe/*"] + Dir["README*"] + Dir["LICENSE*"] + Dir["CHANGELOG*"]
+  spec.bindir = "exe"
+  spec.executables = []
+  spec.require_paths = ["lib"]
+end
+SPEC
       File.write(File.join(dir, "lib", "#{name}.rb"), <<-LIB)
-        # frozen_string_literal: true
+# frozen_string_literal: true
 
-        module #{module_name}
-          VERSION = "0.1.0"
-        end
-      LIB
+module #{module_name}
+  VERSION = "0.1.0"
+end
+LIB
       File.write(File.join(dir, "Gemfile"), <<-GEMFILE)
-        # frozen_string_literal: true
+# frozen_string_literal: true
 
-        source "https://rubygems.org"
+source "https://rubygems.org"
 
-        gemspec
-      GEMFILE
+gemspec
+GEMFILE
       File.write(File.join(dir, "README.md"), <<-README)
-        # #{name}
+# #{name}
 
-        TODO: Write a gem description.
-      README
+TODO: Write a gem description.
+README
       File.write(File.join(dir, "LICENSE.txt"), <<-LICENSE)
-        The MIT License (MIT)
+The MIT License (MIT)
 
-        Copyright (c) #{Time.utc.year}
+Copyright (c) #{Time.utc.year}
 
-        Permission is hereby granted, free of charge, to any person obtaining a copy
-        of this software and associated documentation files (the "Software"), to deal
-        in the Software without restriction, including without limitation the rights
-        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-        copies of the Software, and to permit persons to whom the Software is
-        furnished to do so, subject to the following conditions:
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-        The above copyright notice and this permission notice shall be included in
-        all copies or substantial portions of the Software.
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
 
-        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-        THE SOFTWARE.
-      LICENSE
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+LICENSE
       stdout.puts "Creating gem '#{name}'..."
       0
     end

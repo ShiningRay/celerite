@@ -124,16 +124,9 @@ Prior mapping of those 97 fixtures to milestones (historical, not revalidated):
 
 ## Additional known implementation gaps (M7, evidence-aligned)
 
-- **Ruby/RubyGems 约束过滤（部分进展，未达 M7(1) 验收）**：`src/celerite/resolver/source.cr:265-277`
-  中 `ResolutionSource#ruby_requirement_satisfied?` 已按 `spec.required_ruby_version` /
-  `spec.required_rubygems_version` 对 `running_ruby_version`/`running_rubygems_version`
- （当前由 bridge 版本字段 `@bridge_ruby_version`/`@bridge_rubygems_version` 提供）
-  执行 `satisfied_by?` 并在不满足时返回 `false`（非恒真）。但 M7(1) 仍未满足：
-  需覆盖当前运行/目标 Ruby、engine、patchlevel、ABI、Gemfile 目标 Ruby 等完整约束，
-  以及无匹配版本、平台变体与安装复核的正反例/差分证据；实现与验收仍待完成。
-- `check` and `list` have locked/missing-gem fixture paths, not complete
-  installed-gem discovery; `fund` currently prints a fixed no-funding response.
-  The `gem` template and environment diagnostics also have partial implementations.
+- **Ruby/RubyGems 约束过滤（进行中，未达 M7(1) 完整验收）**：已实现并接线（`032a531` 起，本迭代继续）`src/celerite/ruby_version.cr`/`src/celerite/ruby_runtime.cr`、`Celerite::RubyVersionMismatch`（exit 18）、bridge `ruby_environment.patchlevel`、`ResolutionSource` 运行时版本含 patchlevel/engine 信息参与 gem `required_ruby_version` 满足判断、lockfile Ruby 复用比较 `RubyVersion` diff、`ruby_update` 写入正确 patchlevel。CLI runtime 校验（best-effort：bridge 不可用时跳过，**不视为通过**）已接入 check/install/show/info/fund/exec/cache/clean/doctor/pristine/outdated/update/licenses/console 等命令；`platform` 在 bridge 可用时输出 mismatch 文案但 exit 0，bridge 不可用时输出 "Ruby version requirement not validated (bridge unavailable); cannot confirm runtime match."；`list`/`lock`/`env` 按参考探针不因 mismatch 失败。`spec/ruby_version_spec.cr` + `spec/m7_ruby_runtime_spec.cr` 通过 `crystal spec`（轻量验证，exit 0）；`spec/m7_platform_spec.cr` 已编写但在本机 Windows/MSYS ucrt64 环境 codegen 链接 OpenSSL `EVP_MD_size` 失败（未验证）。仍缺：Gemfile 目标 Ruby/engine/patchlevel/ABI 全矩阵正反例与安装复核、无匹配版本/平台变体差分证据、bridge 缺失场景可执行 spec/集成证据（环境阻塞需后续补）。
+- **安装后 gem 发现（部分修复）**：`Commands.installed_gem_dir` 对 RubyGems 安装放宽为 gem 目录存在即可视为已发现（容忍缺 `specifications/*.gemspec`），`check`/`list`/`show`/`info`/`doctor` 受益。`spec/m7_installed_discovery_spec.cr` 已编写但同上 OpenSSL 链接阻塞未运行。仍需补齐并验证 path/Git/group/`with`/`without`/平台变体等场景的正反例与 differential 证据；当前不可宣称 M7(2) 完成。
+- **占位/诊断路径（部分修复）**：`fund` 仍从已安装 cache/specifications 读取 `funding_uri` metadata（代码已存在，未新增冒充实现）；`gem` 改为最小合理 scaffold（module/VERSION、README.md、LICENSE.txt、gemspec files/summary/required_ruby_version 调整）并对常见生成选项输出 "not fully supported ... Generating a minimal scaffold only"；`console` 现执行 runtime 校验并在 `irb` 缺失时返回 127 与明确说明（非完整交互 console）。`env`/`issue` Build Metadata 改为 `Celerite #{Celerite::VERSION}, compatibility profile` + 仓库真实 `Git SHA`/`Timestamp`（`git rev-parse`，失败回落 `"unknown"`），**Celerite 运行在兼容 profile 下，非上游 Bundler 构建**（首辅裁断：不伪装上游 Bundler build metadata）。仍需更多 M7(3) 行为/输出证据与差分。
 - Global `--retry` is stripped rather than executing the configured retry policy.
   Mirror, proxy, redirect, SSL and legacy/full-index configuration cannot be
   inferred to work merely because a config key is recognized.

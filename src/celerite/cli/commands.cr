@@ -320,10 +320,13 @@ module Celerite
         output << "Your app has gems that work on these platforms:\n#{platform_lines.join("\n")}"
 
         mismatch_message = nil
+        ruby_validation_attempted = false
+        ruby_validation_skipped = false
         if ruby_version
           # Runtime validation: Bundler prints a mismatch message but exits 0
           # for platform when the Gemfile ruby requirement does not match.
           if bridge_available?
+            ruby_validation_attempted = true
             begin
               bridge = Bridge::Client.new
               begin
@@ -340,14 +343,24 @@ module Celerite
                   end
                 end
               rescue
+                ruby_validation_skipped = true
               ensure
                 bridge.close
               end
             rescue
+              ruby_validation_skipped = true
             end
+          else
+            ruby_validation_skipped = true
           end
           output << "Your Gemfile specifies a Ruby version requirement:\n* #{ruby_version}"
-          output << mismatch_message.not_nil! if mismatch_message
+          if mismatch_message
+            output << mismatch_message
+          elsif ruby_validation_skipped
+            output << "Ruby version requirement not validated (bridge unavailable); cannot confirm runtime match."
+          else
+            output << "Your current platform satisfies the Ruby version requirement."
+          end
         else
           output << "Your Gemfile does not specify a Ruby version requirement."
         end
