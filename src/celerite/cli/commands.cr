@@ -463,7 +463,8 @@ module Celerite
       requested_groups = requested_groups_for(definition.config, all_groups, only_group, without_group)
       locked_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, locked_specs, requested_groups) : locked_specs
 
-      if command == "show" && rest.reject { |a| a.starts_with?("--") }.empty?
+      names = rest.reject { |a| a.starts_with?("--") }
+      if command == "show" && names.empty?
         stdout.puts "Gems included by the bundle:"
         missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
         if missing.any?
@@ -473,6 +474,8 @@ module Celerite
         end
         if paths
           locked_specs.each { |spec| stdout.puts(installed_gem_dir(definition, spec, lockfile) || spec.full_name) }
+        elsif name_only
+          locked_specs.each { |spec| stdout.puts spec.name }
         else
           locked_specs.each { |spec| stdout.puts "  * #{spec.full_name}" }
         end
