@@ -1,15 +1,27 @@
 #!/usr/bin/env bash
-# Upstream Bundler spec harness (M6, per docs/upstream-spec-spike.md):
+# Upstream Bundler spec harness (M7, per docs/upstream-spec-spike.md):
 # runs the pinned upstream lockfile spec family against Celerite via a
 # `bundle` shim on PATH, recording per-example results.
 #
 # Requirements:
 #   - Ruby with rspec installed (`gem install rspec`)
-#   - reference Bundler pinned (see vendor/reference/MANIFEST.md)
+#   - built `bin/celerite` (or `bin/celerite.exe` on Windows)
+#   - network access on first run to sparse-clone rubygems/rubygems and fetch
+#     the myrack fixture gem; vendored compact_index may be fetched by upstream
+#     spec setup if the full upstream suite bootstrap runs
 #
 # Usage:
 #   script/upstream-specs                # run lockfile family, write report
 #   UPSTREAM_REV=v4.0.24 script/upstream-specs
+#   CELERITE_SKIP_TEST_DEPS=1 script/upstream-specs  # skip upstream install_test_deps
+#
+# Notes:
+# - The upstream lockfile specs are written for Bundler's own test harness
+#   (spec_helper/builders/helpers, tmp gem repos, installed bundle bin in test
+#   gem path). A byte-green run is NOT the gate. This script records per-example
+#   results/classification evidence (compatibility.md rule 6).
+# - Exits non-zero if rspec reports failures/errors so CI/callers can see the
+#   baseline truth; the generated report is still written.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,20 +29,38 @@ rev="${UPSTREAM_REV:-v4.0.24}"
 spec_dir="$repo_root/.upstream-specs/$rev/bundler/spec"
 report="$repo_root/docs/compat-matrix/generated/upstream-lockfile-$rev.md"
 
+# Resolve celerite binary (Windows Crystal builds produce .exe).
+celerite_bin="$repo_root/bin/celerite"
+if [ ! -x "$celerite_bin" ] && [ -x "$repo_root/bin/celerite.exe" ]; then
+  celerite_bin="$repo_root/bin/celerite.exe"
+elif [ ! -f "$celerite_bin" ] && [ -f "$repo_root/bin/celerite.exe" ]; then
+  celerite_bin="$repo_root/bin/celerite.exe"
+fi
+
+if [ ! -f "$celerite_bin" ]; then
+  echo "error: celerite binary not found at $repo_root/bin/celerite(.exe)" >&2
+  echo "hint: run 'shards build' and re-run this script" >&2
+  exit 127
+fi
+
 if [ ! -f "$spec_dir/lock/lockfile_spec.rb" ]; then
   echo "Cloning rubygems/rubygems @ $rev (sparse)..."
   rm -rf "$repo_root/.upstream-specs/$rev"
   mkdir -p "$repo_root/.upstream-specs/$rev"
   git clone --depth 1 --branch "$rev" --filter=blob:none --sparse \
     https://github.com/rubygems/rubygems.git "$repo_root/.upstream-specs/$rev" >/dev/null 2>&1
-  git -C "$repo_root/.upstream-specs/$rev" sparse-checkout set bundler/spec bundler/lib >/dev/null 2>&1
+  git -C "$repo_root/.upstream-specs/$rev" sparse-checkout set \
+    bundler/spec bundler/lib bundler/bin bundler/exe >/dev/null 2>&1
+else
+  # Ensure bin/exe are present for dev_binstub/path resolution in spec support.
+  git -C "$repo_root/.upstream-specs/$rev" sparse-checkout add bundler/bin bundler/exe >/dev/null 2>&1 || true
 fi
 
 # Build the fixture gem index the lockfile specs use (myrack 1.0.0 from
 # build_repo2 equivalents) from checked-in gems if present; otherwise the
 # harness falls back to the reference bundle executable to generate it.
 index_dir="$repo_root/.upstream-specs/$rev/gem-index"
-if [ ! -f "$index_dir/versions" ]; then
+if [ ! -f "$index_dir/versions" ] && [ ! -f "$index_dir/specs.4.8" ]; then
   echo "Generating fixture gem index..."
   mkdir -p "$index_dir/gems"
   # The upstream spec's build_repo2 includes myrack 1.0.0; the harness
@@ -41,45 +71,107 @@ if [ ! -f "$index_dir/versions" ]; then
 fi
 
 # The upstream spec suite drives `bundle` through RSpec helpers that shell
-# out; point PATH at our shim so `bundle` = celerite.
+# out; point PATH at our shim so `bundle` = celerite. Upstream helpers also
+# execute bundle via installed_bindir/dev_binstub paths inside the test env,
+# so PATH shimming alone is insufficient for true in-example driving; see
+# docs/upstream-spec-spike.md for the classification of this limitation.
 shim_dir="$repo_root/.upstream-specs/shim"
 mkdir -p "$shim_dir"
 cat > "$shim_dir/bundle" <<SHIM
 #!/usr/bin/env bash
 export CELERITE_BRIDGE_SERVER="$repo_root/assets/bridge/server.rb"
-exec "$repo_root/bin/celerite" "\$@"
+exec "$celerite_bin" "\$@"
 SHIM
-chmod +x "$shim_dir/bundle"
+chmod +x "$shim_dir/bundle" 2>/dev/null || true
 
-echo "Note: the upstream spec_helper constructs its own gem repositories and"
-echo "asserts Ruby-Bundler-internal behaviors; a byte-green run is NOT the"
-echo "gate. Per-example results are recorded as the compatibility evidence"
-echo "trail required by compatibility.md rule 6, with exclusions reviewed at"
-echo "every re-pin (see docs/upstream-spec-spike.md)."
+# Windows cmd resolution may prefer .cmd/.bat; provide both.
+cat > "$shim_dir/bundle.cmd" <<SHIM
+@echo off
+set "CELERITE_BRIDGE_SERVER=$repo_root/assets/bridge/server.rb"
+"$celerite_bin" %*
+SHIM
+cat > "$shim_dir/bundle.bat" <<SHIM
+@echo off
+set "CELERITE_BRIDGE_SERVER=$repo_root/assets/bridge/server.rb"
+"$celerite_bin" %*
+SHIM
+
+echo "celerite binary: $celerite_bin"
+echo "upstream checkout: $repo_root/.upstream-specs/$rev"
+echo "Note: upstream lockfile specs depend on Bundler's full spec_helper/test"
+echo "infrastructure (fixture repos, tmp gem env, installed bundle bins). PATH"
+echo "shim targets shell-out resolution; in-example helpers may still use"
+echo "upstream test-env bundle paths. Results are recorded as baseline evidence,"
+echo "not a byte-green gate (see docs/upstream-spec-spike.md)."
 echo
 
 rspec_out="$repo_root/.upstream-specs/rspec-output.txt"
-PATH="$shim_dir:$PATH" BUNDLE_GEMFILE="" \
-  rspec "$spec_dir/lock/lockfile_spec.rb" --format documentation \
-  --out "$rspec_out" 2>&1 | tail -20
+mkdir -p "$(dirname "$rspec_out")"
+
+# Run from bundler dir so .rspec (--require spec_helper) and relative paths
+# resolve as upstream expects. Set envs used by harness/probe workflows.
+(
+  cd "$repo_root/.upstream-specs/$rev/bundler"
+  export PATH="$shim_dir:$PATH"
+  export BUNDLE_GEMFILE=""
+  export CELERITE_BRIDGE_SERVER="$repo_root/assets/bridge/server.rb"
+  export CELERITE_BIN="$celerite_bin"
+  # Optional: skip upstream install_test_deps (avoids network/dev bundle setup,
+  # but may leave fixture/base gems unbuilt). Off by default.
+  if [ "${CELERITE_SKIP_TEST_DEPS:-}" = "1" ]; then
+    export RSPEC_FORMATTER_OUTPUT_ID="celerite-harness"
+  fi
+  # Prefer `ruby -S rspec` for Windows/Git Bash portability.
+  rspec_pre_args=()
+  if [ "${CELERITE_BUNDLE_HELPER_OVERRIDE:-0}" = "1" ]; then
+    rspec_pre_args=(-r "$repo_root/script/upstream-specs-celerite-override.rb")
+  fi
+  if command -v ruby >/dev/null 2>&1; then
+    ruby -S rspec "${rspec_pre_args[@]}" spec/lock/lockfile_spec.rb --format documentation --out "$rspec_out" 2>&1
+  else
+    rspec "${rspec_pre_args[@]}" spec/lock/lockfile_spec.rb --format documentation --out "$rspec_out" 2>&1
+  fi
+)
+rspec_status=$?
+tail -20 "$rspec_out" 2>/dev/null || true
+
+summary="$(grep -E '^[0-9]+ examples' "$rspec_out" 2>/dev/null | tail -1 || true)"
+if [ -z "$summary" ] && [ $rspec_status -ne 0 ]; then
+  summary="rspec exited $rspec_status (no example summary captured)"
+fi
 
 {
-  echo "# Upstream lockfile spec results — $rev"
+  echo "# Upstream lockfile spec results �� $rev"
   echo
   echo "Generated by \`script/upstream-specs\` on $(date -u +%Y-%m-%d)."
-  echo "Harness: rspec against \`bundler/spec/lock/lockfile_spec.rb\` with the"
-  echo "celerite bundle shim on PATH. Exclusions and causes:"
-  echo "docs/upstream-spec-spike.md."
+  echo
+  echo "## Harness"
+  echo
+  echo "- Upstream: \`rubygems/rubygems@$rev\`, spec \`bundler/spec/lock/lockfile_spec.rb\`"
+  echo "- Runner: \`rspec --format documentation\` from \`.upstream-specs/$rev/bundler\`"
+  echo "- Celerite binary: \`$celerite_bin\`"
+  echo "- Shim: \`.upstream-specs/shim/bundle\` (+ .bat/.cmd) exporting \`CELERITE_BRIDGE_SERVER\` and exec'ing celerite"
+  echo "- Sparse checkout: \`bundler/spec bundler/lib bundler/bin bundler/exe\`"
+  echo "- Raw output: \`.upstream-specs/rspec-output.txt\` (gitignored, local evidence)"
+  echo "- rspec exit status: $rspec_status"
+  echo
+  echo "## Result summary"
+  echo
+  echo "${summary:-(no summary line found)}"
+  echo
+  echo "## Output tail"
   echo
   echo "\`\`\`"
-  tail -40 "$rspec_out" 2>/dev/null
+  tail -60 "$rspec_out" 2>/dev/null || echo "(no output)"
   echo "\`\`\`"
   echo
-  echo "Summary: $(grep -E '^[0-9]+ examples' "$rspec_out" 2>/dev/null | tail -1)"
-  echo "Interpretation: the upstream spec_helper gates examples behind fixture"
-  echo "preconditions (build_repo2 etc.) that require the Ruby Bundler internals;"
-  echo "examples listed as pending did not execute under the celerite shim. This"
-  echo "is the recorded spike evidence — see docs/upstream-spec-spike.md for the"
-  echo "per-family applicability analysis."
+  echo "## Interpretation"
+  echo
+  echo "See \`docs/upstream-spec-spike.md\` for harness-precondition analysis,"
+  echo "per-failure classification (harness/precondition/unexecuted vs real"
+  echo "compatibility gap), and applicability notes. This run is baseline"
+  echo "evidence, not a byte-green compatibility gate."
 } > "$report"
+
 echo "wrote $report"
+exit $rspec_status
