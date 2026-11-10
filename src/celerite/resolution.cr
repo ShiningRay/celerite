@@ -26,9 +26,14 @@ module Celerite
     end
 
     def self.ruby_abi(bridge : Bridge::Client) : String
-      env = bridge.ruby_environment
-      parts = env.ruby_version.split(".")
-      "#{parts[0]}.#{parts[1]}.0"
+      ruby_abi_for(bridge.ruby_environment.ruby_version)
+    end
+
+    # Pure helper so the ABI derivation can be tested without a Ruby bridge.
+    # RubyGems/Bundler use `<major>.<minor>.0` (e.g. 4.0.6 -> 4.0.0).
+    def self.ruby_abi_for(ruby_version : String) : String
+      parts = ruby_version.split(".")
+      "#{parts[0]}.#{parts[1]? || "0"}.0"
     end
   end
 
@@ -533,20 +538,25 @@ module Celerite
     end
 
     private def ruby_compatible?(lockfile : Lockfile::Data) : Bool
-      # If Gemfile declares a Ruby requirement, lockfile ruby must be compatible.
-      return true if @evaluation.ruby.nil? && lockfile.ruby_version.nil?
-      return false if @evaluation.ruby.nil? != lockfile.ruby_version.nil?
-      return false unless @evaluation.ruby && lockfile.ruby_version
+      Resolution.ruby_compatible?(@evaluation.ruby, lockfile.ruby_version)
+    end
 
-      requested = Celerite::RubyVersion.parse_requirement(@evaluation.ruby.not_nil!)
-      locked = Celerite::RubyVersion.from_string(lockfile.ruby_version.not_nil!) ||
-               Celerite::RubyVersion.parse_requirement(lockfile.ruby_version.not_nil!)
-      return lockfile.ruby_version == @evaluation.ruby unless requested && locked
+    # Pure helper for Gemfile-declared Ruby vs lockfile Ruby compatibility.
+    # Exposed for the M7 constraint matrix; `ruby_compatible?` delegates here.
+    def self.ruby_compatible?(requested_ruby : String?, locked_ruby : String?) : Bool
+      return true if requested_ruby.nil? && locked_ruby.nil?
+      return false if requested_ruby.nil? != locked_ruby.nil?
+      return false unless requested_ruby && locked_ruby
+
+      requested = Celerite::RubyVersion.parse_requirement(requested_ruby)
+      locked = Celerite::RubyVersion.from_string(locked_ruby) ||
+               Celerite::RubyVersion.parse_requirement(locked_ruby)
+      return locked_ruby == requested_ruby unless requested && locked
 
       # Locked ruby must satisfy the requested declaration (Bundler-style diff).
       requested.diff(locked).nil?
     rescue
-      lockfile.ruby_version == @evaluation.ruby
+      locked_ruby == requested_ruby
     end
 
     private def materialize_locked : Array(ResolvedSpec)
