@@ -21,9 +21,15 @@ module Celerite
     getter download_dir : String
     getter retries : Int32
     getter mirror_url : String?
+    getter ssl_ca_cert : String?
+    getter ssl_client_cert : String?
+    getter ssl_verify_mode : String?
 
-    def initialize(@remote : String, cache_root : String, retries : Int32 = 3, mirror_url : String? = nil)
+    def initialize(@remote : String, cache_root : String, retries : Int32 = 3, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil)
       @mirror_url = mirror_url
+      @ssl_ca_cert = ssl_ca_cert
+      @ssl_client_cert = ssl_client_cert
+      @ssl_verify_mode = ssl_verify_mode
       @download_dir = File.join(cache_root, "downloads")
       Dir.mkdir_p(@download_dir)
       @inflight = Hash(String, Channel(String?)).new
@@ -159,7 +165,23 @@ module Celerite
       end
 
       uri = URI.parse(@remote)
-      client = HTTP::Client.new(uri)
+      tls_ctx = nil
+      if uri.scheme == "https"
+        ctx = OpenSSL::SSL::Context::Client.new
+        if ca = @ssl_ca_cert
+          ctx.ca_certificates = ca
+        end
+        if mode = @ssl_verify_mode
+          case mode.downcase
+          when "none"
+            ctx.verify_mode = OpenSSL::SSL::VerifyMode::NONE
+          when "peer"
+            ctx.verify_mode = OpenSSL::SSL::VerifyMode::PEER
+          end
+        end
+        tls_ctx = ctx
+      end
+      client = HTTP::Client.new(uri, tls: tls_ctx)
       client.connect_timeout = 30.seconds
       client.read_timeout = 120.seconds
       # Retry with exponential backoff (pinned Bundler behavior).
