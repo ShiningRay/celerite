@@ -89,7 +89,7 @@ module Celerite
 
         if mirror = @mirror_url
           begin
-            return fetch_from(mirror, path, request_headers, headers)
+            return fetch_from(mirror, path, request_headers)
           rescue
           end
         end
@@ -99,33 +99,16 @@ module Celerite
         loop do
           attempt += 1
           begin
-            tls_ctx = if @uri.scheme == "https"
-                        ctx = OpenSSL::SSL::Context::Client.new
-                        if ca = @ssl_ca_cert
-                          ctx.ca_certificates = ca
-                        end
-                        if mode = @ssl_verify_mode
-                          case mode.downcase
-                          when "none"
-                            ctx.verify_mode = OpenSSL::SSL::VerifyMode::NONE
-                          when "peer"
-                            ctx.verify_mode = OpenSSL::SSL::VerifyMode::PEER
-                          end
-                        end
-                        ctx
-                      end
-            client = HTTP::Client.new(@uri, tls: tls_ctx)
-            client.connect_timeout = @timeout
-            client.read_timeout = @timeout
-            if @user || @password
-              client.basic_auth(@user || "", @password || "")
-            end
-            response = client.get(path, headers: request_headers)
-            client.close rescue nil
+            response = perform(@uri, path, request_headers)
             if (response.status_code == 301 || response.status_code == 302 || response.status_code == 303 ||
                response.status_code == 307 || response.status_code == 308) && (loc = response.headers["Location"]?)
               @uri = URI.parse(loc)
               return call(remote_path, headers)
+            end
+            # Pinned retry policy: 5xx, 429 and 408 are transient; retry them.
+            if retryable_status?(response.status_code) && attempt < max_attempts
+              sleep (0.5 * (2 ** (attempt - 1))).seconds
+              next
             end
             response_headers = {} of String => String
             response.headers.each do |name, values|
@@ -142,19 +125,51 @@ module Celerite
         end
       end
 
-      private def fetch_from(remote : String, path : String, request_headers : HTTP::Headers, headers : Hash(String, String)) : FetchResponse
-        uri = URI.parse(remote)
-        client = HTTP::Client.new(uri)
-        client.connect_timeout = @timeout
-        client.read_timeout = @timeout
-        response = client.get(path, headers: request_headers)
-        client.close rescue nil
-        raise "mirror failed" unless response.status_code < 400
+      # Mirror responses reuse the original remote's TLS/credential settings;
+      # a 4xx/5xx answer marks the mirror unusable so the caller falls back.
+      private def fetch_from(remote : String, path : String, request_headers : HTTP::Headers) : FetchResponse
+        response = perform(URI.parse(remote), path, request_headers)
+        raise "mirror returned #{response.status_code}" unless response.status_code < 400
         response_headers = {} of String => String
         response.headers.each do |name, values|
           response_headers[name.downcase] = values.first? || ""
         end
         FetchResponse.new(response.status_code, response.body, response_headers)
+      end
+
+      # Transient server errors worth retrying (pinned Bundler network policy).
+      private def retryable_status?(status : Int32) : Bool
+        status == 408 || status == 429 || (status >= 500 && status < 600)
+      end
+
+      # One HTTP request with the configured TLS context and credentials.
+      # Credentials only live on the request; they are never logged.
+      private def perform(uri : URI, path : String, request_headers : HTTP::Headers) : HTTP::Client::Response
+        tls_ctx = nil
+        if uri.scheme == "https"
+          ctx = OpenSSL::SSL::Context::Client.new
+          if ca = @ssl_ca_cert
+            ctx.ca_certificates = ca
+          end
+          if mode = @ssl_verify_mode
+            case mode.downcase
+            when "none"
+              ctx.verify_mode = OpenSSL::SSL::VerifyMode::NONE
+            when "peer"
+              ctx.verify_mode = OpenSSL::SSL::VerifyMode::PEER
+            end
+          end
+          tls_ctx = ctx
+        end
+        client = HTTP::Client.new(uri, tls: tls_ctx)
+        client.connect_timeout = @timeout
+        client.read_timeout = @timeout
+        user = @user || uri.user
+        password = @password || uri.password
+        client.basic_auth(user, password || "") if user
+        response = client.get(path, headers: request_headers)
+        client.close rescue nil
+        response
       end
     end
 
