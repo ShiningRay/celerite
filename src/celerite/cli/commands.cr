@@ -115,7 +115,14 @@ module Celerite
           next
         end
         if arg == "--retry" || arg == "-r"
+          if value = args[index + 1]?
+            ENV["CELERITE_CLI_RETRY"] = value unless value.starts_with?("--")
+          end
           skip_next = true
+          next
+        end
+        if arg.starts_with?("--retry=")
+          ENV["CELERITE_CLI_RETRY"] = arg.split("=", 2)[1]? || ""
           next
         end
         if arg == "--verbose"
@@ -126,6 +133,32 @@ module Celerite
         result << arg
       end
       result
+    end
+
+    # Effective retry count for network operations: CLI --retry overrides config.
+    def self.retry_count(config : Config? = nil) : Int32
+      if cli = ENV["CELERITE_CLI_RETRY"]?
+        if value = cli.to_i?
+          return value if value >= 0
+        end
+      end
+      cfg = config || (begin
+        Config.new
+      rescue
+        nil
+      end)
+      if cfg
+        value = cfg["retry"]
+        case value
+        when Int32
+          return value if value >= 0
+        when String
+          if parsed = value.to_i?
+            return parsed if parsed >= 0
+          end
+        end
+      end
+      3
     end
 
     def self.known_unimplemented?(command : String) : Bool

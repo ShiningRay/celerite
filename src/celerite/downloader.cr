@@ -19,12 +19,14 @@ module Celerite
     end
 
     getter download_dir : String
+    getter retries : Int32
 
-    def initialize(@remote : String, cache_root : String)
+    def initialize(@remote : String, cache_root : String, retries : Int32 = 3)
       @download_dir = File.join(cache_root, "downloads")
       Dir.mkdir_p(@download_dir)
       @inflight = Hash(String, Channel(String?)).new
       @mutex = Mutex.new
+      @retries = retries < 0 ? 0 : retries
     end
 
     # Downloads (or reuses) the .gem for one spec and returns the cached path.
@@ -147,26 +149,40 @@ module Celerite
       client.connect_timeout = 30.seconds
       client.read_timeout = 120.seconds
       # Retry with exponential backoff (pinned Bundler behavior).
-      retries = 3
+      max_attempts = {@retries + 1, 1}.max
       attempt = 0
       loop do
         attempt += 1
-        response = client.get(remote_path)
+        begin
+          response = client.get(remote_path)
+        rescue ex
+          client.close rescue nil
+          if attempt < max_attempts
+            sleep (0.5 * (2 ** (attempt - 1))).seconds
+            client = HTTP::Client.new(URI.parse(@remote))
+            client.connect_timeout = 30.seconds
+            client.read_timeout = 120.seconds
+            next
+          end
+          raise ex
+        end
         if response.status_code == 200
           File.write(path, response.body)
+          client.close rescue nil
           return
         elsif response.status_code == 301 || response.status_code == 302 || response.status_code == 303 || response.status_code == 307 || response.status_code == 308
           # Follow redirect
           if loc = response.headers["Location"]?
-            client.close
+            client.close rescue nil
             @remote = loc
             return download_to(name, version, platform, path)
           end
         end
-        if attempt < retries
+        if attempt < max_attempts
           sleep (0.5 * (2 ** (attempt - 1))).seconds
           next
         end
+        client.close rescue nil
         raise GemNotFoundError.new("Could not fetch gem #{full_name} from #{@remote} (HTTP #{response.status_code})")
       end
     end
