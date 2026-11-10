@@ -68,7 +68,9 @@ module Celerite
                      @local_platform : Gem::Platform,
                      @unlock : Bool | Array(String) = false,
                      @spec_fetcher : (String -> Array(IndexSpec))? = nil,
-                     @resolution_platforms : Array(Gem::Platform)? = nil)
+                     @resolution_platforms : Array(Gem::Platform)? = nil,
+                     @bridge_ruby_version : String = "4.0.6",
+                     @bridge_rubygems_version : String = "4.0.16")
         @root = RootPackage.new(@root_name)
         @packages = {} of String => Package
         @all_versions = {} of Package => Array(Candidate)
@@ -259,7 +261,16 @@ module Celerite
       end
 
       private def ruby_requirement_satisfied?(spec : IndexSpec) : Bool
+        return false unless spec.required_ruby_version.satisfied_by?(Gem::Version.new(running_ruby_version))
         true
+      end
+
+      private def running_ruby_version : String
+        @bridge_ruby_version
+      end
+
+      private def running_rubygems_version : String
+        @bridge_rubygems_version
       end
 
       private def installable?(spec : IndexSpec, platform : Gem::Platform) : Bool

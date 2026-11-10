@@ -572,6 +572,7 @@ module Celerite
                             prerelease_exceptions : Set(String),
                             unlock : Bool | Array(String) = false,
                             spec_fetcher : (String -> Array(Resolver::IndexSpec))? = nil) : Resolver::ResolutionSource
+      env = @bridge.not_nil!.ruby_environment
       source = Resolver::ResolutionSource.new(
         File.basename(@definition.gemfile_path),
         "rubygems repository #{primary_remote} or installed locally",
@@ -582,6 +583,8 @@ module Celerite
         unlock,
         spec_fetcher,
         resolution_platforms,
+        env.ruby_version,
+        env.rubygems_version,
       )
       prerelease_exceptions.each { |name| source.package_consider_prereleases(name) }
       source
