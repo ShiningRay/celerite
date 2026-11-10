@@ -310,7 +310,25 @@ module Celerite
       end
 
       lockfile = definition.lockfile!
-      locked_specs = lockfile.specs.sort_by(&.full_name)
+      only_group = flag_value(rest, "--only-group")
+      without_group = flag_value(rest, "--without-group")
+      all_groups = bridge_available? ? lockfile_groups(definition, lockfile) : ["default"]
+
+      if only_group && without_group
+        stderr.puts "The `--only-group` and `--without-group` options cannot be used together"
+        return 15
+      end
+      if only_group && !all_groups.includes?(only_group)
+        stderr.puts "`#{only_group}` group could not be found."
+        return 15
+      end
+      if without_group && !all_groups.includes?(without_group)
+        stderr.puts "`#{without_group}` group could not be found."
+        return 15
+      end
+
+      requested_groups = requested_groups_for(config, all_groups, only_group, without_group)
+      locked_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, lockfile.specs.sort_by(&.full_name), requested_groups) : lockfile.specs.sort_by(&.full_name)
 
       if unresolved_dep(definition, lockfile)
         stderr.puts "Bundler can't satisfy your Gemfile's dependencies."
@@ -345,8 +363,30 @@ module Celerite
     # ------------------------------------------------------------------
     def self.list(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       paths = rest.includes?("--paths")
+      name_only = rest.includes?("--name-only")
+      only_group = flag_value(rest, "--only-group")
+      without_group = flag_value(rest, "--without-group")
       definition = Definition.build
+      config = definition.config
       lockfile = definition.lockfile!
+
+      # Validate mutually exclusive group filters like the reference.
+      if only_group && without_group
+        stderr.puts "The `--only-group` and `--without-group` options cannot be used together"
+        return 15
+      end
+
+      all_groups = bridge_available? ? lockfile_groups(definition, lockfile) : ["default"]
+      if only_group && !all_groups.includes?(only_group)
+        stderr.puts "`#{only_group}` group could not be found."
+        return 15
+      end
+      if without_group && !all_groups.includes?(without_group)
+        stderr.puts "`#{without_group}` group could not be found."
+        return 15
+      end
+
+      requested_groups = requested_groups_for(config, all_groups, only_group, without_group)
 
       locked_specs = lockfile.specs.sort_by(&.full_name)
       if lockfile.dependencies.empty?
@@ -366,10 +406,19 @@ module Celerite
         stdout.puts "Resolving dependencies..."
       end
 
+      # Filter locked specs by requested groups.
+      locked_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, locked_specs, requested_groups) : locked_specs
+
       missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
       if missing.empty?
         if paths
           locked_specs.each { |spec| stdout.puts(installed_gem_dir(definition, spec, lockfile) || spec.full_name) }
+        elsif name_only
+          locked_specs.each { |spec| stdout.puts spec.name }
+        elsif only_group || without_group
+          stdout.puts "Gems included by the bundle:"
+          locked_specs.each { |spec| stdout.puts "  * #{spec.name} (#{spec.version})" }
+          stdout.puts "Use `bundle info` to print more detailed information about a gem"
         else
           locked_specs.each { |spec| stdout.puts spec.full_name }
         end
@@ -391,7 +440,30 @@ module Celerite
       lockfile = definition.lockfile!
       locked_specs = lockfile.specs.sort_by(&.full_name)
 
-      if command == "show" && rest.empty?
+      paths = rest.includes?("--paths")
+      name_only = rest.includes?("--name-only")
+      only_group = flag_value(rest, "--only-group")
+      without_group = flag_value(rest, "--without-group")
+
+      # Validate mutually exclusive group filters like the reference.
+      all_groups = bridge_available? ? lockfile_groups(definition, lockfile) : ["default"]
+      if only_group && without_group
+        stderr.puts "The `--only-group` and `--without-group` options cannot be used together"
+        return 15
+      end
+      if only_group && !all_groups.includes?(only_group)
+        stderr.puts "`#{only_group}` group could not be found."
+        return 15
+      end
+      if without_group && !all_groups.includes?(without_group)
+        stderr.puts "`#{without_group}` group could not be found."
+        return 15
+      end
+
+      requested_groups = requested_groups_for(definition.config, all_groups, only_group, without_group)
+      locked_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, locked_specs, requested_groups) : locked_specs
+
+      if command == "show" && rest.reject { |a| a.starts_with?("--") }.empty?
         stdout.puts "Gems included by the bundle:"
         missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
         if missing.any?
@@ -399,7 +471,11 @@ module Celerite
           stderr.puts "Could not find #{full_names} in locally installed gems"
           return 7
         end
-        locked_specs.each { |spec| stdout.puts "  * #{spec.full_name}" }
+        if paths
+          locked_specs.each { |spec| stdout.puts(installed_gem_dir(definition, spec, lockfile) || spec.full_name) }
+        else
+          locked_specs.each { |spec| stdout.puts "  * #{spec.full_name}" }
+        end
         return 0
       end
 
@@ -411,20 +487,162 @@ module Celerite
 
       spec = locked_specs.find(&.name.==(name))
       if spec.nil?
+        # Check if gem exists in lockfile but filtered out by group.
+        full_spec = lockfile.specs.find(&.name.==(name))
+        if full_spec
+          # Determine gem's groups
+          groups = gem_groups_for(definition, name)
+          configured_without = definition.config["without"]
+          without_list = configured_without.is_a?(Array(String)) ? configured_without : configured_without.to_s.split(":").reject(&.empty?)
+          if groups.any? { |g| without_list.includes?(g) }
+            stderr.puts "Could not find gem '#{name}', because it's in the group '#{groups.first}', configured to be"
+            stderr.puts "ignored."
+            return 7
+          end
+        end
         stderr.puts "Could not find '#{name}' in locally installed gems. Run `bundle install` to install missing gems."
         return 7
       end
 
-      if gem_dir = installed_gem_dir(definition, spec, lockfile)
-        stdout.puts "#{spec.name} (#{spec.version})"
-        stdout.puts "  Summary: #{spec.name}"
-        stdout.puts "  Homepage:"
-        stdout.puts "  Path: #{gem_dir}"
-        stdout.puts "  Default Gem: no"
-        return 0
+      if paths = rest.includes?("--paths")
+        if gem_dir = installed_gem_dir(definition, spec, lockfile)
+          stdout.puts gem_dir
+          return 0
+        end
+      else
+        if gem_dir = installed_gem_dir(definition, spec, lockfile)
+          stdout.puts "#{spec.name} (#{spec.version})"
+          stdout.puts "  Summary: #{spec.name}"
+          stdout.puts "  Homepage:"
+          stdout.puts "  Path: #{gem_dir}"
+          stdout.puts "  Default Gem: no"
+          return 0
+        end
       end
       stderr.puts "Could not find #{spec.full_name} in locally installed gems"
       7
+    end
+
+    # ------------------------------------------------------------------
+    # Group helpers for read-only commands
+    # ------------------------------------------------------------------
+    def self.lockfile_groups(definition : Definition, lockfile : Lockfile::Data) : Array(String)
+      bridge = Bridge::Client.new
+      begin
+        evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+        groups = [] of String
+        evaluation.dependencies.each do |dep|
+          gs = dep.groups.empty? ? ["default"] : dep.groups
+          gs.each { |g| groups << g unless groups.includes?(g) }
+        end
+        groups
+      rescue
+        [] of String
+      ensure
+        bridge.close
+      end
+    end
+
+    def self.requested_groups_for(config : Config, all_groups : Array(String), only_group : String?, without_group : String?) : Array(String)
+      configured_without = config["without"]
+      configured_with = config["with"]
+      without_list = configured_without.is_a?(Array(String)) ? configured_without : (configured_without.to_s.split(":").reject(&.empty?))
+      with_list = configured_with.is_a?(Array(String)) ? configured_with : (configured_with.to_s.split(":").reject(&.empty?))
+
+      requested = all_groups - without_list
+      requested = requested + with_list
+      requested = requested.uniq
+
+      if only_group
+        requested = [only_group]
+      elsif without_group
+        requested = all_groups - [without_group]
+      end
+      requested
+    end
+
+    def self.filter_locked_specs_by_groups(definition : Definition, lockfile : Lockfile::Data, specs : Array(Lockfile::Spec), requested_groups : Array(String)) : Array(Lockfile::Spec)
+      return specs if requested_groups.empty?
+      bridge = Bridge::Client.new
+      begin
+        evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+        group_map = {} of String => Array(String)
+        evaluation.dependencies.each do |dep|
+          group_map[dep.name] = dep.groups
+        end
+        specs.select do |spec|
+          groups = group_map[spec.name]? || [] of String
+          # If a gem has no explicit groups, treat as default group.
+          groups = ["default"] if groups.empty?
+          !(groups & requested_groups).empty?
+        end
+      rescue
+        specs
+      ensure
+        bridge.close
+      end
+    end
+
+    def self.gem_groups_for(definition : Definition, name : String) : Array(String)
+      bridge = Bridge::Client.new
+      begin
+        evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+        dep = evaluation.dependencies.find(&.name.==(name))
+        groups = dep.try(&.groups) || [] of String
+        groups = ["default"] if groups.empty?
+        groups
+      rescue
+        [] of String
+      ensure
+        bridge.close
+      end
+    end
+
+    def self.requested_groups_for(config : Config, all_groups : Array(String), only_group : String?, without_group : String?) : Array(String)
+      configured_without = config["without"]
+      configured_with = config["with"]
+      without_list = configured_without.is_a?(Array(String)) ? configured_without : configured_without.to_s.split(":").reject(&.empty?)
+      with_list = configured_with.is_a?(Array(String)) ? configured_with : configured_with.to_s.split(":").reject(&.empty?)
+
+      requested = all_groups - without_list
+      requested = (requested + with_list).uniq
+
+      if only_group
+        requested = [only_group]
+      elsif without_group
+        requested = all_groups - [without_group]
+      end
+      requested
+    end
+
+    def self.filter_locked_specs_by_groups(definition : Definition, lockfile : Lockfile::Data, specs : Array(Lockfile::Spec), requested_groups : Array(String)) : Array(Lockfile::Spec)
+      return specs if requested_groups.empty? || requested_groups == lockfile_groups(definition, lockfile)
+      bridge = Bridge::Client.new
+      begin
+        evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+        group_map = {} of String => Array(String)
+        evaluation.dependencies.each do |dep|
+          groups = dep.groups
+          groups = ["default"] if groups.empty?
+          group_map[dep.name] = groups
+        end
+        specs.select do |spec|
+          groups = group_map[spec.name]? || ["default"]
+          !(groups & requested_groups).empty?
+        end
+      rescue
+        specs
+      ensure
+        bridge.close
+      end
+    end
+
+    def self.bridge_available? : Bool
+      server = ENV["CELERITE_BRIDGE_SERVER"]?
+      return true if server && !server.empty? && File.file?(server)
+      ref_lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]?
+      return true if ref_lib && !ref_lib.empty? && Dir.exists?(ref_lib)
+      false
     end
 
     # ------------------------------------------------------------------
