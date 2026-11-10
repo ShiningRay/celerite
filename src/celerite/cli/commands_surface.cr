@@ -109,7 +109,7 @@ module Celerite
 
         install_path = InstallPaths.install_path(config)
         abi = InstallPaths.ruby_abi(bridge)
-        downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(config))
+        downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(config), config.mirror_for(resolution.primary_remote))
         installer = Installer.new(install_path, abi, bridge, downloader, stdout)
         installer.config = config
 
@@ -895,7 +895,7 @@ module Celerite
         Dir.mkdir_p(plugin_root)
         install_path = InstallPaths.install_path(definition.config)
         abi = InstallPaths.ruby_abi(bridge)
-        downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(definition.config))
+        downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(definition.config), definition.config.mirror_for(resolution.primary_remote))
         installer = Installer.new(install_path, abi, bridge, downloader, stdout)
         installer.config = definition.config
         stdin_specs.each do |spec|
@@ -1073,7 +1073,7 @@ module Celerite
         resolution = Resolution.new(definition, false, bridge)
         install_path = InstallPaths.install_path(definition.config)
         abi = InstallPaths.ruby_abi(bridge)
-        downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(definition.config))
+        downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(definition.config), definition.config.mirror_for(resolution.primary_remote))
         installer = Installer.new(install_path, abi, bridge, downloader, stdout)
         installer.config = definition.config
         install_root = File.join(install_path, "ruby", abi)
@@ -1414,7 +1414,7 @@ module Celerite
     end
 
     private def self.release_date_for(definition : Definition, resolution : Resolution, name : String, version : String, checksum : String?) : String
-      downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(definition.config))
+      downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(definition.config), definition.config.mirror_for(resolution.primary_remote))
       path = downloader.fetch(name, version, nil, checksum)
       info = Bridge::GemSpecInfo.from_json(bridge_read_spec_json(path).to_json)
       info.date.to_s.split(" ")[0]
