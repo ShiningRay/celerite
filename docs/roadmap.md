@@ -134,16 +134,16 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 
 任务：
 
-- [ ] 实现当前 Ruby、RubyGems、Gemfile 目标 Ruby、engine、patchlevel 和 ABI 的约束过滤；将 `ResolutionSource#ruby_requirement_satisfied?` 的恒真实现替换为实际规则，覆盖无匹配版本、平台变体和安装复核。
+- [ ] 实现当前 Ruby、RubyGems、Gemfile 目标 Ruby、engine、patchlevel 和 ABI 的约束过滤；将 `ResolutionSource#ruby_requirement_satisfied?` 完整实现并验证（代码进展：`src/celerite/resolver/source.cr:265-277` 已做 required_ruby/rubygems 版本 `satisfied_by?` 判断，非恒真；仍缺 engine/patchlevel/ABI/Gemfile 目标 Ruby、安装复核及正反例/差分证据，未达验收）。
 - [ ] 修复安装后 `check`、`list`、`show`/`info` 的 gem 发现，不再把所有锁定 gem 固定视为 missing；补齐 group、`with/without` 和 path/Git 安装状态。
 - [ ] 移除或实现占位路径：`fund` 的真实 metadata、`gem` 模板、完整 `console`/`env` 行为；避免硬编码 Bundler 版本、时间戳和运行环境。
 - [ ] 让 mirror、proxy、redirect、retry、SSL CA/client cert、`path.system`、`build.<gem>`、legacy/full index 回退具有真实生效路径；为不支持项快速失败，禁止只解析 flag/config 后静默忽略。
 - [ ] 补齐 Git tag/submodules/glob、多个 gemspec、monorepo、私有 source 鉴权、离线安装、磁盘错误与中断清理；验证 Linux gnu/musl 和多 Ruby ABI。
 - [ ] 插件命令注册、自定义 source、hook 异常和第三方插件 fixture 分别验证；不把 Ruby hook 能运行当作完整插件兼容。
 - [ ] 修复 `script/differential`：列出所有归一化规则；对有语义的输出禁止排序/删除；安装文件树同时比较相对路径、文件内容、可执行权限和关键 symlink；lockfile 和 Gemfile 直接比较内容。
-- [ ] 修复 `script/upstream-specs`：使锁文件族真实驱动 Celerite，退出码反映失败；保留当前 64 failures 作为失败基线，再逐项关闭。每次 re-pin 复核排除理由，不把 pending/未执行/调用参考实现记为通过。
+- [ ] 修复 `script/upstream-specs`：使锁文件族真实驱动 Celerite，退出码反映失败；保留当前 64 failures 作为失败基线，再逐项关闭。**代码进展（2026-11-10）：已移除 `|| true` 使 rspec 非零经 `pipefail` 传播（未重跑 rspec，64 failures 仍为既有记录）；“真实驱动 Celerite/失败基线逐项关闭”未完成。** 每次 re-pin 复核排除理由，不把 pending/未执行/调用参考实现记为通过。
 - [ ] 建立 Rails 规模真实项目回归，记录所有有意兼容差异及理由；未解释差异为零后才恢复“该 profile 兼容”的声明。
-- [ ] 更新 README、兼容报告、roadmap 和实际代码状态；历史报告标明对应 commit/工作树，不随新 fixture 静默改写旧结论。
+- [ ] 更新 README、兼容报告、roadmap 和实际代码状态；历史报告标明对应 commit/工作树，不随新 fixture 静默改写旧结论。**（进行中，2026-11-10：compat-report/roadmap/README 已按 HEAD=8e91a2f 与本迭代脚本/文档变更做保守对齐，未重跑门禁的结果标未验证；需后续迭代持续同步。）**
 
 验收：双 profile 单元/格式/差分门禁通过；锁文件上游族真实执行且结果如实；Ruby/平台约束和安装后只读命令有正反例；没有未声明的占位命令、恒真约束或无效配置。M8 的性能改动不得先于本阶段正确性修复合入。
 
@@ -192,7 +192,7 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 
 ## 首个可评审增量
 
-1. 修复兼容报告、上游测试退出码与归一化声明，保留可复核的失败基线。
+1. 修复兼容报告、上游测试退出码与归一化声明，保留可复核的失败基线。**（进行中，2026-11-10 iteration 1：已推送既有 `8e91a2f`；`script/upstream-specs` 移除吞错 `|| true` 使 rspec 失败传播非零退出码，保留 64 failures 基线记录但未重跑 rspec；文档对齐 `ruby_requirement_satisfied?` 现状为“有版本检查实现/未达 M7(1) 验收”，快照项标未验证；diff/spec/differential 未重跑。）**
 2. 用参考 Ruby 生成 Ruby/RubyGems 约束 oracle，实现候选过滤并覆盖不满足、平台变体和安装复核。
 3. 修复安装后 `check/list/show`，再运行双 profile 全部检查。
 4. 之后才实现 M8 的批次求值和完整指纹；每个阶段独立提交、独立 benchmark，不把正确性修复与大型性能重构混为一个变更。

@@ -15,6 +15,8 @@ compatibility boundary. Performance is a measured goal, not an unconditional cla
 > an optional later spike (M10), not the default architecture. See
 > [the compatibility report](docs/compat-report.md) for measured coverage and
 > known gaps rather than treating command names as completed functionality.
+> Snapshot figures in that report are recorded evidence and may be **unverified
+> against the current HEAD** until rerun (see the report header).
 
 ## Goals
 

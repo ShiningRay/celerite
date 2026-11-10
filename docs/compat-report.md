@@ -1,33 +1,37 @@
-# Celerite compatibility report — 2026-11-09
+# Celerite compatibility report — M7 baseline snapshot (2026-11-10)
 
-Generated from the current HEAD (plus this round's working-tree changes) for the
-two pinned reference profiles in the compatibility matrix
-(`docs/compatibility.md`): **Bundler 4.0.24** and **Bundler 2.7.2** on Ruby
-4.0.6 x64-mingw-ucrt, Windows x64 (win32), x86_64.
+Generated for iteration 1 baseline alignment. Git evidence at time of this update:
+`HEAD=8e91a2f` (`test(M7): add installed-tree fixtures for differential comparisons`)
+was pushed to `origin/main` in this iteration; this documentation/script commit is
+pending (see commit recorded in the iteration report). Environment: Ruby 4.0.6
+x64-mingw-ucrt, Crystal 1.22.1, git 2.55.0.windows.3 (Windows x64, win32).
 
-What this proves is **observable-behavior equivalence for the enumerated fixtures
-after the harness's documented normalization**: exit codes, stdout/stderr,
-project-relative file presence and explicitly selected file-content probes.
-It is not a percentage of RubyGems or full Bundler compatibility.
+This file remains a **recorded snapshot** of prior evidence, not a new verification
+run for this iteration. Differential (`script/differential`, both profiles),
+upstream `script/upstream-specs` rspec, and full gate reruns were **not rerun**
+in this iteration; all counts/results below must be read as unverified against the
+current HEAD unless explicitly stated otherwise.
 
-Current normalization includes sandbox paths, dates/timestamps, sorting `Fetching`
-lines, removing selected environment-report sections and Ruby backtrace lines.
-The general tree comparison is primarily path-based; selected markers check
-content, but it is not a general byte-for-byte comparison of the whole installed
-tree. M7 tightens these comparisons and records every normalization rule.
+What prior snapshot results prove is **observable-behavior equivalence for the
+enumerated fixtures after the harness's documented normalization** (exit codes,
+stdout/stderr, project-relative file presence and explicitly selected file-content
+probes). It is not a percentage of RubyGems or full Bundler compatibility.
 
-The fixture counts below are a recorded snapshot, not a new verification run for
-this documentation update. Source and CLI changes elsewhere in the working tree
-must be rebuilt and re-run before treating them as current evidence.
+Current normalization (as previously documented) includes sandbox paths,
+dates/timestamps, sorting `Fetching` lines, removing selected environment-report
+sections and Ruby backtrace lines. The general tree comparison is primarily
+path-based; selected markers check content, but it is not a general byte-for-byte
+comparison of the whole installed tree. M7 tightens these comparisons and records
+every normalization rule (not yet complete).
 
-## Differential evidence
+## Differential evidence (prior snapshot, **unverified this iteration**)
 
 | Bundler | Result |
 |---|---|
-| 4.0.24 | 97 passed, 0 failed (`script/differential` full suite) |
-| 2.7.2 | 96 passed, 0 failed, 1 skipped (`add-group`, documented deferral: the 2.7.2 reference auto-installs Bundler 4.0.24 from rubygems.org, which the offline sandbox cannot prove; `BUNDLER_REF_VERSION=2.7.2 script/differential`) |
+| 4.0.24 | 97 passed, 0 failed (`script/differential` full suite) — **未重跑验证** |
+| 2.7.2 | 96 passed, 0 failed, 1 skipped (`add-group`, documented deferral: the 2.7.2 reference auto-installs Bundler 4.0.24 from rubygems.org, which the offline sandbox cannot prove; `BUNDLER_REF_VERSION=2.7.2 script/differential`) — **未重跑验证** |
 
-Of the 97 fixtures, the completed milestones map as follows:
+Prior mapping of those 97 fixtures to milestones (historical, not revalidated):
 
 - **M0** (contract & differential harness): every lockfile-driven fixture is
   executed differentially — unresolved lockfile coverage (`check-*`,
@@ -118,11 +122,15 @@ Of the 97 fixtures, the completed milestones map as follows:
   (pinned `cache-all-platforms` probe); this order is pinned for fresh
   installs/updates.
 
-## Additional known implementation gaps (M7)
+## Additional known implementation gaps (M7, evidence-aligned)
 
-- Candidate filtering currently does not enforce the indexed required Ruby
-  version: `ResolutionSource#ruby_requirement_satisfied?` returns `true`.
-  Required RubyGems data likewise needs an enforced resolution/install contract.
+- **Ruby/RubyGems 约束过滤（部分进展，未达 M7(1) 验收）**：`src/celerite/resolver/source.cr:265-277`
+  中 `ResolutionSource#ruby_requirement_satisfied?` 已按 `spec.required_ruby_version` /
+  `spec.required_rubygems_version` 对 `running_ruby_version`/`running_rubygems_version`
+ （当前由 bridge 版本字段 `@bridge_ruby_version`/`@bridge_rubygems_version` 提供）
+  执行 `satisfied_by?` 并在不满足时返回 `false`（非恒真）。但 M7(1) 仍未满足：
+  需覆盖当前运行/目标 Ruby、engine、patchlevel、ABI、Gemfile 目标 Ruby 等完整约束，
+  以及无匹配版本、平台变体与安装复核的正反例/差分证据；实现与验收仍待完成。
 - `check` and `list` have locked/missing-gem fixture paths, not complete
   installed-gem discovery; `fund` currently prints a fixed no-funding response.
   The `gem` template and environment diagnostics also have partial implementations.
@@ -169,8 +177,12 @@ The committed `script/upstream-specs` targets only the **lockfile family** of
 the upstream Bundler spec suite (pinned `v4.0.24` revision). The recorded result
 under `docs/compat-matrix/generated/upstream-lockfile-v4.0.24.md` is
 **64 examples, 64 failures**, not a passing gate. It is retained as a failure
-baseline for M7; the harness must drive Celerite correctly and propagate failure
-exit codes before any passing claim can be made.
+baseline for M7.
+
+**本迭代脚本变更（未重跑 rspec）**：移除 `script/upstream-specs` 中吞掉失败的
+`|| true`（line 64 附近），使 rspec 非零退出时脚本按 `pipefail` 传播非零退出码；
+保留既有 64 failures 失败基线记录逻辑/文案。由于本迭代未执行上游 spec，
+上述 64 failures 仍为既有记录，不能视为本次运行结果。
 
 The remaining families (resolver, runtime, resource, plugins, etc.) have selected
 differential behavior only; `docs/upstream-spec-spike.md` records the initial
@@ -198,6 +210,7 @@ crystal spec
 crystal tool format --check src spec
 script/differential               # 4.0.24
 BUNDLER_REF_VERSION=2.7.2 script/differential
+script/upstream-specs             # lockfile family; expect non-zero until failures closed
 script/benchmark 3                # refresh results
 script/profile                    # refresh profile numbers
 ```
@@ -205,5 +218,6 @@ script/profile                    # refresh profile numbers
 > The 4.0.24 ↔ 2.7.2 differences in lockfile `BUNDLED WITH` indentation and
 > CHECKSUMS handling are version-pinned (see
 > `docs/compat-matrix/generated/cli-*.md` and `vendor/reference/MANIFEST.md`).
-> "Compatible" statements in this report and `docs/roadmap.md` are valid only
-> for the pinned profiles and Ruby/platform in the first paragraph.
+> "Compatible"/prior pass statements in this report are historical snapshot
+> evidence for the pinned profiles and Ruby/platform noted above and are
+> **未重跑验证** in this iteration.

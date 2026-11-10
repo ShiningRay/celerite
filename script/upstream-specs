@@ -61,7 +61,7 @@ echo
 rspec_out="$repo_root/.upstream-specs/rspec-output.txt"
 PATH="$shim_dir:$PATH" BUNDLE_GEMFILE="" \
   rspec "$spec_dir/lock/lockfile_spec.rb" --format documentation \
-  --out "$rspec_out" 2>&1 | tail -20 || true
+  --out "$rspec_out" 2>&1 | tail -20
 
 {
   echo "# Upstream lockfile spec results — $rev"
