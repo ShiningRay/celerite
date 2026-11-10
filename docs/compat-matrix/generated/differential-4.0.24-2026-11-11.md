@@ -2,8 +2,10 @@
 
 ## Provenance
 
-- Code under test: working tree at `a029382` plus the local (uncommitted)
-  task-2 source state; no source changes were made for this run.
+- Code under test: `5416456` plus the local (uncommitted) task-2 source state;
+  the source change under test is the 4.0.24 `bundle list` human-output format
+  (header + `  * name (version)` + `bundle info` hint for every human-readable
+  listing) and the two path-source fixtures added in this local state.
 - Binary: `bin/celerite.exe` rebuilt locally with an **uncommitted,
   out-of-repo OpenSSL shim** (see below); `--version` prints `0.1.0`.
 - `bin/` is gitignored. Neither the shim nor the binary is part of the
@@ -19,21 +21,22 @@
 ```sh
 crystal tool format --check src spec          # EXIT 0
 crystal build --no-codegen src/cli.cr         # EXIT 0 (2 pre-existing deprecation warnings)
-crystal spec <85-example M7 + base subset>    # 85 examples, 0 failures, EXIT 0
+crystal spec <86-example M7 + base subset>    # 86 examples, 0 failures, EXIT 0
 crystal spec spec/cli_spec.cr --link-flags "<shim.o>"   # 24 examples, 0 failures, EXIT 0
 crystal spec spec/m7_installed_discovery_spec.cr spec/m7_platform_spec.cr \
-  --link-flags "<shim.o>"                     # 20 examples, 0 failures, EXIT 0
+  --link-flags "<shim.o>"                     # 21 examples, 0 failures, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   bash script/differential ruby-version-mismatch platform-ruby-mismatch \
-  check-missing check-unresolved list-missing show-missing list-multi-group
-# 7 passed, 0 failed, EXIT 0
+  check-missing check-unresolved list-missing show-missing list-multi-group \
+  check-path list-path
+# 9 passed, 0 failed, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" bash script/differential
-# 86 passed, 14 failed, 0 skipped (documented deferrals), EXIT 1
+# 88 passed, 14 failed, 0 skipped (documented deferrals), EXIT 1
 ```
 
-Full local log: `/c/temp/celerite-diff-full-2.log` (temporary; the failure
+Full local log: `C:\temp\celerite-diff-full-3.log` (temporary; the failure
 list below is the durable record). On this host `diff`/`cmp` are taken from
 `C:\Program Files\Git\usr\bin` and `TMPDIR=/c/temp` is used so the MSYS path
 is visible to those tools; this is a test-environment workaround, not a
@@ -74,11 +77,15 @@ generated Windows binstub content differences.
 ## Interpretation
 
 - The M7 fixtures (`ruby-version-mismatch`, `platform-ruby-mismatch`,
-  `list-multi-group`) and the four check/list/show fixtures passed; the 14
-  failures above are outside the M7(1)-(3) paths (native-extension tooling and
-  generated binstub byte content), but the suite is **not green** and these
-  failures are not claimed as fixed.
+  `list-multi-group`, `check-path`, `list-path`) and the four check/list/show
+  fixtures passed; the 14 failures above are outside the M7(1)-(3) paths
+  (native-extension tooling and generated binstub byte content), but the suite
+  is **not green** and these failures are not claimed as fixed.
+- `list-path` also pins the 4.0.24 human-readable `bundle list` format for a
+  PATH source (header + `  * example (1.0.0)` + `bundle info` hint); the
+  previous Celerite default printed only `example-1.0.0`. `cli_spec.cr` and
+  `m7_installed_discovery_spec.cr` were updated to the same format.
 - 2.7.2 profile was not re-run in this verification.
 - The M7(1) full matrix (engine/patchlevel/ABI/Gemfile target, install
-  re-check), M7(2) path/Git combinations and additional platform variants,
-  and M7(3) broader differential evidence remain incomplete.
+  re-check), more M7(2) path/Git combinations and additional platform
+  variants, and M7(3) broader differential evidence remain incomplete.

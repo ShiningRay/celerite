@@ -1,0 +1,17 @@
+PATH
+  remote: vendor/example
+  specs:
+    example (1.0.0)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  example!
+
+BUNDLED WITH
+   4.0.24

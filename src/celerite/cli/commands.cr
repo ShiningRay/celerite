@@ -539,12 +539,12 @@ module Celerite
           locked_specs.each { |spec| stdout.puts(installed_gem_dir(definition, spec, lockfile) || spec.full_name) }
         elsif name_only
           locked_specs.each { |spec| stdout.puts spec.name }
-        elsif only_groups.any? || without_groups.any?
+        else
+          # Reference 4.0.24 prints this header for every human-readable listing,
+          # including when no group filter was given.
           stdout.puts "Gems included by the bundle:"
           locked_specs.each { |spec| stdout.puts "  * #{spec.name} (#{spec.version})" }
           stdout.puts "Use `bundle info` to print more detailed information about a gem"
-        else
-          locked_specs.each { |spec| stdout.puts spec.full_name }
         end
         return 0
       end

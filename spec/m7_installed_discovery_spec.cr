@@ -110,7 +110,7 @@ describe "M7 installed gem discovery" do
     })) do
       code, out, err = capture_command { |o, e| Celerite::Commands.list(o, e, [] of String) }
       err.should eq("")
-      out.should contain("json_pure-2.8.1")
+      out.should eq("Gems included by the bundle:\n  * json_pure (2.8.1)\nUse `bundle info` to print more detailed information about a gem\n")
       code.should eq(0)
     end
   end
@@ -408,7 +408,7 @@ describe "M7 platform-specific installed gem discovery" do
 
       code, out, err = capture_command { |o, e| Celerite::Commands.list(o, e, [] of String) }
       err.should eq("")
-      out.should contain("nokogiri-1.18.10-x64-mingw-ucrt")
+      out.should eq("Gems included by the bundle:\n  * nokogiri (1.18.10)\n  * racc (1.8.1)\nUse `bundle info` to print more detailed information about a gem\n")
       code.should eq(0)
     end
   end
