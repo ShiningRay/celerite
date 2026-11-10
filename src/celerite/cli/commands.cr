@@ -449,6 +449,7 @@ module Celerite
 
       paths = rest.includes?("--paths")
       name_only = rest.includes?("--name-only")
+      json_format = rest.includes?("--format=json") || (rest.includes?("--format") && flag_value(rest, "--format") == "json")
       only_group = flag_value(rest, "--only-group")
       without_group = flag_value(rest, "--without-group")
 
@@ -479,7 +480,12 @@ module Celerite
           stderr.puts "Could not find #{full_names} in locally installed gems"
           return 7
         end
-        if paths
+        if json_format
+          gems = locked_specs.map do |spec|
+            {"name" => spec.name, "version" => spec.version.to_s}
+          end
+          stdout.puts({"gems" => gems}.to_json)
+        elsif paths
           locked_specs.each { |spec| stdout.puts(installed_gem_dir(definition, spec, lockfile) || spec.full_name) }
         elsif name_only
           locked_specs.each { |spec| stdout.puts spec.name }
@@ -514,7 +520,12 @@ module Celerite
         return 7
       end
 
-      if paths = rest.includes?("--paths")
+      if json_format
+        if gem_dir = installed_gem_dir(definition, spec, lockfile)
+          stdout.puts({"name" => spec.name, "version" => spec.version.to_s, "path" => gem_dir}.to_json)
+          return 0
+        end
+      elsif paths = rest.includes?("--paths")
         if gem_dir = installed_gem_dir(definition, spec, lockfile)
           stdout.puts gem_dir
           return 0
