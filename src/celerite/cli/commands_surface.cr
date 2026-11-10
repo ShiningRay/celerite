@@ -520,15 +520,27 @@ module Celerite
       0
     end
 
-    private def self.installed_spec_dir?(definition : Definition, spec : Lockfile::Spec) : Bool
-      return true unless spec.source_type_ruby?
-      bridge = Bridge::Client.new
-      begin
-        install_root = File.join(InstallPaths.install_path(definition.config), "ruby", InstallPaths.ruby_abi(bridge))
-        File.file?(File.join(install_root, "specifications", "#{spec.full_name}.gemspec"))
-      ensure
-        bridge.close
+    # Returns true when the locked spec is installed in the bundle path.
+    def self.installed_spec_dir?(definition : Definition, spec : Lockfile::Spec) : Bool
+      !installed_gem_dir(definition, spec).nil?
+    end
+
+    # Returns the installed gem directory for a locked spec, or nil when not found.
+    # Scans Ruby ABI directories under the bundle install path to avoid requiring
+    # the bridge for read-only checks (M7 installed-gem discovery).
+    def self.installed_gem_dir(definition : Definition, spec : Lockfile::Spec) : String?
+      install_path = InstallPaths.install_path(definition.config)
+      ruby_root = File.join(install_path, "ruby")
+      return nil unless Dir.exists?(ruby_root)
+
+      Dir.each_child(ruby_root) do |abi|
+        gem_dir = File.join(ruby_root, abi, "gems", spec.full_name)
+        spec_file = File.join(ruby_root, abi, "specifications", "#{spec.full_name}.gemspec")
+        if File.file?(spec_file) && Dir.exists?(gem_dir)
+          return gem_dir
+        end
       end
+      nil
     end
 
     # ------------------------------------------------------------------

@@ -33,6 +33,21 @@ describe Celerite::CLI do
   end
 
   describe "check" do
+    it "reports satisfied when all locked gems are installed" do
+      with_project({
+        "Gemfile"                                                         => "source \"https://rubygems.org\"\n\ngem \"json_pure\", \">= 2.0\"\n",
+        "Gemfile.lock"                                                    => FIXTURE_LOCKFILE,
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/.keep"             => "",
+        "vendor/bundle/ruby/3.4.0/specifications/json_pure-2.8.1.gemspec" => "Gem::Specification.new",
+        ".bundle/config"                                                  => "---\nBUNDLE_PATH: \"vendor/bundle\"\n",
+      }) do
+        code, out, err = run_cli(["check"])
+        code.should eq(0)
+        err.should be_empty
+        out.should eq("The Gemfile's dependencies are satisfied\n")
+      end
+    end
+
     it "reports missing locked gems with the reference format" do
       with_project({
         "Gemfile"      => "source \"https://rubygems.org\"\n\ngem \"json_pure\", \">= 2.0\"\n",
@@ -112,6 +127,59 @@ describe Celerite::CLI do
   end
 
   describe "list/show/info" do
+    it "lists installed gems when present in bundle path" do
+      with_project({
+        "Gemfile"                                                         => "source \"https://rubygems.org\"\n\ngem \"json_pure\", \">= 2.0\"\n",
+        "Gemfile.lock"                                                    => FIXTURE_LOCKFILE,
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/.keep"             => "",
+        "vendor/bundle/ruby/3.4.0/specifications/json_pure-2.8.1.gemspec" => "Gem::Specification.new",
+        ".bundle/config"                                                  => "---\nBUNDLE_PATH: \"vendor/bundle\"\n",
+      }) do
+        code, out, err = run_cli(["list"])
+        code.should eq(0)
+        err.should be_empty
+        out.should eq("json_pure-2.8.1\n")
+      end
+    end
+
+    it "lists installed gem paths with --paths" do
+      with_project({
+        "Gemfile"                                                         => "source \"https://rubygems.org\"\n\ngem \"json_pure\", \">= 2.0\"\n",
+        "Gemfile.lock"                                                    => FIXTURE_LOCKFILE,
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/.keep"             => "",
+        "vendor/bundle/ruby/3.4.0/specifications/json_pure-2.8.1.gemspec" => "Gem::Specification.new",
+        ".bundle/config"                                                  => "---\nBUNDLE_PATH: \"vendor/bundle\"\n",
+      }) do
+        code, out, err = run_cli(["list", "--paths"])
+        code.should eq(0)
+        err.should be_empty
+        out.gsub('\\', '/').should contain("vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1")
+      end
+    end
+
+    it "shows installed gems and info for installed gem" do
+      with_project({
+        "Gemfile"                                                         => "source \"https://rubygems.org\"\n\ngem \"json_pure\", \">= 2.0\"\n",
+        "Gemfile.lock"                                                    => FIXTURE_LOCKFILE,
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/.keep"             => "",
+        "vendor/bundle/ruby/3.4.0/specifications/json_pure-2.8.1.gemspec" => "Gem::Specification.new",
+        ".bundle/config"                                                  => "---\nBUNDLE_PATH: \"vendor/bundle\"\n",
+      }) do
+        code, out, err = run_cli(["show"])
+        code.should eq(0)
+        err.should be_empty
+        out.should contain("Gems included by the bundle:")
+        out.should contain("  * json_pure-2.8.1")
+
+        code, out, err = run_cli(["show", "json_pure"])
+        code.should eq(0)
+        err.should be_empty
+        out.should contain("json_pure (2.8.1)")
+        out.should contain("  Path:")
+        out.should contain("json_pure-2.8.1")
+      end
+    end
+
     it "lists missing gems with full names" do
       with_project({
         "Gemfile"      => "source \"https://rubygems.org\"\n\ngem \"json_pure\", \">= 2.0\"\n",

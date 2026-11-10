@@ -326,7 +326,7 @@ module Celerite
         stdout.puts "Resolving dependencies..."
       end
 
-      missing = locked_specs # locked path: no installed gems are discoverable yet
+      missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec) }
       if missing.any?
         stderr.puts "The following gems are missing"
         missing.each do |spec|
@@ -366,8 +366,16 @@ module Celerite
         stdout.puts "Resolving dependencies..."
       end
 
-      # Locked path: specs are not installed (M3 materializes them).
-      full_names = locked_specs.map(&.full_name).join(", ")
+      missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec) }
+      if missing.empty?
+        if paths
+          locked_specs.each { |spec| stdout.puts(installed_gem_dir(definition, spec) || spec.full_name) }
+        else
+          locked_specs.each { |spec| stdout.puts spec.full_name }
+        end
+        return 0
+      end
+      full_names = missing.map(&.full_name).join(", ")
       stderr.puts "Could not find #{full_names} in locally installed gems"
       unless paths
         stderr.puts "Install missing gems with `bundle install`."
@@ -385,12 +393,13 @@ module Celerite
 
       if command == "show" && rest.empty?
         stdout.puts "Gems included by the bundle:"
-        unless locked_specs.empty?
-          full_names = locked_specs.map(&.full_name).join(", ")
+        missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec) }
+        if missing.any?
+          full_names = missing.map(&.full_name).join(", ")
           stderr.puts "Could not find #{full_names} in locally installed gems"
           return 7
         end
-        # No gems in the bundle: header only (parity with an empty bundle).
+        locked_specs.each { |spec| stdout.puts "  * #{spec.full_name}" }
         return 0
       end
 
@@ -406,9 +415,15 @@ module Celerite
         return 7
       end
 
-      # The gem exists in the lockfile but installation discovery is M3.
-      full_names = locked_specs.map(&.full_name).join(", ")
-      stderr.puts "Could not find #{full_names} in locally installed gems"
+      if gem_dir = installed_gem_dir(definition, spec)
+        stdout.puts "#{spec.name} (#{spec.version})"
+        stdout.puts "  Summary: #{spec.name}"
+        stdout.puts "  Homepage:"
+        stdout.puts "  Path: #{gem_dir}"
+        stdout.puts "  Default Gem: no"
+        return 0
+      end
+      stderr.puts "Could not find #{spec.full_name} in locally installed gems"
       7
     end
 
