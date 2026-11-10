@@ -128,6 +128,7 @@ def op_read_gem_spec(payload)
   require "rubygems/package"
   path = payload["path"]
   spec = Gem::Package.new(path).spec
+  metadata = spec.respond_to?(:metadata) ? spec.metadata : {}
   {
     "name" => spec.name,
     "version" => spec.version.to_s,
@@ -141,6 +142,8 @@ def op_read_gem_spec(payload)
     "date" => (spec.date.to_s if spec.respond_to?(:date)),
     "license" => (spec.license if spec.respond_to?(:license)),
     "licenses" => (spec.licenses if spec.respond_to?(:licenses)),
+    "metadata" => metadata,
+    "homepage" => (spec.homepage if spec.respond_to?(:homepage)),
     "dependencies" => spec.runtime_dependencies.map { |d|
       { "name" => d.name, "type" => d.type.to_s, "requirements" => d.requirement.as_list }
     },

@@ -111,6 +111,7 @@ module Celerite
         abi = InstallPaths.ruby_abi(bridge)
         downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root)
         installer = Installer.new(install_path, abi, bridge, downloader, stdout)
+        installer.config = config
 
         specs = resolution.resolve!
 
@@ -889,6 +890,7 @@ module Celerite
         abi = InstallPaths.ruby_abi(bridge)
         downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root)
         installer = Installer.new(install_path, abi, bridge, downloader, stdout)
+        installer.config = definition.config
         stdin_specs.each do |spec|
           next unless names.includes?(spec.name)
           # Git materialization happens during resolution (the plugin source
@@ -1066,6 +1068,7 @@ module Celerite
         abi = InstallPaths.ruby_abi(bridge)
         downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root)
         installer = Installer.new(install_path, abi, bridge, downloader, stdout)
+        installer.config = definition.config
         install_root = File.join(install_path, "ruby", abi)
         cache_dir = File.join(install_root, "cache")
         gems_root = File.join(install_root, "gems")

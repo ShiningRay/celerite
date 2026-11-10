@@ -85,6 +85,8 @@ module Celerite
       getter date : String?
       getter license : String?
       getter licenses : Array(String)?
+      getter metadata : Hash(String, String)?
+      getter homepage : String?
     end
 
     struct GemfileEvaluation
