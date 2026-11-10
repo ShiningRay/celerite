@@ -20,8 +20,10 @@ module Celerite
 
     getter download_dir : String
     getter retries : Int32
+    getter mirror_url : String?
 
-    def initialize(@remote : String, cache_root : String, retries : Int32 = 3)
+    def initialize(@remote : String, cache_root : String, retries : Int32 = 3, mirror_url : String? = nil)
+      @mirror_url = mirror_url
       @download_dir = File.join(cache_root, "downloads")
       Dir.mkdir_p(@download_dir)
       @inflight = Hash(String, Channel(String?)).new
@@ -122,6 +124,18 @@ module Celerite
     private def download_to(name : String, version : String, platform : String?, path : String) : Nil
       full_name = (platform.nil? || platform == "ruby") ? "#{name}-#{version}" : "#{name}-#{version}-#{platform}"
       remote_path = "/gems/#{full_name}.gem"
+
+      if mirror = @mirror_url
+        saved = @remote
+        begin
+          @remote = mirror
+          download_to(name, version, platform, path)
+          @remote = saved
+          return
+        rescue
+          @remote = saved
+        end
+      end
 
       if @remote.starts_with?("file:")
         # URI parsing keeps absolute POSIX paths intact (file:///home/...)

@@ -312,6 +312,35 @@ module Celerite
       value.to_s.to_i?
     end
 
+    # Bundler mirror support: `mirror.<url>` (and `mirror.<url>.fallback_timeout`)
+    # map a source URL onto a mirror URL. Keys are tried with and without a
+    # trailing slash to tolerate Bundler's normalization (config-keys.md).
+    def mirror_for(remote : String) : String?
+      candidates = [remote, remote.chomp("/"), "#{remote}/"].uniq
+      candidates.each do |candidate|
+        value = self["mirror.#{candidate}"]
+        result = case value
+                 when String
+                   value
+                 when Nil
+                   nil
+                 else
+                   value.to_s
+                 end
+        return result unless result.nil? || result.empty?
+      end
+      nil
+    end
+
+    def mirror_fallback_timeout(remote : String) : Int32?
+      candidates = [remote, remote.chomp("/"), "#{remote}/"].uniq
+      candidates.each do |candidate|
+        value = self["mirror.#{candidate}.fallback_timeout"]
+        return value.to_s.to_i? if value
+      end
+      nil
+    end
+
     def self.convert(value : Value, key : String) : ConvertedValue
       normalized = key.lchop("BUNDLE_")
 
