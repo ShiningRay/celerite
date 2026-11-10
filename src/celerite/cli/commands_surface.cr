@@ -5,6 +5,7 @@ require "../lockfile/parser"
 require "../definition"
 require "../resolution"
 require "./commands_install"
+require "../git_source"
 require "yaml"
 
 module Celerite
@@ -507,7 +508,7 @@ module Celerite
       if locked_specs.empty?
         stdout.puts "The Gemfile's dependencies are satisfied"
       else
-        missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec) }
+        missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
         if missing.empty?
           stdout.puts "The Gemfile's dependencies are satisfied"
         else
@@ -520,15 +521,32 @@ module Celerite
       0
     end
 
-    # Returns true when the locked spec is installed in the bundle path.
-    def self.installed_spec_dir?(definition : Definition, spec : Lockfile::Spec) : Bool
-      !installed_gem_dir(definition, spec).nil?
+    # Returns true when the locked spec is installed/available for read-only commands.
+    def self.installed_spec_dir?(definition : Definition, spec : Lockfile::Spec, lockfile : Lockfile::Data? = nil) : Bool
+      !installed_gem_dir(definition, spec, lockfile).nil?
     end
 
     # Returns the installed gem directory for a locked spec, or nil when not found.
-    # Scans Ruby ABI directories under the bundle install path to avoid requiring
-    # the bridge for read-only checks (M7 installed-gem discovery).
-    def self.installed_gem_dir(definition : Definition, spec : Lockfile::Spec) : String?
+    # Handles RubyGems specs in the bundle path, PATH sources at their local path,
+    # and GIT sources in the bundle's bundler/gems checkout.
+    def self.installed_gem_dir(definition : Definition, spec : Lockfile::Spec, lockfile : Lockfile::Data? = nil) : String?
+      lf = lockfile || (definition.lockfile_exists? ? definition.lockfile! : nil)
+      source = lf.try(&.source_for(spec))
+
+      if source
+        case source.type
+        when "PATH"
+          remote = source.option("remote").to_s
+          path = File.expand_path(remote, File.dirname(definition.gemfile_path))
+          return Dir.exists?(path) ? path : nil
+        when "GIT"
+          revision = source.option("revision").to_s
+          remote = source.option("remote").to_s
+          return installed_git_checkout(definition, spec.name, remote, revision)
+        end
+      end
+
+      # Default: RubyGems-installed spec under bundle install path.
       install_path = InstallPaths.install_path(definition.config)
       ruby_root = File.join(install_path, "ruby")
       return nil unless Dir.exists?(ruby_root)
@@ -538,6 +556,27 @@ module Celerite
         spec_file = File.join(ruby_root, abi, "specifications", "#{spec.full_name}.gemspec")
         if File.file?(spec_file) && Dir.exists?(gem_dir)
           return gem_dir
+        end
+      end
+      nil
+    end
+
+    private def self.installed_git_checkout(definition : Definition, name : String, remote : String, revision : String) : String?
+      install_path = InstallPaths.install_path(definition.config)
+      ruby_root = File.join(install_path, "ruby")
+      return nil unless Dir.exists?(ruby_root)
+
+      base = GitSource.base_name(remote)
+      short = revision.empty? ? nil : revision[0, 12]
+      Dir.each_child(ruby_root) do |abi|
+        checkout_root = File.join(ruby_root, abi, "bundler", "gems")
+        next unless Dir.exists?(checkout_root)
+        if short
+          dir = File.join(checkout_root, "#{base}-#{short}")
+          return dir if Dir.exists?(dir)
+        end
+        Dir.each_child(checkout_root) do |child|
+          return File.join(checkout_root, child) if child.starts_with?("#{base}-")
         end
       end
       nil
@@ -1496,7 +1535,7 @@ module Celerite
       end
 
       missing = lockfile.specs.sort_by(&.full_name).reject do |spec|
-        installed_spec_dir?(definition, spec)
+        installed_spec_dir?(definition, spec, lockfile)
       end
       unless missing.empty?
         stderr.puts "The following gems are missing"

@@ -359,6 +359,11 @@ module Celerite
         specs.find(&.name.==(name))
       end
 
+      # Returns the source section containing the given spec instance.
+      def source_for(spec : Spec) : SourceSection?
+        sources.find { |source| source.specs.includes?(spec) }
+      end
+
       def to_lock(io : IO) : Nil
         sections.each_with_index do |section, index|
           io << "\n" unless index.zero?

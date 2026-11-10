@@ -326,7 +326,7 @@ module Celerite
         stdout.puts "Resolving dependencies..."
       end
 
-      missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec) }
+      missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
       if missing.any?
         stderr.puts "The following gems are missing"
         missing.each do |spec|
@@ -366,10 +366,10 @@ module Celerite
         stdout.puts "Resolving dependencies..."
       end
 
-      missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec) }
+      missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
       if missing.empty?
         if paths
-          locked_specs.each { |spec| stdout.puts(installed_gem_dir(definition, spec) || spec.full_name) }
+          locked_specs.each { |spec| stdout.puts(installed_gem_dir(definition, spec, lockfile) || spec.full_name) }
         else
           locked_specs.each { |spec| stdout.puts spec.full_name }
         end
@@ -393,7 +393,7 @@ module Celerite
 
       if command == "show" && rest.empty?
         stdout.puts "Gems included by the bundle:"
-        missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec) }
+        missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
         if missing.any?
           full_names = missing.map(&.full_name).join(", ")
           stderr.puts "Could not find #{full_names} in locally installed gems"
@@ -415,7 +415,7 @@ module Celerite
         return 7
       end
 
-      if gem_dir = installed_gem_dir(definition, spec)
+      if gem_dir = installed_gem_dir(definition, spec, lockfile)
         stdout.puts "#{spec.name} (#{spec.version})"
         stdout.puts "  Summary: #{spec.name}"
         stdout.puts "  Homepage:"
