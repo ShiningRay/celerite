@@ -12,6 +12,10 @@ module Celerite
   module InstallPaths
     def self.install_path(config : Config) : String
       configured = config["path"].to_s
+      if configured.empty? && config["path.system"] == true
+        # path.system: install into the system gem location (user gem dir)
+        return File.expand_path(Config.user_home || ".")
+      end
       base = configured.empty? ? File.join(Config.user_home || ".", ".bundle") : configured
       File.expand_path(base)
     end
