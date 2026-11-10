@@ -512,6 +512,9 @@ module Celerite
           stdout.puts gem_dir
           return 0
         end
+      elsif rest.includes?("--version")
+        stdout.puts spec.version.to_s
+        return 0
       else
         if gem_dir = installed_gem_dir(definition, spec, lockfile)
           stdout.puts "#{spec.name} (#{spec.version})"
