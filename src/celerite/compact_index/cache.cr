@@ -90,6 +90,11 @@ module Celerite
             end
             response = client.get(path, headers: request_headers)
             client.close rescue nil
+            if (response.status_code == 301 || response.status_code == 302 || response.status_code == 303 ||
+               response.status_code == 307 || response.status_code == 308) && (loc = response.headers["Location"]?)
+              @uri = URI.parse(loc)
+              return call(remote_path, headers)
+            end
             response_headers = {} of String => String
             response.headers.each do |name, values|
               response_headers[name.downcase] = values.first? || ""
