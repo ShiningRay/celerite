@@ -2,11 +2,12 @@
 
 ## Provenance
 
-- Code under test: `0f608ff51cec1b7cd179ab2af0801553e3229059` plus this
-  change's local resolver fix (Ruby/RubyGems-metadata-only candidates now
-  raise `SolveFailure`/exit 6; a genuinely missing version still raises
-  `GemNotFound`/exit 7). It includes the earlier path/multi-group fixtures and
-  Ruby/RubyGems candidate-filter/runtime-validation work.
+- Code under test: `ec4680792cfe01e7247f95e22f13fb80a184bf0a` plus this
+  change's git-source listing/path alignment (short revision in human-readable
+  output and forward-slash paths). It includes the earlier `SolveFailure`
+  fix (Ruby/RubyGems-metadata-only candidates exit 6; genuinely missing
+  versions exit 7), path/multi-group fixtures, and Ruby/RubyGems
+  candidate-filter/runtime-validation work.
 - Binary: `bin/celerite.exe` rebuilt locally with an **uncommitted,
   out-of-repo OpenSSL shim** (see below); `--version` prints `0.1.0`.
 - `bin/` is gitignored. Neither the shim nor the binary is part of the
@@ -22,7 +23,7 @@
 ```sh
 crystal tool format --check src spec          # EXIT 0
 crystal build --no-codegen src/cli.cr         # EXIT 0 (2 pre-existing deprecation warnings)
-crystal spec <105-example M7 + base subset>    # 105 examples, 0 failures, EXIT 0
+crystal spec <106-example M7 + base subset>    # 106 examples, 0 failures, EXIT 0
 crystal spec spec/cli_spec.cr --link-flags "<shim.o>"   # 24 examples, 0 failures, EXIT 0
 crystal spec spec/m7_installed_discovery_spec.cr spec/m7_platform_spec.cr \
   --link-flags "<shim.o>"                     # 21 examples, 0 failures, EXIT 0
@@ -30,11 +31,12 @@ crystal spec spec/m7_installed_discovery_spec.cr spec/m7_platform_spec.cr \
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   bash script/differential ruby-version-mismatch platform-ruby-mismatch \
   check-missing check-unresolved list-missing show-missing list-multi-group \
-  check-path list-path no-matching-version platform-variant-fail ruby-metadata-fail
-# 12 passed, 0 failed, 0 skipped, EXIT 0
+  check-path list-path no-matching-version platform-variant-fail ruby-metadata-fail \
+  git-installed-discovery
+# 13 passed, 0 failed, 0 skipped, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" bash script/differential
-# 90 passed, 14 failed, 0 skipped, EXIT 1
+# 91 passed, 14 failed, 0 skipped, EXIT 1
 ```
 
 Full local log: `C:\temp\celerite-diff-full-6.log` (temporary; the failure
@@ -90,13 +92,19 @@ generated Windows binstub content differences.
   explanation as Bundler 4.0.24. The distinction is preserved: a requirement
   with no matching version at all (for example `no-matching-version`) still
   exits 7 with `GemNotFound`.
+- `git-installed-discovery` (local `:git` source): `install`, `check`, `list`,
+  `show --paths gitgem`, `info --version gitgem` all match Bundler 4.0.24 —
+  **PASS**. This pins git-source discovery after a real install, the short
+  revision in human-readable listings (`gitgem (0.2.0 f967e49)`), and
+  forward-slash path rendering on Windows.
 
 ## Interpretation
 
-- The 12 targeted fixtures (`ruby-version-mismatch`, `platform-ruby-mismatch`,
+- The 13 targeted fixtures (`ruby-version-mismatch`, `platform-ruby-mismatch`,
   `list-multi-group`, `check-path`, `list-path`, `no-matching-version`,
-  `platform-variant-fail`, `ruby-metadata-fail`, and the four check/list/show
-  fixtures) all passed; the 14 failures above are outside the M7(1)-(3) paths
+  `platform-variant-fail`, `ruby-metadata-fail`, `git-installed-discovery`,
+  and the four check/list/show fixtures) all passed; the 14 failures above are
+  outside the M7(1)-(3) paths
   (native-extension tooling and generated binstub byte content), but the suite
   is **not green** and these failures are not claimed as fixed.
 - `list-path` also pins the 4.0.24 human-readable `bundle list` format for a

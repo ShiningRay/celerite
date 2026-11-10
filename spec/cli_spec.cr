@@ -169,7 +169,7 @@ describe Celerite::CLI do
         code.should eq(0)
         err.should be_empty
         out.should contain("Gems included by the bundle:")
-        out.should contain("  * json_pure-2.8.1")
+        out.should contain("  * json_pure (2.8.1)")
 
         code, out, err = run_cli(["show", "json_pure"])
         code.should eq(0)

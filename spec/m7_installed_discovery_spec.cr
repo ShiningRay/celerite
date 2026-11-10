@@ -185,6 +185,25 @@ describe "M7 installed gem discovery" do
     end
   end
 
+  it "lists GIT checkouts with the short revision and forward-slash paths" do
+    with_project(project_files_for(GIT_LOCKFILE_TEXT, "gem \"example\", git: \"https://example.com/example.git\"\n", {
+      "vendor/bundle/ruby/3.4.0/bundler/gems/example-abcdef123456/example.gemspec" => "Gem::Specification.new\n",
+    })) do
+      code, out, err = capture_command { |stdout, stderr| Celerite::Commands.list(stdout, stderr, [] of String) }
+      code.should eq(0)
+      err.should be_empty
+      out.should contain("  * example (0.1.0 abcdef1)")
+
+      code, out, err = capture_command do |stdout, stderr|
+        Celerite::Commands.show_info("show", stdout, stderr, ["--paths", "example"])
+      end
+      code.should eq(0)
+      err.should be_empty
+      out.should contain("vendor/bundle/ruby/3.4.0/bundler/gems/example-abcdef123456")
+      out.should_not contain("\\")
+    end
+  end
+
   it "returns nil for a GIT source without a checkout" do
     with_project(project_files_for(GIT_LOCKFILE_TEXT, "gem \"example\", git: \"https://example.com/example.git\"\n")) do
       definition = Celerite::Definition.build

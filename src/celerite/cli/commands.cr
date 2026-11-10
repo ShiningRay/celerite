@@ -543,14 +543,17 @@ module Celerite
           end
           stdout.puts({"gems" => gems}.to_json)
         elsif paths
-          locked_specs.each { |spec| stdout.puts(installed_gem_dir(definition, spec, lockfile) || spec.full_name) }
+          locked_specs.each do |spec|
+            path = installed_gem_dir(definition, spec, lockfile)
+            stdout.puts(path ? display_path(path) : spec.full_name)
+          end
         elsif name_only
           locked_specs.each { |spec| stdout.puts spec.name }
         else
           # Reference 4.0.24 prints this header for every human-readable listing,
           # including when no group filter was given.
           stdout.puts "Gems included by the bundle:"
-          locked_specs.each { |spec| stdout.puts "  * #{spec.name} (#{spec.version})" }
+          locked_specs.each { |spec| stdout.puts "  * #{spec_display_name(spec, lockfile)}" }
           stdout.puts "Use `bundle info` to print more detailed information about a gem"
         end
         return 0
@@ -609,11 +612,14 @@ module Celerite
           end
           stdout.puts({"gems" => gems}.to_json)
         elsif paths
-          locked_specs.each { |spec| stdout.puts(installed_gem_dir(definition, spec, lockfile) || spec.full_name) }
+          locked_specs.each do |spec|
+            path = installed_gem_dir(definition, spec, lockfile)
+            stdout.puts(path ? display_path(path) : spec.full_name)
+          end
         elsif name_only
           locked_specs.each { |spec| stdout.puts spec.name }
         else
-          locked_specs.each { |spec| stdout.puts "  * #{spec.full_name}" }
+          locked_specs.each { |spec| stdout.puts "  * #{spec_display_name(spec, lockfile)}" }
         end
         return 0
       end
@@ -645,12 +651,12 @@ module Celerite
 
       if json_format
         if gem_dir = installed_gem_dir(definition, spec, lockfile)
-          stdout.puts({"name" => spec.name, "version" => spec.version.to_s, "path" => gem_dir}.to_json)
+          stdout.puts({"name" => spec.name, "version" => spec.version.to_s, "path" => display_path(gem_dir)}.to_json)
           return 0
         end
       elsif paths = rest.includes?("--paths")
         if gem_dir = installed_gem_dir(definition, spec, lockfile)
-          stdout.puts gem_dir
+          stdout.puts display_path(gem_dir)
           return 0
         end
       elsif rest.includes?("--version")
@@ -660,10 +666,10 @@ module Celerite
         if gem_dir = installed_gem_dir(definition, spec, lockfile)
           # Read installed gemspec for summary/homepage when available.
           summary, homepage = read_gemspec_summary_homepage(gem_dir, spec.full_name)
-          stdout.puts "#{spec.name} (#{spec.version})"
+          stdout.puts "  * #{spec_display_name(spec, lockfile)}"
           stdout.puts "  Summary: #{summary || spec.name}"
           stdout.puts "  Homepage: #{homepage}" if homepage
-          stdout.puts "  Path: #{gem_dir}"
+          stdout.puts "  Path: #{display_path(gem_dir)}"
           stdout.puts "  Default Gem: no"
           # For git specs, append short revision if available.
           lockfile.source_for(spec).try do |src|
@@ -679,6 +685,20 @@ module Celerite
       end
       stderr.puts "Could not find #{spec.full_name} in locally installed gems"
       7
+    end
+
+    # Bundler prints the short git revision in human-readable listings and
+    # info headings, and renders paths with forward slashes on Windows.
+    private def self.spec_display_name(spec : Lockfile::Spec, lockfile : Lockfile::Data) : String
+      revision = lockfile.source_for(spec).try do |src|
+        src.type == "GIT" ? src.option("revision") : nil
+      end
+      short = revision.to_s[0, 7]
+      short.empty? ? "#{spec.name} (#{spec.version})" : "#{spec.name} (#{spec.version} #{short})"
+    end
+
+    private def self.display_path(path : String) : String
+      path.gsub('\\', '/')
     end
 
     private def self.read_gemspec_summary_homepage(gem_dir : String, full_name : String) : {String?, String?}
