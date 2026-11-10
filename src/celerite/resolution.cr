@@ -272,7 +272,8 @@ module Celerite
         reqs.empty? ? Resolver::DepSpec.new(d["name"].as_s, Gem::Requirement.new) : Resolver::DepSpec.new(d["name"].as_s, Gem::Requirement.new(reqs))
       end
       ruby_req = info.required_ruby_version.empty? ? Gem::Requirement.new : Gem::Requirement.new(info.required_ruby_version)
-      Resolver::IndexSpec.new(name, version, platform, deps, ruby_req, Gem::Requirement.new, nil)
+      rubygems_req = info.required_rubygems_version.empty? ? Gem::Requirement.new : Gem::Requirement.new(info.required_rubygems_version)
+      Resolver::IndexSpec.new(name, version, platform, deps, ruby_req, rubygems_req, nil)
     rescue ex : Bridge::BridgeError
       nil
     end
