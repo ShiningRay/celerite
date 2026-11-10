@@ -146,11 +146,29 @@ module Celerite
       client = HTTP::Client.new(uri)
       client.connect_timeout = 30.seconds
       client.read_timeout = 120.seconds
-      response = client.get(remote_path)
-      unless response.status_code == 200
+      # Retry with exponential backoff (pinned Bundler behavior).
+      retries = 3
+      attempt = 0
+      loop do
+        attempt += 1
+        response = client.get(remote_path)
+        if response.status_code == 200
+          File.write(path, response.body)
+          return
+        elsif response.status_code == 301 || response.status_code == 302 || response.status_code == 303 || response.status_code == 307 || response.status_code == 308
+          # Follow redirect
+          if loc = response.headers["Location"]?
+            client.close
+            @remote = loc
+            return download_to(name, version, platform, path)
+          end
+        end
+        if attempt < retries
+          sleep (0.5 * (2 ** (attempt - 1))).seconds
+          next
+        end
         raise GemNotFoundError.new("Could not fetch gem #{full_name} from #{@remote} (HTTP #{response.status_code})")
       end
-      File.write(path, response.body)
     end
   end
 end
