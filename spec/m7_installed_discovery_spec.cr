@@ -195,3 +195,83 @@ describe "M7 installed gem discovery" do
     end
   end
 end
+
+GROUP_LOCKFILE_TEXT = <<-LOCK
+GEM
+  remote: https://rubygems.org/
+  specs:
+    json_pure (2.8.1)
+    rake (13.4.2)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  json_pure
+  rake
+
+BUNDLED WITH
+   4.0.24
+LOCK
+
+GROUP_GEMFILE = <<-GEMFILE
+source "https://rubygems.org"
+
+gem "json_pure"
+gem "rake", group: :test
+GEMFILE
+
+private def with_bridge_server(&)
+  server = File.expand_path("../assets/bridge/server.rb", __DIR__)
+  previous = ENV["CELERITE_BRIDGE_SERVER"]?
+  ENV["CELERITE_BRIDGE_SERVER"] = server
+  begin
+    yield
+  ensure
+    if previous
+      ENV["CELERITE_BRIDGE_SERVER"] = previous
+    else
+      ENV.delete("CELERITE_BRIDGE_SERVER")
+    end
+  end
+end
+
+describe "M7 group/with-without filtering" do
+  it "check --without-group ignores a missing gem in the excluded group" do
+    with_bridge_server do
+      with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
+      })) do
+        code, out, err = capture_command { |o, e| Celerite::Commands.check(o, e, ["--without-group", "test"]) }
+        err.should eq("")
+        out.should eq("The Gemfile's dependencies are satisfied\n")
+        code.should eq(0)
+      end
+    end
+  end
+
+  it "check --only-group reports a missing gem in the selected group" do
+    with_bridge_server do
+      with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
+      })) do
+        code, _out, err = capture_command { |o, e| Celerite::Commands.check(o, e, ["--only-group", "test"]) }
+        code.should eq(1)
+        err.should contain("rake (13.4.2)")
+      end
+    end
+  end
+
+  it "check --only-group passes when the selected group is installed" do
+    with_bridge_server do
+      with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
+        "vendor/bundle/ruby/3.4.0/gems/rake-13.4.2/lib/rake.rb" => "",
+      })) do
+        code, out, err = capture_command { |o, e| Celerite::Commands.check(o, e, ["--only-group", "test"]) }
+        err.should eq("")
+        out.should eq("The Gemfile's dependencies are satisfied\n")
+        code.should eq(0)
+      end
+    end
+  end
+end

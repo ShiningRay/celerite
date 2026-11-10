@@ -1,4 +1,4 @@
-# Celerite compatibility report — M7 baseline snapshot (2026-11-10)
+# Celerite compatibility report �?M7 baseline snapshot (2026-11-10)
 
 Generated for iteration 1 baseline alignment. Git evidence at time of this update:
 `HEAD=8e91a2f` (`test(M7): add installed-tree fixtures for differential comparisons`)
@@ -28,13 +28,13 @@ every normalization rule (not yet complete).
 
 | Bundler | Result |
 |---|---|
-| 4.0.24 | 97 passed, 0 failed (`script/differential` full suite) — **未重跑验证** |
-| 2.7.2 | 96 passed, 0 failed, 1 skipped (`add-group`, documented deferral: the 2.7.2 reference auto-installs Bundler 4.0.24 from rubygems.org, which the offline sandbox cannot prove; `BUNDLER_REF_VERSION=2.7.2 script/differential`) — **未重跑验证** |
+| 4.0.24 | 97 passed, 0 failed (`script/differential` full suite) �?**未重跑验�?* |
+| 2.7.2 | 96 passed, 0 failed, 1 skipped (`add-group`, documented deferral: the 2.7.2 reference auto-installs Bundler 4.0.24 from rubygems.org, which the offline sandbox cannot prove; `BUNDLER_REF_VERSION=2.7.2 script/differential`) �?**未重跑验�?* |
 
 Prior mapping of those 97 fixtures to milestones (historical, not revalidated):
 
 - **M0** (contract & differential harness): every lockfile-driven fixture is
-  executed differentially — unresolved lockfile coverage (`check-*`,
+  executed differentially �?unresolved lockfile coverage (`check-*`,
   `list-missing`, `show-missing`, `issue-*`).
 - **M1** (read-only commands): `version`, `platform`, `check`, `list`,
   `show`/`info`, `config get` fixtures.
@@ -124,11 +124,7 @@ Prior mapping of those 97 fixtures to milestones (historical, not revalidated):
 
 ## Additional known implementation gaps (M7, evidence-aligned)
 
-- **Ruby/RubyGems 约束过滤（进行中，未达 M7(1) 完整验收）**：已实现并接线（`032a531` 起，本迭代继续）`src/celerite/ruby_version.cr`/`src/celerite/ruby_runtime.cr`、`Celerite::RubyVersionMismatch`（exit 18）、bridge `ruby_environment.patchlevel`、`ResolutionSource` 运行时版本含 patchlevel/engine 信息参与 gem `required_ruby_version` 满足判断、lockfile Ruby 复用比较 `RubyVersion` diff、`ruby_update` 写入正确 patchlevel。CLI runtime 校验（best-effort：bridge 不可用时跳过，**不视为通过**）已接入 check/install/show/info/fund/exec/cache/clean/doctor/pristine/outdated/update/licenses/console 等命令；`platform` 在 bridge 可用时输出 mismatch 文案但 exit 0，bridge 不可用时输出 "Ruby version requirement not validated (bridge unavailable); cannot confirm runtime match."；`list`/`lock`/`env` 按参考探针不因 mismatch 失败。可运行证据（2026-11-11）：`spec/ruby_version_spec.cr`（10）+ `spec/m7_ruby_runtime_spec.cr`（4，含 version/engine/patchlevel mismatch 文案与 exit 18）+ `spec/m7_platform_spec.cr`（2，bridge 不可用时不声称满足、`--ruby` 可解析输出）均通过；本轮 M7 相关 spec 合计 **76 examples, 0 failures, 0 errors, 0 pending**（退出码 0）。**未验证/未达验收**：Gemfile 目标 Ruby/engine/patchlevel/ABI 全矩阵正反例与安装复核、无匹配版本/平台变体 differential 证据；bridge 缺失场景仅有纯逻辑 spec，无 CLI 集成证据；完整 codegen/CLI 集成 spec/differential 受本机 OpenSSL 链接阻塞（见下条）。
-- **本机 codegen/OpenSSL 阻塞（2026-11-11 定位，环境问题非项目缺陷）**：Crystal 1.22.1 标准库 `openssl/digest.cr:77` 绑定 OpenSSL 1.1 的 `EVP_MD_size`，而本机 MSYS2 ucrt64 为 OpenSSL 3.6.5，`libcrypto.dll.a`/`libcrypto.a` 仅导出 `EVP_MD_get_size`（`nm` 已验证无 `EVP_MD_size`），故完整 codegen 链接报 `undefined reference to 'EVP_MD_size'`。影响：**未重建 `bin/celerite.exe`**（仓库内二进制为旧构建）、**未运行 CLI 集成 spec（run_cli 路径）**、**未运行 differential 全量**；已改用 `crystal build --no-codegen`、`crystal tool format --check` 与直接调用 `Celerite::Commands.*` 的纯逻辑 spec 验证。复现：`crystal build src/cli.cr`（PATH 含 MSYS2）或 `crystal spec spec/cli_spec.cr`。修复建议：使用 OpenSSL 1.1.x 库/工具链，或升级 Crystal 标准库绑定到 `EVP_MD_get_size`（需独立变更，不在本任务范围）。
-- **安装后 gem 发现（部分修复）**：`Commands.installed_gem_dir` 对 RubyGems 安装放宽为 gem 目录存在即可视为已发现（容忍缺 `specifications/*.gemspec`），`check`/`list`/`show`/`info`/`doctor` 受益；同时修复 `show --paths <name>` 把 `--paths` 当作 gem 名的问题（`name = names.first?`）。可运行证据：`spec/m7_installed_discovery_spec.cr` **9 examples, 0 failures**，覆盖 check/list/show/show --paths 的“仅 gem 目录”场景、缺 gem 目录/仅 specification 文件的负例、PATH 源与 GIT checkout 解析。仍需补齐：group、`with`/`without`、平台变体等场景证据与 differential；当前不可宣称 M7(2) 完成。
-- **占位/诊断路径（部分修复）**：`fund` 从已安装 specifications/`.gem` metadata 读取 `funding_uri`，并以 `spec/m7_fund_spec.cr`（2 examples，真实 Ruby bridge + gemspec metadata）验证有 funding 与无 funding 两种输出；`gem` 改为最小可用 scaffold（下划线 lib 文件名、gemspec `require_relative` + `Module::VERSION`、README.md、LICENSE.txt、gemspec files/summary/required_ruby_version），对常见生成选项输出 "not fully supported ... Generating a minimal scaffold only"，并由 `spec/m7_gem_spec.cr`（4 examples）验证；`console` 在 `irb` 缺失时返回 127 与明确说明（非完整交互 console），由 `spec/m7_console_spec.cr`（1 example，隔离 PATH）验证。`env`/`issue` Build Metadata 改为 `Celerite #{Celerite::VERSION}, compatibility profile` + 仓库真实 `Git SHA`/`Timestamp`（`git rev-parse`，失败回落 `"unknown"`），**Celerite 运行在兼容 profile 下，非上游 Bundler 构建**。仍需更多 M7(3) 行为/输出证据与差分。
-- Global `--retry` is stripped rather than executing the configured retry policy.
+- **Ruby/RubyGems 约束过滤（进行中，未�?M7(1) 完整验收�?*：已实现并接线（`032a531` 起，本迭代继续）`src/celerite/ruby_version.cr`/`src/celerite/ruby_runtime.cr`、`Celerite::RubyVersionMismatch`（exit 18）、bridge `ruby_environment.patchlevel`、`ResolutionSource` 运行时版本含 patchlevel/engine 信息参与 gem `required_ruby_version` 满足判断、lockfile Ruby 复用比较 `RubyVersion` diff、`ruby_update` 写入正确 patchlevel。CLI runtime 校验（best-effort：bridge 不可用时跳过�?*不视为通过**）已接入 check/install/show/info/fund/exec/cache/clean/doctor/pristine/outdated/update/licenses/console 等命令；`platform` �?bridge 可用时输�?mismatch 文案�?exit 0，bridge 不可用时输出 "Ruby version requirement not validated (bridge unavailable); cannot confirm runtime match."；`list`/`lock`/`env` 按参考探针不�?mismatch 失败。可运行证据�?026-11-11）：`spec/ruby_version_spec.cr`�?0�? `spec/m7_ruby_runtime_spec.cr`�?，含 version/engine/patchlevel mismatch 文案�?exit 18�? `spec/m7_platform_spec.cr`�?，bridge 不可用时不声称满足、`--ruby` 可解析输出）均通过；本�?M7 相关 spec 合计 **76 examples, 0 failures, 0 errors, 0 pending**（退出码 0）�?*未验�?未达验收**：Gemfile 目标 Ruby/engine/patchlevel/ABI 全矩阵正反例与安装复核、无匹配版本/平台变体 differential 证据；bridge 缺失场景仅有纯逻辑 spec，无 CLI 集成证据；完�?codegen/CLI 集成 spec/differential 受本�?OpenSSL 链接阻塞（见下条）�?- **本机 codegen/OpenSSL 阻塞�?026-11-11 定位，环境问题非项目缺陷�?*：Crystal 1.22.1 标准�?`openssl/digest.cr:77` 绑定 OpenSSL 1.1 �?`EVP_MD_size`，而本�?MSYS2 ucrt64 �?OpenSSL 3.6.5，`libcrypto.dll.a`/`libcrypto.a` 仅导�?`EVP_MD_get_size`（`nm` 已验证无 `EVP_MD_size`），故完�?codegen 链接�?`undefined reference to 'EVP_MD_size'`。影响：**未重�?`bin/celerite.exe`**（仓库内二进制为旧构建）�?*未运�?CLI 集成 spec（run_cli 路径�?*�?*未运�?differential 全量**；已改用 `crystal build --no-codegen`、`crystal tool format --check` 与直接调�?`Celerite::Commands.*` 的纯逻辑 spec 验证。复现：`crystal build src/cli.cr`（PATH �?MSYS2）或 `crystal spec spec/cli_spec.cr`。修复建议：使用 OpenSSL 1.1.x �?工具链，或升�?Crystal 标准库绑定到 `EVP_MD_get_size`（需独立变更，不在本任务范围）�?- **安装�?gem 发现（部分修复）**：`Commands.installed_gem_dir` �?RubyGems 安装放宽�?gem 目录存在即可视为已发现（容忍�?`specifications/*.gemspec`），`check`/`list`/`show`/`info`/`doctor` 受益；同时修�?`show --paths <name>` �?`--paths` 当作 gem 名的问题（`name = names.first?`）。可运行证据：`spec/m7_installed_discovery_spec.cr` **9 examples, 0 failures**，覆�?check/list/show/show --paths 的“仅 gem 目录”场景、缺 gem 目录/�?specification 文件的负例、PATH 源与 GIT checkout 解析。仍需补齐：group、`with`/`without`、平台变体等场景证据�?differential；当前不可宣�?M7(2) 完成�?- **占位/诊断路径（部分修复）**：`fund` 从已安装 specifications/`.gem` metadata 读取 `funding_uri`，并�?`spec/m7_fund_spec.cr`�? examples，真�?Ruby bridge + gemspec metadata）验证有 funding 与无 funding 两种输出；`gem` 改为最小可�?scaffold（下划线 lib 文件名、gemspec `require_relative` + `Module::VERSION`、README.md、LICENSE.txt、gemspec files/summary/required_ruby_version），对常见生成选项输出 "not fully supported ... Generating a minimal scaffold only"，并�?`spec/m7_gem_spec.cr`�? examples）验证；`console` �?`irb` 缺失时返�?127 与明确说明（非完整交�?console），�?`spec/m7_console_spec.cr`�? example，隔�?PATH）验证。`env`/`issue` Build Metadata 改为 `Celerite #{Celerite::VERSION}, compatibility profile` + 仓库真实 `Git SHA`/`Timestamp`（`git rev-parse`，失败回�?`"unknown"`），**Celerite 运行在兼�?profile 下，非上�?Bundler 构建**。仍需更多 M7(3) 行为/输出证据与差分�?- Global `--retry` is stripped rather than executing the configured retry policy.
   Mirror, proxy, redirect, SSL and legacy/full-index configuration cannot be
   inferred to work merely because a config key is recognized.
 - `--trust-policy` validates the policy name; that is not a claim of full RubyGems
@@ -149,21 +145,21 @@ documented instead of silently emulated:
 
 | Flag | Status |
 |---|---|
-| `install --force` / `--redownload` | **Supported** — `install-force` differential-verified forced reinstall (Installed already-installed_specs) on both profiles. |
-| `install --standalone[=GROUP]` | **Supported** — `install-standalone` differential (setup.rb byte parity) on both profiles. |
+| `install --force` / `--redownload` | **Supported** �?`install-force` differential-verified forced reinstall (Installed already-installed_specs) on both profiles. |
+| `install --standalone[=GROUP]` | **Supported** �?`install-standalone` differential (setup.rb byte parity) on both profiles. |
 | `install --local/--prefer-local/--no-cache/--no-lock/--trust-policy/--target-rbconfig` | `--local`/`--prefer-local` local-gem rejection; `--no-lock` no-reuse; `--trust-policy` validation; `--target-rbconfig` **supported** (`native-ext-target` dual-passed; bridge passes the target rbconfig to `Gem.set_target_rbconfig` before `Gem::Ext::Builder`). |
-| `lock --add-checksums` | **Supported** — differential-covered on both profiles. |
-| `lock --normalize-platforms` | **Supported** — `lock-normalize` differential dual-passed. |
-| `lock --bundler[=VERSION]` | **Unsupported** — documented; bare form does not re-lock without update. |
-| `update --bundler[=VERSION]` | **Unsupported** — requires network version fetch; offline probes exit 17. |
-| `update --major/--minor/--patch/--strict/--ruby/--group/--source` | **Supported** — `--patch/--minor/--major` candidate ceiling (`update-patch` dual-passed); `--strict` patch ceiling + stayed-same report (`update-strict` dual-passed); `--source <name>` named-source filter, unknown name unlocks nothing (`update-source` dual-passed); `--ruby` ruby-rewrite + group-limit (`update-ruby` dual-passed). |
-| `outdated --local/--source/--filter-strict/--update-strict/--porcelain/--group/--groups/--filter-*` | **Partial** — `--parseable`/`--porcelain` (`outdated-parseable`, dual-passed), `--filter-major/minor/patch` (`outdated-filter-*`), `--strict`/`--filter-strict` (`outdated-strict`), `--only-explicit` (`outdated-only-explicit`), `--local` cache candidates (`outdated-local`), `--group` (`outdated-group`), `--groups` (`outdated-groups`), `--update-strict` (accepted with no additional cap in `outdated`; `outdated-update-strict`), `--cooldown` annotation (`outdated-cooldown-http` parseable + `outdated-cooldown-table` table; 2.7.2 rejects the flag), `--source` candidate-index selection (`outdated-source`), deterministic diagnostic table header and `Path` column (`outdated-verbose`), and named gems (`outdated-named`) are differential-verified. Other option annotation paths remain **unsupported**. |
-| `cache --all-platforms/--cache-path/--no-install` | **Supported** — `--cache-path=<path>` honored (`cache-path` dual-passed); `--no-install` honored (skip install); `--all-platforms` copies every platform variant of locked specs from the download cache + 4.x re-fetch line / 2.7.x `BUNDLE_CACHE_ALL` remembered config (`cache-all-platforms` dual-passed). |
-| `clean --dry-run/--force` | **Supported** — `--dry-run` wired (`Would have removed`); `--force` accepted (`clean-force` dual-passed in Celerite's bundle-path mode; the Bundler system-gems mode is not used by Celerite). |
+| `lock --add-checksums` | **Supported** �?differential-covered on both profiles. |
+| `lock --normalize-platforms` | **Supported** �?`lock-normalize` differential dual-passed. |
+| `lock --bundler[=VERSION]` | **Unsupported** �?documented; bare form does not re-lock without update. |
+| `update --bundler[=VERSION]` | **Unsupported** �?requires network version fetch; offline probes exit 17. |
+| `update --major/--minor/--patch/--strict/--ruby/--group/--source` | **Supported** �?`--patch/--minor/--major` candidate ceiling (`update-patch` dual-passed); `--strict` patch ceiling + stayed-same report (`update-strict` dual-passed); `--source <name>` named-source filter, unknown name unlocks nothing (`update-source` dual-passed); `--ruby` ruby-rewrite + group-limit (`update-ruby` dual-passed). |
+| `outdated --local/--source/--filter-strict/--update-strict/--porcelain/--group/--groups/--filter-*` | **Partial** �?`--parseable`/`--porcelain` (`outdated-parseable`, dual-passed), `--filter-major/minor/patch` (`outdated-filter-*`), `--strict`/`--filter-strict` (`outdated-strict`), `--only-explicit` (`outdated-only-explicit`), `--local` cache candidates (`outdated-local`), `--group` (`outdated-group`), `--groups` (`outdated-groups`), `--update-strict` (accepted with no additional cap in `outdated`; `outdated-update-strict`), `--cooldown` annotation (`outdated-cooldown-http` parseable + `outdated-cooldown-table` table; 2.7.2 rejects the flag), `--source` candidate-index selection (`outdated-source`), deterministic diagnostic table header and `Path` column (`outdated-verbose`), and named gems (`outdated-named`) are differential-verified. Other option annotation paths remain **unsupported**. |
+| `cache --all-platforms/--cache-path/--no-install` | **Supported** �?`--cache-path=<path>` honored (`cache-path` dual-passed); `--no-install` honored (skip install); `--all-platforms` copies every platform variant of locked specs from the download cache + 4.x re-fetch line / 2.7.x `BUNDLE_CACHE_ALL` remembered config (`cache-all-platforms` dual-passed). |
+| `clean --dry-run/--force` | **Supported** �?`--dry-run` wired (`Would have removed`); `--force` accepted (`clean-force` dual-passed in Celerite's bundle-path mode; the Bundler system-gems mode is not used by Celerite). |
 | `config list/get/set/unset --parseable` | `--parseable` handled for `get`; `config get/set/unset` work without a Gemfile (`config-local`/`config-global` dual-passed, array settings render as symbols like the reference). |
-| `plugin install --source/--version/--git/--branch/--ref` | **Supported** — `--source` remote install: failure path on HTTP v2 (`plugin-source` exit 7) and success path with plugin-tree materialization + `Fetching`/`Installing` output (`plugin-source-ok` dual-passed; fixture plugin gem `my_plugin` ships `plugins.rb`); `--git/--branch/--ref` flag validation + git checkout materialization (`plugin-git-local`/`plugin-git-local2` dual-passed, incl. malformatted 29 exit). |
-| `add --group/--version/--source/--path/--git/--branch/--ref/--skip-install/--strict/--optimistic` | **Partial** — `--group` (`add-group`), `--skip-install` (`add-skip-install`), `--version` (`add-version`), `--strict` (`add-strict`, exit 7 on the reference `= 1.8` error), `--optimistic` (`add-optimistic`), `--require` (`add-require`), `--path` (`add-path`), `--git`/`--branch` (`add-git`), and scoped `--source` (`add-source`), distinct-remotes scoped lock (`scoped-source-lock`), and `--ref` (`add-ref`) are differential-verified: requirement probes and candidate resolution use the scoped compact-index remote, installations route downloads/installers by resolved `remote_for` per gem, and generated lock GEM sections are grouped by that remote; `--github` remains suffix-only/not fixture-proven. |
-| `binstubs --force/--standalone/--all-platforms/--shebang/--all` | **Supported** — `--force`/`--all`/`--all-platforms` honored with skip message (`binstubs-flags` dual-passed); `--shebang` rewrites the stub first line (`binstubs-shebang-line` dual-passed via harness `first-line` content probe; 2.7.x remembers `shebang` in local config). |
+| `plugin install --source/--version/--git/--branch/--ref` | **Supported** �?`--source` remote install: failure path on HTTP v2 (`plugin-source` exit 7) and success path with plugin-tree materialization + `Fetching`/`Installing` output (`plugin-source-ok` dual-passed; fixture plugin gem `my_plugin` ships `plugins.rb`); `--git/--branch/--ref` flag validation + git checkout materialization (`plugin-git-local`/`plugin-git-local2` dual-passed, incl. malformatted 29 exit). |
+| `add --group/--version/--source/--path/--git/--branch/--ref/--skip-install/--strict/--optimistic` | **Partial** �?`--group` (`add-group`), `--skip-install` (`add-skip-install`), `--version` (`add-version`), `--strict` (`add-strict`, exit 7 on the reference `= 1.8` error), `--optimistic` (`add-optimistic`), `--require` (`add-require`), `--path` (`add-path`), `--git`/`--branch` (`add-git`), and scoped `--source` (`add-source`), distinct-remotes scoped lock (`scoped-source-lock`), and `--ref` (`add-ref`) are differential-verified: requirement probes and candidate resolution use the scoped compact-index remote, installations route downloads/installers by resolved `remote_for` per gem, and generated lock GEM sections are grouped by that remote; `--github` remains suffix-only/not fixture-proven. |
+| `binstubs --force/--standalone/--all-platforms/--shebang/--all` | **Supported** �?`--force`/`--all`/`--all-platforms` honored with skip message (`binstubs-flags` dual-passed); `--shebang` rewrites the stub first line (`binstubs-shebang-line` dual-passed via harness `first-line` content probe; 2.7.x remembers `shebang` in local config). |
 
 ## Upstream spec suite coverage boundary
 
@@ -173,11 +169,8 @@ under `docs/compat-matrix/generated/upstream-lockfile-v4.0.24.md` is
 **64 examples, 64 failures**, not a passing gate. It is retained as a failure
 baseline for M7.
 
-**本迭代脚本变更（未重跑 rspec）**：移除 `script/upstream-specs` 中吞掉失败的
-`|| true`（line 64 附近），使 rspec 非零退出时脚本按 `pipefail` 传播非零退出码；
-保留既有 64 failures 失败基线记录逻辑/文案。由于本迭代未执行上游 spec，
-上述 64 failures 仍为既有记录，不能视为本次运行结果。
-
+**本迭代脚本变更（未重�?rspec�?*：移�?`script/upstream-specs` 中吞掉失败的
+`|| true`（line 64 附近），�?rspec 非零退出时脚本�?`pipefail` 传播非零退出码�?保留既有 64 failures 失败基线记录逻辑/文案。由于本迭代未执行上�?spec�?上述 64 failures 仍为既有记录，不能视为本次运行结果�?
 The remaining families (resolver, runtime, resource, plugins, etc.) have selected
 differential behavior only; `docs/upstream-spec-spike.md` records the initial
 applicability assessment. Neither pending/unexecuted examples nor behavior
@@ -187,8 +180,7 @@ No "full upstream suite" claim is made.
 ## Known divergences from reference (documented, not hidden)
 
 1. Installed `.gemspec` files use the RubyGems stub format (same as the
-   reference mode, whose installed specs are Ruby stub files, not Marshal) —
-   verified across install/exec differential fixtures.
+   reference mode, whose installed specs are Ruby stub files, not Marshal) �?   verified across install/exec differential fixtures.
 2. `setup` currently loads the reference `bundler/setup` (`Bundler.setup`) in
    the runtime compatibility path; an independent lightweight Ruby adapter is
    planned for M9. The `ruby-api` fixture proves behavior through that reference
@@ -209,9 +201,9 @@ script/benchmark 3                # refresh results
 script/profile                    # refresh profile numbers
 ```
 
-> The 4.0.24 ↔ 2.7.2 differences in lockfile `BUNDLED WITH` indentation and
+> The 4.0.24 �?2.7.2 differences in lockfile `BUNDLED WITH` indentation and
 > CHECKSUMS handling are version-pinned (see
 > `docs/compat-matrix/generated/cli-*.md` and `vendor/reference/MANIFEST.md`).
 > "Compatible"/prior pass statements in this report are historical snapshot
 > evidence for the pinned profiles and Ruby/platform noted above and are
-> **未重跑验证** in this iteration.
+> **未重跑验�?* in this iteration.
