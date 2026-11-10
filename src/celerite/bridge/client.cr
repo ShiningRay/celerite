@@ -96,6 +96,10 @@ module Celerite
       getter dependencies : Array(EvaluatedDependency)
       getter sources : Array(EvaluatedSource)
       getter ruby : String?
+      getter ruby_version : String?
+      getter ruby_patchlevel : String?
+      getter ruby_engine : String?
+      getter ruby_engine_version : String?
       getter bundler_version : String
       getter gemfile_sha256 : String
     end

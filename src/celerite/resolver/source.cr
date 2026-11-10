@@ -266,18 +266,16 @@ module Celerite
       end
 
       private def ruby_requirement_satisfied?(spec : IndexSpec) : Bool
-        return false unless spec.required_ruby_version.satisfied_by?(Gem::Version.new(running_ruby_version_for_gem))
+        return false unless spec.required_ruby_version.satisfied_by?(Gem::Version.new(running_ruby_version))
         return false unless spec.required_rubygems_version.satisfied_by?(Gem::Version.new(running_rubygems_version))
         true
       end
 
+      # Reference parity: Bundler matches gem metadata with Gem.ruby_version,
+      # which is RUBY_VERSION without a patchlevel suffix. Patchlevel only
+      # participates in Gemfile target validation (Celerite::RubyRuntime).
       private def running_ruby_version_for_gem : String
-        # For gems that encode patchlevel in required_ruby_version (rare), prefer
-        # a version string including patchlevel when available.
-        if pl = @bridge_ruby_patchlevel
-          return "#{@bridge_ruby_version}p#{pl}" unless pl.empty? || pl == "-1"
-        end
-        @bridge_ruby_version
+        running_ruby_version
       end
 
       private def running_ruby_version : String

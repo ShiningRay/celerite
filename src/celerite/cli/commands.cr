@@ -324,6 +324,16 @@ module Celerite
     # ------------------------------------------------------------------
     # platform (Bundler::CLI::Platform at the pinned revision)
     # ------------------------------------------------------------------
+    # Reconstructs the structured Gemfile `ruby` declaration (version,
+    # patchlevel, engine, engine_version).  `GemfileEvaluation#ruby` stays the
+    # human-readable string for lockfile comparisons, but it drops the option
+    # fields, so runtime validation must use the structured fields.
+    def self.requested_ruby_version(evaluation : Bridge::GemfileEvaluation) : Celerite::RubyVersion?
+      version = evaluation.ruby_version
+      return nil unless version
+      Celerite::RubyVersion.new(version, evaluation.ruby_patchlevel, evaluation.ruby_engine, evaluation.ruby_engine_version)
+    end
+
     def self.platform(stdout : IO, rest : Array(String)) : Int32
       definition = Definition.build
       parseable = rest.includes?("--ruby")
@@ -357,15 +367,11 @@ module Celerite
               bridge = Bridge::Client.new
               begin
                 evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
-                if req_str = evaluation.ruby
+                if requested = requested_ruby_version(evaluation)
                   env = bridge.ruby_environment
-                  diff = RubyRuntime.diff(req_str, env)
-                  if diff
-                    requested = Celerite::RubyVersion.parse_requirement(req_str) || Celerite::RubyVersion.from_string(req_str)
-                    if requested
-                      system = Celerite::RubyVersion.system_from_env(env)
-                      mismatch_message = Celerite::RubyVersion.mismatch_message(diff[0], diff[1], diff[2], requested, system)
-                    end
+                  if diff = RubyRuntime.diff_version!(requested, env)
+                    system = Celerite::RubyVersion.system_from_env(env)
+                    mismatch_message = Celerite::RubyVersion.mismatch_message(diff[0], diff[1], diff[2], requested, system)
                   end
                 end
               rescue
@@ -403,9 +409,10 @@ module Celerite
       client = bridge || Bridge::Client.new
       begin
         evaluation = client.evaluate_gemfile(definition.gemfile_path)
-        return unless evaluation.ruby
+        requested = requested_ruby_version(evaluation)
+        return unless requested
         env = client.ruby_environment
-        RubyRuntime.validate!(evaluation.ruby, env)
+        RubyRuntime.validate_version!(requested, env)
       ensure
         client.close if bridge.nil?
       end

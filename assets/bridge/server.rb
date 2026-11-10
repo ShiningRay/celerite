@@ -93,11 +93,19 @@ def op_evaluate_gemfile(payload)
     }
   end
 
+  ruby_version = builder.instance_variable_get(:@ruby_version)
+
   {
     "gemfile" => gemfile,
     "dependencies" => deps,
     "sources" => builder.instance_variable_get(:@sources).all_sources.map { |s| serialize_source(s) },
-    "ruby" => builder.instance_variable_get(:@ruby_version)&.to_s,
+    "ruby" => ruby_version&.to_s,
+    # `to_s` omits the patchlevel; expose the structured declaration so
+    # Celerite can validate Gemfile `ruby ..., patchlevel:/engine:` options.
+    "ruby_version" => ruby_version&.versions&.first,
+    "ruby_patchlevel" => ruby_version&.patchlevel,
+    "ruby_engine" => ruby_version&.engine,
+    "ruby_engine_version" => ruby_version&.engine_versions&.first,
     "bundler_version" => Bundler::VERSION,
     "gemfile_sha256" => Digest::SHA256.hexdigest(contents),
   }

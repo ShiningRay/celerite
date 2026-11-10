@@ -57,4 +57,22 @@ describe Celerite::RubyRuntime do
       ex.message.should eq("Your Ruby patchlevel is 0, but your Gemfile specified 1")
     end
   end
+
+  it "preserves Gemfile ruby patchlevel options through the bridge evaluation" do
+    with_project({"Gemfile" => %(source "https://rubygems.org"\nruby "4.0.6", patchlevel: "1"\n)}) do
+      with_client do |client|
+        evaluation = client.evaluate_gemfile("Gemfile")
+        evaluation.ruby_version.should eq("4.0.6")
+        evaluation.ruby_patchlevel.should eq("1")
+
+        requested = Celerite::Commands.requested_ruby_version(evaluation).not_nil!
+        requested.patchlevel.should eq("1")
+
+        env = test_ruby_env("4.0.6", "ruby", "4.0.6", "0")
+        expect_raises(Celerite::RubyVersionMismatch, "Your Ruby patchlevel is 0, but your Gemfile specified 1") do
+          Celerite::RubyRuntime.validate_version!(requested, env)
+        end
+      end
+    end
+  end
 end
