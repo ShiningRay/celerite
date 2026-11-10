@@ -522,6 +522,15 @@ module Celerite
           stdout.puts "  Homepage:"
           stdout.puts "  Path: #{gem_dir}"
           stdout.puts "  Default Gem: no"
+          # For git specs, append short revision if available.
+          lockfile.source_for(spec).try do |src|
+            if src.type == "GIT"
+              rev = src.option("revision").to_s
+              unless rev.empty?
+                stdout.puts "  Git: #{rev[0, 12]}"
+              end
+            end
+          end
           return 0
         end
       end
