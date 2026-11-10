@@ -69,4 +69,20 @@ describe Celerite::RubyVersion do
       Celerite::RubyVersion.mismatch_message(diff[0], diff[1], diff[2], requested, system).should eq("Your Ruby engine is ruby, but your Gemfile specified jruby")
     end
   end
+
+  it "detects engine version mismatch for explicit engine" do
+    system = Celerite::RubyVersion.system("jruby", "2.6.0", "9.4.0.0", "0")
+    requested = Celerite::RubyVersion.from_string("ruby 2.6.0 (jruby 9.3.0.0)").not_nil!
+    diff = requested.diff(system)
+    diff.should_not be_nil
+    if diff
+      diff[0].should eq(:engine_version)
+      Celerite::RubyVersion.mismatch_message(diff[0], diff[1], diff[2], requested, system).should eq("Your jruby version is 9.4.0.0, but your Gemfile specified jruby 9.3.0.0")
+    end
+  end
+
+  it "returns nil for unparseable ruby version strings" do
+    Celerite::RubyVersion.from_string("not-ruby").should be_nil
+    Celerite::RubyVersion.parse_requirement("totally invalid").should be_nil
+  end
 end
