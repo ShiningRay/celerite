@@ -2,10 +2,11 @@
 
 ## Provenance
 
-- Code under test: `5416456` plus the local (uncommitted) task-2 source state;
-  the source change under test is the 4.0.24 `bundle list` human-output format
-  (header + `  * name (version)` + `bundle info` hint for every human-readable
-  listing) and the two path-source fixtures added in this local state.
+- Code under test: `066a646` plus the local task-2 differential fixtures
+  (`no-matching-version`, `ruby-metadata-fail` with its documented deferral,
+  and the earlier path/multi-group fixtures). The source changes include the
+  4.0.24 `bundle list` human-output format, multi-group parsing, and the
+  Ruby/RubyGems candidate-filter/runtime-validation work.
 - Binary: `bin/celerite.exe` rebuilt locally with an **uncommitted,
   out-of-repo OpenSSL shim** (see below); `--version` prints `0.1.0`.
 - `bin/` is gitignored. Neither the shim nor the binary is part of the
@@ -21,7 +22,7 @@
 ```sh
 crystal tool format --check src spec          # EXIT 0
 crystal build --no-codegen src/cli.cr         # EXIT 0 (2 pre-existing deprecation warnings)
-crystal spec <86-example M7 + base subset>    # 86 examples, 0 failures, EXIT 0
+crystal spec <103-example M7 + base subset>    # 103 examples, 0 failures, EXIT 0
 crystal spec spec/cli_spec.cr --link-flags "<shim.o>"   # 24 examples, 0 failures, EXIT 0
 crystal spec spec/m7_installed_discovery_spec.cr spec/m7_platform_spec.cr \
   --link-flags "<shim.o>"                     # 21 examples, 0 failures, EXIT 0
@@ -29,11 +30,11 @@ crystal spec spec/m7_installed_discovery_spec.cr spec/m7_platform_spec.cr \
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   bash script/differential ruby-version-mismatch platform-ruby-mismatch \
   check-missing check-unresolved list-missing show-missing list-multi-group \
-  check-path list-path
-# 9 passed, 0 failed, EXIT 0
+  check-path list-path no-matching-version platform-variant-fail ruby-metadata-fail
+# 11 passed, 0 failed, 1 skipped (documented deferral), EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" bash script/differential
-# 88 passed, 14 failed, 0 skipped (documented deferrals), EXIT 1
+# 89 passed, 14 failed, 1 skipped (documented deferral), EXIT 1
 ```
 
 Full local log: `C:\temp\celerite-diff-full-3.log` (temporary; the failure
@@ -73,6 +74,24 @@ generated Windows binstub content differences.
 | `install-rerun` (`install`) | `ruby/4.0.0/bin/thor.bat` content differs |
 | `pristine` (`install`, `pristine`) | `ruby/4.0.0/bin/thor.bat` content differs |
 | `pristine-named` (`install`, `pristine thor`, `pristine nonexistentgem`) | `ruby/4.0.0/bin/thor.bat` content differs |
+
+## M7(1) constraint fixtures added in this pass
+
+- `no-matching-version` (`lock --print`, `json_pure >= 99.0` against the local
+  compact index): reference and Celerite both exit 7 with a "Could not find"
+  error — **PASS**.
+- `platform-variant-fail` (`lock --add-platform x86_64-linux` with `racc` +
+  `nokogiri`): both exit 7 — **PASS** (regression confirmation for the
+  platform/ABI variant path).
+- `ruby-metadata-fail` (`lock --print` with a PATH gem whose
+  `required_ruby_version = ">= 99.0"`): **deferred** for 4.0.24. Reference
+  exits 6 with the PubGrub explanation ("Because every version of future_gem
+  depends on Ruby >= 99.0 ... version solving has failed."), while Celerite
+  exits 7 with `GemNotFoundError` listing the source candidates. This is a
+  real error-semantics gap in the Ruby-incompatible-only candidate path, not a
+  harness issue; the fixture is committed with an explicit deferral so the
+  suite stays honest. Removing the deferral requires the resolver to report a
+  solve failure (exit 6) for this case.
 
 ## Interpretation
 
