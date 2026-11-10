@@ -400,6 +400,51 @@ module Celerite
       # Root dependency preparation
       # ------------------------------------------------------------------
 
+      # Bundler models Ruby/RubyGems as metadata packages in PubGrub, so a
+      # version that only fails `required_ruby_version`/`required_rubygems_version`
+      # is a solve failure (status 6), not a missing gem (status 7). Mirror that
+      # distinction for root requirements: if requirement-matching specs exist
+      # but every installable candidate is excluded by gem metadata, report a
+      # SolveFailure with the reference explanation shape.
+      private def raise_metadata_or_not_found!(package : Package, requirement : Gem::Requirement) : NoReturn
+        platform_specs = all_specs(package.name).select do |spec|
+          requirement.none? || requirement.satisfied_by?(spec.version)
+        end.select do |spec|
+          package.platforms.all? { |platform| installable?(spec, platform) }
+        end
+
+        excluded = platform_specs.reject { |spec| ruby_requirement_satisfied?(spec) }
+        if excluded.empty?
+          raise_not_found!(package)
+        end
+
+        spec = excluded.first
+        root_requirement = requirement.none? ? ">= 0" : requirement.to_s
+        if !spec.required_ruby_version.satisfied_by?(Gem::Version.new(running_ruby_version))
+          label = "Ruby"
+          required = spec.required_ruby_version.to_s
+          actual = running_ruby_version
+        else
+          label = "RubyGems"
+          required = spec.required_rubygems_version.to_s
+          actual = running_rubygems_version
+        end
+
+        message = String.build do |io|
+          io << "Could not find compatible versions\n\n"
+          io << "Because every version of #{package.name} depends on #{label} #{required}\n"
+          io << "  and Gemfile depends on #{package.name} #{root_requirement},\n"
+          io << "  #{label} #{required} is required.\n"
+          io << "So, because current #{label} version is = #{actual},\n"
+          io << "  version solving has failed."
+        end
+
+        term = Term.new(Constraint.new(package, requirement_to_range(requirement)), true)
+        cause = IncompatibilityCause::NoVersions.new(term)
+        incompatibility = Incompatibility.new([term], cause, message)
+        raise SolveFailure.new(incompatibility)
+      end
+
       private def prepare_dependencies(requirements : Array(DepSpec)) : Hash(Package, Constraint)
         result = Hash(Package, Constraint).new
         requirements.each do |dep|
@@ -414,7 +459,7 @@ module Celerite
           end
 
           if versions.empty?
-            raise_not_found!(package)
+            raise_metadata_or_not_found!(package, dep.requirement)
           end
 
           existing = result[package]?

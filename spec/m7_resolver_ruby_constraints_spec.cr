@@ -55,10 +55,11 @@ private def candidate_versions(source : Celerite::Resolver::ResolutionSource, na
   source.all_versions_for(package).map { |candidate| candidate.version.version.to_s }.sort
 end
 
-private def resolved_version(source : Celerite::Resolver::ResolutionSource, name : String) : String?
+private def resolved_version(source : Celerite::Resolver::ResolutionSource, name : String,
+                             requirement : Celerite::Gem::Requirement = Celerite::Gem::Requirement.new) : String?
   orchestrator = Celerite::Resolver::Orchestrator.new(
     source,
-    [Celerite::Resolver::DepSpec.new(name, Celerite::Gem::Requirement.new)],
+    [Celerite::Resolver::DepSpec.new(name, requirement)],
   )
   decision = orchestrator.solve.find { |package, _| package.name == name }
   decision.try(&.[1].version.to_s)
@@ -111,14 +112,48 @@ describe Celerite::Resolver::ResolutionSource do
     resolved_version(source, "a").should eq("1.0")
   end
 
-  it "raises a not-found error when every candidate is filtered by Ruby constraints" do
+  it "reports a solve failure when every candidate is filtered by Ruby metadata" do
     source = constraint_source([
       index_spec("a", "1.0", required_ruby: ">= 5.0"),
     ])
 
-    error = expect_raises(Celerite::GemNotFoundError) do
+    error = expect_raises(Celerite::Resolver::SolveFailure) do
       resolved_version(source, "a")
     end
-    error.message.not_nil!.should contain("Could not find gem 'a'")
+    error.status_code.should eq(6)
+    error.message.should eq(<<-MSG.chomp)
+      Could not find compatible versions
+
+      Because every version of a depends on Ruby >= 5.0
+        and Gemfile depends on a >= 0,
+        Ruby >= 5.0 is required.
+      So, because current Ruby version is = 4.0.6,
+        version solving has failed.
+      MSG
+  end
+
+  it "reports a solve failure when every candidate is filtered by RubyGems metadata" do
+    source = constraint_source([
+      index_spec("a", "1.0", required_rubygems: ">= 5.0"),
+    ])
+
+    error = expect_raises(Celerite::Resolver::SolveFailure) do
+      resolved_version(source, "a")
+    end
+    error.status_code.should eq(6)
+    error.message.not_nil!.should contain("depends on RubyGems >= 5.0")
+    error.message.not_nil!.should contain("current RubyGems version is = 4.0.16")
+  end
+
+  it "still raises not-found when the requirement itself has no matching version" do
+    source = constraint_source([
+      index_spec("a", "1.0", required_ruby: ">= 3.3"),
+    ])
+
+    error = expect_raises(Celerite::GemNotFoundError) do
+      resolved_version(source, "a", Celerite::Gem::Requirement.new([">= 99.0"]))
+    end
+    error.status_code.should eq(7)
+    error.message.not_nil!.should contain("Could not find gem 'a (>= 99.0)'")
   end
 end

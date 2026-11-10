@@ -589,7 +589,16 @@ module Celerite
       end
       source = make_source(base_requirements, index, locked_index, prerelease_exceptions, @unlock, fetcher)
 
-      orchestrator = Resolver::Orchestrator.new(source, deps)
+      orchestrator = begin
+        Resolver::Orchestrator.new(source, deps)
+      rescue ex : Resolver::SolveFailure
+        # Root-dependency validation runs in the Orchestrator constructor. A
+        # metadata-only solve failure happens after the reference has already
+        # announced resolution, while missing/platform errors happen earlier
+        # and do not print it (pinned oracle behavior).
+        @progress.puts "Resolving dependencies..." if @show_resolving
+        raise ex
+      end
       @progress.puts "Resolving dependencies..." if @show_resolving
       decisions = solve_with_relaxation(source, deps, prerelease_exceptions, unlocked, orchestrator)
       decisions_to_specs(decisions, index, locked_index)
