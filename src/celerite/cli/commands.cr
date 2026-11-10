@@ -265,6 +265,32 @@ module Celerite
       nil
     end
 
+    # Group filters accept Thor-style space-separated lists (reference
+    # `bundle list --without-group=GROUP[ GROUP...]`) as well as repeated
+    # flags and comma/colon separated values.
+    def self.flag_values(rest : Array(String), flag : String) : Array(String)
+      values = [] of String
+      index = 0
+      while index < rest.size
+        arg = rest[index]
+        if arg == flag
+          cursor = index + 1
+          while cursor < rest.size && !rest[cursor].starts_with?("-")
+            value = rest[cursor]
+            break if value.empty?
+            values << value
+            cursor += 1
+          end
+          index = cursor
+          next
+        elsif arg.starts_with?(flag + "=")
+          values.concat(arg.split("=", 2)[1].split(/[\s,:]+/).reject(&.empty?))
+        end
+        index += 1
+      end
+      values.uniq
+    end
+
     def self.platform_flag_values(rest : Array(String), flag : String) : Array(String)
       values = [] of String
       rest.each_with_index do |arg, index|
@@ -404,24 +430,22 @@ module Celerite
       end
 
       lockfile = definition.lockfile!
-      only_group = flag_value(rest, "--only-group")
-      without_group = flag_value(rest, "--without-group")
+      only_groups = flag_values(rest, "--only-group")
+      without_groups = flag_values(rest, "--without-group")
       all_groups = bridge_available? ? lockfile_groups(definition, lockfile) : ["default"]
 
-      if only_group && without_group
+      if only_groups.any? && without_groups.any?
         stderr.puts "The `--only-group` and `--without-group` options cannot be used together"
         return 15
       end
-      if only_group && !all_groups.includes?(only_group)
-        stderr.puts "`#{only_group}` group could not be found."
-        return 15
-      end
-      if without_group && !all_groups.includes?(without_group)
-        stderr.puts "`#{without_group}` group could not be found."
-        return 15
+      (only_groups + without_groups).uniq.each do |group|
+        unless all_groups.includes?(group)
+          stderr.puts "`#{group}` group could not be found."
+          return 15
+        end
       end
 
-      requested_groups = requested_groups_for(config, all_groups, only_group, without_group)
+      requested_groups = requested_groups_for(config, all_groups, only_groups, without_groups)
       locked_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, lockfile.specs.sort_by(&.full_name), requested_groups) : lockfile.specs.sort_by(&.full_name)
 
       if unresolved_dep(definition, lockfile)
@@ -459,8 +483,8 @@ module Celerite
       paths = rest.includes?("--paths")
       name_only = rest.includes?("--name-only")
       json_format = rest.includes?("--format=json") || rest.includes?("--format") && flag_value(rest, "--format") == "json"
-      only_group = flag_value(rest, "--only-group")
-      without_group = flag_value(rest, "--without-group")
+      only_groups = flag_values(rest, "--only-group")
+      without_groups = flag_values(rest, "--without-group")
       definition = Definition.build
       # Reference Bundler 4.0.24: `bundle list` does not run validate_runtime!
       # on Ruby mismatch in installed-bundle scenarios; keep listing behavior.
@@ -468,22 +492,20 @@ module Celerite
       lockfile = definition.lockfile!
 
       # Validate mutually exclusive group filters like the reference.
-      if only_group && without_group
+      if only_groups.any? && without_groups.any?
         stderr.puts "The `--only-group` and `--without-group` options cannot be used together"
         return 15
       end
 
       all_groups = bridge_available? ? lockfile_groups(definition, lockfile) : ["default"]
-      if only_group && !all_groups.includes?(only_group)
-        stderr.puts "`#{only_group}` group could not be found."
-        return 15
-      end
-      if without_group && !all_groups.includes?(without_group)
-        stderr.puts "`#{without_group}` group could not be found."
-        return 15
+      (only_groups + without_groups).uniq.each do |group|
+        unless all_groups.includes?(group)
+          stderr.puts "`#{group}` group could not be found."
+          return 15
+        end
       end
 
-      requested_groups = requested_groups_for(config, all_groups, only_group, without_group)
+      requested_groups = requested_groups_for(config, all_groups, only_groups, without_groups)
 
       locked_specs = lockfile.specs.sort_by(&.full_name)
       if lockfile.dependencies.empty?
@@ -517,7 +539,7 @@ module Celerite
           locked_specs.each { |spec| stdout.puts(installed_gem_dir(definition, spec, lockfile) || spec.full_name) }
         elsif name_only
           locked_specs.each { |spec| stdout.puts spec.name }
-        elsif only_group || without_group
+        elsif only_groups.any? || without_groups.any?
           stdout.puts "Gems included by the bundle:"
           locked_specs.each { |spec| stdout.puts "  * #{spec.name} (#{spec.version})" }
           stdout.puts "Use `bundle info` to print more detailed information about a gem"
@@ -546,25 +568,23 @@ module Celerite
       paths = rest.includes?("--paths")
       name_only = rest.includes?("--name-only")
       json_format = rest.includes?("--format=json") || (rest.includes?("--format") && flag_value(rest, "--format") == "json")
-      only_group = flag_value(rest, "--only-group")
-      without_group = flag_value(rest, "--without-group")
+      only_groups = flag_values(rest, "--only-group")
+      without_groups = flag_values(rest, "--without-group")
 
       # Validate mutually exclusive group filters like the reference.
       all_groups = bridge_available? ? lockfile_groups(definition, lockfile) : ["default"]
-      if only_group && without_group
+      if only_groups.any? && without_groups.any?
         stderr.puts "The `--only-group` and `--without-group` options cannot be used together"
         return 15
       end
-      if only_group && !all_groups.includes?(only_group)
-        stderr.puts "`#{only_group}` group could not be found."
-        return 15
-      end
-      if without_group && !all_groups.includes?(without_group)
-        stderr.puts "`#{without_group}` group could not be found."
-        return 15
+      (only_groups + without_groups).uniq.each do |group|
+        unless all_groups.includes?(group)
+          stderr.puts "`#{group}` group could not be found."
+          return 15
+        end
       end
 
-      requested_groups = requested_groups_for(definition.config, all_groups, only_group, without_group)
+      requested_groups = requested_groups_for(definition.config, all_groups, only_groups, without_groups)
       locked_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, locked_specs, requested_groups) : locked_specs
 
       names = rest.reject { |a| a.starts_with?("--") }
@@ -697,46 +717,6 @@ module Celerite
       end
     end
 
-    def self.requested_groups_for(config : Config, all_groups : Array(String), only_group : String?, without_group : String?) : Array(String)
-      configured_without = config["without"]
-      configured_with = config["with"]
-      without_list = configured_without.is_a?(Array(String)) ? configured_without : (configured_without.to_s.split(":").reject(&.empty?))
-      with_list = configured_with.is_a?(Array(String)) ? configured_with : (configured_with.to_s.split(":").reject(&.empty?))
-
-      requested = all_groups - without_list
-      requested = requested + with_list
-      requested = requested.uniq
-
-      if only_group
-        requested = [only_group]
-      elsif without_group
-        requested = all_groups - [without_group]
-      end
-      requested
-    end
-
-    def self.filter_locked_specs_by_groups(definition : Definition, lockfile : Lockfile::Data, specs : Array(Lockfile::Spec), requested_groups : Array(String)) : Array(Lockfile::Spec)
-      return specs if requested_groups.empty?
-      bridge = Bridge::Client.new
-      begin
-        evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
-        group_map = {} of String => Array(String)
-        evaluation.dependencies.each do |dep|
-          group_map[dep.name] = dep.groups
-        end
-        specs.select do |spec|
-          groups = group_map[spec.name]? || [] of String
-          # If a gem has no explicit groups, treat as default group.
-          groups = ["default"] if groups.empty?
-          !(groups & requested_groups).empty?
-        end
-      rescue
-        specs
-      ensure
-        bridge.close
-      end
-    end
-
     def self.gem_groups_for(definition : Definition, name : String) : Array(String)
       bridge = Bridge::Client.new
       begin
@@ -752,7 +732,7 @@ module Celerite
       end
     end
 
-    def self.requested_groups_for(config : Config, all_groups : Array(String), only_group : String?, without_group : String?) : Array(String)
+    def self.requested_groups_for(config : Config, all_groups : Array(String), only_groups : Array(String), without_groups : Array(String)) : Array(String)
       configured_without = config["without"]
       configured_with = config["with"]
       without_list = configured_without.is_a?(Array(String)) ? configured_without : configured_without.to_s.split(":").reject(&.empty?)
@@ -761,10 +741,10 @@ module Celerite
       requested = all_groups - without_list
       requested = (requested + with_list).uniq
 
-      if only_group
-        requested = [only_group]
-      elsif without_group
-        requested = all_groups - [without_group]
+      if only_groups.any?
+        requested = only_groups
+      elsif without_groups.any?
+        requested = all_groups - without_groups
       end
       requested
     end

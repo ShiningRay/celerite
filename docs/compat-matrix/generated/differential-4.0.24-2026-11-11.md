@@ -2,38 +2,42 @@
 
 ## Provenance
 
-- Code under test: working tree at `a029382` plus the local (uncommitted) task-2 source state; no source changes were made for this run.
-- Binary: `bin/celerite.exe` rebuilt locally with an **uncommitted, out-of-repo OpenSSL shim** (see below); `--version` prints `0.1.0`.
-- `bin/` is gitignored. Neither the shim nor the binary is part of the repository.
+- Code under test: working tree at `a029382` plus the local (uncommitted)
+  task-2 source state; no source changes were made for this run.
+- Binary: `bin/celerite.exe` rebuilt locally with an **uncommitted,
+  out-of-repo OpenSSL shim** (see below); `--version` prints `0.1.0`.
+- `bin/` is gitignored. Neither the shim nor the binary is part of the
+  repository.
 - Stock `crystal build src/cli.cr` still fails on this host with
   `undefined reference to 'EVP_MD_size'`; the shim only works around that
-  local toolchain mismatch (Crystal 1.22.1 binds OpenSSL 1.1 `EVP_MD_size`,
-  MSYS2 ucrt64 ships OpenSSL 3.6.5, which exports `EVP_MD_get_size`).
+  local toolchain mismatch (Crystal 1.22.1 binds OpenSSL 1.1
+  `EVP_MD_size`, MSYS2 ucrt64 ships OpenSSL 3.6.5, which exports
+  `EVP_MD_get_size`).
 
 ## Commands and results
 
 ```sh
 crystal tool format --check src spec          # EXIT 0
 crystal build --no-codegen src/cli.cr         # EXIT 0 (2 pre-existing deprecation warnings)
-crystal spec <79-example M7 + base subset>    # 79 examples, 0 failures, EXIT 0
+crystal spec <85-example M7 + base subset>    # 85 examples, 0 failures, EXIT 0
 crystal spec spec/cli_spec.cr --link-flags "<shim.o>"   # 24 examples, 0 failures, EXIT 0
 crystal spec spec/m7_installed_discovery_spec.cr spec/m7_platform_spec.cr \
-  --link-flags "<shim.o>"                     # 14 examples, 0 failures, EXIT 0
+  --link-flags "<shim.o>"                     # 20 examples, 0 failures, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   bash script/differential ruby-version-mismatch platform-ruby-mismatch \
-  check-missing check-unresolved list-missing show-missing
-# 6 passed, 0 failed, EXIT 0
+  check-missing check-unresolved list-missing show-missing list-multi-group
+# 7 passed, 0 failed, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" bash script/differential
-# 85 passed, 14 failed, 0 skipped (documented deferrals), EXIT 1
+# 86 passed, 14 failed, 0 skipped (documented deferrals), EXIT 1
 ```
 
-Full local log: `/c/temp/celerite-diff-full.log` (temporary; the failure list
-below is the durable record). On this host `diff`/`cmp` are taken from
-`C:\Program Files\Git\usr\bin` and `TMPDIR=/c/temp` is used so the MSYS path is
-visible to those tools; this is a test-environment workaround, not a product
-change.
+Full local log: `/c/temp/celerite-diff-full-2.log` (temporary; the failure
+list below is the durable record). On this host `diff`/`cmp` are taken from
+`C:\Program Files\Git\usr\bin` and `TMPDIR=/c/temp` is used so the MSYS path
+is visible to those tools; this is a test-environment workaround, not a
+product change.
 
 ## The 14 failures (classified)
 
@@ -69,12 +73,12 @@ generated Windows binstub content differences.
 
 ## Interpretation
 
-- The two new M7 fixtures (`ruby-version-mismatch`, `platform-ruby-mismatch`)
-  and the four check/list/show fixtures passed; the 14 failures above are
-  outside the M7(1)-(3) paths (native-extension tooling and generated binstub
-  byte content), but the suite is **not green** and these failures are not
-  claimed as fixed.
+- The M7 fixtures (`ruby-version-mismatch`, `platform-ruby-mismatch`,
+  `list-multi-group`) and the four check/list/show fixtures passed; the 14
+  failures above are outside the M7(1)-(3) paths (native-extension tooling and
+  generated binstub byte content), but the suite is **not green** and these
+  failures are not claimed as fixed.
 - 2.7.2 profile was not re-run in this verification.
 - The M7(1) full matrix (engine/patchlevel/ABI/Gemfile target, install
-  re-check), M7(2) `with`/platform variants, and M7(3) broader differential
-  evidence remain incomplete.
+  re-check), M7(2) path/Git combinations and additional platform variants,
+  and M7(3) broader differential evidence remain incomplete.

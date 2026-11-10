@@ -221,6 +221,34 @@ gem "json_pure"
 gem "rake", group: :test
 GEMFILE
 
+MULTI_GROUP_LOCKFILE_TEXT = <<-LOCK
+GEM
+  remote: https://rubygems.org/
+  specs:
+    example (1.0.0)
+    json_pure (2.8.1)
+    rake (13.4.2)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  example
+  json_pure
+  rake
+
+BUNDLED WITH
+   4.0.24
+LOCK
+
+MULTI_GROUP_GEMFILE = <<-GEMFILE
+source "https://rubygems.org"
+
+gem "json_pure"
+gem "rake", group: :test
+gem "example", group: :development
+GEMFILE
+
 private def with_bridge_server(&)
   server = File.expand_path("../assets/bridge/server.rb", __DIR__)
   previous = ENV["CELERITE_BRIDGE_SERVER"]?
@@ -298,6 +326,45 @@ describe "M7 group/with-without filtering" do
         code, out, err = capture_command { |o, e| Celerite::Commands.check(o, e, [] of String) }
         err.should eq("")
         out.should eq("The Gemfile's dependencies are satisfied\n")
+        code.should eq(0)
+      end
+    end
+  end
+
+  it "list accepts a space-separated multi-group --only-group list" do
+    with_bridge_server do
+      with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
+        "vendor/bundle/ruby/3.4.0/gems/rake-13.4.2/lib/rake.rb"          => "",
+      })) do
+        code, out, err = capture_command { |o, e| Celerite::Commands.list(o, e, ["--only-group", "default", "test"]) }
+        err.should eq("")
+        out.should eq("Gems included by the bundle:\n  * json_pure (2.8.1)\n  * rake (13.4.2)\nUse `bundle info` to print more detailed information about a gem\n")
+        code.should eq(0)
+      end
+    end
+  end
+
+  it "check accepts a space-separated multi-group --only-group list" do
+    with_bridge_server do
+      with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
+      })) do
+        code, _out, err = capture_command { |o, e| Celerite::Commands.check(o, e, ["--only-group", "default", "test"]) }
+        code.should eq(1)
+        err.should contain("rake (13.4.2)")
+      end
+    end
+  end
+
+  it "list accepts a space-separated multi-group --without-group list" do
+    with_bridge_server do
+      with_project(project_files_for(MULTI_GROUP_LOCKFILE_TEXT, MULTI_GROUP_GEMFILE, {
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
+      })) do
+        code, out, err = capture_command { |o, e| Celerite::Commands.list(o, e, ["--without-group", "test", "development"]) }
+        err.should eq("")
+        out.should eq("Gems included by the bundle:\n  * json_pure (2.8.1)\nUse `bundle info` to print more detailed information about a gem\n")
         code.should eq(0)
       end
     end
