@@ -626,14 +626,9 @@ module Celerite
 
         # Groups are not stored in the lockfile; use bridge evaluation for group filtering.
         deps = if groups.any?
-                 bridge = Bridge::Client.new
-                 begin
-                   evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
-                   names = evaluation.dependencies.select { |dep| dep.groups.any? { |g| groups.includes?(g) } }.map(&.name)
-                   lockfile.dependencies.select { |d| names.includes?(d.name) }
-                 ensure
-                   bridge.close
-                 end
+                 evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+                 names = evaluation.dependencies.select { |dep| dep.groups.any? { |g| groups.includes?(g) } }.map(&.name)
+                 lockfile.dependencies.select { |d| names.includes?(d.name) }
                else
                  lockfile.dependencies
                end
@@ -642,11 +637,7 @@ module Celerite
         deps.each do |dep|
           spec = lockfile.specs.find(&.name.==(dep.name))
           next unless spec
-          gem_dir = Commands.installed_gem_dir(definition, spec, lockfile)
-          next unless gem_dir
-          gemspec_path = File.join(gem_dir, "..", "..", "specifications", "#{spec.full_name}.gemspec")
-          # Try to read metadata from cached gem or installed spec.
-          funding = read_funding_uri(definition, spec, lockfile)
+          funding = read_funding_uri(definition, spec, bridge)
           if funding
             fund_info << "* #{spec.name} (#{spec.version})
   Funding: #{funding}"
@@ -665,18 +656,34 @@ module Celerite
       end
     end
 
-    private def self.read_funding_uri(definition : Definition, spec : Lockfile::Spec, lockfile : Lockfile::Data) : String?
+    private def self.read_funding_uri(definition : Definition, spec : Lockfile::Spec, bridge : Bridge::Client) : String?
       install_path = InstallPaths.install_path(definition.config)
       ruby_root = File.join(install_path, "ruby")
       return nil unless Dir.exists?(ruby_root)
 
       Dir.each_child(ruby_root) do |abi|
+        gem_file = File.join(ruby_root, abi, "cache", "#{spec.full_name}.gem")
+        if File.file?(gem_file)
+          begin
+            info = Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(gem_file).to_json)
+            if metadata = info.metadata
+              if uri = metadata["funding_uri"]?
+                return uri unless uri.empty?
+              end
+            end
+          rescue
+          end
+        end
+
         gemspec_path = File.join(ruby_root, abi, "specifications", "#{spec.full_name}.gemspec")
         next unless File.file?(gemspec_path)
-        text = File.read(gemspec_path)
-        # Extract funding_uri from metadata hash if present.
-        if match = text.match(/funding_uri["']?\s*=>\s*["']([^"']+)["']/)
-          return match[1]
+        begin
+          text = File.read(gemspec_path)
+          # Extract funding_uri from metadata hash if present.
+          if match = text.match(/funding_uri["']?\s*=>\s*["']([^"']+)["']/)
+            return match[1]
+          end
+        rescue
         end
       end
       nil
