@@ -100,6 +100,7 @@ module Celerite
         abi = ruby_abi(bridge)
         downloader = Downloader.new(resolution.primary_remote, downloader_cache_root)
         installer = Installer.new(install_path, abi, bridge, downloader, stdout)
+        installer.config = config
         installers_by_remote = {resolution.primary_remote => installer}
         if target_rbconfig = flag_value(rest, "--target-rbconfig")
           installer.target_rbconfig = File.expand_path(target_rbconfig, Dir.current)
@@ -217,6 +218,7 @@ module Celerite
           spec_installer = installers_by_remote[remote]? || begin
             remote_downloader = Downloader.new(remote, downloader_cache_root)
             next_installer = Installer.new(install_path, abi, bridge, remote_downloader, stdout)
+            next_installer.config = config
             installers_by_remote[remote] = next_installer
             next_installer
           end

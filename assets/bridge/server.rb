@@ -194,7 +194,8 @@ def op_build_extension(payload)
   FileUtils.mkdir_p(destination)
   spec.full_gem_path = gem_dir
   spec.extension_dir = destination
-  Gem::Ext::Builder.new(spec).build_extensions
+  build_args = payload["build_args"] ? payload["build_args"].to_s.split(" ") : []
+  Gem::Ext::Builder.new(spec, build_args).build_extensions
   File.write(gem_build_complete, "")
   { "built" => spec.extensions, "complete" => gem_build_complete }
 rescue StandardError => e

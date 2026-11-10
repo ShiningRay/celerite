@@ -189,9 +189,10 @@ module Celerite
         GemSpecInfo.from_json(request("load_gemspec_dir", payload).to_json)
       end
 
-      def build_extension(gem_dir : String, destination : String, name : String, gem_path : String, target_rbconfig : String? = nil) : JSON::Any
+      def build_extension(gem_dir : String, destination : String, name : String, gem_path : String, target_rbconfig : String? = nil, build_args : Array(String)? = nil) : JSON::Any
         payload = {"gem_dir" => gem_dir, "destination" => destination, "name" => name, "gem_path" => gem_path} of String => String
         payload["target_rbconfig"] = target_rbconfig if target_rbconfig
+        payload["build_args"] = build_args.join(" ") if build_args && !build_args.empty?
         request("build_extension", payload)
       end
 
