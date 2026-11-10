@@ -62,17 +62,23 @@ module Celerite
     # HTTP(S) fetcher over stdlib HTTP::Client with optional credentials.
     class HttpFetcher < Fetcher
       getter mirror_url : String?
+      getter ssl_ca_cert : String?
+      getter ssl_client_cert : String?
+      getter ssl_verify_mode : String?
 
-      def initialize(@uri : URI, @user : String? = nil, @password : String? = nil, @timeout : Time::Span = 30.seconds, @retries : Int32 = 3, @mirror_url : String? = nil)
+      def initialize(@uri : URI, @user : String? = nil, @password : String? = nil, @timeout : Time::Span = 30.seconds, @retries : Int32 = 3, @mirror_url : String? = nil, @ssl_ca_cert : String? = nil, @ssl_client_cert : String? = nil, @ssl_verify_mode : String? = nil)
         @retries = @retries < 0 ? 0 : @retries
         @mirror_url = mirror_url
+        @ssl_ca_cert = ssl_ca_cert
+        @ssl_client_cert = ssl_client_cert
+        @ssl_verify_mode = ssl_verify_mode
       end
 
-      def self.for(remote : String, credentials : {String, String}? = nil, retries : Int32 = 3, mirror_url : String? = nil) : HttpFetcher
+      def self.for(remote : String, credentials : {String, String}? = nil, retries : Int32 = 3, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil) : HttpFetcher
         uri = URI.parse(remote)
         user = credentials.try(&.[0]) || uri.user
         password = credentials.try(&.[1]) || uri.password
-        new(uri, user, password, retries: retries, mirror_url: mirror_url)
+        new(uri, user, password, retries: retries, mirror_url: mirror_url, ssl_ca_cert: ssl_ca_cert, ssl_client_cert: ssl_client_cert, ssl_verify_mode: ssl_verify_mode)
       end
 
       def call(remote_path : String, headers : Hash(String, String)) : FetchResponse
@@ -93,7 +99,22 @@ module Celerite
         loop do
           attempt += 1
           begin
-            client = HTTP::Client.new(@uri)
+            tls_ctx = if @uri.scheme == "https"
+              ctx = OpenSSL::SSL::Context::Client.new
+              if ca = @ssl_ca_cert
+                ctx.ca_certificates = ca
+              end
+              if mode = @ssl_verify_mode
+                case mode.downcase
+                when "none"
+                  ctx.verify_mode = OpenSSL::SSL::VerifyMode::NONE
+                when "peer"
+                  ctx.verify_mode = OpenSSL::SSL::VerifyMode::PEER
+                end
+              end
+              ctx
+            end
+            client = HTTP::Client.new(@uri, tls: tls_ctx)
             client.connect_timeout = @timeout
             client.read_timeout = @timeout
             if @user || @password
