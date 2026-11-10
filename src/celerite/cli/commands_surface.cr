@@ -613,8 +613,72 @@ module Celerite
     end
 
     def self.fund(stdout : IO, stderr : IO, rest : Array(String)) : Int32
-      stdout.puts "None of the installed gems you directly depend on are looking for funding."
-      0
+      definition = Definition.build
+      lockfile = definition.lockfile!
+      bridge = Bridge::Client.new
+      begin
+        groups = [] of String
+        group_flag = flag_value(rest, "--group")
+        if group_flag
+          groups = group_flag.split(",").map(&.strip)
+        end
+
+        # Groups are not stored in the lockfile; use bridge evaluation for group filtering.
+        deps = if groups.any?
+                 bridge = Bridge::Client.new
+                 begin
+                   evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+                   names = evaluation.dependencies.select { |dep| dep.groups.any? { |g| groups.includes?(g) } }.map(&.name)
+                   lockfile.dependencies.select { |d| names.includes?(d.name) }
+                 ensure
+                   bridge.close
+                 end
+               else
+                 lockfile.dependencies
+               end
+
+        fund_info = [] of String
+        deps.each do |dep|
+          spec = lockfile.specs.find(&.name.==(dep.name))
+          next unless spec
+          gem_dir = Commands.installed_gem_dir(definition, spec, lockfile)
+          next unless gem_dir
+          gemspec_path = File.join(gem_dir, "..", "..", "specifications", "#{spec.full_name}.gemspec")
+          # Try to read metadata from cached gem or installed spec.
+          funding = read_funding_uri(definition, spec, lockfile)
+          if funding
+            fund_info << "* #{spec.name} (#{spec.version})
+  Funding: #{funding}"
+          end
+        end
+
+        if fund_info.empty?
+          stdout.puts "None of the installed gems you directly depend on are looking for funding."
+        else
+          stdout.puts fund_info.join("
+")
+        end
+        0
+      ensure
+        bridge.close
+      end
+    end
+
+    private def self.read_funding_uri(definition : Definition, spec : Lockfile::Spec, lockfile : Lockfile::Data) : String?
+      install_path = InstallPaths.install_path(definition.config)
+      ruby_root = File.join(install_path, "ruby")
+      return nil unless Dir.exists?(ruby_root)
+
+      Dir.each_child(ruby_root) do |abi|
+        gemspec_path = File.join(ruby_root, abi, "specifications", "#{spec.full_name}.gemspec")
+        next unless File.file?(gemspec_path)
+        text = File.read(gemspec_path)
+        # Extract funding_uri from metadata hash if present.
+        if match = text.match(/funding_uri["']?\s*=>\s*["']([^"']+)["']/)
+          return match[1]
+        end
+      end
+      nil
     end
 
     # ------------------------------------------------------------------
