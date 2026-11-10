@@ -100,20 +100,20 @@ module Celerite
           attempt += 1
           begin
             tls_ctx = if @uri.scheme == "https"
-              ctx = OpenSSL::SSL::Context::Client.new
-              if ca = @ssl_ca_cert
-                ctx.ca_certificates = ca
-              end
-              if mode = @ssl_verify_mode
-                case mode.downcase
-                when "none"
-                  ctx.verify_mode = OpenSSL::SSL::VerifyMode::NONE
-                when "peer"
-                  ctx.verify_mode = OpenSSL::SSL::VerifyMode::PEER
-                end
-              end
-              ctx
-            end
+                        ctx = OpenSSL::SSL::Context::Client.new
+                        if ca = @ssl_ca_cert
+                          ctx.ca_certificates = ca
+                        end
+                        if mode = @ssl_verify_mode
+                          case mode.downcase
+                          when "none"
+                            ctx.verify_mode = OpenSSL::SSL::VerifyMode::NONE
+                          when "peer"
+                            ctx.verify_mode = OpenSSL::SSL::VerifyMode::PEER
+                          end
+                        end
+                        ctx
+                      end
             client = HTTP::Client.new(@uri, tls: tls_ctx)
             client.connect_timeout = @timeout
             client.read_timeout = @timeout

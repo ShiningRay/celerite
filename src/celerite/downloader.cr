@@ -127,15 +127,18 @@ module Celerite
       nil
     end
 
-    private def download_to(name : String, version : String, platform : String?, path : String) : Nil
+    private def download_to(name : String, version : String, platform : String?, path : String, allow_mirror : Bool = true) : Nil
       full_name = (platform.nil? || platform == "ruby") ? "#{name}-#{version}" : "#{name}-#{version}-#{platform}"
       remote_path = "/gems/#{full_name}.gem"
 
-      if mirror = @mirror_url
+      # Bundler mirror support: try the mirror first, then fall back to the
+      # original remote. allow_mirror=false prevents retrying the mirror
+      # after it already failed (and avoids unbounded recursion).
+      if allow_mirror && (mirror = @mirror_url)
         saved = @remote
         begin
           @remote = mirror
-          download_to(name, version, platform, path)
+          download_to(name, version, platform, path, allow_mirror: false)
           @remote = saved
           return
         rescue
@@ -211,7 +214,7 @@ module Celerite
           if loc = response.headers["Location"]?
             client.close rescue nil
             @remote = loc
-            return download_to(name, version, platform, path)
+            return download_to(name, version, platform, path, allow_mirror: false)
           end
         end
         if attempt < max_attempts

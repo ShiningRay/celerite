@@ -55,5 +55,33 @@ module Celerite
       File.file?(path).should be_true
       FileUtils.rm_rf(cache_root)
     end
+
+    it "uses the configured mirror when the original remote is unreachable" do
+      cache_root = File.tempname("celerite-dl", "cache")
+      missing = file_source_url(File.expand_path(File.join(__DIR__, "..", "fixtures", "no-such-index")))
+      downloader = Downloader.new(missing, cache_root, 0, fixture_index_remote)
+
+      path = downloader.fetch("json_pure", "2.8.1", nil, nil)
+      File.file?(path).should be_true
+      FileUtils.rm_rf(cache_root)
+    end
+
+    it "falls back to the original remote when the mirror fails" do
+      cache_root = File.tempname("celerite-dl", "cache")
+      missing = file_source_url(File.expand_path(File.join(__DIR__, "..", "fixtures", "no-such-index")))
+      downloader = Downloader.new(fixture_index_remote, cache_root, 0, missing)
+
+      path = downloader.fetch("json_pure", "2.8.1", nil, nil)
+      File.file?(path).should be_true
+      FileUtils.rm_rf(cache_root)
+    end
+
+    it "keeps the retry count configurable" do
+      cache_root = File.tempname("celerite-dl", "cache")
+      Downloader.new(fixture_index_remote, cache_root, 0).retries.should eq(0)
+      Downloader.new(fixture_index_remote, cache_root, -5).retries.should eq(0)
+      Downloader.new(fixture_index_remote, cache_root, 7).retries.should eq(7)
+      FileUtils.rm_rf(cache_root)
+    end
   end
 end
