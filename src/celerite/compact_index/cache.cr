@@ -61,15 +61,18 @@ module Celerite
 
     # HTTP(S) fetcher over stdlib HTTP::Client with optional credentials.
     class HttpFetcher < Fetcher
-      def initialize(@uri : URI, @user : String? = nil, @password : String? = nil, @timeout : Time::Span = 30.seconds, @retries : Int32 = 3)
+      getter mirror_url : String?
+
+      def initialize(@uri : URI, @user : String? = nil, @password : String? = nil, @timeout : Time::Span = 30.seconds, @retries : Int32 = 3, @mirror_url : String? = nil)
         @retries = @retries < 0 ? 0 : @retries
+        @mirror_url = mirror_url
       end
 
-      def self.for(remote : String, credentials : {String, String}? = nil, retries : Int32 = 3) : HttpFetcher
+      def self.for(remote : String, credentials : {String, String}? = nil, retries : Int32 = 3, mirror_url : String? = nil) : HttpFetcher
         uri = URI.parse(remote)
         user = credentials.try(&.[0]) || uri.user
         password = credentials.try(&.[1]) || uri.password
-        new(uri, user, password, retries: retries)
+        new(uri, user, password, retries: retries, mirror_url: mirror_url)
       end
 
       def call(remote_path : String, headers : Hash(String, String)) : FetchResponse
@@ -77,6 +80,14 @@ module Celerite
         headers.each { |k, v| request_headers[k] = v }
 
         path = remote_path.starts_with?("/") ? remote_path : "/#{remote_path}"
+
+        if mirror = @mirror_url
+          begin
+            return fetch_from(mirror, path, request_headers, headers)
+          rescue
+          end
+        end
+
         max_attempts = {@retries + 1, 1}.max
         attempt = 0
         loop do
@@ -108,6 +119,21 @@ module Celerite
             raise ex
           end
         end
+      end
+
+      private def fetch_from(remote : String, path : String, request_headers : HTTP::Headers, headers : Hash(String, String)) : FetchResponse
+        uri = URI.parse(remote)
+        client = HTTP::Client.new(uri)
+        client.connect_timeout = @timeout
+        client.read_timeout = @timeout
+        response = client.get(path, headers: request_headers)
+        client.close rescue nil
+        raise "mirror failed" unless response.status_code < 400
+        response_headers = {} of String => String
+        response.headers.each do |name, values|
+          response_headers[name.downcase] = values.first? || ""
+        end
+        FetchResponse.new(response.status_code, response.body, response_headers)
       end
     end
 
@@ -471,8 +497,8 @@ module Celerite
     class Client
       @parser : Parser
 
-      def initialize(remote : String, cache_root : String, credentials : {String, String}? = nil, retries : Int32 = 3)
-        fetcher = make_fetcher(remote, credentials, retries)
+      def initialize(remote : String, cache_root : String, credentials : {String, String}? = nil, retries : Int32 = 3, mirror_url : String? = nil)
+        fetcher = make_fetcher(remote, credentials, retries, mirror_url)
         cache_dir = File.join(cache_root, cache_key(remote))
         @parser = Parser.new(Cache.new(cache_dir, Updater.new(fetcher)))
       end
@@ -489,7 +515,7 @@ module Celerite
         @parser.info(name)
       end
 
-      private def make_fetcher(remote : String, credentials : {String, String}?, retries : Int32) : Fetcher
+      private def make_fetcher(remote : String, credentials : {String, String}?, retries : Int32, mirror_url : String? = nil) : Fetcher
         if remote.starts_with?("file:")
           # Use URI parsing so file:///C:/..., file:///home/... and
           # file:/C:/... all resolve to an absolute local path.
@@ -509,7 +535,7 @@ module Celerite
           path += "/" unless path.ends_with?("/")
           FileFetcher.new(path)
         else
-          HttpFetcher.for(remote, credentials, retries)
+          HttpFetcher.for(remote, credentials, retries, mirror_url)
         end
       end
 
