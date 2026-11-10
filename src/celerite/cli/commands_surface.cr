@@ -401,7 +401,7 @@ module Celerite
         stdout.puts "  Platforms   #{platforms.join(", ")}"
         stdout.puts "Ruby          #{re.ruby_env_line}"
         stdout.puts "  Full Path   #{re.ruby_exe.gsub(/\\/, "/")}"
-        stdout.puts "  Config Dir  #{config_dir.gsub(/\\/, "/")}"
+        stdout.puts "  Config Dir  #{config_dir}"
         stdout.puts "RubyGems      #{re.rubygems_version}"
         stdout.puts "  Gem Home    #{re.default_gem_dir.gsub(/\\/, "/")}"
         stdout.puts "  Gem Path    #{re.gem_paths.map(&.gsub(/\\/, "/")).join(", ")}"
@@ -1511,7 +1511,7 @@ module Celerite
         stdout.puts "  Platforms   #{platforms.join(", ")}"
         stdout.puts "Ruby          #{re.ruby_env_line}"
         stdout.puts "  Full Path   #{re.ruby_exe.gsub(/\\/, "/")}"
-        stdout.puts "  Config Dir  C:/ProgramData"
+        stdout.puts "  Config Dir  #{config_dir}"
         stdout.puts "RubyGems      #{re.rubygems_version}"
         # When BUNDLE_PATH is configured, the reference restart reports the
         # bundle-path gem home as its Gem Home/Path/Bin (Bundler 4 behavior
