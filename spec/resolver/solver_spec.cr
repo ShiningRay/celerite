@@ -11,7 +11,7 @@ def build_index(specs : Array(SCSpec)) : Hash(String, Array(Celerite::Resolver::
     end
     (grouped[spec[:name]] ||= [] of Celerite::Resolver::IndexSpec) << Celerite::Resolver::IndexSpec.new(
       spec[:name], Celerite::Gem::Version.new(spec[:version]), Celerite::Gem::Platform::RUBY, deps,
-      Celerite::Gem::Requirement.new, nil
+      Celerite::Gem::Requirement.new, Celerite::Gem::Requirement.new, nil
     )
   end
   grouped

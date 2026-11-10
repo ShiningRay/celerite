@@ -272,7 +272,7 @@ module Celerite
         reqs.empty? ? Resolver::DepSpec.new(d["name"].as_s, Gem::Requirement.new) : Resolver::DepSpec.new(d["name"].as_s, Gem::Requirement.new(reqs))
       end
       ruby_req = info.required_ruby_version.empty? ? Gem::Requirement.new : Gem::Requirement.new(info.required_ruby_version)
-      Resolver::IndexSpec.new(name, version, platform, deps, ruby_req, nil)
+      Resolver::IndexSpec.new(name, version, platform, deps, ruby_req, Gem::Requirement.new, nil)
     rescue ex : Bridge::BridgeError
       nil
     end
@@ -417,10 +417,11 @@ module Celerite
             end
           end
           ruby_req = Gem::Requirement.new(entry.required_ruby_version_list)
+          rubygems_req = Gem::Requirement.new(entry.required_rubygems_version_list)
           # Parity: the reference only records per-gem checksums from remote
           # API sources; file:// indexes install without them.
           checksum = remote.starts_with?("file:") ? nil : entry.checksum
-          Resolver::IndexSpec.new(name, version, platform, deps, ruby_req, checksum)
+          Resolver::IndexSpec.new(name, version, platform, deps, ruby_req, rubygems_req, checksum)
         end
       rescue ex : CompactIndex::Error
         raise ex
@@ -770,7 +771,7 @@ module Celerite
         (index[locked.name] ||= [] of Resolver::IndexSpec) << Resolver::IndexSpec.new(
           locked.name, locked.version,
           locked.platform && locked.platform != "ruby" ? Gem::Platform.new(locked.platform.not_nil!) : Gem::Platform::RUBY,
-          [] of Resolver::DepSpec, Gem::Requirement.new, nil
+          [] of Resolver::DepSpec, Gem::Requirement.new, Gem::Requirement.new, nil
         )
       end
       index

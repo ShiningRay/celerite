@@ -12,11 +12,13 @@ module Celerite
       getter platform : Gem::Platform
       getter dependencies : Array(DepSpec)
       getter required_ruby_version : Gem::Requirement
+      getter required_rubygems_version : Gem::Requirement
       getter checksum : String?
 
       def initialize(@name : String, @version : Gem::Version, @platform : Gem::Platform,
                      @dependencies : Array(DepSpec), @required_ruby_version : Gem::Requirement,
-                     @checksum : String?)
+                     @required_rubygems_version : Gem::Requirement = Gem::Requirement.new,
+                     @checksum : String? = nil)
       end
 
       def platform_ruby? : Bool
@@ -262,6 +264,7 @@ module Celerite
 
       private def ruby_requirement_satisfied?(spec : IndexSpec) : Bool
         return false unless spec.required_ruby_version.satisfied_by?(Gem::Version.new(running_ruby_version))
+        return false unless spec.required_rubygems_version.satisfied_by?(Gem::Version.new(running_rubygems_version))
         true
       end
 
