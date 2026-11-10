@@ -591,7 +591,7 @@ module Celerite
         return 0
       end
 
-      name = rest.first?
+      name = names.first?
       if name.nil?
         stderr.puts "Could not find command \"#{command}\"."
         return 15
@@ -879,7 +879,7 @@ module Celerite
         File.write(definition.lockfile_path, text)
       end
       # 4.0.24: report versions skipped by the cooldown setting (stderr in
-      # --print mode, stdout in write mode — pinned reference stream split).
+      # --print mode, stdout in write mode --pinned reference stream split).
       print_cooldown_summary(resolution, print_mode ? stderr : stdout)
       resolution.close
       0

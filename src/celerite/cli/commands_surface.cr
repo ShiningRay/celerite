@@ -1705,15 +1705,18 @@ module Celerite
       end
       Dir.mkdir_p(File.join(dir, "lib"))
       module_name = name.split(/[-_]/).map(&.capitalize).join
+      underscored = name.gsub('-', '_')
       # Reasonable scaffold aligned with `bundle gem`: README + MIT license +
       # gemspec + lib; option flags are accepted but scaffold content is the
       # documented minimum.
       File.write(File.join(dir, "#{name}.gemspec"), <<-SPEC)
 # frozen_string_literal: true
 
+require_relative "lib/#{underscored}"
+
 Gem::Specification.new do |spec|
   spec.name = #{name.inspect}
-  spec.version = "#{module_name}::VERSION"
+  spec.version = #{module_name}::VERSION
   spec.summary = "Ruby gem #{name}"
   spec.required_ruby_version = ">= 3.0.0"
 
@@ -1723,7 +1726,7 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 end
 SPEC
-      File.write(File.join(dir, "lib", "#{name}.rb"), <<-LIB)
+      File.write(File.join(dir, "lib", "#{underscored}.rb"), <<-LIB)
 # frozen_string_literal: true
 
 module #{module_name}
