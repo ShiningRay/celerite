@@ -124,8 +124,8 @@ Prior mapping of those 97 fixtures to milestones (historical, not revalidated):
 
 ## Additional known implementation gaps (M7, evidence-aligned)
 
-- **Ruby/RubyGems 约束过滤（进行中，未达 M7(1) 完整验收）**：已实现并接线（`032a531` 起，本迭代继续）`src/celerite/ruby_version.cr`/`src/celerite/ruby_runtime.cr`、`Celerite::RubyVersionMismatch`（exit 18）、bridge `ruby_environment.patchlevel`、`ResolutionSource` 运行时版本含 patchlevel/engine 信息参与 gem `required_ruby_version` 满足判断、lockfile Ruby 复用比较 `RubyVersion` diff、`ruby_update` 写入正确 patchlevel。CLI runtime 校验（best-effort：bridge 不可用时跳过，**不视为通过**）已接入 check/install/show/info/fund/exec/cache/clean/doctor/pristine/outdated/update/licenses/console 等命令；`platform` 在 bridge 可用时输出 mismatch 文案但 exit 0，bridge 不可用时输出 "Ruby version requirement not validated (bridge unavailable); cannot confirm runtime match."；`list`/`lock`/`env` 按参考探针不因 mismatch 失败。可运行证据（2026-11-11）：`spec/ruby_version_spec.cr`（10）+ `spec/m7_ruby_runtime_spec.cr`（4，含 version/engine/patchlevel mismatch 文案与 exit 18）+ `spec/m7_platform_spec.cr`（2，bridge 不可用时不声称满足、`--ruby` 可解析输出）均通过；本轮 M7 相关 spec 合计 **79 examples, 0 failures, 0 errors, 0 pending**（退出码 0，含 `spec/m7_installed_discovery_spec.cr` 12、`spec/m7_fund_spec.cr` 2、`spec/m7_gem_spec.cr` 4、`spec/m7_console_spec.cr` 1）。已新增最小 differential fixtures：`fixtures/differential/ruby-version-mismatch`（`check`，参考期望 exit 18 + Bundler mismatch 文案）与 `fixtures/differential/platform-ruby-mismatch`（`platform`，参考期望 exit 0 + mismatch 文案）；因完整 codegen 链接阻塞**未运行**，复现条件见下条 OpenSSL 说明。**未验证/未达验收**：Gemfile 目标 Ruby/engine/patchlevel/ABI 全矩阵正反例与安装复核、无匹配版本/平台变体 differential 证据；bridge 缺失场景仅有纯逻辑 spec，无 CLI 集成证据；完整 codegen/CLI 集成 spec/differential 受本机 OpenSSL 链接阻塞（见下条）。
-- **本机 codegen/OpenSSL 阻塞（2026-11-11 定位，环境问题非项目缺陷）**：Crystal 1.22.1 标准库 `openssl/digest.cr:77` 绑定 OpenSSL 1.1 的 `EVP_MD_size`，而本机 MSYS2 ucrt64 为 OpenSSL 3.6.5，`libcrypto.dll.a`/`libcrypto.a` 仅导出 `EVP_MD_get_size`（`nm` 已验证无 `EVP_MD_size`），故完整 codegen 链接报 `undefined reference to 'EVP_MD_size'`。影响：**未重建 `bin/celerite.exe`**（仓库内二进制为旧构建）、**未运行 CLI 集成 spec（run_cli 路径）**、**未运行 differential 全量**；已改用 `crystal build --no-codegen`、`crystal tool format --check` 与直接调用 `Celerite::Commands.*` 的纯逻辑 spec 验证。复现：`crystal build src/cli.cr`（PATH 含 MSYS2）或 `crystal spec spec/cli_spec.cr`。修复建议：使用 OpenSSL 1.1.x 库/工具链，或升级 Crystal 标准库绑定到 `EVP_MD_get_size`（需独立变更，不在本任务范围）。
+- **Ruby/RubyGems 约束过滤（进行中，未达 M7(1) 完整验收）**：已实现并接线（`032a531` 起，本迭代继续）`src/celerite/ruby_version.cr`/`src/celerite/ruby_runtime.cr`、`Celerite::RubyVersionMismatch`（exit 18）、bridge `ruby_environment.patchlevel`、`ResolutionSource` 运行时版本含 patchlevel/engine 信息参与 gem `required_ruby_version` 满足判断、lockfile Ruby 复用比较 `RubyVersion` diff、`ruby_update` 写入正确 patchlevel。CLI runtime 校验（best-effort：bridge 不可用时跳过，**不视为通过**）已接入 check/install/show/info/fund/exec/cache/clean/doctor/pristine/outdated/update/licenses/console 等命令；`platform` 在 bridge 可用时输出 mismatch 文案但 exit 0，bridge 不可用时输出 "Ruby version requirement not validated (bridge unavailable); cannot confirm runtime match."；`list`/`lock`/`env` 按参考探针不因 mismatch 失败。可运行证据（2026-11-11）：`spec/ruby_version_spec.cr`（10）+ `spec/m7_ruby_runtime_spec.cr`（4，含 version/engine/patchlevel mismatch 文案与 exit 18）+ `spec/m7_platform_spec.cr`（2，bridge 不可用时不声称满足、`--ruby` 可解析输出）均通过；本轮 M7 相关 spec 合计 **79 examples, 0 failures, 0 errors, 0 pending**（退出码 0，含 `spec/m7_installed_discovery_spec.cr` 12、`spec/m7_fund_spec.cr` 2、`spec/m7_gem_spec.cr` 4、`spec/m7_console_spec.cr` 1）。已新增并**实际运行**最小 differential fixtures：`fixtures/differential/ruby-version-mismatch`（`check`，exit 18 + Bundler mismatch 文案）与 `fixtures/differential/platform-ruby-mismatch`（`platform`，exit 0 + mismatch 文案），二者均 PASS；4.0.24 全量 differential 为 **85 passed / 14 failed**，14 项失败分类见下节“Local verification run”。**未验证/未达验收**：Gemfile 目标 Ruby/engine/patchlevel/ABI 全矩阵正反例与安装复核、无匹配版本/平台变体 differential 证据；bridge 缺失场景仅有纯逻辑 spec，无 CLI 集成证据；2.7.2 profile 未重跑。
+- **本机 codegen/OpenSSL 阻塞与本地 shim（2026-11-11，环境问题非项目缺陷）**：Crystal 1.22.1 标准库 `openssl/digest.cr:77` 绑定 OpenSSL 1.1 的 `EVP_MD_size`，而本机 MSYS2 ucrt64 为 OpenSSL 3.6.5，`libcrypto.dll.a`/`libcrypto.a` 仅导出 `EVP_MD_get_size`（`nm` 已验证无 `EVP_MD_size`），故 stock `crystal build src/cli.cr` 报 `undefined reference to 'EVP_MD_size'`。本轮用**仓库外临时 C shim**（`#undef EVP_MD_size` + `int EVP_MD_size(const EVP_MD *md){ return EVP_MD_get_size(md); }`）配合 `--link-flags "<shim.o>"` 成功完成本地 codegen（EXIT 0），并据此重建 `bin/celerite.exe`（`--version` 0.1.0）；**shim 与二进制均不入库**（`bin/` 被 gitignore），stock 构建仍失败。CLI 集成 spec 与 differential 的计数/分类见下节。
 - **安装后 gem 发现（部分修复）**：`Commands.installed_gem_dir` 对 RubyGems 安装放宽为 gem 目录存在即可视为已发现（容忍缺 `specifications/*.gemspec`），`check`/`list`/`show`/`info`/`doctor` 受益；同时修复 `show --paths <name>` 把 `--paths` 当作 gem 名的问题（`name = names.first?`）。可运行证据：`spec/m7_installed_discovery_spec.cr` **12 examples, 0 failures**，覆盖 check/list/show/show --paths 的“仅 gem 目录”场景、缺 gem 目录/仅 specification 文件的负例、PATH 源与 GIT checkout 解析，以及 `--only-group`/`--without-group` 场景。仍需补齐：`with` 显式包含、平台变体等场景证据与 differential；当前不可宣称 M7(2) 完成。
 - **占位/诊断路径（部分修复）**：`fund` 从已安装 specifications/`.gem` metadata 读取 `funding_uri`，并以 `spec/m7_fund_spec.cr`（2 examples，真实 Ruby bridge + gemspec metadata）验证有 funding 与无 funding 两种输出；`gem` 改为最小可用 scaffold（下划线 lib 文件名、gemspec `require_relative` + `Module::VERSION`、README.md、LICENSE.txt、gemspec files/summary/required_ruby_version），对常见生成选项输出 "not fully supported ... Generating a minimal scaffold only"，并由 `spec/m7_gem_spec.cr`（4 examples）验证；`console` 在 `irb` 缺失时返回 127 与明确说明（非完整交互 console），由 `spec/m7_console_spec.cr`（1 example，隔离 PATH）验证。`env`/`issue` Build Metadata 改为 `Celerite #{Celerite::VERSION}, compatibility profile` + 仓库真实 `Git SHA`/`Timestamp`（`git rev-parse`，失败回落 `"unknown"`），**Celerite 运行在兼容 profile 下，非上游 Bundler 构建**。仍需更多 M7(3) 行为/输出证据与差分。
 - Global `--retry` is stripped rather than executing the configured retry policy.
@@ -183,6 +183,35 @@ differential behavior only; `docs/upstream-spec-spike.md` records the initial
 applicability assessment. Neither pending/unexecuted examples nor behavior
 provided by the reference Ruby runtime counts as Celerite passing upstream specs.
 No "full upstream suite" claim is made.
+
+## Local verification run (2026-11-11, task-2)
+
+- **Codegen workaround**: a temporary, out-of-repo C shim
+  (`EVP_MD_size` → `EVP_MD_get_size`) was compiled with MSYS2 gcc and passed via
+  `--link-flags`; `crystal build src/cli.cr -o bin/celerite.exe --link-flags "<shim.o>"`
+  exited 0 and the rebuilt binary prints `0.1.0`. The shim and binary are
+  **not committed** (`bin/` is gitignored); stock `crystal build src/cli.cr`
+  still fails with `undefined reference to 'EVP_MD_size'`.
+- **Specs**: the 79-example base subset passed (0 failures, exit 0);
+  `spec/cli_spec.cr` passed with the shim (24 examples, 0 failures, exit 0);
+  the M7 installed-discovery/platform subset passed with the shim
+  (14 examples, 0 failures, exit 0).
+- **Differential**: the targeted subset
+  (`ruby-version-mismatch`, `platform-ruby-mismatch`, `check-missing`,
+  `check-unresolved`, `list-missing`, `show-missing`) passed 6/6 (exit 0).
+  Full 4.0.24 run: **85 passed, 14 failed, 0 skipped, exit 1**.
+- The 14 failures split into: **7 × `make` unavailable** (racc native
+  extension: `add-group`, `add-optimistic`, `add-remove`, `add-version`,
+  `cache-all-platforms`, `native-ext`, `native-ext-target`) and
+  **7 × generated `.bat`/`loader` content differences** (`binstubs`,
+  `exec-loader`, `install-force`, `install-fresh`, `install-rerun`,
+  `pristine`, `pristine-named`). None are on the M7(1)-(3) paths; the suite is
+  nevertheless not green.
+- Durable details and per-fixture notes:
+  [`docs/compat-matrix/generated/differential-4.0.24-2026-11-11.md`](compat-matrix/generated/differential-4.0.24-2026-11-11.md).
+- **Still unverified**: 2.7.2 profile, release-form/published-binary behavior,
+  M7(1) full matrix (engine/patchlevel/ABI/Gemfile target + install re-check),
+  M7(2) `with`/platform variants, broader M7(3) differential evidence.
 
 ## Known divergences from reference (documented, not hidden)
 
