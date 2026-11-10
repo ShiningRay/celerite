@@ -219,11 +219,11 @@ module Celerite
     end
 
     def compact_index_client : CompactIndex::Client
-      @compact_index_client ||= CompactIndex::Client.new(primary_remote, user_cache_root)
+      @compact_index_client ||= CompactIndex::Client.new(primary_remote, user_cache_root, nil, Commands.retry_count(@definition.config))
     end
 
     def compact_index_client_for(remote : String) : CompactIndex::Client
-      CompactIndex::Client.new(remote, user_cache_root)
+      CompactIndex::Client.new(remote, user_cache_root, nil, Commands.retry_count(@definition.config))
     end
 
     # Scoped Rubygems source (`gem "x", source: <remote>`), normalized like
