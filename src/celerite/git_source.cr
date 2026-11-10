@@ -86,10 +86,28 @@ module Celerite
         run("git", ["clone", "--quiet", "--no-hardlinks", mirror, destination])
         run("git", ["checkout", "--quiet", revision], destination)
         if submodules
-          run("git", ["submodule", "update", "--init", "--recursive"], destination)
+          run("git", submodule_update_args, destination)
         end
       end
       destination
+    end
+
+    # `git submodule update` refuses `file://` transports since git 2.38
+    # (CVE-2022-39253 mitigation). Celerite resolves submodules from the
+    # local mirror, so a local source needs the protocol explicitly allowed —
+    # only for local remotes, never for network sources.
+    private def submodule_update_args : Array(String)
+      args = ["submodule", "update", "--init", "--recursive"]
+      return args unless local_remote?
+      ["-c", "protocol.file.allow=always"] + args
+    end
+
+    private def local_remote? : Bool
+      remote = @remote
+      return true if remote.starts_with?("file:")
+      return true if remote.starts_with?("/") || remote.starts_with?("\\")
+      return true if remote.matches?(/\A[A-Za-z]:[\\\/]/)
+      !remote.includes?("://") && !remote.matches?(/\A[\w.-]+@[\w.-]+:/)
     end
 
     private def run(executable : String, args : Array(String), chdir : String? = nil) : String
