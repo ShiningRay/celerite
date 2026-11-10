@@ -1,3 +1,4 @@
+require "json"
 require "../../celerite"
 require "../errors"
 require "../gem/platform"
@@ -364,6 +365,7 @@ module Celerite
     def self.list(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       paths = rest.includes?("--paths")
       name_only = rest.includes?("--name-only")
+      json_format = rest.includes?("--format=json") || rest.includes?("--format") && flag_value(rest, "--format") == "json"
       only_group = flag_value(rest, "--only-group")
       without_group = flag_value(rest, "--without-group")
       definition = Definition.build
@@ -411,7 +413,12 @@ module Celerite
 
       missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
       if missing.empty?
-        if paths
+        if json_format
+          gems = locked_specs.map do |spec|
+            {"name" => spec.name, "version" => spec.version.to_s}
+          end
+          stdout.puts({"gems" => gems}.to_json)
+        elsif paths
           locked_specs.each { |spec| stdout.puts(installed_gem_dir(definition, spec, lockfile) || spec.full_name) }
         elsif name_only
           locked_specs.each { |spec| stdout.puts spec.name }
