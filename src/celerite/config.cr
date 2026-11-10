@@ -341,6 +341,31 @@ module Celerite
       nil
     end
 
+    # Bundler `Settings#credentials_for`: the full URI string is consulted
+    # first, then the bare host. Values use the `user:password` form.
+    # Callers must never print the returned pair (architecture §4).
+    def credentials_for(remote : String) : {String, String}?
+      uri = begin
+        URI.parse(remote)
+      rescue
+        nil
+      end
+      candidates = [remote]
+      if uri && (host = uri.host) && !host.empty?
+        candidates << "#{uri.scheme}://#{host}/"
+        candidates << host
+      end
+      candidates.uniq.each do |candidate|
+        value = self[candidate]
+        next if value.nil?
+        text = value.to_s
+        next if text.empty?
+        user, _, password = text.partition(":")
+        return {user, password} unless user.empty?
+      end
+      nil
+    end
+
     def self.convert(value : Value, key : String) : ConvertedValue
       normalized = key.lchop("BUNDLE_")
 

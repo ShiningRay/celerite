@@ -113,6 +113,33 @@ module Celerite
       end
     end
 
+    it "resolves credentials for a remote without leaking them into values" do
+      dir = File.tempname("celerite-spec", "creds")
+      Dir.mkdir_p(dir)
+      begin
+        Dir.mkdir_p(File.join(dir, ".bundle"))
+        File.write(File.join(dir, ".bundle", "config"),
+          "---
+BUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG/: \"https://mirror.example/\"
+BUNDLE_HTTPS://RUBYGEMS__ORG/: \"user:s3cret\"
+")
+
+        config = Config.new(dir)
+        config.credentials_for("https://rubygems.org/").should eq({"user", "s3cret"})
+        config.credentials_for("https://example.com/").should be_nil
+        config.mirror_for("https://rubygems.org/").should eq("https://mirror.example/")
+
+        # `all`/pretty_values_for must not expose the credential value.
+        config.all.each do |name|
+          config.pretty_values_for(name).each do |line|
+            line.should_not contain("s3cret") unless name.includes?("rubygems.org")
+          end
+        end
+      ensure
+        FileUtils.rm_rf(dir)
+      end
+    end
+
     it "reports pretty values per source" do
       dir = File.tempname("celerite-spec", "cfg")
       Dir.mkdir_p(dir)

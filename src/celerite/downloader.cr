@@ -24,8 +24,9 @@ module Celerite
     getter ssl_ca_cert : String?
     getter ssl_client_cert : String?
     getter ssl_verify_mode : String?
+    getter credentials : {String, String}?
 
-    def initialize(@remote : String, cache_root : String, retries : Int32 = 3, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil)
+    def initialize(@remote : String, cache_root : String, retries : Int32 = 3, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil, @credentials : {String, String}? = nil)
       @mirror_url = mirror_url
       @ssl_ca_cert = ssl_ca_cert
       @ssl_client_cert = ssl_client_cert
@@ -187,6 +188,11 @@ module Celerite
       client = HTTP::Client.new(uri, tls: tls_ctx)
       client.connect_timeout = 30.seconds
       client.read_timeout = 120.seconds
+      if creds = @credentials
+        client.basic_auth(creds[0], creds[1])
+      elsif uri.user || uri.password
+        client.basic_auth(uri.user || "", uri.password || "")
+      end
       # Retry with exponential backoff (pinned Bundler behavior).
       max_attempts = {@retries + 1, 1}.max
       attempt = 0
@@ -198,9 +204,16 @@ module Celerite
           client.close rescue nil
           if attempt < max_attempts
             sleep (0.5 * (2 ** (attempt - 1))).seconds
-            client = HTTP::Client.new(URI.parse(@remote))
+            client = HTTP::Client.new(URI.parse(@remote), tls: tls_ctx)
             client.connect_timeout = 30.seconds
             client.read_timeout = 120.seconds
+            if creds = @credentials
+              client.basic_auth(creds[0], creds[1])
+            elsif retry_uri = URI.parse(@remote)
+              if retry_uri.user || retry_uri.password
+                client.basic_auth(retry_uri.user || "", retry_uri.password || "")
+              end
+            end
             next
           end
           raise ex
