@@ -2,17 +2,14 @@
 
 ## Provenance
 
-- Code under test: `f6a4413` plus this change: `Commands.lock_ruby_unlock_kind`
-  distinguishes `:diff` (Gemfile ruby vs lock RUBY VERSION differs) from
-  `:missing_from_lock` (Gemfile declares ruby but lock has no RUBY VERSION);
-  `check` prints `Resolving dependencies...` for either kind, and `list`
-  prints it for `:diff` or for `:missing_from_lock` when locked gems are not
-  installed, matching Bundler 4.0.24/2.7.2 harness behavior for the new
-  fixtures. Adds differential fixtures `check-missing-ruby-nolock` and
-  `list-missing-ruby-nolock` (ruby in Gemfile, no RUBY VERSION in lock,
-  locked gem not installed, exit 1). It builds on `0f78548`/`9d8426e`/
-  `f6a4413` M7(1)/(2) work: positive ruby-target fixtures, patchlevel-unlock
-  `check`/`list` parity, SolveFailure exit 6 vs GemNotFound exit 7,
+- Code under test: `f549de3` plus this change: adds differential fixture
+  `rubygems-metadata-match` (PATH gem with `required_rubygems_version = ">= 0"`,
+  `lock --print`, exit 0) as the positive counterpart to
+  `rubygems-metadata-fail`, verifying RubyGems metadata constraints accept a
+  satisfied requirement on 4.0.24/2.7.2. It builds on
+  `0f78548`/`9d8426e`/`f6a4413`/`5a5310b`/`f549de3` M7(1)/(2) work: positive
+  ruby-target fixtures, patchlevel-unlock and ruby-nolock `check`/`list`
+  re-resolve notice parity, SolveFailure exit 6 vs GemNotFound exit 7,
   path/multi-group fixtures, fund PATH/GIT metadata, and Ruby/RubyGems
   candidate-filter/runtime-validation.
 - Binary: `bin/celerite.exe` rebuilt locally with an **uncommitted,
@@ -38,25 +35,26 @@ crystal spec spec/m7_installed_discovery_spec.cr spec/m7_platform_spec.cr \
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   bash script/differential ruby-version-mismatch platform-ruby-mismatch \
   ruby-engine-mismatch ruby-engine-version-mismatch ruby-patchlevel-mismatch \
-  ruby-metadata-fail rubygems-metadata-fail no-matching-version \
-  platform-variant-fail install-check check-missing check-unresolved \
-  list-missing show-missing list-multi-group check-path list-path \
-  git-installed-discovery show-info-installed fund-path ruby-target-match \
-  ruby-patchlevel-match ruby-engine-match ruby-patchlevel-match-list \
-  check-missing-ruby-nolock list-missing-ruby-nolock
-# 26 passed, 0 failed, 0 skipped, EXIT 0
-
-TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
-  BUNDLER_REF_VERSION=2.7.2 bash script/differential ruby-version-mismatch \
-  platform-ruby-mismatch ruby-engine-mismatch ruby-engine-version-mismatch \
-  ruby-patchlevel-mismatch ruby-metadata-fail rubygems-metadata-fail \
+  ruby-metadata-fail rubygems-metadata-fail rubygems-metadata-match \
   no-matching-version platform-variant-fail install-check check-missing \
   check-unresolved list-missing show-missing list-multi-group check-path \
   list-path git-installed-discovery show-info-installed fund-path \
   ruby-target-match ruby-patchlevel-match ruby-engine-match \
   ruby-patchlevel-match-list check-missing-ruby-nolock \
   list-missing-ruby-nolock
-# 26 passed, 0 failed, 0 skipped, EXIT 0
+# 27 passed, 0 failed, 0 skipped, EXIT 0
+
+TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
+  BUNDLER_REF_VERSION=2.7.2 bash script/differential ruby-version-mismatch \
+  platform-ruby-mismatch ruby-engine-mismatch ruby-engine-version-mismatch \
+  ruby-patchlevel-mismatch ruby-metadata-fail rubygems-metadata-fail \
+  rubygems-metadata-match no-matching-version platform-variant-fail \
+  install-check check-missing check-unresolved list-missing show-missing \
+  list-multi-group check-path list-path git-installed-discovery \
+  show-info-installed fund-path ruby-target-match ruby-patchlevel-match \
+  ruby-engine-match ruby-patchlevel-match-list check-missing-ruby-nolock \
+  list-missing-ruby-nolock
+# 27 passed, 0 failed, 0 skipped, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" bash script/differential
 # 101 passed, 14 failed, 0 skipped, EXIT 1
@@ -192,18 +190,31 @@ generated Windows binstub content differences.
   covered; `check-missing-ruby-nolock` and `list-missing-ruby-nolock` pin the
   case where Gemfile declares `ruby` but the lock has no `RUBY VERSION` and
   locked gems are not installed (4.0.24/2.7.2 PASS, exit 1 with
-  `Resolving dependencies...`). Manual harness-style evidence (isolated env,
-  preinstalled `json_pure-2.8.1` gem+gemspec under `BUNDLE_PATH`, Gemfile
-  declares `ruby "4.0.6"`, lock has specs/PLATFORMS/DEPENDENCIES/BUNDLED WITH
-  but no `RUBY VERSION`) shows reference Bundler 4.0.24 and 2.7.2 print
-  `Resolving dependencies...` for both `check` and `list` when dependencies are
-  satisfied (EXIT 0); `Commands.list` was aligned to print on
-  `:missing_from_lock` unconditionally (matching `check`, bridge-available
-  path), but this satisfied case is **not yet differential-fixture-pinned**
-  (harness setup for pre-satisfied state with lock lacking RUBY VERSION needs a
-  reproducible fixture recipe; manual celerite probes were inconclusive due to
-  bridge/environment details). Bridge unavailable remains best-effort/fail-safe
-  (notice may be omitted). Remaining gaps: satisfied nolock fixture/CLI proof,
-  ABI/platform positive variants, `show`/`info` other re-resolve notification
-  scenarios, more M7(2) path/Git combinations and additional platform variants,
-  and M7(3) broader differential evidence.
+  `Resolving dependencies...`). `rubygems-metadata-match` pins satisfied
+  `required_rubygems_version` (PATH gem, lock --print, exit 0) as the positive
+  counterpart to `rubygems-metadata-fail`. Manual harness-style evidence
+  (isolated env, preinstalled `json_pure-2.8.1` gem+gemspec under
+  `BUNDLE_PATH/ruby/4.0.0`, Gemfile declares `ruby "4.0.6"`, lock has
+  specs/PLATFORMS/DEPENDENCIES/BUNDLED WITH but no `RUBY VERSION`) shows
+  reference Bundler 4.0.24 and 2.7.2 print `Resolving dependencies...` for both
+  `check` and `list` when dependencies are satisfied (EXIT 0); with
+  `CELERITE_REFERENCE_BUNDLER_LIB`/`CELERITE_PROFILE_BUNDLER_VERSION` set (as
+  in `script/differential`), shim-built celerite reproduced the same
+  `Resolving dependencies...` + satisfied/listing output for both commands
+  (harness-like probe, `C:\temp\nolock-sat-harnesslike-eZPd5c`, 2026-11-11).
+  This satisfied ruby-nolock case is **not yet differential-fixture-pinned**:
+  `script/differential` provides `extra/` (copied into project) and
+  `installed-tree` comparison but has no mechanism to seed `BUNDLE_PATH` before
+  command execution; a `install` step would typically add `RUBY VERSION` to the
+  lock, changing the scenario. Blocker: no harness primitive to pre-populate a
+  satisfied bundle state with lock lacking RUBY VERSION while preserving that
+  lock. Reproduction (reference): create isolated project with above Gemfile/lock
+  and preinstalled gem/spec in `BUNDLE_PATH`, run
+  `HOME=... GEM_HOME=BUNDLE_PATH GEM_PATH=BUNDLE_PATH BUNDLE_PATH=... RUBYOPT=`
+  `ruby -I <bundler-4.0.24/lib> <bundle> check|list` → both print
+  `Resolving dependencies...` then succeed. Bridge unavailable remains
+  best-effort/fail-safe (notice may be omitted). Remaining gaps: satisfied
+  nolock differential fixture/harness support, ABI/platform positive variants,
+  `show`/`info` other re-resolve notification scenarios, more M7(2) path/Git
+  combinations and additional platform variants, and M7(3) broader differential
+  evidence.
