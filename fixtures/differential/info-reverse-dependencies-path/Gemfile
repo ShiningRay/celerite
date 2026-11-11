@@ -1,0 +1,4 @@
+source "https://rubygems.org"
+
+gem "depender", path: "vendor/depender"
+gem "dependee", path: "vendor/dependee"

@@ -761,15 +761,39 @@ module Celerite
       # Try installed specifications first.
       install_root = File.dirname(File.dirname(gem_dir))
       spec_path = File.join(install_root, "specifications", "#{full_name}.gemspec")
-      text = File.file?(spec_path) ? File.read(spec_path) : nil
+      text = (File.file?(spec_path) rescue false) ? File.read(spec_path) : nil
       # Fallback: search abi directories.
       if text.nil?
         ruby_root = File.dirname(install_root)
-        Dir.each_child(ruby_root) do |abi|
-          candidate = File.join(ruby_root, abi, "specifications", "#{full_name}.gemspec")
-          if File.file?(candidate)
-            text = File.read(candidate)
-            break
+        if (Dir.exists?(ruby_root) rescue false)
+          begin
+            Dir.each_child(ruby_root) do |abi|
+              candidate = File.join(ruby_root, abi, "specifications", "#{full_name}.gemspec")
+              if (File.file?(candidate) rescue false)
+                text = File.read(candidate)
+                break
+              end
+            end
+          rescue
+          end
+        end
+      end
+      # Fallback: PATH/GIT sources keep the gemspec in the gem directory.
+      if text.nil? && (Dir.exists?(gem_dir) rescue false)
+        gem_name = full_name.sub(/-[^-]+(?:-[^-]+)?\z/, "")
+        candidate = File.join(gem_dir, "#{gem_name}.gemspec")
+        text = File.read(candidate) if (File.file?(candidate) rescue false)
+        if text.nil?
+          begin
+            Dir.each_child(gem_dir) do |entry|
+              next unless entry.ends_with?(".gemspec")
+              candidate = File.join(gem_dir, entry)
+              if (File.file?(candidate) rescue false)
+                text = File.read(candidate)
+                break
+              end
+            end
+          rescue
           end
         end
       end
