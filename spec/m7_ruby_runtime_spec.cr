@@ -58,6 +58,26 @@ describe Celerite::RubyRuntime do
     end
   end
 
+  it "preserves Gemfile ruby engine options through the bridge evaluation" do
+    with_project({"Gemfile" => %(source "https://rubygems.org"\nruby "2.6.0", engine: "jruby", engine_version: "9.4.0.0"\n)}) do
+      with_client do |client|
+        evaluation = client.evaluate_gemfile("Gemfile")
+        evaluation.ruby_version.should eq("2.6.0")
+        evaluation.ruby_engine.should eq("jruby")
+        evaluation.ruby_engine_version.should eq("9.4.0.0")
+
+        requested = Celerite::Commands.requested_ruby_version(evaluation).not_nil!
+        requested.engine.should eq("jruby")
+        requested.engine_versions.should eq(["9.4.0.0"])
+
+        env = test_ruby_env("4.0.6", "ruby", "4.0.6", "0")
+        expect_raises(Celerite::RubyVersionMismatch, "Your Ruby engine is ruby, but your Gemfile specified jruby") do
+          Celerite::RubyRuntime.validate_version!(requested, env)
+        end
+      end
+    end
+  end
+
   it "preserves Gemfile ruby patchlevel options through the bridge evaluation" do
     with_project({"Gemfile" => %(source "https://rubygems.org"\nruby "4.0.6", patchlevel: "1"\n)}) do
       with_client do |client|
