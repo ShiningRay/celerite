@@ -39,6 +39,40 @@ describe "M7 fund" do
     end
   end
 
+  it "prints a funding URI read from a PATH source gemspec" do
+    server = File.expand_path("../assets/bridge/server.rb", __DIR__)
+    previous = ENV["CELERITE_BRIDGE_SERVER"]?
+    ENV["CELERITE_BRIDGE_SERVER"] = server
+    begin
+      with_project({
+        "Gemfile"                        => "source \"https://rubygems.org\"\n\ngem \"example\", path: \"vendor/example\"\n",
+        "Gemfile.lock"                   => "PATH\n  remote: vendor/example\n  specs:\n    example (1.0.0)\n\nGEM\n  remote: https://rubygems.org/\n  specs:\n\nPLATFORMS\n  x64-mingw-ucrt\n\nDEPENDENCIES\n  example!\n\nBUNDLED WITH\n   4.0.24\n",
+        "vendor/example/example.gemspec" => <<-SPEC,
+          Gem::Specification.new do |s|
+            s.name = "example"
+            s.version = "1.0.0"
+            s.summary = "path funding probe"
+            s.metadata = { "funding_uri" => "https://example.com/path-funding" }
+          end
+          SPEC
+        "vendor/example/lib/example.rb" => "module Example; VERSION = \"1.0.0\"; end\n",
+      }) do
+        output = IO::Memory.new
+        errors = IO::Memory.new
+        code = Celerite::Commands.fund(output, errors, [] of String)
+        code.should eq(0)
+        errors.to_s.should eq("")
+        output.to_s.should eq("* example (1.0.0)\n  Funding: https://example.com/path-funding\n")
+      end
+    ensure
+      if previous
+        ENV["CELERITE_BRIDGE_SERVER"] = previous
+      else
+        ENV.delete("CELERITE_BRIDGE_SERVER")
+      end
+    end
+  end
+
   it "reports no funding when installed gems have no funding metadata" do
     server = File.expand_path("../assets/bridge/server.rb", __DIR__)
     previous = ENV["CELERITE_BRIDGE_SERVER"]?

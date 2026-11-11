@@ -2,9 +2,9 @@
 
 ## Provenance
 
-- Code under test: `ad9c5154111c3979e42c7d51b8811917571a7236` plus this
-  change's engine_version runtime spec and RubyGems-metadata SolveFailure
-  fixture. It includes the earlier `SolveFailure` fix (Ruby/RubyGems-metadata-only
+- Code under test: `32f8d25a5b81dfbd705736021ec8fa2189f51630` plus this
+  change's fund PATH/GIT source metadata fix and `fund-path` fixture. It
+  includes the earlier `SolveFailure` fix (Ruby/RubyGems-metadata-only
   candidates exit 6; genuinely missing versions exit 7), path/multi-group
   fixtures, and Ruby/RubyGems candidate-filter/runtime-validation work.
 - Binary: `bin/celerite.exe` rebuilt locally with an **uncommitted,
@@ -22,19 +22,19 @@
 ```sh
 crystal tool format --check src spec          # EXIT 0
 crystal build --no-codegen src/cli.cr         # EXIT 0 (2 pre-existing deprecation warnings)
-crystal spec <108-example M7 + base subset>    # 108 examples, 0 failures, EXIT 0
+crystal spec <109-example M7 + base subset>    # 109 examples, 0 failures, EXIT 0
 crystal spec spec/cli_spec.cr --link-flags "<shim.o>"   # 24 examples, 0 failures, EXIT 0
 crystal spec spec/m7_installed_discovery_spec.cr spec/m7_platform_spec.cr \
   --link-flags "<shim.o>"                     # 22 examples, 0 failures, EXIT 0
 
-TMPDR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
+TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   bash script/differential ruby-version-mismatch platform-ruby-mismatch \
   ruby-engine-mismatch ruby-patchlevel-mismatch ruby-metadata-fail \
   rubygems-metadata-fail no-matching-version platform-variant-fail \
   install-check check-missing check-unresolved list-missing show-missing \
   list-multi-group check-path list-path git-installed-discovery \
-  show-info-installed
-# 18 passed, 0 failed, 0 skipped, EXIT 0
+  show-info-installed fund-path
+# 19 passed, 0 failed, 0 skipped, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   BUNDLER_REF_VERSION=2.7.2 bash script/differential ruby-version-mismatch \
@@ -42,11 +42,11 @@ TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   ruby-metadata-fail rubygems-metadata-fail no-matching-version \
   platform-variant-fail install-check check-missing check-unresolved \
   list-missing show-missing list-multi-group check-path list-path \
-  git-installed-discovery show-info-installed
-# 18 passed, 0 failed, 0 skipped, EXIT 0
+  git-installed-discovery show-info-installed fund-path
+# 19 passed, 0 failed, 0 skipped, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" bash script/differential
-# 96 passed, 14 failed, 0 skipped, EXIT 1
+# 97 passed, 14 failed, 0 skipped, EXIT 1
 ```
 
 The full run above was streamed to the terminal; the failure list below is the
@@ -129,12 +129,12 @@ generated Windows binstub content differences.
 
 ## Interpretation
 
-- The 18 targeted fixtures (`ruby-version-mismatch`, `ruby-engine-mismatch`,
+- The 19 targeted fixtures (`ruby-version-mismatch`, `ruby-engine-mismatch`,
   `ruby-patchlevel-mismatch`, `platform-ruby-mismatch`, `list-multi-group`,
   `check-path`, `list-path`, `no-matching-version`, `platform-variant-fail`,
   `ruby-metadata-fail`, `rubygems-metadata-fail`, `git-installed-discovery`,
-  `install-check`, `show-info-installed`, and the four check/list/show
-  fixtures) all passed; the 14 failures above are
+  `install-check`, `show-info-installed`, `fund-path`, and the four
+  check/list/show fixtures) all passed; the 14 failures above are
   outside the M7(1)-(3) paths
   (native-extension tooling and generated binstub byte content), but the suite
   is **not green** and these failures are not claimed as fixed.
@@ -147,8 +147,13 @@ generated Windows binstub content differences.
   in reference order. `show <gem>` no longer prints the old Celerite detail
   block; `info <gem>` now omits `Default Gem` unless the gem is actually a
   default gem and adds the metadata URI fields.
-- The same 18 targeted fixtures also passed on the 2.7.2 profile
-  (18 passed, 0 failed, 0 skipped, exit 0). The full 2.7.2 suite was not
+- `fund-path` pins the PATH-source funding metadata path: a PATH gem whose
+  gemspec contains `s.metadata = { "funding_uri" => ... }` is reported as
+  `* example (1.0.0)` / `  Funding: https://example.com/path-funding`, not as
+  the fixed no-funding response. `read_funding_uri` now checks PATH/GIT source
+  gemspecs before the installed RubyGems tree.
+- The same 19 targeted fixtures also passed on the 2.7.2 profile
+  (19 passed, 0 failed, 0 skipped, exit 0). The full 2.7.2 suite was not
   re-run in this verification.
 - The M7(1) full matrix (engine/patchlevel/ABI/Gemfile target, install
   re-check), more M7(2) path/Git combinations and additional platform

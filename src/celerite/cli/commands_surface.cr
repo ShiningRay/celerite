@@ -655,7 +655,7 @@ module Celerite
         deps.each do |dep|
           spec = lockfile.specs.find(&.name.==(dep.name))
           next unless spec
-          funding = read_funding_uri(definition, spec, bridge)
+          funding = read_funding_uri(definition, spec, lockfile, bridge)
           if funding
             fund_info << "* #{spec.name} (#{spec.version})
   Funding: #{funding}"
@@ -674,7 +674,32 @@ module Celerite
       end
     end
 
-    private def self.read_funding_uri(definition : Definition, spec : Lockfile::Spec, bridge : Bridge::Client) : String?
+    private def self.read_source_funding_uri(definition : Definition, spec : Lockfile::Spec, lockfile : Lockfile::Data) : String?
+      source = lockfile.source_for(spec)
+      return nil unless source
+      return nil unless source.type == "PATH" || source.type == "GIT"
+
+      dir = installed_gem_dir(definition, spec, lockfile)
+      return nil unless dir
+
+      gemspec_path = File.join(dir, "#{spec.name}.gemspec")
+      unless File.file?(gemspec_path)
+        gemspec_path = Dir.glob(File.join(dir, "*.gemspec")).sort.first?
+      end
+      return nil unless gemspec_path
+      return nil unless File.file?(gemspec_path)
+
+      text = File.read(gemspec_path)
+      if match = text.match(/funding_uri["']?\s*=>\s*["']([^"']+)["']/)
+        return match[1]
+      end
+      nil
+    end
+
+    private def self.read_funding_uri(definition : Definition, spec : Lockfile::Spec, lockfile : Lockfile::Data, bridge : Bridge::Client) : String?
+      source_funding = read_source_funding_uri(definition, spec, lockfile)
+      return source_funding if source_funding
+
       install_path = InstallPaths.install_path(definition.config)
       ruby_root = File.join(install_path, "ruby")
       return nil unless Dir.exists?(ruby_root)
