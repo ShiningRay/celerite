@@ -424,25 +424,29 @@ module Celerite
       nil
     end
 
-    # Reference parity: Bundler re-resolves (printing "Resolving
-    # dependencies...") when the Gemfile ruby declaration differs from the
-    # lockfile RUBY VERSION, e.g. an explicit patchlevel the lockfile string
-    # does not preserve (definition.rb `@unlocking_ruby`).  Celerite keeps
-    # using the lockfile, so only the notification is mirrored.
-    private def self.lock_ruby_declaration_mismatch?(definition : Definition, lockfile : Lockfile::Data) : Bool
-      return false unless bridge_available?
-      lock_ruby = lockfile.ruby_version
-      return false if lock_ruby.nil? || lock_ruby.empty?
+    # Reference parity: Bundler re-resolves/unlocks when the Gemfile ruby
+    # declaration differs from the lockfile RUBY VERSION (e.g. explicit
+    # patchlevel dropped by lock serialization) or when the Gemfile declares
+    # ruby but the lockfile has no RUBY VERSION section
+    # (definition.rb `@unlocking_ruby` / `(!@locked_ruby_version ^ !@ruby_version)`).
+    # Celerite keeps using the lockfile, so only the notification is mirrored.
+    # Returns :diff, :missing_from_lock, or :none.
+    private def self.lock_ruby_unlock_kind(definition : Definition, lockfile : Lockfile::Data) : Symbol
+      return :none unless bridge_available?
       bridge = Bridge::Client.new
       begin
         evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
         requested = requested_ruby_version(evaluation)
-        return false if requested.nil?
+        return :none if requested.nil?
+        lock_ruby = lockfile.ruby_version
+        if lock_ruby.nil? || lock_ruby.empty?
+          return :missing_from_lock
+        end
         locked = Celerite::RubyVersion.from_string(lock_ruby)
-        return false if locked.nil?
-        !requested.diff(locked).nil?
+        return :none if locked.nil?
+        requested.diff(locked).nil? ? :none : :diff
       rescue
-        false
+        :none
       ensure
         bridge.close
       end
@@ -479,9 +483,11 @@ module Celerite
       requested_groups = requested_groups_for(config, all_groups, only_groups, without_groups)
       locked_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, lockfile.specs.sort_by(&.full_name), requested_groups) : lockfile.specs.sort_by(&.full_name)
 
-      # Reference parity: an explicit Gemfile patchlevel the lockfile RUBY
-      # VERSION string does not preserve makes Bundler re-resolve here.
-      stdout.puts "Resolving dependencies..." if lock_ruby_declaration_mismatch?(definition, lockfile)
+      # Reference parity: Gemfile ruby declaration differs from lock RUBY VERSION
+      # or is absent from the lock; check prints the re-resolve notice in both
+      # satisfied and missing-dependency cases.
+      ruby_unlock_kind = lock_ruby_unlock_kind(definition, lockfile)
+      stdout.puts "Resolving dependencies..." if ruby_unlock_kind == :diff || ruby_unlock_kind == :missing_from_lock
 
       if unresolved_dep(definition, lockfile)
         stderr.puts "Bundler can't satisfy your Gemfile's dependencies."
@@ -555,19 +561,28 @@ module Celerite
         return 1
       end
 
+      # Filter locked specs by requested groups.
+      filtered_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, locked_specs, requested_groups) : locked_specs
+
+      installed_missing = filtered_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
+
       # Reference parity: Gemfile ruby declaration differs from lock RUBY
-      # VERSION (e.g. explicit patchlevel dropped by lock serialization).
-      stdout.puts "Resolving dependencies..." if lock_ruby_declaration_mismatch?(definition, lockfile)
+      # VERSION (e.g. explicit patchlevel dropped by lock serialization) or is
+      # absent from the lock. list prints the notice for declaration diffs even
+      # when satisfied, but for a missing lock RUBY VERSION only when
+      # dependencies are not fully installed.
+      ruby_unlock_kind = lock_ruby_unlock_kind(definition, lockfile)
+      if ruby_unlock_kind == :diff || (ruby_unlock_kind == :missing_from_lock && installed_missing.any?)
+        stdout.puts "Resolving dependencies..."
+      end
 
       # Reference parity: see the platform-missing note in `check`.
       if platform_missing?(definition)
         stdout.puts "Resolving dependencies..."
       end
 
-      # Filter locked specs by requested groups.
-      locked_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, locked_specs, requested_groups) : locked_specs
-
-      missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
+      locked_specs = filtered_specs
+      missing = installed_missing
       if missing.empty?
         if json_format
           gems = locked_specs.map do |spec|

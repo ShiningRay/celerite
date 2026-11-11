@@ -2,17 +2,19 @@
 
 ## Provenance
 
-- Code under test: `0f78548` plus this change's positive
-  ruby-target fixtures (`ruby-target-match`, `ruby-patchlevel-match`,
-  `ruby-engine-match`), the matching version/patchlevel/engine spec
-  examples, the `check` re-resolve notification for a Gemfile patchlevel
-  the lockfile RUBY VERSION string does not preserve, and `list` parity for
-  the same patchlevel-unlock case (`ruby-patchlevel-match-list`,
-  install→list). It includes the earlier
-  `SolveFailure` fix (Ruby/RubyGems-metadata-only candidates exit 6;
-  genuinely missing versions exit 7), path/multi-group fixtures, the fund
-  PATH/GIT source metadata fix, and Ruby/RubyGems candidate-filter/
-  runtime-validation work.
+- Code under test: `f6a4413` plus this change: `Commands.lock_ruby_unlock_kind`
+  distinguishes `:diff` (Gemfile ruby vs lock RUBY VERSION differs) from
+  `:missing_from_lock` (Gemfile declares ruby but lock has no RUBY VERSION);
+  `check` prints `Resolving dependencies...` for either kind, and `list`
+  prints it for `:diff` or for `:missing_from_lock` when locked gems are not
+  installed, matching Bundler 4.0.24/2.7.2 harness behavior for the new
+  fixtures. Adds differential fixtures `check-missing-ruby-nolock` and
+  `list-missing-ruby-nolock` (ruby in Gemfile, no RUBY VERSION in lock,
+  locked gem not installed, exit 1). It builds on `0f78548`/`9d8426e`/
+  `f6a4413` M7(1)/(2) work: positive ruby-target fixtures, patchlevel-unlock
+  `check`/`list` parity, SolveFailure exit 6 vs GemNotFound exit 7,
+  path/multi-group fixtures, fund PATH/GIT metadata, and Ruby/RubyGems
+  candidate-filter/runtime-validation.
 - Binary: `bin/celerite.exe` rebuilt locally with an **uncommitted,
   out-of-repo OpenSSL shim** (see below); `--version` prints `0.1.0`.
 - `bin/` is gitignored. Neither the shim nor the binary is part of the
@@ -39,10 +41,10 @@ TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   ruby-metadata-fail rubygems-metadata-fail no-matching-version \
   platform-variant-fail install-check check-missing check-unresolved \
   list-missing show-missing list-multi-group check-path list-path \
-  git-installed-discovery show-info-installed fund-path ruby-target-match
-  ruby-patchlevel-match ruby-engine-match
-  ruby-patchlevel-match-list
-# 24 passed, 0 failed, 0 skipped, EXIT 0
+  git-installed-discovery show-info-installed fund-path ruby-target-match \
+  ruby-patchlevel-match ruby-engine-match ruby-patchlevel-match-list \
+  check-missing-ruby-nolock list-missing-ruby-nolock
+# 26 passed, 0 failed, 0 skipped, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   BUNDLER_REF_VERSION=2.7.2 bash script/differential ruby-version-mismatch \
@@ -52,8 +54,9 @@ TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   check-unresolved list-missing show-missing list-multi-group check-path \
   list-path git-installed-discovery show-info-installed fund-path \
   ruby-target-match ruby-patchlevel-match ruby-engine-match \
-  ruby-patchlevel-match-list
-# 24 passed, 0 failed, 0 skipped, EXIT 0
+  ruby-patchlevel-match-list check-missing-ruby-nolock \
+  list-missing-ruby-nolock
+# 26 passed, 0 failed, 0 skipped, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" bash script/differential
 # 101 passed, 14 failed, 0 skipped, EXIT 1
@@ -155,15 +158,16 @@ generated Windows binstub content differences.
 
 ## Interpretation
 
-- The 23 targeted fixtures (`ruby-version-mismatch`, `ruby-engine-mismatch`,
+- The 26 targeted fixtures (`ruby-version-mismatch`, `ruby-engine-mismatch`,
   `ruby-engine-version-mismatch`, `ruby-patchlevel-mismatch`,
   `platform-ruby-mismatch`, `list-multi-group`,
   `check-path`, `list-path`, `no-matching-version`, `platform-variant-fail`,
   `ruby-metadata-fail`, `rubygems-metadata-fail`, `git-installed-discovery`,
   `install-check`, `show-info-installed`, `fund-path`, `ruby-target-match`,
-  `ruby-patchlevel-match`, `ruby-engine-match`, and the four
-  check/list/show fixtures) all passed; the 14 failures above are
-  outside the M7(1)-(3) paths
+  `ruby-patchlevel-match`, `ruby-engine-match`, `ruby-patchlevel-match-list`,
+  `check-missing-ruby-nolock`, `list-missing-ruby-nolock`, and the four
+  check/list/show fixtures) all passed on 4.0.24 and 2.7.2; the 14 failures in
+  the full 4.0.24 run above are outside the M7(1)-(3) paths
   (native-extension tooling and generated binstub byte content), but the suite
   is **not green** and these failures are not claimed as fixed.
 - `list-path` also pins the 4.0.24 human-readable `bundle list` format for a
@@ -180,12 +184,19 @@ generated Windows binstub content differences.
   `* example (1.0.0)` / `  Funding: https://example.com/path-funding`, not as
   the fixed no-funding response. `read_funding_uri` now checks PATH/GIT source
   gemspecs before the installed RubyGems tree.
-- The same 23 targeted fixtures also passed on the 2.7.2 profile
-  (24 passed, 0 failed, 0 skipped, exit 0). The full 2.7.2 suite was not
+- The same 26 targeted fixtures also passed on the 2.7.2 profile
+  (26 passed, 0 failed, 0 skipped, exit 0). The full 2.7.2 suite was not
   re-run in this verification.
 - The M7(1) positive matrix (matching version/patchlevel/engine/
-  engine_version) and the patchlevel re-resolve notification are now covered;
-  remaining gaps are ABI/platform positive variants, a Gemfile target Ruby
-  with no lockfile RUBY VERSION, `list`/`show`/`info` re-resolve notification
-  parity, more M7(2) path/Git combinations and additional platform variants,
-  and M7(3) broader differential evidence.
+  engine_version) and patchlevel-unlock `check`/`list` notification parity are
+  covered; this change adds `check-missing-ruby-nolock` and
+  `list-missing-ruby-nolock` for the case where Gemfile declares `ruby` but the
+  lock has no `RUBY VERSION` and locked gems are not installed (4.0.24/2.7.2
+  PASS, exit 1 with `Resolving dependencies...`). Remaining gaps: that scenario
+  with dependencies satisfied and other command/shape combinations (manual probe
+  indicates reference `check`/`list` may still print `Resolving dependencies...`
+  when satisfied; current `list` only prints on `:missing_from_lock` when
+  installed gems are missing — not yet fixture-pinned), ABI/platform positive
+  variants, `show`/`info` other re-resolve notification scenarios, more M7(2)
+  path/Git combinations and additional platform variants, and M7(3) broader
+  differential evidence.
