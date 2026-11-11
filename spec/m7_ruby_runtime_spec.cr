@@ -47,6 +47,18 @@ describe Celerite::RubyRuntime do
     end
   end
 
+  it "detects engine version mismatch for an explicit engine" do
+    env = test_ruby_env("2.6.0", "jruby", "9.4.0.0", "0")
+    requested = Celerite::RubyVersion.from_string("ruby 2.6.0 (jruby 9.3.0.0)").not_nil!
+    begin
+      Celerite::RubyRuntime.validate_version!(requested, env)
+      fail "expected RubyVersionMismatch"
+    rescue ex : Celerite::RubyVersionMismatch
+      ex.status_code.should eq(18)
+      ex.message.should eq("Your jruby version is 9.4.0.0, but your Gemfile specified jruby 9.3.0.0")
+    end
+  end
+
   it "detects patchlevel mismatch when explicitly requested" do
     env = test_ruby_env("4.0.6", "ruby", "4.0.6", "0")
     begin

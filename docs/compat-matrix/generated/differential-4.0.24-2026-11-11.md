@@ -2,12 +2,11 @@
 
 ## Provenance
 
-- Code under test: `ec4680792cfe01e7247f95e22f13fb80a184bf0a` plus this
-  change's git-source listing/path alignment (short revision in human-readable
-  output and forward-slash paths). It includes the earlier `SolveFailure`
-  fix (Ruby/RubyGems-metadata-only candidates exit 6; genuinely missing
-  versions exit 7), path/multi-group fixtures, and Ruby/RubyGems
-  candidate-filter/runtime-validation work.
+- Code under test: `ad9c5154111c3979e42c7d51b8811917571a7236` plus this
+  change's engine_version runtime spec and RubyGems-metadata SolveFailure
+  fixture. It includes the earlier `SolveFailure` fix (Ruby/RubyGems-metadata-only
+  candidates exit 6; genuinely missing versions exit 7), path/multi-group
+  fixtures, and Ruby/RubyGems candidate-filter/runtime-validation work.
 - Binary: `bin/celerite.exe` rebuilt locally with an **uncommitted,
   out-of-repo OpenSSL shim** (see below); `--version` prints `0.1.0`.
 - `bin/` is gitignored. Neither the shim nor the binary is part of the
@@ -23,21 +22,31 @@
 ```sh
 crystal tool format --check src spec          # EXIT 0
 crystal build --no-codegen src/cli.cr         # EXIT 0 (2 pre-existing deprecation warnings)
-crystal spec <107-example M7 + base subset>    # 107 examples, 0 failures, EXIT 0
+crystal spec <108-example M7 + base subset>    # 108 examples, 0 failures, EXIT 0
 crystal spec spec/cli_spec.cr --link-flags "<shim.o>"   # 24 examples, 0 failures, EXIT 0
 crystal spec spec/m7_installed_discovery_spec.cr spec/m7_platform_spec.cr \
   --link-flags "<shim.o>"                     # 22 examples, 0 failures, EXIT 0
 
-TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
+TMPDR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   bash script/differential ruby-version-mismatch platform-ruby-mismatch \
-  ruby-engine-mismatch ruby-patchlevel-mismatch check-missing check-unresolved \
+  ruby-engine-mismatch ruby-patchlevel-mismatch ruby-metadata-fail \
+  rubygems-metadata-fail no-matching-version platform-variant-fail \
+  install-check check-missing check-unresolved list-missing show-missing \
+  list-multi-group check-path list-path git-installed-discovery \
+  show-info-installed
+# 18 passed, 0 failed, 0 skipped, EXIT 0
+
+TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
+  BUNDLER_REF_VERSION=2.7.2 bash script/differential ruby-version-mismatch \
+  platform-ruby-mismatch ruby-engine-mismatch ruby-patchlevel-mismatch \
+  ruby-metadata-fail rubygems-metadata-fail no-matching-version \
+  platform-variant-fail install-check check-missing check-unresolved \
   list-missing show-missing list-multi-group check-path list-path \
-  no-matching-version platform-variant-fail ruby-metadata-fail \
-  git-installed-discovery install-check show-info-installed
-# 17 passed, 0 failed, 0 skipped, EXIT 0
+  git-installed-discovery show-info-installed
+# 18 passed, 0 failed, 0 skipped, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" bash script/differential
-# 95 passed, 14 failed, 0 skipped, EXIT 1
+# 96 passed, 14 failed, 0 skipped, EXIT 1
 ```
 
 The full run above was streamed to the terminal; the failure list below is the
@@ -93,6 +102,10 @@ generated Windows binstub content differences.
   explanation as Bundler 4.0.24. The distinction is preserved: a requirement
   with no matching version at all (for example `no-matching-version`) still
   exits 7 with `GemNotFound`.
+- `rubygems-metadata-fail` (`lock --print` with a PATH gem whose
+  `required_rubygems_version = ">= 99.0"`): both exit 6 — **PASS**. This pins
+  the RubyGems-metadata-only exclusion path with the same SolveFailure
+  semantics as the Ruby-metadata case.
 - `ruby-engine-mismatch` (`ruby "4.0.6", engine: "jruby",
   engine_version: "9.4.0.0"`, `check`): both exit 18 with the "Your Ruby
   engine is ruby, but your Gemfile specified jruby" diagnostic — **PASS**.
@@ -116,11 +129,12 @@ generated Windows binstub content differences.
 
 ## Interpretation
 
-- The 17 targeted fixtures (`ruby-version-mismatch`, `ruby-engine-mismatch`,
+- The 18 targeted fixtures (`ruby-version-mismatch`, `ruby-engine-mismatch`,
   `ruby-patchlevel-mismatch`, `platform-ruby-mismatch`, `list-multi-group`,
   `check-path`, `list-path`, `no-matching-version`, `platform-variant-fail`,
-  `ruby-metadata-fail`, `git-installed-discovery`, `install-check`,
-  `show-info-installed`, and the four check/list/show fixtures) all passed; the 14 failures above are
+  `ruby-metadata-fail`, `rubygems-metadata-fail`, `git-installed-discovery`,
+  `install-check`, `show-info-installed`, and the four check/list/show
+  fixtures) all passed; the 14 failures above are
   outside the M7(1)-(3) paths
   (native-extension tooling and generated binstub byte content), but the suite
   is **not green** and these failures are not claimed as fixed.
@@ -133,7 +147,9 @@ generated Windows binstub content differences.
   in reference order. `show <gem>` no longer prints the old Celerite detail
   block; `info <gem>` now omits `Default Gem` unless the gem is actually a
   default gem and adds the metadata URI fields.
-- 2.7.2 profile was not re-run in this verification.
+- The same 18 targeted fixtures also passed on the 2.7.2 profile
+  (18 passed, 0 failed, 0 skipped, exit 0). The full 2.7.2 suite was not
+  re-run in this verification.
 - The M7(1) full matrix (engine/patchlevel/ABI/Gemfile target, install
   re-check), more M7(2) path/Git combinations and additional platform
   variants, and M7(3) broader differential evidence remain incomplete.
