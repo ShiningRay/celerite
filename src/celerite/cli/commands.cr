@@ -555,6 +555,10 @@ module Celerite
         return 1
       end
 
+      # Reference parity: Gemfile ruby declaration differs from lock RUBY
+      # VERSION (e.g. explicit patchlevel dropped by lock serialization).
+      stdout.puts "Resolving dependencies..." if lock_ruby_declaration_mismatch?(definition, lockfile)
+
       # Reference parity: see the platform-missing note in `check`.
       if platform_missing?(definition)
         stdout.puts "Resolving dependencies..."

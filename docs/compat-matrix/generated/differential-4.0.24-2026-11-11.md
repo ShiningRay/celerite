@@ -5,8 +5,10 @@
 - Code under test: `0f78548` plus this change's positive
   ruby-target fixtures (`ruby-target-match`, `ruby-patchlevel-match`,
   `ruby-engine-match`), the matching version/patchlevel/engine spec
-  examples, and the `check` re-resolve notification for a Gemfile patchlevel
-  the lockfile RUBY VERSION string does not preserve. It includes the earlier
+  examples, the `check` re-resolve notification for a Gemfile patchlevel
+  the lockfile RUBY VERSION string does not preserve, and `list` parity for
+  the same patchlevel-unlock case (`ruby-patchlevel-match-list`,
+  install→list). It includes the earlier
   `SolveFailure` fix (Ruby/RubyGems-metadata-only candidates exit 6;
   genuinely missing versions exit 7), path/multi-group fixtures, the fund
   PATH/GIT source metadata fix, and Ruby/RubyGems candidate-filter/
@@ -39,7 +41,8 @@ TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   list-missing show-missing list-multi-group check-path list-path \
   git-installed-discovery show-info-installed fund-path ruby-target-match
   ruby-patchlevel-match ruby-engine-match
-# 23 passed, 0 failed, 0 skipped, EXIT 0
+  ruby-patchlevel-match-list
+# 24 passed, 0 failed, 0 skipped, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   BUNDLER_REF_VERSION=2.7.2 bash script/differential ruby-version-mismatch \
@@ -48,8 +51,9 @@ TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   no-matching-version platform-variant-fail install-check check-missing \
   check-unresolved list-missing show-missing list-multi-group check-path \
   list-path git-installed-discovery show-info-installed fund-path \
-  ruby-target-match ruby-patchlevel-match ruby-engine-match
-# 23 passed, 0 failed, 0 skipped, EXIT 0
+  ruby-target-match ruby-patchlevel-match ruby-engine-match \
+  ruby-patchlevel-match-list
+# 24 passed, 0 failed, 0 skipped, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" bash script/differential
 # 101 passed, 14 failed, 0 skipped, EXIT 1
@@ -177,7 +181,7 @@ generated Windows binstub content differences.
   the fixed no-funding response. `read_funding_uri` now checks PATH/GIT source
   gemspecs before the installed RubyGems tree.
 - The same 23 targeted fixtures also passed on the 2.7.2 profile
-  (23 passed, 0 failed, 0 skipped, exit 0). The full 2.7.2 suite was not
+  (24 passed, 0 failed, 0 skipped, exit 0). The full 2.7.2 suite was not
   re-run in this verification.
 - The M7(1) positive matrix (matching version/patchlevel/engine/
   engine_version) and the patchlevel re-resolve notification are now covered;
