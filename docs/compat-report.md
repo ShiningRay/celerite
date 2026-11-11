@@ -241,16 +241,38 @@ No "full upstream suite" claim is made.
   `BUNDLER_REF_VERSION=2.7.2 CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential`。
   逐例证据与分类见
   [`docs/compat-matrix/generated/differential-4.0.24-2026-11-11.md`](compat-matrix/generated/differential-4.0.24-2026-11-11.md)。
+- **M7(1) 矩阵补强（2026-11-12，HEAD=`7c446d9` + 同轮 worktree 未提交改动，shim-built bin）**：
+  新增 6 个 differential fixtures（`ruby-metadata-boundary-fail` `>= 4.0.7`、
+  `rubygems-metadata-boundary-fail` `>= 4.0.17`、`ruby-metadata-exact-match`
+  `= 4.0.6`、`rubygems-metadata-pessimistic-match` `~> 4.0`、
+  `ruby-engine-patchlevel-match`（engine/engine_version/patchlevel 全匹配，
+  install+check）、`multi-platform-install`（`lock --add-platform x86_64-linux`
+  + install + check；首跑 racc ext 落 Class A `make` 阻塞，已移除 racc 保留
+  json_pure+thor 后复跑 PASS））；spec 新增 3 个 `RubyRuntime.diff` 优先级例 +
+  新 `spec/m7_platform_match_spec.cr` 4 例（Platform 解析/匹配/特异度）。实测：
+  spec 子集 46 examples, 0 failures, 0 errors, 0 pending（EXIT 0）；4.0.24 定向
+  6/6 PASS（含修正后单跑 `differential (4.0.24): 1 passed, 0 failed, 0 skipped`）；
+  2.7.2 定向 6/6 PASS、扩展 36 例定向集 36/36 PASS（`differential (2.7.2): 36
+  passed, 0 failed, 0 skipped`，DIFF_272_36_EXIT=0）；4.0.24 全量重跑 128 fixtures
+  **120 passed, 8 failed, 0 skipped，wrapper exit 1**（log
+  `C:\temp\celerite-diff-full-4.0.24-7c446d9.log`，mtime 04:36:56 CST，汇总行在
+  log 第 301 行），8 个 FAIL 名字与 03:18 轮完全一致（⊆ 先前 14 名单，按名字无比对
+  新增回归），6 个新 fixture 全 PASS，delta +6 passed / ±0 failed / +6 fixtures。
+  **2.7.2 全量仍未重跑——未验证**；复现：
+  `BUNDLER_REF_VERSION=2.7.2 CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential`。
+  逐例证据与分类见
+  [`docs/compat-matrix/generated/differential-4.0.24-2026-11-11.md`](compat-matrix/generated/differential-4.0.24-2026-11-11.md)。
 - Durable details and per-fixture notes:
   [`docs/compat-matrix/generated/differential-4.0.24-2026-11-11.md`](compat-matrix/generated/differential-4.0.24-2026-11-11.md).
-- **Still unverified**: full 2.7.2 profile run (targeted 28/28 passed; 2026-11-12
-  刷新仍未重跑 2.7.2 全量，复现命令见上条),
+- **Still unverified**: full 2.7.2 profile run (targeted sets passed: 28/28
+  earlier, 30/30 and 36/36 on 2026-11-12; 2026-11-12 矩阵补强轮仍未重跑 2.7.2
+  全量，复现命令见上条),
   release-form/published-binary behavior,
-  M7(1) remaining matrix (ABI/platform positive variants; Gemfile target Ruby
-  without lock `RUBY VERSION` with dependencies satisfied / other
-  `check`/`list`/`show`/`info` re-resolve-notification scenarios beyond the
-  pinned missing-deps fixtures and the patchlevel-unlock `check`/`list`
-  fixtures),
+  M7(1) remaining matrix (ABI positive variants beyond the local
+  x64-mingw-ucrt arch; Gemfile target Ruby without lock `RUBY VERSION` with
+  dependencies satisfied; other `check`/`list`/`show`/`info`
+  re-resolve-notification scenarios beyond the pinned missing-deps fixtures
+  and the patchlevel-unlock `check`/`list` fixtures),
   M7(2) path/Git combinations and additional platform variants. M7(3):
   `fund-path` differential 已在 4.0.24/2.7.2 取证，但 `env`/`issue` 全量输出
   与 Bundler reference 的 differential 尚未 fixture 化，`console` IRB 可用/交互

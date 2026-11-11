@@ -73,4 +73,21 @@ describe Celerite::RubyRuntime do
     diff = Celerite::RubyRuntime.diff("ruby 2.6.0 (jruby 9.3.0.0)", env)
     diff.should eq({:engine_version, "9.3.0.0", "9.4.0.0"})
   end
+
+  it "prefers the engine diff over a version diff" do
+    env = constraint_ruby_env("4.0.6", "ruby", "4.0.6", "0")
+    diff = Celerite::RubyRuntime.diff("ruby 3.0.0 (jruby 9.4.0.0)", env)
+    diff.should eq({:engine, "jruby", "ruby"})
+  end
+
+  it "prefers the engine version diff over a patchlevel diff" do
+    env = constraint_ruby_env("4.0.6", "ruby", "4.0.6", "0")
+    diff = Celerite::RubyRuntime.diff("ruby 4.0.6p1 (ruby 4.0.5)", env)
+    diff.should eq({:engine_version, "4.0.5", "4.0.6"})
+  end
+
+  it "reports no diff when engine, engine version and patchlevel all match" do
+    env = constraint_ruby_env("4.0.6", "ruby", "4.0.6", "0")
+    Celerite::RubyRuntime.diff("ruby 4.0.6p0 (ruby 4.0.6)", env).should be_nil
+  end
 end
