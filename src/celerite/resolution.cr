@@ -223,6 +223,42 @@ module Celerite
         ""
     end
 
+    private def normalize_rubygems_remote(remote : String?) : String?
+      return nil if remote.nil? || remote.empty?
+      remote = remote.chomp('/')
+      remote = "https://rubygems.org" if remote.empty? || remote == "https://rubygems.org"
+      remote += "/" unless remote.ends_with?("/")
+      remote
+    end
+
+    # Declared Rubygems/Metadata source remotes in Gemfile evaluation order,
+    # normalized for lockfile GEM sections. Includes scoped remotes and the
+    # primary source; deduplicates by normalized remote.
+    private def declared_rubygem_remotes : Array(String)
+      remotes = [] of String
+      seen = Set(String).new
+      @sources.each do |source|
+        next unless source.type == "Rubygems" || source.type == "Metadata"
+        candidates = source.remotes
+        if candidates && !candidates.empty?
+          candidates.each do |candidate|
+            remote = normalize_rubygems_remote(candidate)
+            next unless remote
+            remotes << remote unless seen.includes?(remote)
+            seen << remote
+          end
+        else
+          remote = normalize_rubygems_remote(source.remote)
+          remote ||= primary_remote
+          unless seen.includes?(remote)
+            remotes << remote
+            seen << remote
+          end
+        end
+      end
+      remotes
+    end
+
     def compact_index_client : CompactIndex::Client
       @compact_index_client ||= CompactIndex::Client.new(primary_remote, user_cache_root, @definition.config.credentials_for(primary_remote), Commands.retry_count(@definition.config), @definition.config.mirror_for(primary_remote))
     end
@@ -879,15 +915,26 @@ module Celerite
           [Lockfile::Option.new("remote", remote)], source_specs))
       end
 
-      @resolved_specs.select(&.source_type.==("GEM")).group_by { |spec|
-        spec.source_remote || primary_remote
-      }.each do |remote, specs|
-        gem_specs = specs.map do |spec|
-          Lockfile::Spec.new(spec.name, spec.version.to_s, spec.platform, spec.dependencies)
-        end
-        gem_specs.sort_by!(&.full_name)
+      gem_sections_by_remote = {} of String => Array(Lockfile::Spec)
+      @resolved_specs.select(&.source_type.==("GEM")).each do |spec|
+        remote = spec.source_remote || primary_remote
+        gem_sections_by_remote[remote] ||= [] of Lockfile::Spec
+        gem_sections_by_remote[remote] << Lockfile::Spec.new(spec.name, spec.version.to_s, spec.platform, spec.dependencies)
+      end
+
+      gem_sections_by_remote.each do |remote, specs|
+        specs.sort_by!(&.full_name)
         sections << Lockfile::TypedSection.new(Lockfile::SourceSection.new("GEM",
-          [Lockfile::Option.new("remote", remote)], gem_specs))
+          [Lockfile::Option.new("remote", remote)], specs))
+      end
+
+      # Bundler emits declared rubygems source sections even when no GEM specs
+      # resolve from them (for example a Gemfile with only a path gem still
+      # records `GEM / remote: https://rubygems.org/ / specs:`).
+      declared_rubygem_remotes.each do |remote|
+        next if gem_sections_by_remote.has_key?(remote)
+        sections << Lockfile::TypedSection.new(Lockfile::SourceSection.new("GEM",
+          [Lockfile::Option.new("remote", remote)], [] of Lockfile::Spec))
       end
 
       platforms = [] of String
