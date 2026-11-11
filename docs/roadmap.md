@@ -126,6 +126,14 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 
 验收：基准可复现；兼容报告对应 commit；用户可明确切换与回退，且不会丢失现有配置。
 
+## M7(1)-(3) 阶段性闭环汇总快照（HEAD=`34a8cad`，2026-11-12）
+
+- **结论**：M7(1)(2)(3) 均为**部分证据化/未闭环**；以下复选框保持未勾选，不得据此视为 M7 整体验收通过（见本节末验收条件与 `docs/compat-report.md` “M7(1)-(3) 阶段性闭环汇总”）。
+- **M7(1) 约束过滤 / install recheck / lock reuse / re-resolve 通知**：实现与 spec/differential 有进展（46-example 子集、ruby/engine/patchlevel/元数据 match+boundary+fail、2.7.2 36/36、4.0.24 全量 128:120/8/0 同名 8 FAIL 无按名新增回归）；**部分**。未达/未验证：本地外 ABI/平台-gnu-musl 矩阵穷举、依赖已满足+lock 无 `RUBY VERSION` 的 `check`/`list` 通知仅手工 harness-like 取证未 fixture 化、其他 `show`/`info` 重解通知场景（阻塞/复现见 compat-report）。
+- **M7(2) 安装后发现（group/with-without/path/Git/平台）**：`spec/m7_installed_discovery_spec.cr` 20/0 + `list-multi-group`/`check-path`/`list-path`/`git-installed-discovery`/`show-info-installed`/`*-nolock`/`ruby-patchlevel-match-list` 等；**部分**。未达/未验证：Reverse Dependencies/Default Gem 可行差分或更强单测、path/GIT + `--with/--without/--only-group`/平台组合补强（复现：补 fixture/spec 跑 differential 与 `crystal spec`）。
+- **M7(3) 占位路径真实/显式 unsupported**：`fund`/metadata 与 `fund-path` 双 profile PASS；`env`/`issue` 稳定集 `env-report`+`issue-no-gemfile`+`issue-missing-gems` **4.0.24/2.7.2 各 3/0/0 EXIT 0**（34a8cad）；`console` IRB 缺失 EXIT 127、`gem` 6 文件最小 scaffold+不支持选项 warning 为显式边界；**部分**。未达/未验证：satisfied-issue fixture、`env`/`issue` 全量输出差分、console IRB 可用/交互路径、gem 完整模板/选项矩阵差分（复现见 compat-report）。
+- **通用未验证/阻塞**：2.7.2 全量 differential 未跑（`BUNDLER_REF_VERSION=2.7.2 CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential`）；stock OpenSSL `EVP_MD_size` 链接阻塞，CLI/diff 证据依赖仓库外 shim 本地 bin（未入库）。
+
 ## 当前阶段：M7–M10
 
 ### M7：正确性与兼容证据收敛（当前优先）
