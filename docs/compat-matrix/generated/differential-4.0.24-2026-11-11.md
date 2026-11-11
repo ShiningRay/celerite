@@ -2,11 +2,12 @@
 
 ## Provenance
 
-- Code under test: `32f8d25a5b81dfbd705736021ec8fa2189f51630` plus this
-  change's fund PATH/GIT source metadata fix and `fund-path` fixture. It
-  includes the earlier `SolveFailure` fix (Ruby/RubyGems-metadata-only
-  candidates exit 6; genuinely missing versions exit 7), path/multi-group
-  fixtures, and Ruby/RubyGems candidate-filter/runtime-validation work.
+- Code under test: `081678723020f2db4dba06d5f2e6f7a99569f0ff` plus this
+  change's `ruby-engine-version-mismatch` fixture. It includes the earlier
+  `SolveFailure` fix (Ruby/RubyGems-metadata-only candidates exit 6;
+  genuinely missing versions exit 7), path/multi-group fixtures, the fund
+  PATH/GIT source metadata fix, and Ruby/RubyGems candidate-filter/
+  runtime-validation work.
 - Binary: `bin/celerite.exe` rebuilt locally with an **uncommitted,
   out-of-repo OpenSSL shim** (see below); `--version` prints `0.1.0`.
 - `bin/` is gitignored. Neither the shim nor the binary is part of the
@@ -29,24 +30,24 @@ crystal spec spec/m7_installed_discovery_spec.cr spec/m7_platform_spec.cr \
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   bash script/differential ruby-version-mismatch platform-ruby-mismatch \
-  ruby-engine-mismatch ruby-patchlevel-mismatch ruby-metadata-fail \
-  rubygems-metadata-fail no-matching-version platform-variant-fail \
-  install-check check-missing check-unresolved list-missing show-missing \
-  list-multi-group check-path list-path git-installed-discovery \
-  show-info-installed fund-path
-# 19 passed, 0 failed, 0 skipped, EXIT 0
-
-TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
-  BUNDLER_REF_VERSION=2.7.2 bash script/differential ruby-version-mismatch \
-  platform-ruby-mismatch ruby-engine-mismatch ruby-patchlevel-mismatch \
+  ruby-engine-mismatch ruby-engine-version-mismatch ruby-patchlevel-mismatch \
   ruby-metadata-fail rubygems-metadata-fail no-matching-version \
   platform-variant-fail install-check check-missing check-unresolved \
   list-missing show-missing list-multi-group check-path list-path \
   git-installed-discovery show-info-installed fund-path
-# 19 passed, 0 failed, 0 skipped, EXIT 0
+# 20 passed, 0 failed, 0 skipped, EXIT 0
+
+TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
+  BUNDLER_REF_VERSION=2.7.2 bash script/differential ruby-version-mismatch \
+  platform-ruby-mismatch ruby-engine-mismatch ruby-engine-version-mismatch \
+  ruby-patchlevel-mismatch ruby-metadata-fail rubygems-metadata-fail \
+  no-matching-version platform-variant-fail install-check check-missing \
+  check-unresolved list-missing show-missing list-multi-group check-path \
+  list-path git-installed-discovery show-info-installed fund-path
+# 20 passed, 0 failed, 0 skipped, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" bash script/differential
-# 97 passed, 14 failed, 0 skipped, EXIT 1
+# 98 passed, 14 failed, 0 skipped, EXIT 1
 ```
 
 The full run above was streamed to the terminal; the failure list below is the
@@ -109,6 +110,11 @@ generated Windows binstub content differences.
 - `ruby-engine-mismatch` (`ruby "4.0.6", engine: "jruby",
   engine_version: "9.4.0.0"`, `check`): both exit 18 with the "Your Ruby
   engine is ruby, but your Gemfile specified jruby" diagnostic — **PASS**.
+- `ruby-engine-version-mismatch` (`ruby "4.0.6", engine: "jruby",
+  engine_version: "9.3.0.0"`, `check`): both exit 18 with the "Your jruby
+  version is 9.4.0.0, but your Gemfile specified jruby 9.3.0.0" diagnostic —
+  **PASS**. This pins the structured Gemfile `engine_version` option through
+  the bridge evaluation and the runtime mismatch message.
 - `ruby-patchlevel-mismatch` (`ruby "4.0.6", patchlevel: "1"`, `check`): both
   exit 18 with the patchlevel diagnostic — **PASS**. This exercises the
   Gemfile target Ruby options preserved through the bridge evaluation.
@@ -129,8 +135,9 @@ generated Windows binstub content differences.
 
 ## Interpretation
 
-- The 19 targeted fixtures (`ruby-version-mismatch`, `ruby-engine-mismatch`,
-  `ruby-patchlevel-mismatch`, `platform-ruby-mismatch`, `list-multi-group`,
+- The 20 targeted fixtures (`ruby-version-mismatch`, `ruby-engine-mismatch`,
+  `ruby-engine-version-mismatch`, `ruby-patchlevel-mismatch`,
+  `platform-ruby-mismatch`, `list-multi-group`,
   `check-path`, `list-path`, `no-matching-version`, `platform-variant-fail`,
   `ruby-metadata-fail`, `rubygems-metadata-fail`, `git-installed-discovery`,
   `install-check`, `show-info-installed`, `fund-path`, and the four
@@ -152,8 +159,8 @@ generated Windows binstub content differences.
   `* example (1.0.0)` / `  Funding: https://example.com/path-funding`, not as
   the fixed no-funding response. `read_funding_uri` now checks PATH/GIT source
   gemspecs before the installed RubyGems tree.
-- The same 19 targeted fixtures also passed on the 2.7.2 profile
-  (19 passed, 0 failed, 0 skipped, exit 0). The full 2.7.2 suite was not
+- The same 20 targeted fixtures also passed on the 2.7.2 profile
+  (20 passed, 0 failed, 0 skipped, exit 0). The full 2.7.2 suite was not
   re-run in this verification.
 - The M7(1) full matrix (engine/patchlevel/ABI/Gemfile target, install
   re-check), more M7(2) path/Git combinations and additional platform
