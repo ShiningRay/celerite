@@ -572,7 +572,7 @@ module Celerite
       # when satisfied, but for a missing lock RUBY VERSION only when
       # dependencies are not fully installed.
       ruby_unlock_kind = lock_ruby_unlock_kind(definition, lockfile)
-      if ruby_unlock_kind == :diff || (ruby_unlock_kind == :missing_from_lock && installed_missing.any?)
+      if ruby_unlock_kind == :diff || ruby_unlock_kind == :missing_from_lock
         stdout.puts "Resolving dependencies..."
       end
 

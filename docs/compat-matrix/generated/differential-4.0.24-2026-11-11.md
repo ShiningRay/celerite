@@ -189,14 +189,21 @@ generated Windows binstub content differences.
   re-run in this verification.
 - The M7(1) positive matrix (matching version/patchlevel/engine/
   engine_version) and patchlevel-unlock `check`/`list` notification parity are
-  covered; this change adds `check-missing-ruby-nolock` and
-  `list-missing-ruby-nolock` for the case where Gemfile declares `ruby` but the
-  lock has no `RUBY VERSION` and locked gems are not installed (4.0.24/2.7.2
-  PASS, exit 1 with `Resolving dependencies...`). Remaining gaps: that scenario
-  with dependencies satisfied and other command/shape combinations (manual probe
-  indicates reference `check`/`list` may still print `Resolving dependencies...`
-  when satisfied; current `list` only prints on `:missing_from_lock` when
-  installed gems are missing — not yet fixture-pinned), ABI/platform positive
-  variants, `show`/`info` other re-resolve notification scenarios, more M7(2)
-  path/Git combinations and additional platform variants, and M7(3) broader
-  differential evidence.
+  covered; `check-missing-ruby-nolock` and `list-missing-ruby-nolock` pin the
+  case where Gemfile declares `ruby` but the lock has no `RUBY VERSION` and
+  locked gems are not installed (4.0.24/2.7.2 PASS, exit 1 with
+  `Resolving dependencies...`). Manual harness-style evidence (isolated env,
+  preinstalled `json_pure-2.8.1` gem+gemspec under `BUNDLE_PATH`, Gemfile
+  declares `ruby "4.0.6"`, lock has specs/PLATFORMS/DEPENDENCIES/BUNDLED WITH
+  but no `RUBY VERSION`) shows reference Bundler 4.0.24 and 2.7.2 print
+  `Resolving dependencies...` for both `check` and `list` when dependencies are
+  satisfied (EXIT 0); `Commands.list` was aligned to print on
+  `:missing_from_lock` unconditionally (matching `check`, bridge-available
+  path), but this satisfied case is **not yet differential-fixture-pinned**
+  (harness setup for pre-satisfied state with lock lacking RUBY VERSION needs a
+  reproducible fixture recipe; manual celerite probes were inconclusive due to
+  bridge/environment details). Bridge unavailable remains best-effort/fail-safe
+  (notice may be omitted). Remaining gaps: satisfied nolock fixture/CLI proof,
+  ABI/platform positive variants, `show`/`info` other re-resolve notification
+  scenarios, more M7(2) path/Git combinations and additional platform variants,
+  and M7(3) broader differential evidence.
