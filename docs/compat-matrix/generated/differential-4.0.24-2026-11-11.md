@@ -26,22 +26,22 @@ crystal build --no-codegen src/cli.cr         # EXIT 0 (2 pre-existing deprecati
 crystal spec <107-example M7 + base subset>    # 107 examples, 0 failures, EXIT 0
 crystal spec spec/cli_spec.cr --link-flags "<shim.o>"   # 24 examples, 0 failures, EXIT 0
 crystal spec spec/m7_installed_discovery_spec.cr spec/m7_platform_spec.cr \
-  --link-flags "<shim.o>"                     # 21 examples, 0 failures, EXIT 0
+  --link-flags "<shim.o>"                     # 22 examples, 0 failures, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   bash script/differential ruby-version-mismatch platform-ruby-mismatch \
-  check-missing check-unresolved list-missing show-missing list-multi-group \
-  check-path list-path no-matching-version platform-variant-fail ruby-metadata-fail \
-  ruby-engine-mismatch ruby-patchlevel-mismatch install-check git-installed-discovery \
-  git-installed-discovery
-# 16 passed, 0 failed, 0 skipped, EXIT 0
+  ruby-engine-mismatch ruby-patchlevel-mismatch check-missing check-unresolved \
+  list-missing show-missing list-multi-group check-path list-path \
+  no-matching-version platform-variant-fail ruby-metadata-fail \
+  git-installed-discovery install-check show-info-installed
+# 17 passed, 0 failed, 0 skipped, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" bash script/differential
-# 94 passed, 14 failed, 0 skipped, EXIT 1
+# 95 passed, 14 failed, 0 skipped, EXIT 1
 ```
 
-Full local log: `C:\temp\celerite-diff-full-6.log` (temporary; the failure
-list below is the durable record). On this host `diff`/`cmp` are taken from
+The full run above was streamed to the terminal; the failure list below is the
+durable record. On this host `diff`/`cmp` are taken from
 `C:\Program Files\Git\usr\bin` and `TMPDIR=/c/temp` is used so the MSYS path
 is visible to those tools; this is a test-environment workaround, not a
 product change.
@@ -102,6 +102,12 @@ generated Windows binstub content differences.
 - `install-check` (local compact-index `json_pure`, `install`, `check`): both
   exit 0 and the installed `gems`/`specifications` trees match — **PASS**.
   This pins the post-install recheck path.
+- `show-info-installed` (local compact-index `json_pure`, `install`, `show
+  json_pure`, `info json_pure`): both exit 0 — **PASS**. This pins the 4.0.24
+  read-only formats: `show <gem>` prints only the installed path, and `info
+  <gem>` prints tab-indented Summary/Homepage/Documentation/Source
+  Code/Wiki/Changelog/Bug Tracker/Path in reference order (metadata URIs from
+  the installed gemspec).
 - `git-installed-discovery` (local `:git` source): `install`, `check`, `list`,
   `show --paths gitgem`, `info --version gitgem` all match Bundler 4.0.24 —
   **PASS**. This pins git-source discovery after a real install, the short
@@ -110,11 +116,11 @@ generated Windows binstub content differences.
 
 ## Interpretation
 
-- The 16 targeted fixtures (`ruby-version-mismatch`, `ruby-engine-mismatch`,
+- The 17 targeted fixtures (`ruby-version-mismatch`, `ruby-engine-mismatch`,
   `ruby-patchlevel-mismatch`, `platform-ruby-mismatch`, `list-multi-group`,
   `check-path`, `list-path`, `no-matching-version`, `platform-variant-fail`,
-  `ruby-metadata-fail`, `git-installed-discovery`, `install-check`, and the
-  four check/list/show fixtures) all passed; the 14 failures above are
+  `ruby-metadata-fail`, `git-installed-discovery`, `install-check`,
+  `show-info-installed`, and the four check/list/show fixtures) all passed; the 14 failures above are
   outside the M7(1)-(3) paths
   (native-extension tooling and generated binstub byte content), but the suite
   is **not green** and these failures are not claimed as fixed.
@@ -122,6 +128,11 @@ generated Windows binstub content differences.
   PATH source (header + `  * example (1.0.0)` + `bundle info` hint); the
   previous Celerite default printed only `example-1.0.0`. `cli_spec.cr` and
   `m7_installed_discovery_spec.cr` were updated to the same format.
+- `show-info-installed` pins the 4.0.24 read-only formats: `show <gem>` prints
+  only the installed path, and `info <gem>` prints tab-indented metadata fields
+  in reference order. `show <gem>` no longer prints the old Celerite detail
+  block; `info <gem>` now omits `Default Gem` unless the gem is actually a
+  default gem and adds the metadata URI fields.
 - 2.7.2 profile was not re-run in this verification.
 - The M7(1) full matrix (engine/patchlevel/ABI/Gemfile target, install
   re-check), more M7(2) path/Git combinations and additional platform

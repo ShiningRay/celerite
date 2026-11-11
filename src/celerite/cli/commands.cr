@@ -664,21 +664,30 @@ module Celerite
         return 0
       else
         if gem_dir = installed_gem_dir(definition, spec, lockfile)
-          # Read installed gemspec for summary/homepage when available.
-          summary, homepage = read_gemspec_summary_homepage(gem_dir, spec.full_name)
+          # Reference `bundle show <gem>` prints only the installed gem path;
+          # detailed metadata belongs to `bundle info`.
+          if command == "show"
+            stdout.puts display_path(gem_dir)
+            return 0
+          end
+
+          summary, homepage, metadata = read_gemspec_info(gem_dir, spec.full_name)
           stdout.puts "  * #{spec_display_name(spec, lockfile)}"
-          stdout.puts "  Summary: #{summary || spec.name}"
-          stdout.puts "  Homepage: #{homepage}" if homepage
-          stdout.puts "  Path: #{display_path(gem_dir)}"
-          stdout.puts "  Default Gem: no"
-          # For git specs, append short revision if available.
-          lockfile.source_for(spec).try do |src|
-            if src.type == "GIT"
-              rev = src.option("revision").to_s
-              unless rev.empty?
-                stdout.puts "  Git: #{rev[0, 12]}"
-              end
-            end
+          stdout.puts "\tSummary: #{summary}" if summary
+          stdout.puts "\tHomepage: #{homepage}" if homepage
+          stdout.puts "\tDocumentation: #{metadata["documentation_uri"]}" if metadata.has_key?("documentation_uri")
+          stdout.puts "\tSource Code: #{metadata["source_code_uri"]}" if metadata.has_key?("source_code_uri")
+          stdout.puts "\tFunding: #{metadata["funding_uri"]}" if metadata.has_key?("funding_uri")
+          stdout.puts "\tWiki: #{metadata["wiki_uri"]}" if metadata.has_key?("wiki_uri")
+          stdout.puts "\tChangelog: #{metadata["changelog_uri"]}" if metadata.has_key?("changelog_uri")
+          stdout.puts "\tBug Tracker: #{metadata["bug_tracker_uri"]}" if metadata.has_key?("bug_tracker_uri")
+          stdout.puts "\tMailing List: #{metadata["mailing_list_uri"]}" if metadata.has_key?("mailing_list_uri")
+          stdout.puts "\tPath: #{display_path(gem_dir)}"
+          stdout.puts "\tDefault Gem: yes" if default_gem?(gem_dir)
+          reverse_dependencies = gem_reverse_dependencies(locked_specs, spec.name)
+          if reverse_dependencies.any?
+            stdout.puts "\tReverse Dependencies: "
+            reverse_dependencies.each { |line| stdout.puts "\t\t#{line}" }
           end
           return 0
         end
@@ -701,7 +710,7 @@ module Celerite
       path.gsub('\\', '/')
     end
 
-    private def self.read_gemspec_summary_homepage(gem_dir : String, full_name : String) : {String?, String?}
+    private def self.read_gemspec_info(gem_dir : String, full_name : String) : {String?, String?, Hash(String, String)}
       # Try installed specifications first.
       install_root = File.dirname(File.dirname(gem_dir))
       spec_path = File.join(install_root, "specifications", "#{full_name}.gemspec")
@@ -717,11 +726,45 @@ module Celerite
           end
         end
       end
-      return {nil, nil} unless text
+      return {nil, nil, {} of String => String} unless text
 
-      summary = text.match(/spec\.summary\s*=\s*["']([^"']*)["']/).try(&.[1])
-      homepage = text.match(/spec\.homepage\s*=\s*["']([^"']*)["']/).try(&.[1])
-      {summary, homepage}
+      summary = text.match(/\.summary\s*=\s*["']([^"']*)["']/).try(&.[1])
+      homepage = text.match(/\.homepage\s*=\s*["']([^"']*)["']/).try(&.[1])
+      metadata = {} of String => String
+      text.scan(/\.metadata\s*=\s*\{(.*?)\}/m) do |match|
+        match[1].scan(/["']([^"']+)["']\s*=>\s*["']([^"']*)["']/) do |pair|
+          metadata[pair[1]] = pair[2]
+        end
+      end
+      text.scan(/\.metadata\[["']([^"']+)["']\]\s*=\s*["']([^"']*)["']/) do |pair|
+        metadata[pair[1]] = pair[2]
+      end
+      {summary, homepage, metadata}
+    end
+
+    # Reference `spec.default_gem?` is true for specs installed in Ruby's
+    # default gem directory; bundle-installed gems omit the line.
+    private def self.default_gem?(gem_dir : String) : Bool
+      return false unless bridge_available?
+
+      bridge = Bridge::Client.new
+      begin
+        env = bridge.ruby_environment
+        default_dir = env.default_gem_dir
+        !default_dir.empty? && gem_dir.starts_with?(default_dir)
+      rescue
+        false
+      ensure
+        bridge.close
+      end
+    end
+
+    private def self.gem_reverse_dependencies(locked_specs : Array(Lockfile::Spec), gem_name : String) : Array(String)
+      locked_specs.map do |spec|
+        dependency = spec.dependencies.find(&.name.==(gem_name))
+        next unless dependency
+        "#{spec.name} (#{spec.version}) depends on #{gem_name} (#{dependency.requirement})"
+      end.compact.sort
     end
 
     # ------------------------------------------------------------------

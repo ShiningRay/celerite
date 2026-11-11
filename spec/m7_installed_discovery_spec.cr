@@ -432,15 +432,15 @@ describe "M7 platform-specific installed gem discovery" do
     end
   end
 
-  it "show reports the platform-specific installed gem" do
+  it "info reports the platform-specific installed gem" do
     with_project(project_files_for(PLATFORM_LOCKFILE_TEXT, PLATFORM_GEMFILE, {
       "vendor/bundle/ruby/3.4.0/gems/nokogiri-1.18.10-x64-mingw-ucrt/lib/nokogiri.rb" => "",
       "vendor/bundle/ruby/3.4.0/gems/racc-1.8.1/lib/racc.rb"                          => "",
     })) do
-      code, out, err = capture_command { |o, e| Celerite::Commands.show_info("show", o, e, ["nokogiri"]) }
+      code, out, err = capture_command { |o, e| Celerite::Commands.show_info("info", o, e, ["nokogiri"]) }
       code.should eq(0)
       err.should eq("")
-      out.should contain("nokogiri (1.18.10)")
+      out.should contain("  * nokogiri (1.18.10)")
       out.should contain("nokogiri-1.18.10-x64-mingw-ucrt")
     end
   end

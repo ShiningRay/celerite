@@ -174,8 +174,14 @@ describe Celerite::CLI do
         code, out, err = run_cli(["show", "json_pure"])
         code.should eq(0)
         err.should be_empty
-        out.should contain("json_pure (2.8.1)")
-        out.should contain("  Path:")
+        out.should contain("vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1")
+        out.should_not contain("Summary:")
+
+        code, out, err = run_cli(["info", "json_pure"])
+        code.should eq(0)
+        err.should be_empty
+        out.should contain("  * json_pure (2.8.1)")
+        out.should contain("\tPath:")
         out.should contain("json_pure-2.8.1")
       end
     end
