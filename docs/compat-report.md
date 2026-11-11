@@ -215,7 +215,8 @@ No "full upstream suite" claim is made.
   and the `* example (1.0.0)` / `  Funding: ...` output on both profiles.
   The same 23-fixture targeted subset also passed on the 2.7.2 profile
   (23 passed, 0 failed, 0 skipped, exit 0).
-  Full 4.0.24 run: **101 passed, 14 failed, 0 skipped, exit 1**.
+  Full 4.0.24 run (2026-11-11 基线, 115 fixtures): **101 passed, 14 failed, 0
+  skipped, exit 1**.
 - The 14 failures split into: **7 × `make` unavailable** (racc native
   extension: `add-group`, `add-optimistic`, `add-remove`, `add-version`,
   `cache-all-platforms`, `native-ext`, `native-ext-target`) and
@@ -223,9 +224,27 @@ No "full upstream suite" claim is made.
   `exec-loader`, `install-force`, `install-fresh`, `install-rerun`,
   `pristine`, `pristine-named`). None are on the M7(1)-(3) paths; the suite is
   nevertheless not green.
+- **Differential 全量刷新（2026-11-12，HEAD=`a8753b6` 已推送，shim-built bin）**：
+  全量 `script/differential`（Bundler 4.0.24，无 fixture 参数，122 fixtures）实测
+  **114 passed, 8 failed, 0 skipped，wrapper exit 1**（log
+  `C:\temp\celerite-diff-full-4.0.24-a8753b6.log`，mtime 03:18:50 CST，汇总行在
+  log 第 295 行）。8 个 FAIL = 7× racc `make` 不可用（`add-group`/`add-optimistic`/
+  `add-remove`/`add-version`/`cache-all-platforms`/`native-ext`/`native-ext-target`，
+  块内均有 `make failedNo such file or directory - make`，racc-1.8.1/ext/racc/cparse）
+  + 1× `exec-loader`（`ruby/4.0.0/bin/loader` 与 `loader.bat` 归一化后内容差异）。
+  按名字比对：当前 8 个 FAIL 全部落在先前记录的 14 个 FAIL 名单内（⊆），即无新增失败
+  用例；先前 7 个 `.bat`/`loader` 失败中除 `exec-loader` 外的 6 个（`binstubs`/
+  `install-force`/`install-fresh`/`install-rerun`/`pristine`/`pristine-named`）本轮转
+  PASS。为何从 7 降为 1 不作因果断言（本轮未取证）。与 101/14 基线相比 delta 为
+  +13 passed / −6 failed，同期新增 7 个 fixtures（含 2 个 boundary fixtures，均 PASS）。
+  **2.7.2 全量本轮未重跑——未验证**；复现：
+  `BUNDLER_REF_VERSION=2.7.2 CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential`。
+  逐例证据与分类见
+  [`docs/compat-matrix/generated/differential-4.0.24-2026-11-11.md`](compat-matrix/generated/differential-4.0.24-2026-11-11.md)。
 - Durable details and per-fixture notes:
   [`docs/compat-matrix/generated/differential-4.0.24-2026-11-11.md`](compat-matrix/generated/differential-4.0.24-2026-11-11.md).
-- **Still unverified**: full 2.7.2 profile run (targeted 28/28 passed),
+- **Still unverified**: full 2.7.2 profile run (targeted 28/28 passed; 2026-11-12
+  刷新仍未重跑 2.7.2 全量，复现命令见上条),
   release-form/published-binary behavior,
   M7(1) remaining matrix (ABI/platform positive variants; Gemfile target Ruby
   without lock `RUBY VERSION` with dependencies satisfied / other
