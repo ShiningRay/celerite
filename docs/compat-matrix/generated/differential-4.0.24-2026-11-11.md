@@ -2,8 +2,11 @@
 
 ## Provenance
 
-- Code under test: `081678723020f2db4dba06d5f2e6f7a99569f0ff` plus this
-  change's `ruby-engine-version-mismatch` fixture. It includes the earlier
+- Code under test: `0f78548` plus this change's positive
+  ruby-target fixtures (`ruby-target-match`, `ruby-patchlevel-match`,
+  `ruby-engine-match`), the matching version/patchlevel/engine spec
+  examples, and the `check` re-resolve notification for a Gemfile patchlevel
+  the lockfile RUBY VERSION string does not preserve. It includes the earlier
   `SolveFailure` fix (Ruby/RubyGems-metadata-only candidates exit 6;
   genuinely missing versions exit 7), path/multi-group fixtures, the fund
   PATH/GIT source metadata fix, and Ruby/RubyGems candidate-filter/
@@ -23,7 +26,7 @@
 ```sh
 crystal tool format --check src spec          # EXIT 0
 crystal build --no-codegen src/cli.cr         # EXIT 0 (2 pre-existing deprecation warnings)
-crystal spec <109-example M7 + base subset>    # 109 examples, 0 failures, EXIT 0
+crystal spec <111-example M7 + base subset>    # 111 examples, 0 failures, EXIT 0
 crystal spec spec/cli_spec.cr --link-flags "<shim.o>"   # 24 examples, 0 failures, EXIT 0
 crystal spec spec/m7_installed_discovery_spec.cr spec/m7_platform_spec.cr \
   --link-flags "<shim.o>"                     # 22 examples, 0 failures, EXIT 0
@@ -34,8 +37,9 @@ TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   ruby-metadata-fail rubygems-metadata-fail no-matching-version \
   platform-variant-fail install-check check-missing check-unresolved \
   list-missing show-missing list-multi-group check-path list-path \
-  git-installed-discovery show-info-installed fund-path
-# 20 passed, 0 failed, 0 skipped, EXIT 0
+  git-installed-discovery show-info-installed fund-path ruby-target-match
+  ruby-patchlevel-match ruby-engine-match
+# 23 passed, 0 failed, 0 skipped, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   BUNDLER_REF_VERSION=2.7.2 bash script/differential ruby-version-mismatch \
@@ -43,11 +47,12 @@ TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" \
   ruby-patchlevel-mismatch ruby-metadata-fail rubygems-metadata-fail \
   no-matching-version platform-variant-fail install-check check-missing \
   check-unresolved list-missing show-missing list-multi-group check-path \
-  list-path git-installed-discovery show-info-installed fund-path
-# 20 passed, 0 failed, 0 skipped, EXIT 0
+  list-path git-installed-discovery show-info-installed fund-path \
+  ruby-target-match ruby-patchlevel-match ruby-engine-match
+# 23 passed, 0 failed, 0 skipped, EXIT 0
 
 TMPDIR=/c/temp CELERITE_BIN="$PWD/bin/celerite.exe" bash script/differential
-# 98 passed, 14 failed, 0 skipped, EXIT 1
+# 101 passed, 14 failed, 0 skipped, EXIT 1
 ```
 
 The full run above was streamed to the terminal; the failure list below is the
@@ -121,6 +126,17 @@ generated Windows binstub content differences.
 - `install-check` (local compact-index `json_pure`, `install`, `check`): both
   exit 0 and the installed `gems`/`specifications` trees match — **PASS**.
   This pins the post-install recheck path.
+- `ruby-target-match` (`ruby "4.0.6"`, `install` + `check`), `ruby-engine-match`
+  (`ruby "4.0.6", engine: "ruby", engine_version: "4.0.6"`, `install` +
+  `check`), and `ruby-patchlevel-match` (`ruby "4.0.6", patchlevel: "0"`,
+  `install` + `check`): all exit 0 on both profiles — **PASS**. These pin the
+  positive/matching side of the Gemfile target Ruby matrix. The patchlevel
+  case also pins the reference quirk that an explicit Gemfile patchlevel the
+  lockfile RUBY VERSION string does not preserve makes Bundler re-resolve on
+  `check` and print `Resolving dependencies...` (`definition.rb`
+  `@unlocking_ruby`); `Commands.check` mirrors that notification via
+  `lock_ruby_declaration_mismatch?` before reporting satisfaction, while still
+  using the lockfile.
 - `show-info-installed` (local compact-index `json_pure`, `install`, `show
   json_pure`, `info json_pure`): both exit 0 — **PASS**. This pins the 4.0.24
   read-only formats: `show <gem>` prints only the installed path, and `info
@@ -135,12 +151,13 @@ generated Windows binstub content differences.
 
 ## Interpretation
 
-- The 20 targeted fixtures (`ruby-version-mismatch`, `ruby-engine-mismatch`,
+- The 23 targeted fixtures (`ruby-version-mismatch`, `ruby-engine-mismatch`,
   `ruby-engine-version-mismatch`, `ruby-patchlevel-mismatch`,
   `platform-ruby-mismatch`, `list-multi-group`,
   `check-path`, `list-path`, `no-matching-version`, `platform-variant-fail`,
   `ruby-metadata-fail`, `rubygems-metadata-fail`, `git-installed-discovery`,
-  `install-check`, `show-info-installed`, `fund-path`, and the four
+  `install-check`, `show-info-installed`, `fund-path`, `ruby-target-match`,
+  `ruby-patchlevel-match`, `ruby-engine-match`, and the four
   check/list/show fixtures) all passed; the 14 failures above are
   outside the M7(1)-(3) paths
   (native-extension tooling and generated binstub byte content), but the suite
@@ -159,9 +176,12 @@ generated Windows binstub content differences.
   `* example (1.0.0)` / `  Funding: https://example.com/path-funding`, not as
   the fixed no-funding response. `read_funding_uri` now checks PATH/GIT source
   gemspecs before the installed RubyGems tree.
-- The same 20 targeted fixtures also passed on the 2.7.2 profile
-  (20 passed, 0 failed, 0 skipped, exit 0). The full 2.7.2 suite was not
+- The same 23 targeted fixtures also passed on the 2.7.2 profile
+  (23 passed, 0 failed, 0 skipped, exit 0). The full 2.7.2 suite was not
   re-run in this verification.
-- The M7(1) full matrix (engine/patchlevel/ABI/Gemfile target, install
-  re-check), more M7(2) path/Git combinations and additional platform
-  variants, and M7(3) broader differential evidence remain incomplete.
+- The M7(1) positive matrix (matching version/patchlevel/engine/
+  engine_version) and the patchlevel re-resolve notification are now covered;
+  remaining gaps are ABI/platform positive variants, a Gemfile target Ruby
+  with no lockfile RUBY VERSION, `list`/`show`/`info` re-resolve notification
+  parity, more M7(2) path/Git combinations and additional platform variants,
+  and M7(3) broader differential evidence.

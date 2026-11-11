@@ -36,6 +36,18 @@ describe Celerite::RubyRuntime do
     Celerite::RubyRuntime.validate!("ruby 4.0.6", env)
   end
 
+  it "accepts matching version with explicit patchlevel" do
+    env = test_ruby_env("4.0.6", "ruby", "4.0.6", "0")
+    requested = Celerite::RubyVersion.from_string("ruby 4.0.6p0").not_nil!
+    Celerite::RubyRuntime.validate_version!(requested, env)
+  end
+
+  it "accepts matching explicit engine and engine_version" do
+    env = test_ruby_env("4.0.6", "ruby", "4.0.6", "0")
+    requested = Celerite::RubyVersion.from_string("ruby 4.0.6 (ruby 4.0.6)").not_nil!
+    Celerite::RubyRuntime.validate_version!(requested, env)
+  end
+
   it "detects engine mismatch" do
     env = test_ruby_env
     begin
