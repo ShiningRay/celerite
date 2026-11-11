@@ -386,11 +386,15 @@ module Celerite
     private def self.build_timestamp : String
       begin
         output = IO::Memory.new
-        result = Process.run("git", ["rev-parse", "--format=%cs", "-s", "HEAD"],
+        # `git log -1 --format=%cs` is portable across Git builds; some
+        # `git rev-parse --format=%cs` invocations return non-date output with
+        # success on Windows Git 2.55, so avoid treating arbitrary stdout as a
+        # timestamp.
+        result = Process.run("git", ["log", "-1", "--format=%cs", "HEAD"],
           output: output, error: Process::Redirect::Close)
         if result.success?
-          ts = output.to_s.strip
-          return ts unless ts.empty?
+          ts = output.to_s.lines.first?.try(&.strip) || ""
+          return ts if ts.matches?(/^\d{4}-\d{2}-\d{2}$/)
         end
       rescue
       end
