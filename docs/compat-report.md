@@ -241,7 +241,7 @@ No "full upstream suite" claim is made.
   `BUNDLER_REF_VERSION=2.7.2 CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential`。
   逐例证据与分类见
   [`docs/compat-matrix/generated/differential-4.0.24-2026-11-11.md`](compat-matrix/generated/differential-4.0.24-2026-11-11.md)。
-- **M7(1) 矩阵补强（2026-11-12，HEAD=`7c446d9` + 同轮 worktree 未提交改动，shim-built bin）**：
+- **M7(1) 矩阵补强（2026-11-12，HEAD=`7c446d9` + 同轮 worktree 未提交改动，shim-built bin，后随 3c4f55d 提交）**：
   新增 6 个 differential fixtures（`ruby-metadata-boundary-fail` `>= 4.0.7`、
   `rubygems-metadata-boundary-fail` `>= 4.0.17`、`ruby-metadata-exact-match`
   `= 4.0.6`、`rubygems-metadata-pessimistic-match` `~> 4.0`、
@@ -264,8 +264,30 @@ No "full upstream suite" claim is made.
   [`docs/compat-matrix/generated/differential-4.0.24-2026-11-11.md`](compat-matrix/generated/differential-4.0.24-2026-11-11.md)。
 - Durable details and per-fixture notes:
   [`docs/compat-matrix/generated/differential-4.0.24-2026-11-11.md`](compat-matrix/generated/differential-4.0.24-2026-11-11.md).
+- **M7(3) 部分修复（2026-11-12，HEAD=`3c4f55d`，shim-built bin）**：新增 differential fixture
+  `fixtures/differential/env-report`（`env`，Gemfile cwd 正常输出，exit 0）并与既有
+  `issue-no-gemfile`（exit 10）/`issue-missing-gems`（exit 1）组成 env/issue 稳定场景集
+  （lead 要求的 repo-cwd 正常输出/无 Gemfile exit 10/缺 gem issue exit 1）。定向 differential
+  **4.0.24：3 passed, 0 failed, 0 skipped，DIFF_EXIT=0**；**2.7.2：3 passed, 0 failed, 0
+  skipped，DIFF_EXIT=0**（命令
+  `CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp [BUNDLER_REF_VERSION=2.7.2] bash script/differential env-report issue-no-gemfile issue-missing-gems`；
+  harness N5 归一化剥离 `## Environment` 机体至 `## Bundle Doctor` 后比对）。`console`/`gem`
+  边界证据（shim 本地、非 differential）：IRB 缺失 PATH 下 `console` stderr 含
+  `bundle console requires IRB (`irb`) in PATH... (Celerite: full interactive bundle console not implemented; install IRB to exec irb in bundle context)`
+  且 EXIT 127（同受限 PATH 下 reference 为 `bundle: command not found`，不可差分比对；IRB 可用
+  但依赖未装入 bundle 的交互/管道路径本轮探针非 green，**未验证**，复现：在已安装依赖的 bundle
+  cwd 下 `printf 'exit\n' | CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash -c '... celerite console'`）。
+  `gem`：`celerite gem <name>` 生成 6 文件最小 scaffold（Gemfile/lib/<name>.rb/LICENSE.txt/
+  <name>.gemspec/README.md）+ stdout `Creating gem '<name>'...`，EXIT 0；`--test=rspec` 额外
+  warning `bundle gem options not fully supported by Celerite: --test=rspec` + “Generating a
+  minimal scaffold only…” 仍 EXIT 0；reference bundler 4.0.24 `bundle gem` 为交互式完整模板
+  （本轮探针 14 文件，含 bin/console,bin/setup,Rakefile,sig,lib/<name>/version.rb 等并提示
+  test/CI/license/coc/changelog/linter），模板/选项矩阵差异大，完整 differential **未覆盖**。
+  satisfied `issue`（含 lock）的 differential 场景 **未验证**（先前探针 celerite 侧 install/issue
+  路径与 harness 预期不一致，复现同 `env-report` 形制在含 file-index Gemfile+lock 的 fixture 上
+  跑 `script/differential`）。
 - **Still unverified**: full 2.7.2 profile run (targeted sets passed: 28/28
-  earlier, 30/30 and 36/36 on 2026-11-12; 2026-11-12 矩阵补强轮仍未重跑 2.7.2
+  earlier, 30/30 and 36/36 on 2026-11-12, and 3/3 env/issue on 2026-11-12; 2026-11-12 矩阵补强轮仍未重跑 2.7.2
   全量，复现命令见上条),
   release-form/published-binary behavior,
   M7(1) remaining matrix (ABI positive variants beyond the local
