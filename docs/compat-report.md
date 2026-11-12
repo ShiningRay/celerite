@@ -1,4 +1,4 @@
-﻿# Celerite compatibility report — M7 baseline snapshot (2026-11-10)
+# Celerite compatibility report — M7 baseline snapshot (2026-11-10)
 
 Generated for iteration 1 baseline alignment. Git evidence at time of this update:
 `HEAD=8e91a2f` (`test(M7): add installed-tree fixtures for differential comparisons`)
@@ -364,13 +364,13 @@ script/profile                    # refresh profile numbers
 
 ## M7(1)-(3) 阶段性闭环汇总（事实快照，14ccb9d/5949cc2 docs 基线 + b4fe095 B2 同步 + a482329/582b099 M7(3) issue/env/gem/IRB 边界证据同步，2026-11-12）
 
-> 范围：仅 M7(1) Ruby/平台/引擎/patchlevel/元数据约束与通知、M7(2) 安装后 gem 发现、M7(3) 占位路径真实化/显式 unsupported。依据仓库已提交证据（`docs/roadmap.md`、`docs/compat-report.md`、`docs/compat-matrix/generated/differential-4.0.24-2026-11-11.md`、`spec/`、`fixtures/differential/` 与 commit 记录）与前序/本轮可复核实测。**HEAD=`0fabf9e36b5463bd17ad9f591d3e10f3f8f15f2c`（`fix(M7 task-2): print lock-ruby unlock notice before empty-deps return in list`，7 files：`src/celerite/cli/commands.cr` +2/-? 与 B3 fixtures，已推送 `origin/main`）**：`a482329` 补齐 satisfied `issue` doctor success 行，`340f050` docs 同步，`582b099` 新增 `issue-satisfied` fixture 并双 profile 1/0/0 PASS，`0fabf9e` 修复 `list` 空 deps 早返回前打印 lock-ruby unlock notice 并 fixture 化 B3 两分支（check/list satisfied+missing）双 profile 4/0/0 PASS。**582b099 后本子项追加受控探针（docs-only，2026-11-12）**：`gem` 模板/选项/`--help` 行为与 env/issue 归一化外字段差异取证、IRB-in-bundle 尝试（≤2 次，未获稳定可用对照，阻塞+复现）。本节计数/全量差分仍沿用既有可复核实测，**未在 5949cc2/b4fe095/a482329/582b099/0fabf9e 及本子项后重跑全量 differential 或 M7 spec 子集**；M7(1)-(3) 复选框保持未勾选，**不得视为 M7 整体验收通过**。
+> 范围：仅 M7(1) Ruby/平台/引擎/patchlevel/元数据约束与通知、M7(2) 安装后 gem 发现、M7(3) 占位路径真实化/显式 unsupported。依据仓库已提交证据（`docs/roadmap.md`、`docs/compat-report.md`、`docs/compat-matrix/generated/differential-4.0.24-2026-11-11.md`、`spec/`、`fixtures/differential/` 与 commit 记录）与前序/本轮可复核实测。**当前 HEAD=`0423b2f66aec54ae78a9f6aa1667efebdad018ce`（docs 证据同步至该 HEAD；M7(1)-(3) 实现证据快照源头至 `0fabf9e36b5463bd17ad9f591d3e10f3f8f15f2c` `fix(M7 task-2): print lock-ruby unlock notice before empty-deps return in list`，已推送 `origin/main`）**：`a482329` 补齐 satisfied `issue` doctor success 行，`340f050` docs 同步，`582b099` 新增 `issue-satisfied` fixture 并双 profile 1/0/0 PASS，`0fabf9e` 修复 `list` 空 deps 早返回前打印 lock-ruby unlock notice 并 fixture 化 B3 两分支（check/list satisfied+missing）双 profile 4/0/0 PASS。**582b099 后追加受控探针（docs-only，2026-11-12，`6488b8a`）**：`gem` 模板/选项/`--help` 行为与 env/issue 归一化外字段差异取证、IRB-in-bundle 尝试（≤2 次，未获稳定可用对照，阻塞+复现）。`b5cfa51`/`0423b2f` 为 docs 汇总/对齐提交（本子项同步证据与边界至 HEAD `0423b2f`）。本节计数/全量差分仍沿用既有可复核实测，**未在 5949cc2/b4fe095/a482329/582b099/0fabf9e 及后续 docs-only 提交后重跑全量 differential 或 M7 spec 子集**；M7(1)-(3) 复选框保持未勾选，**不得视为 M7 整体验收通过**。
 
 ### 1) 证据索引
 
 | 类别 | 证据（commit / 路径 / 日志） | 计数/结论（与实测一致） |
 |---|---|---|
-| 关键 commit（至 HEAD） | `a8753b6`、`f168d6f`、`7c446d9`、`3c4f55d`、`34a8cad`、`f3ad8a5`、`ae8eafc`、`20690ff`、`8d20c17`、`bdd0ca6`、`0032664`、`14ccb9d`、`5949cc2`、`8f1ef39`、`b4fe095`、`7a4f1bc`、`bce1138`、`a482329`、`340f050`、`582b099`、`0fabf9e` | 实现/fixture/spec/差分修复与文档证据链；`14ccb9d`/`8f1ef39`/`7a4f1bc`/`bce1138`/`340f050` 为 docs 同步；`5949cc2`/`b4fe095` 修复 B2 exec/console；`a482329` 修复 satisfied `issue` doctor success 行；`582b099` 新增 `fixtures/differential/issue-satisfied` 并双 profile 1/0/0 PASS；本子项追加 gem/env-issue 字段/IRB-in-bundle 受控探针（docs-only，未重跑全量差分/子集 spec） |
+| 关键 commit（至 HEAD） | `a8753b6`、`f168d6f`、`7c446d9`、`3c4f55d`、`34a8cad`、`f3ad8a5`、`ae8eafc`、`20690ff`、`8d20c17`、`bdd0ca6`、`0032664`、`14ccb9d`、`5949cc2`、`8f1ef39`、`b4fe095`、`7a4f1bc`、`bce1138`、`a482329`、`340f050`、`582b099`、`0fabf9e`、`6488b8a`、`b5cfa51`、`0423b2f` | 实现/fixture/spec/差分修复与文档证据链；`14ccb9d`/`8f1ef39`/`7a4f1bc`/`bce1138`/`340f050`/`6488b8a`/`b5cfa51`/`0423b2f` 为 docs 同步/汇总；`5949cc2`/`b4fe095` 修复 B2 exec/console；`a482329` 修复 satisfied `issue` doctor success 行；`582b099` 新增 `fixtures/differential/issue-satisfied` 并双 profile 1/0/0 PASS；`6488b8a` 追加 gem/env-issue 字段/IRB-in-bundle 受控探针记录（docs-only，未重跑全量差分/子集 spec） |
 | M7 子集 spec（既有实测，未重跑） | `spec/m7_reverse_dependencies_spec.cr spec/m7_installed_discovery_spec.cr spec/m7_platform_match_spec.cr spec/m7_ruby_constraints_spec.cr spec/m7_resolver_ruby_constraints_spec.cr spec/ruby_version_spec.cr spec/m7_ruby_runtime_spec.cr spec/m7_platform_spec.cr` | **70 examples, 0 failures, 0 errors, 0 pending, EXIT 0**（`ae8eafc` 轮，14.65s） |
 | M7(3) spec（既有实测，未重跑） | `spec/m7_console_spec.cr spec/m7_gem_spec.cr spec/m7_fund_spec.cr` | **8 examples, 0 failures, 0 errors, 0 pending, EXIT 0** |
 | M7(2) 定向回归（既有实测） | `info-reverse-dependencies-path check-path list-path git-installed-discovery show-info-installed list-multi-group`（双 profile） | 4.0.24 **6/0/0 EXIT 0**、2.7.2 **6/0/0 EXIT 0**（`ae8eafc`） |
@@ -419,11 +419,11 @@ script/profile                    # refresh profile numbers
 - **若继续推进的最小可行方向**：补 IRB-in-bundle 稳定受控 fixture/env（可安装 irb+deps、规避 reline-fiddle 脆弱性）与 Case C 文档化边界、M7(1)/(2) 可低成本 fixture/spec 化项（B3 harness 扩展、nolock deps-satisfied 通知、Default Gem ≤1 次再试、path/GIT+group/platform 组合、show/info 重解通知等可行子项）并回归；M7(3) 仅在可构造稳定可比场景时补差分，否则维持显式 unsupported/边界记录（gem 矩阵/console UX 已取证为非低成本对齐点）。达当前环境最大可行闭环时提交阶段验收汇总报首辅裁断 task-2 收口与 task-3 启动。
 
 （本节末：以上结论与计数均来自既有实测 commit/日志与本轮 docs 核实；未重跑 differential/spec 的条目已标注。）
-# Stage acceptance summary (HEAD=b5cfa51, 2026-11-12)
+# Stage acceptance summary (docs aligned to HEAD=0423b2f, 2026-11-12)
 
-- Current HEAD: b5cfa51 (docs sync); source HEAD 0fabf9e. task-2 remains in_progress; M7 checkboxes not checked.
-- Baselines (unchanged, no rerun): 4.0.24 130:123/7/0; 2.7.2 130:123/6/1; M7 spec subset 70/0/0/0.
-- Recent fixture evidence: issue-satisfied 1/0/0; B3 nolock satisfied+missing 4/0/0; env/issue stable set 3/0/0; M7 spec subset 68/0/0/0.
-- Unverified/blocked: Default Gem lockfile resolution mismatch, IRB-in-bundle/interactive, console UX, Case C, gem full matrix, env/issue outer fields, ABI/platform matrix, full differential not rerun.
-- docs aligned to HEAD b5cfa51; no bin/shim/shard.lock committed.
-- Recommendation: stage acceptance summary submitted; await lead adjudication for task-2 closure and task-3 start.
+- Current HEAD: 0423b2f66aec54ae78a9f6aa1667efebdad018ce (docs-only sync commits on main; prior snapshot commit 0423b2f titled with HEAD=b5cfa51); source implementation evidence HEAD 0fabf9e. task-2 remains in_progress; M7 checkboxes not checked.
+- Baselines (unchanged, no rerun): 4.0.24 130:123/7/0 (log `C:\temp\celerite-diff-full-4.0.24-execloader-final.log`, 2026-11-12 08:02:07); 2.7.2 130:123/6/1 (log `C:\temp\celerite-diff-full-2.7.2-8d20c17.log`, 2026-11-12 10:12:15 CST); M7 spec subset 70/0/0/0 (ae8eafc, 未重跑)。
+- Recent fixture evidence (unchanged): issue-satisfied 1/0/0 (582b099); B3 nolock satisfied+missing 4/0/0 (0fabf9e); env/issue stable set 3/0/0 (34a8cad/a482329 证据)；M7(3) spec 8/0/0/0（既有）。尾段原记“M7 spec subset 68/0/0/0”为笔误（正文/基线均为 70/0/0/0），本次更正为 70/0/0/0。
+- Unverified/blocked（未实跑/未闭环，复现见正文对应条目）：B1 Default Gem stable diff/spec；B2 IRB-in-bundle/交互/console UX（Case A exec-irb 对齐、console UX 未对齐；IRB-in-bundle ≤2 次未获稳定对照，reline/fiddle/LoadError；Case C bundler gem 不可见且无 `CELERITE_REFERENCE_BUNDLER_LIB`）；B3 nolock 其他 `show`/`info` 重解通知场景；`gem` 完整模板/选项/`--help` 显式 unsupported；env/issue 归一化外字段与稳定集外完整输出；ABI/平台/gnu-musl 矩阵；全量 differential/M7 子集 spec 未在 5949cc2/b4fe095/a482329/582b099/0fabf9e 及后续 docs-only 提交后重跑。bridge 不可用不得视为通过。
+- docs aligned to HEAD 0423b2f (this subitem); no bin/shim/shard.lock committed. M7 checkboxes not checked.
+- Recommendation: stage acceptance summary/evidence boundaries synced at 0423b2f; await lead adjudication for task-2 closure and task-3 start.
