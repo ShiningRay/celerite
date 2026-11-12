@@ -1694,6 +1694,8 @@ module Celerite
         stderr.puts "Install missing gems with `bundle install`"
         return 1
       end
+      stdout.puts "The Gemfile's dependencies are satisfied"
+      stdout.puts "No issues found with the installed bundle"
       0
     end
 
