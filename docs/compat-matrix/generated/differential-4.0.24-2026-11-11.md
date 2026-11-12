@@ -341,8 +341,7 @@ content, not inference):
   `PASS rubygems-metadata-boundary-match (exit=0)`). Why the `.bat`/`loader`
   class dropped 7 -> 1 is **not** asserted (no evidence gathered this run
   beyond the name-level comparison).
-- Bundler 2.7.2 full suite: **not rerun this subitem — 未验证**. Repro:
-  `BUNDLER_REF_VERSION=2.7.2 CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential`.
+- Bundler 2.7.2 full suite: **rerun this subitem (2026-11-12 08:34–08:45 CST, HEAD=`20690ff`, shim-built bin): 130 fixtures, 121 passed / 8 failed / 1 skipped (documented deferral), wrapper exit 1** — log `C:\temp\celerite-diff-full-2.7.2-20690ff.log` (12228 bytes, mtime 08:45:20 CST, 293 lines). FAIL 8 = class A racc/make 6 (add-optimistic, add-remove, add-version, cache-all-platforms, native-ext, native-ext-target) + class C clean-output 2 (2.7.2-specific: `clean-force`, `clean-unused`; both PASS on 4.0.24 full run `C:\temp\celerite-diff-full-4.0.24-execloader-final.log`). SKIP 1 = `add-group` (documented deferral). See “Full suite (no fixture args), Bundler 2.7.2 (2026-11-12 08:34–08:45 run on 20690ff: 121/8/1)” below.
 
 ### Full suite (no fixture args), Bundler 4.0.24 (2026-11-12 04:20-04:37 run on 7c446d9 + worktree: 120/8/0)
 
@@ -395,10 +394,38 @@ CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential
 - Delta vs the 03:18 run: +6 passed / +/-0 failed / +6 fixtures. No causal
   claim is made for any per-fixture behavior change beyond the name-level
   comparison.
-- Bundler 2.7.2 full suite: **not rerun this subitem — 未验证**. Repro:
-  `BUNDLER_REF_VERSION=2.7.2 CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential`.
+- Bundler 2.7.2 full suite: **rerun this subitem (2026-11-12 08:34–08:45 CST, HEAD=`20690ff`, shim-built bin): 121/8/1, wrapper exit 1** — log `C:\temp\celerite-diff-full-2.7.2-20690ff.log`. The targeted 36-fixture set above (36/36 PASS, DIFF_272_36_EXIT=0) is retained; the full run additionally records class C clean-output FAILs `clean-force`/`clean-unused` (2.7.2-specific, both PASS on 4.0.24 full run, root cause unlocated).
   (The 2.7.2 evidence this subitem is the targeted 36-fixture set above: 36/36
   PASS, DIFF_272_36_EXIT=0.)
+
+### Full suite (no fixture args), Bundler 2.7.2 (2026-11-12 08:34–08:45 run on 20690ff: 121/8/1)
+
+```sh
+BUNDLER_REF_VERSION=2.7.2 CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential
+```
+
+(run inside `bash -c '...'` with log redirect: `bash -c 'BUNDLER_REF_VERSION=2.7.2 CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential > /c/temp/celerite-diff-full-2.7.2-20690ff.log 2>&1; echo DIFF_FULL_EXIT=$?'`; wrapper reported `DIFF_FULL_EXIT=1`.)
+
+- Worktree: HEAD=`20690ff` (`20690ff3e290803e18bf2fd581781dd88be47716`), `main == origin/main`, only `?? shard.lock`. 130 fixture dirs total.
+- Binary: shim-built `bin/celerite.exe` `--version` `0.1.0`, VER_EXIT 0, mtime `2026-11-12 08:34:15`, size 9972126 bytes (rebuilt at HEAD: `crystal build src/cli.cr -o bin/celerite.exe --link-flags "C:/Users/ShiningRay/AppData/Local/Temp/celerite-shim-m7wip/evp_md_size_shim.o"`, BUILD_EXIT 0; 2 known deprecation warnings `src\celerite\cli\commands_install.cr:567:43,631:20` `Deprecated File.executable?`). `bin/` gitignored, shim out-of-repo (stock EVP_MD_size/OpenSSL mismatch remains).
+- Log: `C:\temp\celerite-diff-full-2.7.2-20690ff.log`, 12228 bytes, mtime `2026-11-12 08:45:20` CST, 293 lines.
+- Summary (final line): `differential (2.7.2): 121 passed, 8 failed, 1 skipped (documented deferrals)` — 121 PASS + 8 FAIL + 1 SKIP = 130 (all fixtures accounted).
+
+| Fixture | Command (log) | Observed difference (normalized) | Class |
+|---|---|---|---|
+| add-optimistic | `add racc --optimistic` | exit ref=0/cel=1; stderr `extension build failed for racc-1.8.1: ERROR: Failed to build gem native extension.` + racc/cparse + `make ... clean` | A racc/make (env, `make` unavailable) |
+| add-remove | install / add racc / remove racc | stdout `13c13 < racc (~> 1.8) was removed. --- > racc was removed.`; stderr racc make failure | A racc/make (env) |
+| add-version | `add racc --version=1.8.1` | exit ref=0/cel=1; stderr racc make failure | A racc/make (env) |
+| cache-all-platforms | cache --all-platforms | exit ref=0/cel=1; stdout missing `Bundle complete! 3 Gemfile dependencies, 4 gems now installed.`/bundle path/`Updating files in vendor/cache` + 3 gem lines; stderr racc make failure | A racc/make (env) |
+| clean-force | install / clean --force | stdout `9,10d8 < Removing json_pure (2.8.1) < Removing thor (1.3.2)` (reference prints removal lines, celerite prints none) | C clean-output (2.7.2-specific) |
+| clean-unused | install / remove thor / clean | stdout `11d10 < Removing json_pure (2.8.1)` | C clean-output (2.7.2-specific) |
+| native-ext | install / exec ruby inline.rb | exit ref=0/cel=1; stdout missing `Bundle complete! 1 Gemfile dependency, 2 gems now installed.`/bundle path/`Racc::Parser`; stderr racc make failure | A racc/make (env) |
+| native-ext-target | install --target-rbconfig=rbconfig.rb / exec ruby inline.rb | same shape as native-ext | A racc/make (env) |
+
+- SKIP (1, documented deferral, harness): `SKIP add-group (deferred for 2.7.2: reference 2.7.2 auto-installs Bundler 4.0.24 from rubygems.org (network-required); offline sandbox cannot prove this path)` — not a fixture failure; in 4.0.24 full run `add-group` is class A FAIL (racc/make).
+- Class split: A racc/make = 6, C clean-output = 2, B loader/.bat = 0, other = 0. `PASS exec-loader (exit=42)` and `PASS exec-loader-disabled (exit=42)` present (consistent with 4.0.24 post-fix). Boundary fixtures PASS: `PASS ruby-metadata-boundary-match (exit=0)`, `PASS rubygems-metadata-boundary-match (exit=0)`.
+- By-name comparison vs 4.0.24 full 130:123/7/0 (`C:\temp\celerite-diff-full-4.0.24-execloader-final.log`, A:7 = add-group, add-optimistic, add-remove, add-version, cache-all-platforms, native-ext, native-ext-target): 6 racc/make failures shared (add-optimistic/add-remove/add-version/cache-all-platforms/native-ext/native-ext-target); `add-group` differs in form (2.7.2 deferred SKIP vs 4.0.24 class A FAIL — harness/network constraint, not asserted as product regression); `exec-loader`/`exec-loader-disabled` PASS on both; **2 2.7.2-specific class C FAILs** `clean-force`/`clean-unused` (both PASS on 4.0.24). No causal claim beyond measured name-level/class comparison; clean-output root cause unlocated (2.7.2 reference emits `Removing <name> (<version>)` lines in these fixtures, celerite does not — product compat gap vs profile contract difference to be isolated, **未修复**).
+
 
 ## Interpretation (this subitem scope)
 
@@ -456,11 +483,22 @@ CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential
   (`C:\temp\celerite-diff-full-4.0.24-execloader-final.log`), with only the 7
   racc/make failures remaining and `exec-loader`/`exec-loader-disabled` PASS.
   Full
-  `script/differential` on 2.7.2 was **not** rerun — **未验证**; repro:
-  `BUNDLER_REF_VERSION=2.7.2 CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential`.
-  The 2.7.2 evidence for this subitem is instead the targeted extension: the
-  36-fixture set (prior 30 + 6 new matrix fixtures) passed 36/36
-  (`differential (2.7.2): 36 passed, 0 failed, 0 skipped`, DIFF_272_36_EXIT=0).
+  `script/differential` on 2.7.2 **was rerun** (2026-11-12 08:34–08:45 CST,
+  HEAD=`20690ff`, shim-built bin `0.1.0` mtime 08:34:15 9972126 bytes): 130
+  fixtures, **121 passed, 8 failed, 1 skipped (documented deferral), wrapper
+  exit 1** (`C:\temp\celerite-diff-full-2.7.2-20690ff.log`, 12228 bytes, mtime
+  08:45:20 CST, 293 lines). FAIL 8 = class A racc/make 6 (add-optimistic,
+  add-remove, add-version, cache-all-platforms, native-ext, native-ext-target)
+  + class C clean-output 2 (**2.7.2-specific**: `clean-force`/`clean-unused` —
+  reference prints `Removing <name> (<version>)`, celerite prints none; both
+  PASS on 4.0.24 full `C:\temp\celerite-diff-full-4.0.24-execloader-final.log`;
+  root cause unlocated, recorded). SKIP 1 = `add-group` (harness documented
+  deferral: reference 2.7.2 auto-installs Bundler 4.0.24 from rubygems.org,
+  network-required; 4.0.24 treats add-group as class A FAIL). By-name vs 4.0.24
+  full 130:123/7/0: 6 racc/make shared, exec-loader/exec-loader-disabled PASS
+  on both, no B:1; 2.7.2-specific differences = class C clean-output + add-group
+  deferral form. The targeted 36-fixture extension (36/36 PASS,
+  DIFF_272_36_EXIT=0) remains valid prior evidence.
 - Prior full-run failures recorded in earlier evidence (native-extension tooling
   `make` unavailable in that environment; binstub `.bat`/`loader` content
   differences) were re-checked by name across runs: in the 03:18/04:20-04:37
