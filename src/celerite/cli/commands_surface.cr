@@ -570,16 +570,65 @@ module Celerite
       # Default: RubyGems-installed spec under bundle install path.
       install_path = InstallPaths.install_path(definition.config)
       ruby_root = File.join(install_path, "ruby")
-      return nil unless Dir.exists?(ruby_root)
+      if Dir.exists?(ruby_root)
+        Dir.each_child(ruby_root) do |abi|
+          gem_dir = File.join(ruby_root, abi, "gems", spec.full_name)
+          # For read-only commands (check/list/show/info/doctor), treat extracted
+          # gem contents as installed even if the installed specification file is
+          # missing from this layout.
+          return gem_dir if Dir.exists?(gem_dir)
+        end
+      end
 
-      Dir.each_child(ruby_root) do |abi|
-        gem_dir = File.join(ruby_root, abi, "gems", spec.full_name)
-        # For read-only commands (check/list/show/info/doctor), treat extracted
-        # gem contents as installed even if the installed specification file is
-        # missing from this layout.
-        return gem_dir if Dir.exists?(gem_dir)
+      # Fallback for RubyGems sources: check system/default gem directories.
+      # This aligns `check/list/show/info/doctor` with Bundler behavior when
+      # locked gems are satisfied by gems installed in GEM_PATH/system/default
+      # locations (e.g. default gems) rather than the bundle install path.
+      if source.nil? || source.type == "GEM"
+        system_gem_search_dirs.each do |base|
+          gem_dir = File.join(base, "gems", spec.full_name)
+          return gem_dir if Dir.exists?(gem_dir)
+        end
       end
       nil
+    end
+
+    @@system_gem_search_dirs : Array(String)? = nil
+
+    # Cached system gem base directories (GEM_PATH/default/user gem dirs) used
+    # as a fallback when resolving installed RubyGems specs for read-only commands.
+    # Requires the bridge for ruby_environment; returns empty when unavailable.
+    def self.system_gem_search_dirs : Array(String)
+      if dirs = @@system_gem_search_dirs
+        return dirs
+      end
+      dirs = [] of String
+      begin
+        server = ENV["CELERITE_BRIDGE_SERVER"]?
+        ref_lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]?
+        if (server && !server.empty? && File.file?(server)) || (ref_lib && !ref_lib.empty? && Dir.exists?(ref_lib))
+          bridge = Bridge::Client.new
+          begin
+            env = bridge.ruby_environment
+            unless env.default_gem_dir.empty?
+              dirs << env.default_gem_dir
+            end
+            env.gem_paths.each do |p|
+              dirs << p unless p.empty?
+            end
+            if user = env.user_gem_dir
+              dirs << user unless user.empty?
+            end
+          ensure
+            bridge.close
+          end
+        end
+      rescue
+        dirs = [] of String
+      end
+      dirs = dirs.uniq
+      @@system_gem_search_dirs = dirs
+      dirs
     end
 
     private def self.installed_git_checkout(definition : Definition, name : String, remote : String, revision : String) : String?
