@@ -27,12 +27,21 @@ set -uo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 bundler_version="${BUNDLER_REF_VERSION:-4.0.24}"
 # CELERITE_BIN overrides the engine under test (e.g. a gem-installed shim:
-# CELERITE_BIN="$gem_home/bin/celerite" script/differential <fixture>)
-celerite_bin="${CELERITE_BIN:-$repo_root/bin/celerite}"
+# CELERITE_BIN="$gem_home/bin/celerite" script/differential <fixture>).
+# When CELERITE_BIN is explicitly provided, require the file to exist and
+# skip `shards build` (caller supplies the engine binary); default path
+# still auto-builds when missing/non-executable.
+celerite_bin_default="$repo_root/bin/celerite"
+celerite_bin="${CELERITE_BIN:-$celerite_bin_default}"
 fixtures_root="$repo_root/fixtures/differential"
 selected=("$@")
 
-if [ ! -x "$celerite_bin" ]; then
+if [ -n "${CELERITE_BIN:-}" ]; then
+  if [ ! -f "$celerite_bin" ]; then
+    echo "CELERITE_BIN not found: $celerite_bin" >&2
+    exit 2
+  fi
+elif [ ! -x "$celerite_bin" ]; then
   (cd "$repo_root" && shards build >/dev/null) || { echo "celerite build failed" >&2; exit 2; }
 fi
 
