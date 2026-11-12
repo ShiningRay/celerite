@@ -538,9 +538,10 @@ module Celerite
           raise ex
         rescue
         end
+        bundler_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
         bundler_lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]?
         if bundler_lib.nil? || bundler_lib.empty?
-          bundler_lib = File.expand_path("../lib", File.dirname(env.ruby_exe))
+          bundler_lib = find_bundler_lib(env, bundler_version)
         end
         bundler_lib = bundler_lib.not_nil!
 
@@ -568,9 +569,7 @@ module Celerite
         process_env["RUBYLIB"] = rubylib.join(path_delimiter_static)
         process_env["BUNDLE_GEMFILE"] = File.expand_path(definition.gemfile_path).gsub(/\\/, "/")
         process_env["BUNDLE_LOCKFILE"] = File.expand_path(definition.lockfile_path).gsub(/\\/, "/")
-        if bundler_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]?
-          process_env["BUNDLER_VERSION"] = bundler_version
-        end
+        process_env["BUNDLER_VERSION"] = bundler_version
         process_env["BUNDLER_SETUP"] = setup_path
         exe_candidate = File.join(bundler_lib, "..", "exe", "bundle")
         process_env["BUNDLE_BIN_PATH"] = File.expand_path(exe_candidate).gsub(/\\/, "/") if File.file?(exe_candidate)
@@ -678,6 +677,25 @@ module Celerite
       {% unless flag?(:windows) %}
         Signal::INT.reset
       {% end %}
+    end
+
+    # Locate the reference bundler library for exec's setup injection. Prefer
+    # the pinned/profile bundler gem when installed (regular envs), so
+    # `bundle exec` can require bundler/setup and satisfy BUNDLER_VERSION
+    # without requiring callers to set CELERITE_REFERENCE_BUNDLER_LIB (the
+    # differential harness still supplies it explicitly). Falls back to the
+    # Ruby-adjacent lib directory for compatibility.
+    private def self.find_bundler_lib(env : Bridge::RubyEnvironment, version : String) : String
+      gem_dirs = env.gem_paths.dup
+      gem_dirs << env.default_gem_dir unless env.default_gem_dir.empty?
+      if user = env.user_gem_dir
+        gem_dirs << user unless user.empty?
+      end
+      gem_dirs.uniq.each do |dir|
+        candidate = File.join(dir, "gems", "bundler-#{version}", "lib")
+        return candidate if File.file?(File.join(candidate, "bundler", "setup.rb"))
+      end
+      File.expand_path("../lib", File.dirname(env.ruby_exe))
     end
 
     # Pinned `Bundler::CLI::Exec#directly_loadable?`: a non-empty Ruby script
