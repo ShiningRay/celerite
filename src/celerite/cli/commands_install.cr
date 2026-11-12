@@ -548,6 +548,14 @@ module Celerite
         bin_dir = File.join(install_path(definition.config), "ruby", abi, "bin")
 
         process_env = ENV.to_h
+        # Windows environment variable names are case-insensitive at the OS
+        # level, but Crystal's ENV.to_h preserves the original casing (e.g.
+        # "Path" rather than "PATH").  Normalise every PATH variant to the
+        # canonical "PATH" key so that the child process receives a single,
+        # complete PATH instead of a stale "Path" shadowing the injected
+        # "PATH".
+        path_value = ENV["PATH"]? || ""
+        process_env.keys.select { |k| k.downcase == "path" }.each { |k| process_env.delete(k) }
         setup_path = File.join(bundler_lib, "bundler/setup")
         setup_require = setup_path.includes?(" ") ? "-rbundler/setup" : "-r#{setup_path}"
         existing_rubyopt = (process_env["RUBYOPT"]? || "").split(" ").reject(&.empty?)
@@ -567,7 +575,7 @@ module Celerite
         exe_candidate = File.join(bundler_lib, "..", "exe", "bundle")
         process_env["BUNDLE_BIN_PATH"] = File.expand_path(exe_candidate).gsub(/\\/, "/") if File.file?(exe_candidate)
         path_delimiter = {{ flag?(:windows) }} ? ";" : ":"
-        process_env["PATH"] = "#{bin_dir.gsub(/\\/, "/")}#{path_delimiter}#{process_env["PATH"]? || ""}"
+        process_env["PATH"] = "#{bin_dir.gsub(/\\/, "/")}#{path_delimiter}#{path_value}"
 
         args = rest[1..]
 
