@@ -549,6 +549,17 @@ module Celerite
       requested_groups = requested_groups_for(config, all_groups, only_groups, without_groups)
 
       locked_specs = lockfile.specs.sort_by(&.full_name)
+
+      # Reference parity: Gemfile ruby declaration differs from lock RUBY
+      # VERSION (e.g. explicit patchlevel dropped by lock serialization) or is
+      # absent from the lock. list prints the notice for declaration diffs even
+      # when satisfied, but list prints the notice for a missing lock RUBY VERSION
+      # even when dependencies are satisfied.
+      ruby_unlock_kind = lock_ruby_unlock_kind(definition, lockfile)
+      if ruby_unlock_kind == :diff || ruby_unlock_kind == :missing_from_lock
+        stdout.puts "Resolving dependencies..."
+      end
+
       if lockfile.dependencies.empty?
         stdout.puts "No gems in the Gemfile"
         return 0
@@ -565,16 +576,6 @@ module Celerite
       filtered_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, locked_specs, requested_groups) : locked_specs
 
       installed_missing = filtered_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
-
-      # Reference parity: Gemfile ruby declaration differs from lock RUBY
-      # VERSION (e.g. explicit patchlevel dropped by lock serialization) or is
-      # absent from the lock. list prints the notice for declaration diffs even
-      # when satisfied, but for a missing lock RUBY VERSION only when
-      # dependencies are not fully installed.
-      ruby_unlock_kind = lock_ruby_unlock_kind(definition, lockfile)
-      if ruby_unlock_kind == :diff || ruby_unlock_kind == :missing_from_lock
-        stdout.puts "Resolving dependencies..."
-      end
 
       # Reference parity: see the platform-missing note in `check`.
       if platform_missing?(definition)

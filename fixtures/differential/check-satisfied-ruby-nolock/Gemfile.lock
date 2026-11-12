@@ -1,0 +1,11 @@
+GEM
+  remote: file:///@INDEX_DIR@/
+  specs:
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+
+BUNDLED WITH
+  @BUNDLER_VERSION@
