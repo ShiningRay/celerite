@@ -87,6 +87,7 @@ git diff --check                       # DIFFCHECK_EXIT=0 (after doc/fixture upd
 ```
 
 ## Spec subset (PASS)
+- 2026-11-13 rerun @HEAD=4c2404a+worktree (this subitem, combo fixtures): 8-file M7 subset incl. spec/m7_reverse_dependencies_spec.cr -> 70 examples, 0 failures, 0 errors, 0 pending, EXIT 0 (17.91s).
 
 ```sh
 crystal spec spec/m7_platform_match_spec.cr spec/m7_ruby_constraints_spec.cr \
@@ -456,6 +457,21 @@ Run on HEAD=`8d20c17` (`fix(M7 task-2): align 2.7.2 bundle clean semantics and s
 - **Comparison vs 4.0.24 full 130:123/7/0 (`C:\temp\celerite-diff-full-4.0.24-execloader-final.log`, A:7 = add-group, add-optimistic, add-remove, add-version, cache-all-platforms, native-ext, native-ext-target)**: 6 racc/make failures shared by name; `add-group` differs in form only (2.7.2 harness deferral SKIP vs 4.0.24 class A FAIL — network/env constraint, not asserted as product regression). No B:1 exec-loader; no 2.7.2-specific class C failure remains. No causal claim beyond measured name-level/class comparison.
 
 
+### New M7(1)/(2) combo fixtures (2), Bundler 4.0.24 & 2.7.2 (PASS)
+
+Inserted before this Interpretation section: this subitem (2026-11-13, HEAD=`4c2404a` + 2 uncommitted fixture dirs in worktree, committed by this subitem's closing commit) added:
+
+- `fixtures/differential/list-path-only-group` (M7(2): path source + group + `list --only-group default`; test-group path gem excluded)
+- `fixtures/differential/multi-platform-install-ruby` (M7(1): `lock --add-platform ruby` + install + check; ruby platform positive)
+
+Measured (shim bin `C:\Users\ShiningRay\AppData\Local\Temp\celerite-b1b2-fix.exe` + `CELERITE_BRIDGE_SERVER=<repo>/assets/bridge/server.rb`, `TMPDIR=/c/temp`):
+
+- 4.0.24 targeted: `PASS list-path-only-group (exit=0)`, `PASS multi-platform-install-ruby (exit=0)`, `differential (4.0.24): 2 passed, 0 failed, 0 skipped`, DIFF_4024_EXIT=0 (log `C:\temp\celerite-diff-m7combos-4024.log`).
+- 2.7.2 targeted: same per-case PASS, `differential (2.7.2): 2 passed, 0 failed, 0 skipped`, DIFF_272_EXIT=0 (log `C:\temp\celerite-diff-m7combos-272.log`).
+- 43-case M7 regression set (constraints/metadata/platform/engine/patchlevel/nolock/path-git/group/discovery/exec-loader/clean + the 2 new), dual profile: 4.0.24 `43 passed, 0 failed, 0 skipped` EXIT 0 (log `C:\temp\celerite-diff-m7combos-reg-4024.log`); 2.7.2 `43 passed, 0 failed, 0 skipped` EXIT 0 (log `C:\temp\celerite-diff-m7combos-reg-272.log`). Non-zero-exit cases are reference-expected exits (1/6/7/10/18/42) and all PASS.
+- M7 spec subset (8 files) rerun this subitem: 70 examples, 0 failures, 0 errors, 0 pending, EXIT 0.
+- Full suites NOT rerun this subitem (unverified; cite 1882f53 4.0.24 133:126/7/0 and 517f69a 2.7.2 133:126/6/1 measured logs). Repro: `BUNDLER_REF_VERSION=2.7.2 CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential`.
+
 ## Interpretation (this subitem scope)
 
 - Added fixtures `ruby-metadata-boundary-match` (`lock --print`, PATH gem with
@@ -493,6 +509,7 @@ Run on HEAD=`8d20c17` (`fix(M7 task-2): align 2.7.2 bundle clean semantics and s
   match?/specificity unit spec (46-example spec subset green, see above).
 
 ## Known blockers / not verified (as of this run)
+- 2026-11-13 combo-fixture subitem: full 4.0.24/2.7.2 suites not rerun (unverified; measured baselines 133:126/7/0 @1882f53 and 133:126/6/1 @517f69a-rerun stand); targeted 2-fixture + 43-case regression dual profile green; M7 spec subset rerun 70/0/0/0 EXIT 0. B1 Default Gem / B2 console UX / IRB-in-bundle / Case C / gem matrix / env-issue outer fields / ABI-gnu-musl remain unverified with repro in docs/compat-report.md.
 
 - Stock `crystal build src/cli.cr` remains blocked on this host:
   `undefined reference to 'EVP_MD_size'` (Crystal 1.22.1 / MSYS2 ucrt64 OpenSSL

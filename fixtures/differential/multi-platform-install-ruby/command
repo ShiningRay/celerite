@@ -1,0 +1,3 @@
+lock --add-platform ruby
+install
+check

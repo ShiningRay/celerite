@@ -1,0 +1,4 @@
+source "https://rubygems.org"
+
+gem "example", path: "vendor/example"
+gem "example2", path: "vendor/example2", group: :test
