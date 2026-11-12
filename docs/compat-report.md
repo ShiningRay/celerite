@@ -419,3 +419,11 @@ script/profile                    # refresh profile numbers
 - **若继续推进的最小可行方向**：补 IRB-in-bundle 稳定受控 fixture/env（可安装 irb+deps、规避 reline-fiddle 脆弱性）与 Case C 文档化边界、M7(1)/(2) 可低成本 fixture/spec 化项（B3 harness 扩展、nolock deps-satisfied 通知、Default Gem ≤1 次再试、path/GIT+group/platform 组合、show/info 重解通知等可行子项）并回归；M7(3) 仅在可构造稳定可比场景时补差分，否则维持显式 unsupported/边界记录（gem 矩阵/console UX 已取证为非低成本对齐点）。达当前环境最大可行闭环时提交阶段验收汇总报首辅裁断 task-2 收口与 task-3 启动。
 
 （本节末：以上结论与计数均来自既有实测 commit/日志与本轮 docs 核实；未重跑 differential/spec 的条目已标注。）
+# Stage acceptance summary (HEAD=b5cfa51, 2026-11-12)
+
+- Current HEAD: b5cfa51 (docs sync); source HEAD 0fabf9e. task-2 remains in_progress; M7 checkboxes not checked.
+- Baselines (unchanged, no rerun): 4.0.24 130:123/7/0; 2.7.2 130:123/6/1; M7 spec subset 70/0/0/0.
+- Recent fixture evidence: issue-satisfied 1/0/0; B3 nolock satisfied+missing 4/0/0; env/issue stable set 3/0/0; M7 spec subset 68/0/0/0.
+- Unverified/blocked: Default Gem lockfile resolution mismatch, IRB-in-bundle/interactive, console UX, Case C, gem full matrix, env/issue outer fields, ABI/platform matrix, full differential not rerun.
+- docs aligned to HEAD b5cfa51; no bin/shim/shard.lock committed.
+- Recommendation: stage acceptance summary submitted; await lead adjudication for task-2 closure and task-3 start.
