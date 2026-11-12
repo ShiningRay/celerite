@@ -436,17 +436,27 @@ module Celerite
         abi = ruby_abi(bridge)
         install_root = File.join(install_path(definition.config), "ruby", abi)
         lockfile = definition.lockfile!
+        profile = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
         # specs_to_keep (pinned `Bundler::Runtime#clean`): lockfile specs plus
         # the running bundler itself (not installed via Source::Rubygems here).
-        keep_names = lockfile.specs.map(&.full_name).to_set
+        # Bundler 2.7.2 profile: `bundle clean` removes bundle-installed gem/git
+        # dirs (and prints `Removing <name> (<version>)`) even when locked, as
+        # observed in pinned differential fixtures clean-force/clean-unused.
+        keep_names = if profile.starts_with?("2.7.")
+                       Set(String).new
+                     else
+                       lockfile.specs.map(&.full_name).to_set
+                     end
 
         # Stale git checkouts: any <base>-* directory not holding a locked
-        # Git source checkout.
+        # Git source checkout (4.0.x keeps locked git sources; 2.7.x cleans all).
         checkout_keep = Set(String).new
-        lockfile.sources.each do |section|
-          next unless section.type == "GIT"
-          base = GitSource.base_name(section.remote || "")
-          checkout_keep << base
+        unless profile.starts_with?("2.7.")
+          lockfile.sources.each do |section|
+            next unless section.type == "GIT"
+            base = GitSource.base_name(section.remote || "")
+            checkout_keep << base
+          end
         end
         git_root = File.join(install_root, "bundler", "gems")
         git_removed = [] of String
