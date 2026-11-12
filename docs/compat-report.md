@@ -274,9 +274,13 @@ No "full upstream suite" claim is made.
   harness N5 归一化剥离 `## Environment` 机体至 `## Bundle Doctor` 后比对）。`console`/`gem`
   边界证据（shim 本地、非 differential）：IRB 缺失 PATH 下 `console` stderr 含
   `bundle console requires IRB (`irb`) in PATH... (Celerite: full interactive bundle console not implemented; install IRB to exec irb in bundle context)`
-  且 EXIT 127（同受限 PATH 下 reference 为 `bundle: command not found`，不可差分比对；IRB 可用
-  但依赖未装入 bundle 的交互/管道路径本轮探针非 green，**未验证**，复现：在已安装依赖的 bundle
-  cwd 下 `printf 'exit\n' | CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash -c '... celerite console'`）。
+  且 EXIT 127（同受限 PATH 下 reference 为 `bundle: command not found`，不可差分比对）。**B2 取证（2026-11-12，IRB 系统可用但未入 bundle，未修代码）**：
+  `C:\temp\defaultgem-test`（Gemfile `json >= 0`，lock json_pure 2.8.1，`BUNDLE_PATH=C:/temp/defaultgem-test/gems` 含已安装 json_pure 3.1.0，`GEM_HOME/GEM_PATH=C:/Ruby40-x64/lib/ruby/gems/4.0.0`，PATH 含 `C:\Ruby40-x64\bin`，`CELERITE_BIN`=shim bin）下
+  `celerite console` 与 `celerite exec irb --version` 均 stderr `bundler: command not found: irb` / `Install missing gem executables with \`bundle install\`` EXIT 127；
+  同探针 `celerite exec ruby -e "puts 123"` 亦 EXIT 127 `bundler: command not found: ruby`（`Get-Command ruby` 指向 `C:\Ruby40-x64\bin\ruby.exe`，原因未定性）。
+  对照 reference：`bundle _4.0.24_ exec irb --version` EXIT 1（`bundler: failed to load command: irb ...` / `Gem.replace_bin_path': can't find executable irb for gem irb. irb is not currently included in the bundle`），
+  `echo exit | bundle _4.0.24_ console` EXIT 1（`irb ... not part of the default gems since Ruby 4.0.0` / `Failed to activate irb...` / `LoadError: cannot load such file -- irb`）。
+  该分歧与 IRB 缺失 PATH 文案场景不同，**未验证/未修复**（复现：上述命令与路径；IRB 可用且在 bundle 内的完整交互路径仍未覆盖）。
   `gem`：`celerite gem <name>` 生成 6 文件最小 scaffold（Gemfile/lib/<name>.rb/LICENSE.txt/
   <name>.gemspec/README.md）+ stdout `Creating gem '<name>'...`，EXIT 0；`--test=rspec` 额外
   warning `bundle gem options not fully supported by Celerite: --test=rspec` + “Generating a
@@ -302,7 +306,7 @@ No "full upstream suite" claim is made.
   dependencies satisfied; other `check`/`list`/`show`/`info`
   re-resolve-notification scenarios beyond the pinned missing-deps fixtures
   and the patchlevel-unlock `check`/`list` fixtures),
-  M7(2): `Reverse Dependencies` 已补 path-source differential/spec 证据（`info-reverse-dependencies-path` 4.0.24/2.7.2 各 1/0/0 EXIT 0，`spec/m7_reverse_dependencies_spec.cr` 4/0/0/0，M7(2) 回归定向集 `info-reverse-dependencies-path check-path list-path git-installed-discovery show-info-installed list-multi-group` 双 profile 各 6/0/0 EXIT 0，M7 子集 8 文件 70/0/0/0 EXIT 0，commit `ae8eafc`，shim 本地 bin）且 `info` path gemspec 元数据回退已修复；`Default Gem` 标记稳定取证仍受默认 gem 布局/安装态限制（**未验证**，复现：`bundle _4.0.24_ info json` 与 `CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp celerite info json` 在可控 default-gem 发现场景对照）；path/Git + `--with/--without/--only-group`/平台组合仍未穷尽。M7(3):
+  M7(2): `Reverse Dependencies` 已补 path-source differential/spec 证据（`info-reverse-dependencies-path` 4.0.24/2.7.2 各 1/0/0 EXIT 0，`spec/m7_reverse_dependencies_spec.cr` 4/0/0/0，M7(2) 回归定向集 `info-reverse-dependencies-path check-path list-path git-installed-discovery show-info-installed list-multi-group` 双 profile 各 6/0/0 EXIT 0，M7 子集 8 文件 70/0/0/0 EXIT 0，commit `ae8eafc`，shim 本地 bin）且 `info` path gemspec 元数据回退已修复；`Default Gem` 标记稳定取证仍受默认 gem 布局/安装态与 differential sandbox 隔离限制（**未验证**）。**B1 取证（2026-11-12，已试≤2，未修代码）**：`C:\temp\defaultgem-test2`（Gemfile pin `json 2.15.1`，Ruby 4.0.6 default gem dir 含 `json-2.15.1`）手工对照探针中 `celerite install --local`/`install` 多次失败 `celerite internal error: SSL_CTX_load_verify_locations: error:80092004:system library::Unknown error` EXIT 1（含设 `SSL_CERT_FILE=C:/msys64/ucrt64/ssl/cert.pem` 仍失败），无法完成安装后 bundle-vs-celerite 对照；`script/differential` 隔离 GEM_HOME/GEM_PATH/BUNDLE_PATH 与本地 file index 难以稳定构造可差分 fixture（阻塞，复现见上述命令/路径与 `bundle _4.0.24_ info json` 基线探测）。path/Git + `--with/--without/--only-group`/平台组合仍未穷尽。M7(3):
   `fund-path` differential 已在 4.0.24/2.7.2 取证，但 `env`/`issue` 全量输出
   与 Bundler reference 的 differential 尚未 fixture 化，`console` IRB 可用/交互
   路径与 `gem` 完整模板/选项矩阵差分未覆盖（详见“M7(3) 部分修复”证据）。
