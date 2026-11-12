@@ -694,12 +694,13 @@ module Celerite
         "#!/usr/bin/env ruby\n",
         "#!/usr/bin/env jruby\n",
         "#!/usr/bin/env truffleruby\n",
+        "#! ruby\n",
         "#!#{ruby_exe.gsub(/\\/, "/")}\n",
       ]
       bytes = Bytes.new(possibilities.map(&.bytesize).max)
       File.open(path, "rb") { |io| io.read(bytes) }
       header = String.new(bytes)
-      possibilities.any? { |shebang| header.starts_with?(shebang) }
+      possibilities.any? { |shebang| header.starts_with?(shebang) } || header.starts_with?("#! ruby\r\n")
     rescue
       false
     end
@@ -712,6 +713,7 @@ module Celerite
         first_line == "#!/usr/bin/env ruby -w" ||
         first_line == "#!/usr/bin/env jruby" ||
         first_line == "#!/usr/bin/env truffleruby" ||
+        first_line == "#! ruby" ||
         first_line.starts_with?("#!#{ENV["RUBY"]? || "/usr/bin/ruby"}")
     end
 

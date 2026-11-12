@@ -413,9 +413,17 @@ CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential
 - Full 4.0.24 suite on this tree: 114 passed / 8 failed / 0 skipped in the 03:18
   run on `a8753b6` (122 fixtures) and 120 passed / 8 failed / 0 skipped in the
   04:20-04:37 run on `7c446d9` + matrix-strengthening worktree (128 fixtures);
-  the 8 failures are the environment `make` racc class (7) plus the persisting
-  `exec-loader` `.bat`/`loader` class (1) in both runs, with identical FAIL name
-  sets (see "Full suite" sections above). The suite is therefore not green;
+  the 8 failures in those runs were the environment `make` racc class (7) plus
+  `exec-loader` `.bat`/`loader` class (1), with identical FAIL name sets (see
+  "Full suite" sections above). A subsequent B:1 exec-loader fix subitem
+  (2026-11-12, shim local bin) reran the full suite on 130 fixtures: **123
+  passed, 7 failed, 0 skipped, wrapper exit 1**
+  (`C:\temp\celerite-diff-full-4.0.24-execloader-final.log`, mtime 2026-11-12
+  08:02:07, 299 lines) — remaining 7 FAILs all class A racc/make
+  (`add-group`, `add-optimistic`, `add-remove`, `add-version`,
+  `cache-all-platforms`, `native-ext-target`, `native-ext`; `make failedNo
+  such file or directory - make`); `exec-loader` and `exec-loader-disabled`
+  both PASS (exit=42). The suite remains not green (env/tooling failures);
   this does not close M7(1)-(3).
 - Matrix strengthening (this subitem): 6 new differential fixtures
   (`ruby-metadata-boundary-fail` `>= 4.0.7`,
@@ -441,9 +449,13 @@ CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential
   03:18 on `a8753b6` (122 fixtures, 114 passed / 8 failed / 0 skipped, wrapper
   exit 1) and 04:20-04:37 on `7c446d9` + matrix-strengthening worktree (128
   fixtures, 120 passed / 8 failed / 0 skipped, wrapper exit 1; see "Full suite"
-  sections above; the 8 failures are the environment `make` racc class (7) plus
-  the persisting `exec-loader` `.bat`/`loader` class (1) in both runs, and the
-  FAIL name sets are identical between the two runs). Full
+  sections above; the 8 failures were the environment `make` racc class (7)
+  plus the `exec-loader` `.bat`/`loader` class (1) in both runs, identical FAIL
+  name sets). A subsequent B:1 fix subitem (2026-11-12) reran the full suite
+  on 130 fixtures: **123 passed, 7 failed, 0 skipped, wrapper exit 1**
+  (`C:\temp\celerite-diff-full-4.0.24-execloader-final.log`), with only the 7
+  racc/make failures remaining and `exec-loader`/`exec-loader-disabled` PASS.
+  Full
   `script/differential` on 2.7.2 was **not** rerun — **未验证**; repro:
   `BUNDLER_REF_VERSION=2.7.2 CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential`.
   The 2.7.2 evidence for this subitem is instead the targeted extension: the
@@ -451,12 +463,14 @@ CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential
   (`differential (2.7.2): 36 passed, 0 failed, 0 skipped`, DIFF_272_36_EXIT=0).
 - Prior full-run failures recorded in earlier evidence (native-extension tooling
   `make` unavailable in that environment; binstub `.bat`/`loader` content
-  differences) were re-checked by name in both full runs: the current 8 FAIL
-  names are a subset of the prior 14; the 6 non-persisting prior `.bat`/`loader`
-  failures (`binstubs`, `install-force`, `install-fresh`, `install-rerun`,
-  `pristine`, `pristine-named`) now PASS. No reason for the 7 -> 1 `.bat`/`loader`
-  drop is asserted (no additional evidence gathered beyond the name-level
-  comparison).
+  differences) were re-checked by name across runs: in the 03:18/04:20-04:37
+  full runs the 8 FAIL names were a subset of the prior 14 and the 6
+  non-persisting prior `.bat`/`loader` failures (`binstubs`, `install-force`,
+  `install-fresh`, `install-rerun`, `pristine`, `pristine-named`) passed while
+  `exec-loader` remained (no causal claim for 7 -> 1). In the 2026-11-12 B:1
+  fix subitem, PATH/GIT binstub + exec shebang fixes made `exec-loader` and
+  `exec-loader-disabled` PASS on 4.0.24/2.7.2 targeted runs and the final 130-
+  fixture 4.0.24 full run recorded only the 7 racc/make failures.
 - `shard.lock` remains untracked (`??`) and is not part of this subitem.
 
 (removed - replaced above with accurate subitem-scoped interpretation and blockers)
