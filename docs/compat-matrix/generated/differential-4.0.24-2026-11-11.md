@@ -558,3 +558,26 @@ Measured (shim bin `C:\Users\ShiningRay\AppData\Local\Temp\celerite-b1b2-fix.exe
 - `shard.lock` remains untracked (`??`) and is not part of this subitem.
 
 (removed - replaced above with accurate subitem-scoped interpretation and blockers)
+
+## 2026-11-13 M7(5) submodules fixture `git-submodules`（本轮实测）
+
+- **目的**：验证 `submodules: true` 的 git source 在 differential 下的真实处理（gitlink 记录、`git -c protocol.file.allow=always submodule update --init --recursive`、子模块内容进入安装树）。
+- **夹具**：`fixtures/differential/git-submodules/`。`Gemfile` = `source "file:///@INDEX_DIR@"` + `gem "subgem", git: "./subrepos/subgem", submodules: true`；`command` = `install`；installed-tree marker = `ruby/*/gems`、`ruby/*/specifications`、`ruby/*/bin`。
+  - `extra/subrepos/subdep/`：`subdep.gemspec` + `lib/subdep.rb`（纯内容，无 `.git`；由 harness `git-init` 清单物化为确定 SHA 的仓库）。
+  - `extra/subrepos/subgem/`：`subgem.gemspec`（`s.files = Dir["lib/**/*.rb"] + Dir["subdep/**/*"]`）+ `lib/subgem.rb` + `.gitmodules`（`[submodule "subdep"]`，`path = subdep`，`url = ../subdep`，TAB 缩进）+ `subdep/` 嵌入仓库（gitlink `160000 8daf5f2c419954f757d030cf58a00d389b1143f0 subdep`）。
+  - git-init 清单：`subrepos/subdep`、`subrepos/subgem`（两仓库均物化进 staging；`subgem` 的 `subdep/` 作为 gitlink 保留同一 SHA）。
+  - 预置步骤 `setup.sh`（幂等，未跟踪内容见目录 `.gitignore`）：在 `extra/subrepos/subgem/subdep/` 内以与 harness `git-init` 相同的环境（固定 author/date、`core.autocrlf=false`、`commit.gpgsign=false`）init+add+commit 得 HEAD `S = 8daf5f2c419954f757d030cf58a00d389b1143f0`；随后 `mv subdep/.git ../.subdep-git` 并写指针文件 `subdep/.git`（内容 `gitdir: ../.subdep-git`），使 `git add -A` 能记录 gitlink；实测 `git update-index --add --cacheinfo 100644,<sha>,.../subdep/.git` 被 git 拒绝（`error: Invalid path 'subgem/subdep/.git'`），指针文件无法直接提交，故只能由 `setup.sh` 预置；`setup.sh` 末尾用全新 staging 副本复核 `S == S2`（确定性）。
+- **实测（登记 deferral 前，2026-11-13 本轮）**：`CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp MSYS=winsymlinks:nativestrict bash script/differential git-submodules`（`bin/celerite.exe` 10001485 字节；注意 fixture 参数是 NAME 不是路径）：
+  - 4.0.24：`FAIL git-submodules: reference exit 11 vs celerite exit 1`（0 passed, 1 failed，exit 1）。参考侧 stderr：`Submodule 'subdep' (subrepos/subdep) registered for path 'subdep'` → `fatal: repository 'subrepos/subdep' does not exist`；celerite 侧 stderr：`git command failed: git -c protocol.file.allow=always submodule update --init --recursive` → `Submodule 'subdep' (.../celerite/bundle/ruby/4.0.0/cache/bundler/git/subdep) registered` → `fatal: '...cache/bundler/git/subdep' does not appear to be a git repository`。
+  - 2.7.2：同形 FAIL；参考侧另见 `fatal: transport 'file' not allowed`。
+- **根因（归类：环境级阻塞，非 celerite 产品缺陷）**：两侧均把相对 URL `../subdep` 解析进 `bundle/ruby/*/cache/bundler/git/subdep`；参考侧 bundler 不传 `-c protocol.file.allow=always`，被 git ≥2.38 子模块 file 传输默认策略拦截；celerite 传了该标志（`src/celerite/git_source.cr:99-103`）但解析路径无仓库。本地 file 型子模块夹具在参考侧无法通过。
+- **处置**：按 harness 既有 documented-deferral 机制登记 `deferred-4.0.24` / `deferred-2.7.2`（原因见文件文本）。复跑两 profile 均输出 `SKIP git-submodules (deferred for ...)` 与 `differential (<v>): 0 passed, 0 failed, 1 skipped (documented deferrals)`，exit 0（保持套件全绿，同时保留上述实测失败证据）。
+- **解除阻塞需要**：网络可访问的子模块 URL，或 harness 层对两侧统一设置 `protocol.file.allow=always`（超出本夹具范围），或参考侧 git <2.38。
+- **未验证**：子模块成功路径下安装树内容一致性（`subdep/lib/subdep.rb` 是否进入 `ruby/*/gems/subgem-*/`）——本轮两侧均未到达该状态；celerite 侧 `submodule update` 标志行为仅由 stderr 间接证实。
+- **复现**：
+  ```
+  cd C:\Users\ShiningRay\projects\ShiningRay\celerite
+  bash fixtures/differential/git-submodules/setup.sh
+  CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp MSYS=winsymlinks:nativestrict bash script/differential git-submodules
+  ```
+  需 Git MSYS bash（PATH 含 `C:\Program Files\Git\usr\bin`）；pwsh 下直接 `bash` 是 WSL bash（/mnt/c，git 2.43），路径体系不同会失败。
