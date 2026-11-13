@@ -89,6 +89,7 @@ module Celerite
       end
 
       bridge = Bridge::Client.new
+      lock : ProcessLock? = nil
       begin
         # Runtime Ruby requirement validation (Bundler validate_runtime!/validate_ruby!)
         # for install flows when evaluation is available.
@@ -304,7 +305,7 @@ module Celerite
         end
         0
       ensure
-        lock.not_nil!.close
+        lock.try(&.close)
         bridge.close
       end
     end

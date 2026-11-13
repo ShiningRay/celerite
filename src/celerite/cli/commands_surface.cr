@@ -67,6 +67,7 @@ module Celerite
       # "Bundle updated!" with no installs and no stayed-same report).
       source_restricted = !flag_value(rest, "--source").nil?
       bridge = Bridge::Client.new
+      lock : ProcessLock? = nil
       begin
         unlock : Bool | Array(String) = all ? true : gems
         if source_name = flag_value(rest, "--source")
@@ -184,7 +185,7 @@ module Celerite
         print_cooldown_summary(resolution, stdout)
         0
       ensure
-        lock.not_nil!.close
+        lock.try(&.close)
         bridge.close
       end
     end
