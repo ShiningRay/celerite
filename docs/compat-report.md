@@ -631,3 +631,24 @@ edirect (NUMBER_KEY, default 5): Downloader follows 301/302/303/307/308 uncondit
 - **门禁**：`crystal tool format --check src spec` **EXIT 0**；`crystal build --no-codegen src/cli.cr` **EXIT 0**（2 条既有 deprecation warning：`src\celerite\cli\commands_install.cr:594:43,658:20` `Deprecated File.executable?`）；`git diff --check` **EXIT 0**。
 - **未验证/阻塞**：未重跑全量 135-fixture differential（未验证）；既有全量基线 4.0.24 133:126/7/0、2.7.2 133:126/6/1 未更新（未重跑，不得虚报）；`git-installed-discovery` 无 `installed-tree` marker（按请求“带 installed-tree 的定向 fixture”判定不适用）；stock OpenSSL `EVP_MD_size` 环境阻塞与 shim 本地 bin 未提交限制同前；bridge 不可用不视为通过；symlink (c)/(d) 依赖真实 symlink 能力，本环境可用故 PASS（若不可用须 SKIP+复现，未发生）。
 - **结论**：M7(7) 子项（symlink 目标比较 + selftest + 文档 + 定向回归）按实测完成并提交/推送；M7 复选框未勾，task-2/task-3 维持 `in_progress`。
+
+## M7(9) Rails 可行性探测（2026-11-14，未验证/阻塞）
+
+- **目的**：判定 M7(9)「Rails 规模真实项目回归」在本环境是否可实跑；只记录实测，不伪造通过。
+- **环境探测（实测）**：`gem list -i rails` → true（EXIT 0）；`gem list -i railties` → true（EXIT 0）；`bundle _4.0.24_ --version` → `Bundler version 4.0.24`（EXIT 0）；`ruby -v` → ruby 4.0.6；本机已装 rails 8.1.4.1 / 8.1.4 / 8.1.3.1 / 8.0.2。**Rails 与 Bundler 4.0.24 齐备**。
+- **二进制纪律**：本节与 D2 节相同——所有 differential/上游跑批必须使用当前 HEAD 重建的 `bin/celerite.exe`（`bin/` 被 gitignore，不入库），否则结论无效。重建命令（正斜杠链接参数，反斜杠会被 sh 吃掉）：
+  `crystal build src/cli.cr -o bin/celerite.exe --link-flags "C:/Users/ShiningRay/AppData/Local/Temp/celerite-shim-m7wip/evp_md_size_shim.o"`（BUILD=0；2 条既有 deprecation 警告 commands_install.cr:594,658）。
+- **夹具**（仅本地 `C:\temp\rails-min\`，不入库）：Gemfile = `source "https://rubygems.org"` + `gem "rails", "8.0.2"`；`config/boot.rb` = `require "bundler/setup"`；`config/application.rb` = 最小 `Rails::Application`。
+- **实测结果（当前 HEAD 重建二进制；每格均先控 env 变量）**：
+  | 命令（目录） | 关键输出 | exit |
+  |---|---|---|
+  | `celerite install`（rails-min，无 bridge/TMPDIR） | 仅 `celerite internal error: Nil assertion failed`，无 Fetching 行，无 Gemfile.lock | 1 |
+  | `celerite install`（rails-min，带 `CELERITE_BRIDGE_SERVER`+`TMPDIR`） | 同上 | 1 |
+  | `celerite lock`（rails-min） | `Writing lockfile to C:/temp/rails-min/Gemfile.lock` + `Fetching gem metadata from https://rubygems.org/.` → `celerite internal error: SSL_connect: error:0A000086:SSL routines::certificate verify failed`；残留 Gemfile.lock 仅头一行 | 1 |
+  | `celerite lock`（smoke-ssl，同二进制，无 bridge/TMPDIR） | 同上 TLS 失败（第 3 次，确定性） | 1 |
+  | `celerite install`（smoke-ssl，`gem "rake","13.0.0"`，早前对照） | `Fetching/Resolving/Installing rake 13.0.0` → `Bundle complete! 1 Gemfile dependency, 1 gem now installed.`；Gemfile.lock 完整（GEM/remote/specs/PLATFORMS/DEPENDENCIES/CHECKSUMS bundler 4.0.24 + rake 13.0.0/BUNDLED WITH 4.0.24） | 0 |
+  | `celerite install --help`（任意目录） | `celerite internal error: Nil assertion failed`（`--help` 疑似被当 gem 名解析；次要，记注） | 1 |
+- **归因**：`CELERITE_BRIDGE_SERVER`/`TMPDIR` 已由 B1/B2 对照排除（有无该两变量结果不变）。两个**不同**的产品侧阻塞：① rails 规模 Gemfile 的 `install` 在网络活动之前即 `Nil assertion failed`（无 Fetching 行、无 lockfile）；② `lock` 命令元数据抓取确定性 `SSL_connect: ... certificate verify failed`（3/3 次），而同一夹具同一二进制 `install` 命令早前成功 ⇒ 命令路径差异，非 host TLS/CA 问题（另见 D2 节纯 Crystal HTTP::Client + OpenSSL 对照 OK 200 与 install 成功证据）。
+- **结论**：M7(9) Rails 真实应用驱动**未达成**，记 **未验证**；不伪报通过。复现（本机）：
+  `cd C:\temp\rails-min && celerite install`；`cd C:\temp\rails-min && celerite lock`；`cd C:\temp\smoke-ssl && celerite lock`（对照组 `cd C:\temp\smoke-ssl && celerite install`）。
+- **未验证/遗留**：Nil assertion 的具体触发点（rails 规模解析 vs 平台变体）未定位；lock 命令 TLS 失败与 install 命令 TLS 成功的代码路径差异未定位；两者均需产品侧排查后才能重试 M7(9)。
