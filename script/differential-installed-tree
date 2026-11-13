@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Helpers for the optional `installed-tree` differential marker.
 # Sourced by script/differential; all functions operate on the two sandbox
-# roots and reuse the harness `normalize` function (N1-N6 text normalization).
+# roots and reuse the harness `normalize` function (N1-N7 text normalization).
 #
 # Marker format: each line is a glob relative to BUNDLE_PATH, e.g.
 #   ruby/*/gems
