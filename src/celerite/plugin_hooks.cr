@@ -6,7 +6,11 @@ module Celerite
   # Hooks are Ruby code executed by the bridge; with no installed plugins the
   # call is a no-op (parity: `return unless plugins.any?`).
   module PluginHooks
-    EVENTS = ["post-install"]
+    # Reference layout event name: Bundler::Plugin::Events::GEM_AFTER_INSTALL
+    # serializes as "after-install" in the project plugin index (see
+    # spec/plugin_hooks_spec.cr). Aliases intentionally NOT kept: a legacy
+    # "post-install" key would silently never match a reference-written index.
+    EVENTS = ["after-install"]
 
     struct HookResult
       getter fired : Bool

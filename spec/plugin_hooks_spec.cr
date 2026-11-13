@@ -93,5 +93,53 @@ module Celerite
         end
       end
     end
+
+    it "pins the hook event list to the reference after-install layout" do
+      pending! "ruby not available" unless ruby_available?
+      PluginHooks::EVENTS.should eq(["after-install"])
+    end
+
+    it "documents the legacy post-install event name is a silent no-op on a reference-layout index" do
+      pending! "ruby not available" unless ruby_available?
+      with_project({"Gemfile" => "source \"https://rubygems.org\"\n"}) do |dir|
+        plugin_root = File.join(dir, "legacy_event_plugin")
+        Dir.mkdir_p(File.join(plugin_root, "lib"))
+        File.write(File.join(plugin_root, "plugins.rb"), "require \"legacy_event_plugin\"\n")
+        File.write(File.join(plugin_root, "lib", "legacy_event_plugin.rb"), <<-RUBY
+        require "bundler/plugin"
+        require "bundler/plugin/api"
+
+        class LegacyEventPlugin < Bundler::Plugin::API
+          hook(Bundler::Plugin::Events::GEM_AFTER_INSTALL) do |_, _ctx|
+            File.write(File.join(#{dir.inspect}, "legacy-fired.txt"), "fired")
+          end
+        end
+        RUBY
+        )
+
+        index_dir = File.join(dir, ".bundle", "plugin")
+        Dir.mkdir_p(index_dir)
+        lib_dir = File.join(plugin_root, "lib").gsub(/\\/, "/")
+        File.write(File.join(index_dir, "index"), <<-YAML
+        ---
+        hooks:
+          after-install:
+          - legacy_event_plugin
+        load_paths:
+          legacy_event_plugin:
+          - #{lib_dir.inspect}
+        plugin_paths:
+          legacy_event_plugin: #{plugin_root.inspect}
+        YAML
+        )
+
+        with_client do |client|
+          result = PluginHooks.call(client, Definition.build, "post-install")
+          result.fired.should be_false
+          result.reason.to_s.should contain "no plugins for event"
+          File.file?(File.join(dir, "legacy-fired.txt")).should be_false
+        end
+      end
+    end
   end
 end

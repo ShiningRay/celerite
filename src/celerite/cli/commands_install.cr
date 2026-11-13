@@ -292,7 +292,7 @@ module Celerite
 
         # Plugin lifecycle hook (architecture §2.2); no-op without plugins
         begin
-          PluginHooks.call(bridge, definition, "post-install")
+          PluginHooks.call(bridge, definition, "after-install")
         rescue Bridge::BridgeError
           # hook failures must not fail the install (reference: friendly error)
         end
