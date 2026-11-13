@@ -7,6 +7,8 @@
 #   (b) content differs -> FAIL (exit 1) with "content differs"
 #   (c) symlink target differs -> FAIL (exit 1) with "symlink target differs"
 #   (d) missing symlink -> FAIL (exit 1)
+#   (e) ref regular file vs cel same-name symlink (identical content) -> FAIL (exit 1) with "entry type differs"
+#   (f) cel has an extra symlink -> FAIL (exit 1) with "unexpected symlink"
 #
 # Symlink-dependent assertions (c,d) require real symlinks. On Windows Git
 # Bash use MSYS=winsymlinks:nativestrict; if a real symlink cannot be created
@@ -133,6 +135,44 @@ if [ "$symlink_ok" = 1 ]; then
   fi
 else
   report_skip "(d) missing symlink" "real symlink unavailable: ${symlink_err}" "$symlink_repro"
+fi
+
+# (e) ref regular file vs cel same-name symlink (identical content) -> FAIL with "entry type differs"
+if [ "$symlink_ok" = 1 ]; then
+  base="$(setup_pair e_entry_type_file_vs_symlink)"
+  # ref side: regular file named "link" with content
+  printf 'hello\n' > "$base/ref/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/link"
+  # cel side: symlink named "link" pointing at tool (same content)
+  MSYS=winsymlinks:nativestrict ln -s tool "$base/cel/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/link"
+  out=""
+  rc=0
+  out="$(compare_installed_tree "$base/ref/sandbox" "$base/cel/sandbox" "$base/marker" "$base/ref/sandbox/bundle" "$base/cel/sandbox/bundle" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ] && echo "$out" | grep -q "entry type differs"; then
+    report_pass "(e) entry type differs (file vs symlink)"
+  else
+    report_fail "(e) entry type differs (file vs symlink)" "expected exit!=0 and 'entry type differs', got exit=$rc output=$out"
+  fi
+else
+  report_skip "(e) entry type differs (file vs symlink)" "real symlink unavailable: ${symlink_err}" "$symlink_repro"
+fi
+
+# (f) cel has an extra symlink -> FAIL with "unexpected symlink"
+if [ "$symlink_ok" = 1 ]; then
+  base="$(setup_pair f_extra_symlink)"
+  printf 't1\n' > "$base/ref/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/t1"
+  cp "$base/ref/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/t1" "$base/cel/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/t1"
+  # cel side has an extra symlink not present on ref side
+  MSYS=winsymlinks:nativestrict ln -s t1 "$base/cel/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/extra_link"
+  out=""
+  rc=0
+  out="$(compare_installed_tree "$base/ref/sandbox" "$base/cel/sandbox" "$base/marker" "$base/ref/sandbox/bundle" "$base/cel/sandbox/bundle" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ] && echo "$out" | grep -q "unexpected symlink"; then
+    report_pass "(f) unexpected symlink on celerite side"
+  else
+    report_fail "(f) unexpected symlink on celerite side" "expected exit!=0 and 'unexpected symlink', got exit=$rc output=$out"
+  fi
+else
+  report_skip "(f) unexpected symlink on celerite side" "real symlink unavailable: ${symlink_err}" "$symlink_repro"
 fi
 
 echo

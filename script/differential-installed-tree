@@ -47,24 +47,46 @@ compare_installed_tree() {
       local ref_dir="$ref_bundle/$rel"
       local cel_dir="$cel_bundle/$rel"
 
-      # Symbolic link comparison (path set + target). Traverse explicitly to
-      # avoid GNU/BSD differences in diff --no-dereference.
-      local ref_links cel_links
+      # Symbolic link comparison (presence + type + target). Traverse
+      # explicitly to avoid GNU/BSD differences in diff --no-dereference.
+      # Take the union of both sides' link sets so links present only on
+      # the celerite side are also inspected.
+      local ref_links cel_links all_links
       ref_links="$(cd "$ref_dir" 2>/dev/null && find . -type l -print 2>/dev/null | sed 's|^\./||' | LC_ALL=C sort || true)"
       cel_links="$(cd "$cel_dir" 2>/dev/null && find . -type l -print 2>/dev/null | sed 's|^\./||' | LC_ALL=C sort || true)"
-      if [ -n "$ref_links" ] || [ -n "$cel_links" ]; then
+      all_links="$(printf '%s\n%s\n' "$ref_links" "$cel_links" | sed '/^$/d' | LC_ALL=C sort -u)"
+      if [ -n "$all_links" ]; then
         local link
         while IFS= read -r link; do
           [ -z "$link" ] && continue
-          if [ -L "$cel_dir/$link" ]; then
+          local ref_is_link=0 cel_is_link=0
+          [ -L "$ref_dir/$link" ] && ref_is_link=1
+          [ -L "$cel_dir/$link" ] && cel_is_link=1
+          local ref_exists=0 cel_exists=0
+          if [ -e "$ref_dir/$link" ] || [ -L "$ref_dir/$link" ]; then ref_exists=1; fi
+          if [ -e "$cel_dir/$link" ] || [ -L "$cel_dir/$link" ]; then cel_exists=1; fi
+
+          if [ "$ref_is_link" = 1 ] && [ "$cel_is_link" = 1 ]; then
             local ref_tgt cel_tgt
             ref_tgt="$(readlink "$ref_dir/$link" 2>/dev/null || true)"
             cel_tgt="$(readlink "$cel_dir/$link" 2>/dev/null || true)"
             if [ "$ref_tgt" != "$cel_tgt" ]; then
               problems+="  $rel/$link symlink target differs: ref=$ref_tgt cel=$cel_tgt"$'\n'
             fi
+          elif [ "$ref_is_link" = 1 ] && [ "$cel_is_link" = 0 ]; then
+            if [ "$cel_exists" = 1 ]; then
+              problems+="  $rel/$link entry type differs: ref=symlink cel=file"$'\n'
+            else
+              problems+="  $rel/$link symlink missing on celerite side"$'\n'
+            fi
+          elif [ "$cel_is_link" = 1 ] && [ "$ref_is_link" = 0 ]; then
+            if [ "$ref_exists" = 1 ]; then
+              problems+="  $rel/$link entry type differs: ref=file cel=symlink"$'\n'
+            else
+              problems+="  $rel/$link unexpected symlink on celerite side"$'\n'
+            fi
           fi
-        done <<< "$ref_links"
+        done <<< "$all_links"
       fi
 
       # Path-set comparison (missing/extra entries only).

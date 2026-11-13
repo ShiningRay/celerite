@@ -48,7 +48,9 @@ ruby/*/bin
 
 **N1–N7 索引**：路径/换行/时间戳/日期/Environment 体/backtrace 帧/连续 `Fetching` 行排序的归一化规则见本文档顶部表格；安装树内容比较复用同一 `normalize`。
 
-**自测**：`script/differential-installed-tree-selftest` 覆盖 (a) 完全一致 PASS、(b) 内容差异 FAIL 且含 `content differs`、(c) symlink 目标差异 FAIL 且含 `symlink target differs`、(d) 缺 symlink FAIL。Windows 使用 `MSYS=winsymlinks:nativestrict ln -s` 探测/创建真实符号链接；若无法创建时 (c)/(d) 记为 SKIP 并输出错误与复现命令（不伪报 PASS）。
+**自测**：`script/differential-installed-tree-selftest` 覆盖 6 断言——(a) 完全一致 PASS、(b) 内容差异 FAIL 且含 `content differs`、(c) symlink 目标差异 FAIL 且含 `symlink target differs`、(d) 缺 symlink FAIL、(e) ref 普通文件 vs cel 同名 symlink（内容相同）FAIL 且含 `entry type differs`、(f) cel 多一个 symlink FAIL 且含 `unexpected symlink`。Windows 使用 `MSYS=winsymlinks:nativestrict ln -s` 探测/创建真实符号链接；若无法创建时 (c)/(d)/(e)/(f) 记为 SKIP 并输出错误与复现命令（不伪报 PASS）。
+
+**5 类判定**（安装树 `compare_installed_tree`）：① 路径集合（matched dirs / relative path set，missing/extra）；② 类型（symlink vs regular file，输出 `entry type differs: ref=<file|symlink> cel=<file|symlink>`）；③ 链接目标（`readlink` 不一致，输出 `symlink target differs: ref=<x> cel=<y>`；仅单侧存在时 `symlink missing on celerite side` / `unexpected symlink on celerite side`）；④ 内容（非 symlink 文件经 N1–N7 normalize 后一致，否则 `content differs after normalization`）；⑤ 可执行位（仅非 Windows，executable bit differs）。消息文本与上述输出字面一致。
 
 **覆盖范围**：带 `installed-tree` marker 的 fixture 列表随仓库演进变化，权威来源为 `ls fixtures/differential/*/installed-tree`（历史：HEAD=206d749 时 20 个）。回归时应至少对可运行的请求 fixture 在双 profile 下记录命令/exit/计数。
 ## Known limits
