@@ -652,3 +652,49 @@ edirect (NUMBER_KEY, default 5): Downloader follows 301/302/303/307/308 uncondit
 - **结论**：M7(9) Rails 真实应用驱动**未达成**，记 **未验证**；不伪报通过。复现（本机）：
   `cd C:\temp\rails-min && celerite install`；`cd C:\temp\rails-min && celerite lock`；`cd C:\temp\smoke-ssl && celerite lock`（对照组 `cd C:\temp\smoke-ssl && celerite install`）。
 - **未验证/遗留**：Nil assertion 的具体触发点（rails 规模解析 vs 平台变体）未定位；lock 命令 TLS 失败与 install 命令 TLS 成功的代码路径差异未定位；两者均需产品侧排查后才能重试 M7(9)。
+
+## 2026-11-14 G：环境根因定位（exe 位置写/TLS 限制）+ ① 已修复落地 + ②③ 验收
+
+背景：lead m02402 纠正 D 的 SSL 假象（陈旧二进制）后，m02561/m02782 指示修两个产品缺陷：② `ProcessLock` 在 Windows 的 `a+` 打开 EACCES；③ `lock` 路径 TLS 校验失败。本轮实测结论：**②③ 均非产品缺陷，而是本机按 exe 图像路径生效的环境限制**；①（ensure 掩盖错误）为真实产品缺陷，已由 ff66c83 修复。
+
+### 环境限制定位（隔离实验，均可复现）
+
+- 最小复现 `C:\Temp\lockdbg3.cr`（16 行，不含 celerite 代码）：同一二进制、同一 CWD、同一用户、同一目标文件——从 `C:\temp` 运行：`r/r+/w/a/a+` 全部 OK；从 `C:\Users\ShiningRay\projects\ShiningRay\celerite\bin\`、仓库根、`spec/`、`docs/`、`C:\Users\ShiningRay\projects\ShiningRay\` 运行：写模式全部 `File::AccessDeniedError: Error opening file with mode 'a': 'C:\Users\ShiningRay\.bundle\bundler.lock': 拒绝访问。`，读模式 `r` 仍 OK。
+- 边界：exe 位于 `C:\Users\ShiningRay\projects\ShiningRay\` 子树 → 进程**写任何位置都失败**（`~/.bundle`、`C:\temp`、exe 自身目录均 EACCES）、读正常；exe 位于 `C:\Users\ShiningRay\projects\`（树根）、`Desktop`、`Downloads`、`C:\temp` → 全部写正常。
+- 同分钟对照（排除陈旧/争用/内容）：`C:\temp\binloc\celerite.exe`（`Copy-Item` 同字节）→ EXIT 0 `Bundle complete!`；`bin/celerite.exe` → EACCES。03:48 用当前 HEAD 重建 `bin/celerite.exe` 仍 EACCES ⇒ 非陈旧、非内容。`ruby_procs=0`、`file_probe2.cr` 400 次 open+flock 循环 fails=0 与失败 install 并发、ACL FullControl、python/Crystal 直开均 OK ⇒ 非争用/非 ACL/非占用。
+- TLS 同分钟配对（冷 compact_index 缓存，先 `Move-Item` 迁走 `~/.bundle/cache/compact_index/63ce7be7-https---rubygems.org-`）：`C:\temp\celerite-clean.exe lock`（rack 3.0.0 夹具）→ EXIT 0，`Writing lockfile to ...` + `Fetching gem metadata from https://rubygems.org/.` + `Resolving dependencies...` + lockfile 落盘；同分钟 `bin/celerite.exe lock` 同夹具 → `SSL_connect: error:0A000086:SSL routines::certificate verify failed` EXIT 1、无 lockfile。静态对比两路径 TLS 构造对称（`resolution.cr:263,267` 与 `commands_install.cr:118` 均传 `Commands.ssl_option` 三参数 + `timeout:`；`cache.cr:149-178` 与 `downloader.cr:184-211` ctx 构造一致；Crystal 1.22.1 `OpenSSL::SSL::Context::Client` 无 `add_default_paths`）。
+- 结论：机器策略按图像路径（`projects\ShiningRay\` 子树）限制子进程写权限并破坏其出站 TLS 校验；机制本体未验证（无管理工具权限）。`ProcessLock` 逻辑本身健全：新增 `spec/m7_process_lock_spec.cr` 取锁/释放/再取锁往返，`1 examples, 0 failures, 0 errors, 0 pending EXIT 0`。
+
+### ① 真实缺陷修复（ff66c83，已推送）+ 修复后真实错误浮现
+
+- 修复：`commands_install.cr` `lock : ProcessLock? = nil` + ensure `lock.try(&.close)`；同类 `commands_surface.cr:187`（update 命令）一并修；spec `spec/m7_install_ensure_unmask_spec.cr`（畸形 Gemfile → exit 1 友好报错，不再 Nil 掩盖）。
+- 修复后 rails-min 夹具（`C:\temp\rails-min`，`gem "rails", "8.0.2"`）install → EXIT 6 `(derived conflict)`：真实 gemfile 级解析冲突浮出，无崩溃、无 TLS 错误、无 EACCES（是否为产品差异需与参考 Bundler 同夹具对照——未验证）。
+
+### ②③ 行为验收（全部用仓库外二进制，当前 HEAD 构建，正斜杠 shim 链接参数）
+
+- 重建纪律命令：`crystal build src/cli.cr -o bin/celerite.exe --link-flags "C:/Users/ShiningRay/AppData/Local/Temp/celerite-shim-m7wip/evp_md_size_shim.o"`（BUILD=0；反斜杠会被 sh 吃掉），随后 `Copy-Item` 到 `C:\temp\runner\celerite.exe` 执行。
+- fresh21 rack 3.0.0 install → EXIT 0 `Bundle complete! 1 Gemfile dependency, 1 gem now installed.`；fresh20 rack lock（冷缓存）→ EXIT 0 lockfile 落盘；smoke-ssl rake 13.0.0 对照 → EXIT 0。
+
+### 强制运行纪律（本宿主）
+
+- 所有 celerite 执行（differential / upstream-specs / 人工验证）必须使用仓库外副本（如 `C:\temp\runner\celerite.exe`），**禁止原地执行 `bin/celerite.exe`**；`CELERITE_BIN` 指向副本。
+- 2026-11-14 ~01:00 后原地 `bin/` 执行的证据一律无效；D2/E/F 证据产生于限制生效前，保持有效；下方 harness 复跑用于再验证。
+
+### harness 复跑（仓库外二进制 + helper override）
+
+- 命令：`CELERITE_BIN="C:/temp/runner/celerite.exe" CELERITE_BRIDGE_SERVER=<repo>/assets/bridge/server.rb CELERITE_SKIP_TEST_DEPS=1 CELERITE_BUNDLE_HELPER_OVERRIDE=1 RSPEC_FORMATTER_OUTPUT_ID=celerite-harness ruby -S rspec -r <repo>/script/upstream-specs-celerite-override.rb spec/lock/lockfile_spec.rb --format documentation --out C:\temp\rspec-outputG2.txt`（MSYS bash PATH 前缀，cwd `.upstream-specs/v4.0.24/bundler`）。
+- 实测：`64 examples, 53 failures`（seed 31121，exit 1；Commands 行显示 `$ C:/temp/runner/celerite.exe install` ×16，runner 路径命中 46 处 ⇒ override 真实驱动 celerite）。对比 D2（旧二进制原地 `bin/`）：64/55/9 pass → 本轮 64/53/11 pass（+2）。
+- 四桶归类（53，加总=53）：环境 36（DNS `Hostname lookup for gem.repoN failed` 35 + HTTP 403 1）；夹具 12（checksums.rb:24 ENOENT 10 + `gem file not found: myrack_middleware-1.0.gem` 1 + lockfile_spec.rb:1683 ArgumentError `myrack-0.9.1.gem does not exist` 1）；产品差异 5（见下）；shim/override 未覆盖 0。
+- 产品差异 5 条（4 条与 D2 C1 同例同形 + 1 条新发现）：
+  1. `stores relative paths when the path is provided in an absolute fashion but is relative`：期望 `remote: foo`，实得绝对路径 `remote: C:/.../bundled_app/foo`（未 relativize）。
+  2. `regenerates a lockfile with no specs`：期望 direct_dependency (4.5.6) + indirect_dependency (1.2.3)，实得空 `specs:`。
+  3. `refuses to install if Gemfile.lock contains conflict markers`：期望 `/your Gemfile.lock contains merge conflicts/i`，实得消息在 "Your" 与 "Gemfile.lock" 间插入绝对 Windows 路径（行为正确，exit 20）。
+  4. `automatically fixes the lockfile when it has incorrect deps, keeping the locked version`：期望 net-smtp (0.5.0) 带嵌套 `net-protocol` 依赖边，实得缺该嵌套行。
+  5. **新发现**（D2 被环境噪声掩盖）：`does not add the :require option to the lockfile` → `celerite internal error: Couldn't parse (String | Nil) from ["myrack/obama"] at line 1, column 250 / parsing Celerite::Bridge::EvaluatedDependency#autorequire` — bridge 对 `require:` 数组形态解析的类型缺陷（真实产品缺陷，需后续子项）。
+- D2 旧桶对照：环境 39→36（SSL 32 假象消除，DNS 31+4 msg-eq 保留，403 1）；夹具 12 不变；产品 4→5（#27 由 Nil 崩溃显形为 autorequire 解析缺陷）。
+
+### 未验证项
+
+- 限制的机制本体与影响半径（仅本宿主实证；其他宿主未验证）。
+- rails-min `(derived conflict)` 与参考 Bundler 的同夹具对照（未验证）。
+- 复现：上述 lockdbg3/边界/配对实验命令见 `C:\Temp\lockdbg*.cr` 与本节命令；harness 复跑命令见上。
