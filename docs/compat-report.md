@@ -536,6 +536,32 @@ eloaded.all.should eq([] of String) got 6 gem.* keys. Root cause: global ~/.bund
 - Canary regression (config display surface, dual profile): `CELERITE_BIN="$PWD/bin/celerite.exe" CELERITE_BRIDGE_SERVER="$PWD/assets/bridge/server.rb" TMPDIR=/c/temp bash script/differential env-report config-global fund-path show-info-installed` + `BUNDLER_REF_VERSION=2.7.2` variant -> 4 passed / 0 failed / 0 skipped, EXIT 0 both profiles (logs `C:\temp\celerite-diff-m74-canary-4024.log`, `C:\temp\celerite-diff-m74-canary-272.log`). Bin rebuilt with shim after the code change: BUILD_EXIT=0, `bin/celerite.exe --version` 0.1.0 VER_EXIT=0.
 - Remaining gaps (recommended follow-ups, not fixed this round): enforce max-redirect limit (needs redirect counter in downloader/cache + differential harness for redirects); implement or explicitly fast-fail proxy / timeout / ssl_client_cert / ssl_client_key / mirror.<url>.fallback_timeout; legacy-full-index fallback is a design tradeoff; path.system semantics alignment vs reference system-gem dir. Pre-existing config_spec round-trip failure (all-after-unset) recorded with baseline proof; recommend separate low-cost fix subitem.
 - Unverified: full 135-fixture suites NOT rerun after this 1-line change (repro: `CELERITE_BIN="$PWD/bin/celerite.exe" CELERITE_BRIDGE_SERVER="$PWD/assets/bridge/server.rb" [BUNDLER_REF_VERSION=2.7.2] TMPDIR=/c/temp bash script/differential`); baselines unchanged 4.0.24 133:126/7/0 (@1882f53) and 2.7.2 133:126/6/1 (@517f69a-rerun); audit is code-read evidence (no per-setting runtime proof beyond canaries); bridge unavailable ≠ pass; stock OpenSSL EVP_MD_size blocker + shim local-only recorded.
+## Subitem evidence: M7(4) silent-ignore disposition (2026-11-13, HEAD=3c3f52e, docs-only)
+
+- Scope/HEAD baseline: 3c3f52e (stage summary refresh + M7(1)/(2) regression evidence). This subitem is docs-only disposition (code read + grep evidence); no code changes landed this round (fast-fail/real-effect implementation deferred to a follow-up subitem or lead adjudication).
+- **Key -> read site -> status -> disposition table**:
+  - proxy / http_proxy / https_proxy: NO key in BOOL/NUMBER/ARRAY_KEYS; no code path in src/; env HTTP_PROXY/HTTPS_PROXY never read -> **GAP** (no consumer). Disposition: document as unsupported; fast-fail not wired (no read site to gate).
+  - 	imeout (NUMBER_KEY, default 10): Downloader hardcodes connect_timeout=30s/read_timeout=120s; HttpFetcher @timeout param exists but make_fetcher does not pass config timeout -> **SILENT IGNORE** (config value unused). Disposition: wire timeout into Downloader + HttpFetcher in follow-up (real-effect) OR fast-fail.
+  - ssl_ca_cert: REAL (used in both Downloader and HttpFetcher TLS ctx).
+  - ssl_client_cert: stored unused in both Downloader and HttpFetcher (getter only, never applied to TLS ctx) -> **GAP** (parsed but never applied).
+  - ssl_client_key: not read anywhere -> **GAP**.
+  - ssl_verify_mode: REAL (used in both Downloader and HttpFetcher TLS ctx).
+  - mirror / mirror.<url>: REAL (mirror_for used; mirror fallback in Downloader).
+  - mirror.<url>.fallback_timeout: getter exists but NO consumer -> **SILENT IGNORE**.
+  -
+edirect (NUMBER_KEY, default 5): Downloader follows 301/302/303/307/308 unconditionally with NO limit/count -> **SILENT IGNORE** (no enforcement of BUNDLE_REDIRECT).
+  - legacy/full index: not implemented (compact-only) -> **GAP**.
+  - path.system: REAL conditional effect (user_home install base).
+- **Read sites (file:line)**:
+  - config.cr: BOOL_KEYS L14-23 (incl path.system L22); NUMBER_KEYS L25 (jobs/retry/redirect/timeout/cooldown); mirror_for L318-333; mirror_fallback_timeout L335-342 (no consumer); key_for L6727; convert L13064; all L2239.
+  - downloader.cr: initialize L29 (ssl_client_cert stored); download_to L131-240 (hardcoded 30/120 L189-190; redirect follow L225-231 no limit; ssl_ca_cert/verify_mode used in TLS ctx L171-187; ssl_client_cert NOT applied).
+  - compact_index/cache.cr: HttpFetcher initialize L69 (@timeout param, default 30s); perform L147-173 (ssl_ca_cert/verify_mode used; ssl_client_cert NOT applied); make_fetcher L554-575 (HttpFetcher.for does not pass timeout); HttpFetcher.for L77-81 (no timeout param).
+  - resolution.cr: install_path L12-21 (path.system consulted).
+  - commands_install.cr L111/209/229/791; commands_surface.cr L113/994/1173/1522 (Downloader.new call sites passing ssl params).
+- **Gates**: crystal tool format --check src spec EXIT 0; crystal build --no-codegen src/cli.cr EXIT 0 (2 deprecation warnings); git diff --check EXIT 0; CR=0.
+- **Unverified/blocked**: runtime proof per-setting (no live network to exercise proxy/timeout/redirect/ssl_client_cert); fast-fail implementation not landed (docs-only disposition this round); full 135-fixture dual profile unrun (explicit + repro); bridge unavailable != pass; stock EVP_MD_size + shim local-only recorded; M7 checkboxes not checked; task-2/task-3 in_progress; no task-4/M8.
+- **Repro for follow-up implementation**: set BUNDLE_PROXY/BUNDLE_TIMEOUT/BUNDLE_SSL_CLIENT_CERT/BUNDLE_SSL_CLIENT_KEY/BUNDLE_MIRROR_..._FALLBACK_TIMEOUT/BUNDLE_REDIRECT and run undle install against a remote source; observe current behavior (ignored). Follow-up subitem should land real-effect or fast-fail + spec + differential affected-set regression.
+
 ## Subitem evidence: M7(6) plugin command/hook audit (2026-11-13, HEAD=94ec377, docs-only)
 
 - Scope: lead m03973 item 1 (plugin command registration + plugin_hooks post-install failure policy audit). Docs-only; no behavior change this subitem. Event-name alignment fix authorized separately (lead m04050) as follow-up subitem with before/after spec evidence.
