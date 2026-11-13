@@ -132,3 +132,86 @@ bash script/upstream-specs
 - bridge 不可用≠通过；本轮失败链未触达 bridge。
 - `script/upstream-specs` 会整体重写本报告（本轮已覆盖生成一次，标题行含预存 U+FFFD，系历史提交带入、非本轮引入，未修）；已 `git checkout -- docs/compat-matrix/generated/upstream-lockfile-v4.0.24.md` 复原后手工追加本小节。
 - 复现：`cd .upstream-specs/v4.0.24/bundler && ruby -I spec/support C:/temp/populate_pristine.rb`；再于仓库根 `CELERITE_BIN="$PWD/bin/celerite.exe" CELERITE_BRIDGE_SERVER="$PWD/assets/bridge/server.rb" CELERITE_SKIP_TEST_DEPS=1 bash script/upstream-specs`；原始输出 `.upstream-specs/rspec-output.txt`（gitignored，本地证据）。
+
+## 2026-11-13 helper-override attempt（本轮实测）
+
+本轮以 `CELERITE_BUNDLE_HELPER_OVERRIDE=1` 让例内 `Spec::Helpers#bundle/bundler` 直接调用 celerite（`script/upstream-specs-celerite-override.rb`），首次取得 celerite 在例内被真实调用的留痕；以下计数均来自实测输出。
+
+### 前置（同上一节）
+
+`pristine_system` 已由 `C:/temp/populate_pristine.rb`（仓库外，不入库）填充；`helpers.rb:528` 的 `Errno::ENOENT ... bundler/tmp/gems` 不再出现，setup 通过。
+
+### 执行命令与环境（两轮，计数一致）
+
+trace 直跑（PowerShell `$env:` 赋值，勿用 bash 传 `$var`；反斜杠路径会被 sh 吃掉，故用正斜杠）：
+
+```
+cd .upstream-specs/v4.0.24/bundler
+$env:PATH="$repo\.upstream-specs\shim;C:\Ruby40-x64\bin;C:\msys64\ucrt64\bin;C:\msys64\usr\bin;C:\Program Files\Git\usr\bin;C:\Program Files\Git\cmd;$env:PATH"
+$env:BUNDLE_GEMFILE=""
+$env:CELERITE_BRIDGE_SERVER="$repo\assets\bridge\server.rb"
+$env:CELERITE_BIN="C:/Ruby40-x64/bin/ruby.exe C:/Users/ShiningRay/projects/ShiningRay/celerite/.upstream-specs/bin/celerite-trace.rb"
+$env:CELERITE_TRACE_LOG="C:\temp\celerite-invocations.log"
+$env:RSPEC_FORMATTER_OUTPUT_ID="celerite-harness"   # 等价 CELERITE_SKIP_TEST_DEPS=1
+ruby -S rspec -r "$repo\script\upstream-specs-celerite-override.rb" spec/lock/lockfile_spec.rb --format documentation --out C:\temp\rspec-outputB.txt
+```
+
+脚本正路：仓库根 `CELERITE_BUNDLE_HELPER_OVERRIDE=1 CELERITE_SKIP_TEST_DEPS=1 bash script/upstream-specs`（脚本解析 `CELERITE_BIN` 为 `bin/celerite(.exe)` 并加 `-r script/upstream-specs-celerite-override.rb`）。
+
+- trace 包装 `.upstream-specs/bin/celerite-trace.rb`（gitignored，不入库）：先 `File.open(log,'a'){|f| f.puts ARGV.join(' ')}`，再 `exec 'C:/Users/ShiningRay/projects/ShiningRay/celerite/bin/celerite.exe', *ARGV`
+- `CELERITE_BIN` 指向 `C:/Ruby40-x64/bin/ruby.exe <wrapper>`（`.sh` 在 sh 下不可直接 exec，改用 Ruby 包装）
+- `BUNDLER_REF_VERSION` 未设置（rev 由 `UPSTREAM_REV=v4.0.24` checkout 固定）
+- fixture 数：`bundler/spec/lock/lockfile_spec.rb` 64 examples
+
+### 实测结果
+
+| 轮次 | 命令 | 摘要 | seed | 计时 | exit |
+|---|---|---|---|---|---|
+| trace 直跑 | 上（`C:\temp\rspec-outputB.txt`） | `64 examples, 55 failures`（行 4157） | 6534 | `Finished in 2 minutes 54.9 seconds (files took 1.45 seconds to load)` | 1 |
+| 脚本正路 | `bash script/upstream-specs` | `64 examples, 55 failures`（`.upstream-specs/rspec-output.txt:4154`） | 51053 | `Finished in 2 minutes 19.1 seconds (files took 1.08 seconds to load)` | 1 |
+
+- celerite 触达证据：trace 日志 57 条调用（install 51、config 3、lock 2、cache 1，写入 `C:\temp\celerite-invocations.log`）；脚本正路输出中 `celerite` 字样 164 处；celerite 真实输出如 `Writing lockfile to .../tmp/2.1/bundled_app/Gemfile.lock`、`Bundler 4.0.24 is running, but your lockfile was generated with 2.3.0. Installing Bundler 2.3.0 and restarting using that version.`、`Fetching gem metadata from https://gem.repo4/.`
+- 通过例（9，两轮集合一致）：`successfully updates the lockfile when a new gem is added in the Gemfile includes a gem that shouldn't be included`；`serializes pinned path sources to the lockfile`；`stores relative paths when the path is provided for gemspec`；`serializes global git sources`；`generates a simple lockfile for a single pinned source, gem with a version requirement`；`generates a lockfile with a ref for a single pinned source, git gem with a tag requirement`；`stores relative paths when the path is provided in a relative fashion and is above Gemfile dir`；`stores relative paths when the path is provided in a relative fashion and in Gemfile dir`；`generates a lockfile with a ref for a single pinned source, git gem with a branch requirement`
+
+### 首失败原文（trace 直跑 Failures 第 1 条）
+
+```
+1) the lockfile format does not add duplicate dependencies with versions
+   Errno::ENOENT: No such file or directory @ rb_sysopen -
+     .../bundler/tmp/2.1/gems/remote2/gems/myrack-1.0.0.gem
+   # ./spec/support/checksums.rb:24:in 'File#initialize'
+   # ./spec/lock/lockfile_spec.rb:1414:in 'block (3 levels) in <top (required)>'
+```
+
+### 逐类归属（55 失败，逐块核对）
+
+| 类 | 计数 | 原文特征 | 归属 |
+|---|---|---|---|
+| `RuntimeError` + `celerite internal error: SSL_CTX_load_verify_locations: error:80092004/800000CB` | 36 | `Invoking ... celerite-trace.rb install` 失败，输出含 `Fetching gem metadata from https://gem.repoN/.` 后 SSL 中断（`command_execution.rb:25` ← `subprocess.rb:97` ← `helpers.rb:191` ← `override.rb:44`） | 环境：shim 构建二进制 OpenSSL CA 装载失败；非上游断言差异 |
+| `Errno::ENOENT` | 10 | `checksums.rb:24`，`remote2/gems/{myrack-1.0.0,myrack-0.9.1,activesupport-2.3.5}.gem` 缺失 | 测试夹具依赖 |
+| `RuntimeError` 其他 | 2 | `celerite internal error: Nil assertion failed`（`:require` 例）；`gem file not found: myrack_middleware-1.0.gem`（full index 例） | 1 产品错误处理 + 1 夹具 |
+| `expect(lockfile).to eq` 内容 diff | 3 | 见下样例 1-3 | 产品差异（celerite 已执行并产出 lockfile） |
+| `expect(err)` 消息 diff | 3 | 见下样例 4-5 | 产品差异（错误消息内容/路径格式） |
+| `ArgumentError` | 1 | `helpers.rb:328 install_gem`：`` `.../remote2/gems/myrack-0.9.1.gem` does not exist! `` | 测试夹具依赖 |
+
+合计：产品差异 7（内容 3 + 消息 3 + Nil assertion 1）；环境 36；夹具 12；7+36+12=55。shim 未覆盖命令 0（override 直接调用 celerite，不再走 `tmp/2.1/gems/system/bin/bundle`）。
+
+### 产品差异样例（断言 diff 摘要）
+
+1. `stores relative paths when the path is provided in an absolute fashion but is relative`：期望 `PATH` 节 `remote: foo`，实得 `remote: C:/Users/.../bundled_app/foo`（绝对路径未相对化）；其余节一致。
+2. `regenerates a lockfile with no specs`：期望 `specs:` 含 `direct_dependency (4.5.6)` 与 `indirect_dependency (1.2.3)`，实得 `specs:` 为空。
+3. `automatically fixes the lockfile when it has incorrect deps, keeping the locked version`：期望 `net-smtp (0.5.0)` 下含 `net-protocol` 依赖边，实得缺失该边。
+4. `raises if two different versions are used`：期望 stderr 含 `myrack (= 1.0) and myrack (= 1.1)`，实得 `celerite internal error: Nil assertion failed`（`# $? => 1`）。
+5. `refuses to install if Gemfile.lock contains conflict markers`：celerite 已检出冲突，但消息为 `Your C:\Users\...\Gemfile.lock contains merge conflicts.`（绝对 Windows 路径），不匹配 `/your Gemfile.lock contains merge conflicts/i`。
+
+### 与 64/62 基线的关系
+
+同一 fixture 族、同一 rev；差异仅在例内 helper 调用对象：基线轮 helper 走 `tmp/2.1/gems/system/bin/bundle` 绝对路径（celerite 未触达，62 败全为夹具/环境）；本轮 override 后 celerite 在例内真实执行 57 次（留痕），通过 2→9（+7），失败 62→55，其中 7 块为真实产品差异（内容/错误消息），其余 48 块仍为环境（SSL_CTX 36）与夹具（12）。未达 byte-green；bridge 在 SSL 失败链中未触达。
+
+### 未验证 / 阻塞
+
+- 通过例的逐例调用映射：trace 日志仅记参数，无 rspec 例名上下文；失败例的调用命令取自失败正文 `Invoking ...` 行。
+- `SSL_CTX_load_verify_locations` 根因（CA bundle 路径 vs shim 构建二进制）未隔离；需可用 bridge/CA 环境复测。
+- `script/upstream-specs:122` 在 `CELERITE_BIN` 已设置时仍覆盖为 `bin/celerite(.exe)`，故 trace 直跑未走脚本入口；脚本正路轮已验证 override 接线与计数一致。
+- 复现：先 `cd .upstream-specs/v4.0.24/bundler && ruby -I spec/support C:/temp/populate_pristine.rb`；再 `CELERITE_BUNDLE_HELPER_OVERRIDE=1 CELERITE_SKIP_TEST_DEPS=1 bash script/upstream-specs`；trace 直跑见上（原始输出 `C:\temp\rspec-outputB.txt`、`C:\temp\celerite-invocations.log`，本地证据）。
+- `script/upstream-specs` 自 93716bd 起只写 `.upstream-specs/`（本轮产物 `.upstream-specs/upstream-lockfile-v4.0.24-20261113T132634Z.md`，8464 字节），`git status docs/` 为空，docs/ 不再被覆盖。
