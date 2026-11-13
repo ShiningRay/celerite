@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# Self-test for script/differential-installed-tree (M7(7)).
+# Exercises compare_installed_tree against controlled temp trees.
+#
+# Assertions:
+#   (a) identical trees -> PASS (exit 0)
+#   (b) content differs -> FAIL (exit 1) with "content differs"
+#   (c) symlink target differs -> FAIL (exit 1) with "symlink target differs"
+#   (d) missing symlink -> FAIL (exit 1)
+#
+# Symlink-dependent assertions (c,d) require real symlinks. On Windows Git
+# Bash use MSYS=winsymlinks:nativestrict; if a real symlink cannot be created
+# the assertion is SKIP with exact error and repro command (no fake PASS).
+set -uo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+. "$repo_root/script/differential-installed-tree"
+
+# Minimal normalize compatible with compare_installed_tree (N1/N2 subset).
+normalize() {
+  local ref="$1"
+  local cel="$2"
+  local ref_win cel_win
+  ref_win="$(cygpath -m "$ref" 2>/dev/null || echo "$ref")"
+  cel_win="$(cygpath -m "$cel" 2>/dev/null || echo "$cel")"
+  sed -e "s|$ref|{SANDBOX}|g" \
+      -e "s|$cel|{SANDBOX}|g" \
+      -e "s|$ref_win|{SANDBOX}|g" \
+      -e "s|$cel_win|{SANDBOX}|g" \
+      -e 's/\r$//'
+}
+
+pass=0
+fail=0
+skip=0
+tmpbase="$(mktemp -d)"
+cleanup() { rm -rf "$tmpbase"; }
+trap cleanup EXIT
+
+report_pass() { echo "PASS $1"; pass=$((pass + 1)); }
+report_fail() { echo "FAIL $1"; echo "$2" | sed 's/^/  /'; fail=$((fail + 1)); }
+report_skip() { echo "SKIP $1: $2"; echo "  repro: $3"; skip=$((skip + 1)); }
+
+setup_pair() {
+  local name="$1"
+  local base="$tmpbase/$name"
+  mkdir -p "$base/ref/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin" \
+           "$base/cel/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin"
+  printf 'hello\n' > "$base/ref/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/tool"
+  printf 'hello\n' > "$base/cel/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/tool"
+  printf 'ruby/*/gems\n' > "$base/marker"
+  echo "$base"
+}
+
+# Probe real symlink capability (MSYS=winsymlinks:nativestrict on Windows).
+symlink_err=""
+symlink_repro='MSYS=winsymlinks:nativestrict ln -s target link && test -L link'
+symlink_ok=0
+probe_dir="$tmpbase/probe"
+mkdir -p "$probe_dir"
+printf 'x' > "$probe_dir/target"
+if MSYS=winsymlinks:nativestrict ln -s target "$probe_dir/link" 2>"$probe_dir/err"; then
+  if [ -L "$probe_dir/link" ]; then
+    symlink_ok=1
+  else
+    symlink_err="ln -s succeeded but did not create a real symlink (created copy/junction fallback?)"
+  fi
+else
+  symlink_err="$(cat "$probe_dir/err" 2>/dev/null || echo 'ln -s failed')"
+fi
+
+echo "== differential-installed-tree selftest =="
+echo "symlink probe: $([ "$symlink_ok" = 1 ] && echo 'real symlinks available' || echo "unavailable (${symlink_err})")"
+
+# (a) identical trees -> PASS
+base="$(setup_pair a_identical)"
+out=""
+rc=0
+out="$(compare_installed_tree "$base/ref/sandbox" "$base/cel/sandbox" "$base/marker" "$base/ref/sandbox/bundle" "$base/cel/sandbox/bundle" 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+  report_pass "(a) identical trees"
+else
+  report_fail "(a) identical trees" "expected exit 0 and no output, got exit=$rc output=$out"
+fi
+
+# (b) content differs -> FAIL with "content differs"
+base="$(setup_pair b_content)"
+printf 'DIFFERENT\n' > "$base/cel/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/tool"
+out=""
+rc=0
+out="$(compare_installed_tree "$base/ref/sandbox" "$base/cel/sandbox" "$base/marker" "$base/ref/sandbox/bundle" "$base/cel/sandbox/bundle" 2>&1)" || rc=$?
+if [ "$rc" -ne 0 ] && echo "$out" | grep -q "content differs"; then
+  report_pass "(b) content differs"
+else
+  report_fail "(b) content differs" "expected exit!=0 and 'content differs', got exit=$rc output=$out"
+fi
+
+# (c) symlink target differs -> FAIL with "symlink target differs"
+if [ "$symlink_ok" = 1 ]; then
+  base="$(setup_pair c_symlink_target)"
+  printf 't1\n' > "$base/ref/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/t1"
+  printf 't2\n' > "$base/ref/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/t2"
+  cp "$base/ref/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/t1" "$base/cel/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/t1"
+  cp "$base/ref/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/t2" "$base/cel/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/t2"
+  MSYS=winsymlinks:nativestrict ln -s t1 "$base/ref/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/link"
+  MSYS=winsymlinks:nativestrict ln -s t2 "$base/cel/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/link"
+  out=""
+  rc=0
+  out="$(compare_installed_tree "$base/ref/sandbox" "$base/cel/sandbox" "$base/marker" "$base/ref/sandbox/bundle" "$base/cel/sandbox/bundle" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ] && echo "$out" | grep -q "symlink target differs"; then
+    report_pass "(c) symlink target differs"
+  else
+    report_fail "(c) symlink target differs" "expected exit!=0 and 'symlink target differs', got exit=$rc output=$out"
+  fi
+else
+  report_skip "(c) symlink target differs" "real symlink unavailable: ${symlink_err}" "$symlink_repro"
+fi
+
+# (d) missing symlink -> FAIL
+if [ "$symlink_ok" = 1 ]; then
+  base="$(setup_pair d_missing_symlink)"
+  printf 't1\n' > "$base/ref/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/t1"
+  cp "$base/ref/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/t1" "$base/cel/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/t1"
+  MSYS=winsymlinks:nativestrict ln -s t1 "$base/ref/sandbox/bundle/ruby/4.0.0/gems/foo-1.0.0/bin/link"
+  # cel side missing symlink
+  out=""
+  rc=0
+  out="$(compare_installed_tree "$base/ref/sandbox" "$base/cel/sandbox" "$base/marker" "$base/ref/sandbox/bundle" "$base/cel/sandbox/bundle" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    report_pass "(d) missing symlink"
+  else
+    report_fail "(d) missing symlink" "expected exit!=0, got exit=$rc output=$out"
+  fi
+else
+  report_skip "(d) missing symlink" "real symlink unavailable: ${symlink_err}" "$symlink_repro"
+fi
+
+echo
+echo "selftest summary: $pass passed, $fail failed, $skip skipped"
+[ "$fail" -eq 0 ]

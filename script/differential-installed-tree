@@ -14,6 +14,7 @@
 # - Files are compared after `normalize` (installed specs embed sandbox paths);
 #   binary files compare byte-for-byte (normalize is a no-op for them because
 #   the substitution strings never appear).
+# - Symbolic links are compared by relative path and link target (readlink).
 # - Executable-bit differences are reported (POSIX only; Windows git does not
 #   preserve the bit).
 
@@ -46,6 +47,26 @@ compare_installed_tree() {
       local ref_dir="$ref_bundle/$rel"
       local cel_dir="$cel_bundle/$rel"
 
+      # Symbolic link comparison (path set + target). Traverse explicitly to
+      # avoid GNU/BSD differences in diff --no-dereference.
+      local ref_links cel_links
+      ref_links="$(cd "$ref_dir" 2>/dev/null && find . -type l -print 2>/dev/null | sed 's|^\./||' | LC_ALL=C sort || true)"
+      cel_links="$(cd "$cel_dir" 2>/dev/null && find . -type l -print 2>/dev/null | sed 's|^\./||' | LC_ALL=C sort || true)"
+      if [ -n "$ref_links" ] || [ -n "$cel_links" ]; then
+        local link
+        while IFS= read -r link; do
+          [ -z "$link" ] && continue
+          if [ -L "$cel_dir/$link" ]; then
+            local ref_tgt cel_tgt
+            ref_tgt="$(readlink "$ref_dir/$link" 2>/dev/null || true)"
+            cel_tgt="$(readlink "$cel_dir/$link" 2>/dev/null || true)"
+            if [ "$ref_tgt" != "$cel_tgt" ]; then
+              problems+="  $rel/$link symlink target differs: ref=$ref_tgt cel=$cel_tgt"$'\n'
+            fi
+          fi
+        done <<< "$ref_links"
+      fi
+
       # Path-set comparison (missing/extra entries only).
       local only
       only="$(diff -r --brief "$ref_dir" "$cel_dir" 2>/dev/null \
@@ -62,6 +83,10 @@ compare_installed_tree() {
         [ -z "$rel_file" ] && continue
         local ref_file="$ref_dir/$rel_file"
         local cel_file="$cel_dir/$rel_file"
+        # Symlinks are compared by target above; skip content/exec checks.
+        if [ -L "$ref_file" ] || [ -L "$cel_file" ]; then
+          continue
+        fi
         if ! diff -q \
               <(normalize "$ref_sandbox" "$cel_sandbox" < "$ref_file") \
               <(normalize "$ref_sandbox" "$cel_sandbox" < "$cel_file") >/dev/null 2>&1; then
