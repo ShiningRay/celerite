@@ -62,3 +62,73 @@ rspec ./spec/lock/lockfile_spec.rb:2395 # ... preserves \r\n
 2. Run with `CELERITE_BUNDLE_HELPER_OVERRIDE=1` (and/or align installed_bindir/dev_binstub paths) once examples execute, then collect true compatibility-gap failures vs passes.
 3. Fix `script/upstream-specs` rspec invocation for Windows Git Bash/WSL interop (`ruby -S rspec` path already added; validate end-to-end) and record rerun evidence.
 4. Keep reporting per-example/aggregate evidence without declaring pass where unexecuted.
+
+## 2026-11-13 rerun via `script/upstream-specs`（本轮实测）
+
+本轮取得真实执行（setup 已通过、例体已运行），非阻塞记录；以下计数均来自 `.upstream-specs/rspec-output.txt` 实测输出。
+
+### Setup 解锁（前置于命令）
+
+先前 `pristine_system_gem_path`（`.upstream-specs/v4.0.24/bundler/tmp/gems/pristine_system`）从未被填充，导致 `spec/support/helpers.rb:528` `default_system_gems` 的 `FileUtils.cp_r pristine_system_gem_path, system_gem_path` 抛 `Errno::ENOENT ... bundler/tmp/gems`（64/64 全灭于 setup，即 iteration 2 基线）。本轮先本地填充（脚本位于仓库外 `C:/temp/populate_pristine.rb`，不入库）：
+
+```
+cd .upstream-specs/v4.0.24/bundler
+ruby -I spec/support C:/temp/populate_pristine.rb
+```
+
+脚本仅 `$LOAD_PATH.unshift "spec/support"; require "helpers"; Spec::Helpers.install_dev_bundler`（调 `helpers.rb:321-325` `with_built_bundler(nil, build_path: tmp_root) {|gem_path| install_gem(gem_path, pristine_system_gem_path) }`，纯本地构建 bundler gem 装入 pristine_system，无需网络）。输出 `PRISTINE_OK`，EXIT 0；`tmp/gems/pristine_system/specifications/bundler-4.0.24.gemspec` 生成。
+
+### 执行命令与环境
+
+```
+CELERITE_BIN="$PWD/bin/celerite.exe" \
+CELERITE_BRIDGE_SERVER="$PWD/assets/bridge/server.rb" \
+CELERITE_SKIP_TEST_DEPS=1 \
+bash script/upstream-specs
+```
+
+- `CELERITE_BIN`=`bin/celerite.exe`（脚本自动解析；shim 构建产物，未入库）
+- `CELERITE_BRIDGE_SERVER`=`assets/bridge/server.rb`（脚本/shim 导出；本轮失败例未触达 bridge）
+- `CELERITE_SKIP_TEST_DEPS=1`（设 `RSPEC_FORMATTER_OUTPUT_ID=celerite-harness`，跳过 `install_test_deps`）
+- PATH 含 `C:\Ruby40-x64\bin`、msys64 ucrt64/usr、Git usr/bin 与 cmd（脚本将 `.upstream-specs/shim` 置于 PATH 前，shim 导出 `CELERITE_BRIDGE_SERVER` 并 exec celerite）
+- `BUNDLER_REF_VERSION` 本轮未设置（upstream checkout 由标签 `UPSTREAM_REV=v4.0.24` 固定；该变量属 differential 路径，与本 harness 无关）
+- fixture 数：`bundler/spec/lock/lockfile_spec.rb` 64 examples
+
+### 实测结果
+
+- rspec 摘要（`.upstream-specs/rspec-output.txt:4972`）：`64 examples, 62 failures`（`Randomized with seed 14923`；`Finished in 1 minute 30.19 seconds (files took 1.33 seconds to load)`）
+- 退出码：1（rspec 有失败，脚本原样传播）
+- setup：通过（`helpers.rb:528` 的 `Errno::ENOENT ... bundler/tmp/gems` 已消失；around-hook `default_system_gems` cp_r 成功）
+- 通过例（2）：`successfully updates the lockfile when a new gem is added in the Gemfile includes a gem that shouldn't be included`；`automatically fixes the lockfile when it includes a gem under the correct GIT section, but also under an incorrect GEM section, with a higher version`
+
+### 首失败原文（`rspec-output.txt` Failures 第 1 条）
+
+```
+1) the lockfile format does not add duplicate dependencies with versions
+   Errno::ENOENT: No such file or directory @ rb_sysopen -
+     C:/Users/ShiningRay/projects/ShiningRay/celerite/.upstream-specs/v4.0.24/bundler/tmp/2.1/gems/remote2/gems/myrack-1.0.0.gem
+   # ./spec/support/checksums.rb:24:in 'File#initialize'
+   # ./spec/lock/lockfile_spec.rb:1414:in 'block (3 levels) in <top (required)>'
+```
+
+### 逐类归属（62 失败，逐块核对）
+
+| 类 | 计数 | 原文特征 | 归属 |
+|---|---|---|---|
+| `RuntimeError` | 44 | `command_execution.rb:25 raise_error!`，`Invoking ... tmp/2.1/gems/system/bin/bundle install ... failed with output:`；43 条含 `endpoint.rb:7: cannot load such file -- sinatra/base (LoadError)`，1 条为 `Could not fetch specs from file:///.../tmp/2.1/gems/remote2/`（空夹具仓库） | 测试夹具依赖 + 环境：sinatra/rack 等 artifice 依赖未装载（`install_test_deps` 被跳过）；且 helper 走绝对 binstub 路径而非 PATH shim，celerite 未被触达 |
+| `Commands` 正文头 | 7 | 同上 binstub + `endpoint.rb:7` sinatra LoadError 链（抽样 7/7 一致） | 同上 |
+| `Errno::ENOENT` | 10 | `checksums.rb:24`，目标 `remote2/gems/{myrack-1.0.0,myrack-0.9.1,activesupport-2.3.5}.gem` | 测试夹具依赖：`build_repo` 夹具未构建（`gem_repo1` 目录存在即 early-return；dev bundle 被跳过） |
+| `ArgumentError` | 1 | `helpers.rb:328 install_gem`：`` `.../remote2/gems/myrack-0.9.1.gem` does not exist! `` | 同上 |
+| 产品不兼容 | 0 | — | 无证据 |
+| shim 未覆盖命令 | 0 | — | 无证据（shim 本轮未被触达：helper 用绝对 binstub 路径） |
+
+### 与 iteration 2 基线（64/64）的关系
+
+同一 fixture 族、同一 rev（v4.0.24），不同失败阶段：基线 64/64 全是 setup-stage 未执行（`CELERITE_SKIP_TEST_DEPS=1` 且 pristine_system 为空）；本轮预填 pristine_system 后 setup 通过，64 例全部进入例体执行，62 例失败均为例体内夹具/依赖失败，2 例通过。失败数变化（64→62）来自 setup 解锁，非产品行为变化；**无任何一轮证据表明 celerite 产品不兼容**。
+
+### 未验证 / 阻塞
+
+- 未验证任何失败是否含真实产品差异：需完整 `install_test_deps`（网络/dev bundle/sinatra 夹具）+ `CELERITE_BUNDLE_HELPER_OVERRIDE=1` 调用点验证后，例体才会经 shim 驱动 celerite。
+- bridge 不可用≠通过；本轮失败链未触达 bridge。
+- `script/upstream-specs` 会整体重写本报告（本轮已覆盖生成一次，标题行含预存 U+FFFD，系历史提交带入、非本轮引入，未修）；已 `git checkout -- docs/compat-matrix/generated/upstream-lockfile-v4.0.24.md` 复原后手工追加本小节。
+- 复现：`cd .upstream-specs/v4.0.24/bundler && ruby -I spec/support C:/temp/populate_pristine.rb`；再于仓库根 `CELERITE_BIN="$PWD/bin/celerite.exe" CELERITE_BRIDGE_SERVER="$PWD/assets/bridge/server.rb" CELERITE_SKIP_TEST_DEPS=1 bash script/upstream-specs`；原始输出 `.upstream-specs/rspec-output.txt`（gitignored，本地证据）。
