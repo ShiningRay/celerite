@@ -141,6 +141,8 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 - **通用阻塞与硬约束**：stock `crystal build` OpenSSL `EVP_MD_size` 阻塞（本次基线检查 `crystal build --no-codegen src/cli.cr` EXIT 1，`sh` 不可用/`pkg-config` 探测失败），证据依赖 shim 本地 bin（未入库）；A:7/A:6 为 `make` 缺失环境阻塞，2.7.2 `add-group` 为 harness deferral；bridge 不可用不得视为通过。全量差分未在 5949cc2/b4fe095/a482329/582b099/0fabf9e/6488b8a/b5cfa51/0423b2f/4c2404a 及本子项后重跑（引用 1882f53/517f69a 实测）；M7 spec 子集本轮已重跑 70/0/0/0 EXIT 0。复现：`CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential`；`BUNDLER_REF_VERSION=2.7.2 ...`。
 - **task-2 收口建议（供首辅裁断）**：不建议宣告 M7(1)-(3) 整体验收收口/不勾选 M7 复选框；task-2 保持 `in_progress`。582b099 已 fixture 化 satisfied-issue（双 profile 1/0/0 PASS）；本子项（docs-only）固化 gem/env-issue 字段/IRB-in-bundle 边界 probe 证据（显式 unsupported/未验证+阻塞+复现）；`0fabf9e` 修复 B3 list 空 deps 早返回前打印 lock-ruby unlock notice 并 fixture 化 B3 两分支（check/list satisfied+missing）双 profile 4/0/0 PASS。剩余：IRB-in-bundle/交互可用路径、Case C、`gem` 完整模板/选项/`--help`、env/issue 归一化外字段与稳定集外输出、B1 Default Gem、`show`/`info` 其他重解通知场景、path/GIT+group/platform 等 M7(1)/(2) 补强与阶段验收汇总。后续按 lead 指示继续低成本可行子项，达当前环境最大可行闭环后提交汇总报首辅裁断 task-2 收口与 task-3 启动。
 
+- **config_spec round-trip 既存失败（2026-11-13，docs-only）**：`crystal spec spec/config_spec.cr` 在本环境失败 1/9（L97/L113），根因 global `~/.bundle/config` 6 个非 nil `BUNDLE_GEM__*` 键（gem.changelog/ci/coc/linter/mit/test=false） survives `Config#all`（返回 @local.keys）。nil-filter 尝试无效（global keys 非 nil）。裁断 docs-only：不改 `all` 语义、不改 spec 期望、回退 src/celerite/config.cr；环境耦合记录 + 复现 `crystal spec spec/config_spec.cr`。M7 复选框不勾。
+
 ## 当前阶段：M7–M10
 
 ### M7：正确性与兼容证据收敛（当前优先）
