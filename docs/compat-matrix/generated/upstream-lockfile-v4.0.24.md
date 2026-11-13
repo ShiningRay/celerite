@@ -276,6 +276,11 @@ ruby -S rspec -r "$repo\script\upstream-specs-celerite-override.rb" spec/lock/lo
 - **未验证**：通过例成员差 1 的原因（seed/例序是否影响共享夹具状态）；#24 HTTP 403 的出口策略细节；2.7.2 profile（见 E 节）。
 - **复现**：重建命令见上；`cd .upstream-specs/v4.0.24/bundler && ruby -S rspec -r "<repo>/script/upstream-specs-celerite-override.rb" spec/lock/lockfile_spec.rb --format documentation`（env：`CELERITE_BIN` 指向 trace wrapper，`CELERITE_TRACE_LOG`、`CELERITE_BRIDGE_SERVER`、`RSPEC_FORMATTER_OUTPUT_ID=celerite-harness`、`BUNDLE_GEMFILE=`）；原始输出 `C:\temp\rspec-outputD2.txt`、调用日志 `C:\temp\celerite-invocations-d2.log`（均本地，未入库）。
 
+### 更正（2026-11-14 晚，追加于 D2 节后；不删改 D2 原始记录）
+- **现象**：D2 轮判定“32 条 `SSL_CTX_load_verify_locations` 失败 = 陈旧二进制（`ca_certificates` 空串路径）”机制**不完整**。
+- **新证据**（lead m03200 独立复现 + 本轮复核）：同一 exe 字节、仅位置不同，行为不同——仓库树内 `...\celerite\bin\celerite.exe install` → `Error opening file with mode 'a+': 'C:\Users\ShiningRay\.bundle\bundler.lock': 拒绝访问` EXIT 1；同字节复制到树外 `C:\temp\celerite-copy.exe` → `Fetching gem metadata…` → `Bundle complete! 1 Gemfile dependency, 1 gem now installed.` EXIT 0；同分钟树外副本 `C:\temp\runner\celerite.exe` 复跑 harness，`SSL_CTX` 出现 0 次（G2 轮）。
+- **更正后归因**：该 32 条 SSL 形态的主因是“执行环境对位于仓库树内可执行文件的写盘/联网限制”（exe 位置策略）；陈旧构建（`ssl_option` 守卫前的 `ca_certificates` 空串路径）可能是叠加因素之一；二者均非产品代码缺陷。D2 原始记录与计数保留如上。
+- **纪律**：所有 differential/上游跑批必须用仓库树外 exe 副本（如 `C:\temp\runner\celerite.exe`），重建后也必须复制出去再跑；树内 in-place 证据自 2026-11-14 ~01:00 起无效。
 ## 2026-11-13 E：v2.7.2 profile 同链路尝试（本轮实测，≤1 次尝试已用）
 
 - **命令**：`CELERITE_BIN="$PWD/bin/celerite.exe" CELERITE_BRIDGE_SERVER="$PWD/assets/bridge/server.rb" UPSTREAM_REV=v2.7.2 CELERITE_SKIP_TEST_DEPS=1 CELERITE_BUNDLE_HELPER_OVERRIDE=1 bash script/upstream-specs`（Git MSYS bash，PATH 含 `C:\Program Files\Git\usr\bin` 等；shim-built `bin/celerite.exe` 本地构建，未入库）。
