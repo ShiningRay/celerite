@@ -52,6 +52,7 @@ module Celerite
       config = Config.new
       config["retry"].should eq(3)
       config["timeout"].should eq(10)
+      config["redirect"].should eq(5) # number key, not bool
       config["version"].should eq("lockfile")
       config["lockfile_checksums"].should eq(true)
     end
@@ -87,6 +88,8 @@ module Celerite
       Config.convert("0", "frozen").should eq(false)
       Config.convert("yes", "frozen").should eq(true)
       Config.convert("7", "jobs").should eq(7)
+      Config.convert("5", "redirect").should eq(5)
+      Config.convert("0", "redirect").should eq(0)
       Config.convert("with :dev", "with").should eq(["with", "", "dev"])
       Config.convert("vendor/bundle", "path").should eq("vendor/bundle")
     end

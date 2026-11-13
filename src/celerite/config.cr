@@ -16,7 +16,7 @@ module Celerite
       "disable_checksum_validation", "disable_exec_load", "disable_local_branch_check",
       "disable_shared_gems", "force", "global_gem_cache", "ignore_funding_requests",
       "lockfile_checksums", "no_install", "no_prune", "plugins", "prefer_local",
-      "prune", "redirect", "silence_deprecations", "disable_version_check",
+      "prune", "silence_deprecations", "disable_version_check",
       "prefer_patch", "update_requires_all_flag", "forget_cli_options",
       "allow_offline_install", "cache_command_is_package", "error_on_stderr",
       "major_deprecations", "path.system", "default_install_uses_path",
