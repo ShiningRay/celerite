@@ -275,3 +275,11 @@ ruby -S rspec -r "$repo\script\upstream-specs-celerite-override.rb" spec/lock/lo
 - **M7(8) 结论建议**：真实例内驱动已达成（64 例全部经 celerite 执行，57 次调用留痕）；产品差异 4 条为真实待修项；环境 39 / 夹具 12 需 harness 层解决（进程内 stub 对跨进程 celerite 可达化、或真实网络夹具）。**M7(8) 仍不能宣称完成**（与首辅判断一致）。
 - **未验证**：通过例成员差 1 的原因（seed/例序是否影响共享夹具状态）；#24 HTTP 403 的出口策略细节；2.7.2 profile（见 E 节）。
 - **复现**：重建命令见上；`cd .upstream-specs/v4.0.24/bundler && ruby -S rspec -r "<repo>/script/upstream-specs-celerite-override.rb" spec/lock/lockfile_spec.rb --format documentation`（env：`CELERITE_BIN` 指向 trace wrapper，`CELERITE_TRACE_LOG`、`CELERITE_BRIDGE_SERVER`、`RSPEC_FORMATTER_OUTPUT_ID=celerite-harness`、`BUNDLE_GEMFILE=`）；原始输出 `C:\temp\rspec-outputD2.txt`、调用日志 `C:\temp\celerite-invocations-d2.log`（均本地，未入库）。
+
+## 2026-11-13 E：v2.7.2 profile 同链路尝试（本轮实测，≤1 次尝试已用）
+
+- **命令**：`CELERITE_BIN="$PWD/bin/celerite.exe" CELERITE_BRIDGE_SERVER="$PWD/assets/bridge/server.rb" UPSTREAM_REV=v2.7.2 CELERITE_SKIP_TEST_DEPS=1 CELERITE_BUNDLE_HELPER_OVERRIDE=1 bash script/upstream-specs`（Git MSYS bash，PATH 含 `C:\Program Files\Git\usr\bin` 等；shim-built `bin/celerite.exe` 本地构建，未入库）。
+- **结果**：`git clone --depth 1 --branch v2.7.2 --filter=blob:none --sparse https://github.com/rubygems/rubygems.git` 成功；但 `rubygems@v2.7.2` 为 2017 年布局，sparse 模式 `bundler/spec bundler/lib bundler/bin bundler/exe` 未命中任何文件，`.upstream-specs/v2.7.2/bundler/` 为空目录，`bundler/spec/lock/lockfile_spec.rb` 不存在。rspec 加载失败：`LoadError: cannot load such file -- C:/.../.upstream-specs/v2.7.2/bundler/spec/lock/lockfile_spec.rb`；汇总 `0 examples, 0 failures, 1 error occurred outside of examples`，exit 1。
+- **结论**：2.7.2 profile 在本 harness（`UPSTREAM_REV` 指向 rubygems/rubygems 标签）下**不可执行 → 未验证**（非网络阻塞：clone 已成功，是 rev 布局不含 bundler spec 族）。`BUNDLER_REF_VERSION=2.7.2` 的 differential 证据链不受影响（M7 differential 走 `script/differential`，与 `script/upstream-specs` 的 rev 机制不同）。
+- **复现**：同上命令；本地产物 `.upstream-specs/v2.7.2/`、`.upstream-specs/upstream-lockfile-v2.7.2-*.md`、日志 `C:\temp\E-run.log` 均未入库；D 的 v4.0.24 原始输出已从 `C:\temp\rspec-output-4024-final.txt` 恢复（`64 examples, 55 failures` / seed 51053 复核一致）。
+- **未验证**：2.7.2 真实 per-example 结果（如需，需另行构造 bundler@2.7.2 时代 spec 布局或改用其他 rev，超出本轮 ≤1 次尝试范围）。
