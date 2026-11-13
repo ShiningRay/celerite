@@ -25,12 +25,18 @@ module Celerite
     getter ssl_client_cert : String?
     getter ssl_verify_mode : String?
     getter credentials : {String, String}?
+    getter timeout : Int32
+    getter max_redirects : Int32
+    getter redirect_count : Int32
 
-    def initialize(@remote : String, cache_root : String, retries : Int32 = 3, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil, @credentials : {String, String}? = nil)
+    def initialize(@remote : String, cache_root : String, retries : Int32 = 3, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil, @credentials : {String, String}? = nil, timeout : Int32 = 30, max_redirects : Int32 = 5)
       @mirror_url = mirror_url
       @ssl_ca_cert = ssl_ca_cert
       @ssl_client_cert = ssl_client_cert
       @ssl_verify_mode = ssl_verify_mode
+      @timeout = timeout < 1 ? 30 : timeout
+      @max_redirects = max_redirects < 0 ? 0 : max_redirects
+      @redirect_count = 0
       @download_dir = File.join(cache_root, "downloads")
       Dir.mkdir_p(@download_dir)
       @inflight = Hash(String, Channel(String?)).new
@@ -129,6 +135,7 @@ module Celerite
     end
 
     private def download_to(name : String, version : String, platform : String?, path : String, allow_mirror : Bool = true) : Nil
+      @redirect_count = 0 if allow_mirror
       full_name = (platform.nil? || platform == "ruby") ? "#{name}-#{version}" : "#{name}-#{version}-#{platform}"
       remote_path = "/gems/#{full_name}.gem"
 
@@ -175,6 +182,9 @@ module Celerite
         if ca = @ssl_ca_cert
           ctx.ca_certificates = ca
         end
+        if cert = @ssl_client_cert
+          ctx.certificate_chain = cert
+        end
         if mode = @ssl_verify_mode
           case mode.downcase
           when "none"
@@ -186,8 +196,8 @@ module Celerite
         tls_ctx = ctx
       end
       client = HTTP::Client.new(uri, tls: tls_ctx)
-      client.connect_timeout = 30.seconds
-      client.read_timeout = 120.seconds
+      client.connect_timeout = @timeout.seconds
+      client.read_timeout = @timeout.seconds
       if creds = @credentials
         client.basic_auth(creds[0], creds[1])
       elsif uri.user || uri.password
@@ -205,8 +215,8 @@ module Celerite
           if attempt < max_attempts
             sleep (0.5 * (2 ** (attempt - 1))).seconds
             client = HTTP::Client.new(URI.parse(@remote), tls: tls_ctx)
-            client.connect_timeout = 30.seconds
-            client.read_timeout = 120.seconds
+            client.connect_timeout = @timeout.seconds
+            client.read_timeout = @timeout.seconds
             if creds = @credentials
               client.basic_auth(creds[0], creds[1])
             elsif retry_uri = URI.parse(@remote)
@@ -223,8 +233,13 @@ module Celerite
           client.close rescue nil
           return
         elsif response.status_code == 301 || response.status_code == 302 || response.status_code == 303 || response.status_code == 307 || response.status_code == 308
-          # Follow redirect
+          # Follow redirect, honoring BUNDLE_REDIRECT max-redirect limit.
           if loc = response.headers["Location"]?
+            if @redirect_count >= @max_redirects
+              client.close rescue nil
+              raise GemNotFoundError.new("Too many redirects")
+            end
+            @redirect_count += 1
             client.close rescue nil
             @remote = loc
             return download_to(name, version, platform, path, allow_mirror: false)

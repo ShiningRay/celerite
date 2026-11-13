@@ -65,20 +65,25 @@ module Celerite
       getter ssl_ca_cert : String?
       getter ssl_client_cert : String?
       getter ssl_verify_mode : String?
+      getter timeout : Int32
+      getter ssl_ca_cert : String?
+      getter ssl_client_cert : String?
+      getter ssl_verify_mode : String?
 
-      def initialize(@uri : URI, @user : String? = nil, @password : String? = nil, @timeout : Time::Span = 30.seconds, @retries : Int32 = 3, @mirror_url : String? = nil, @ssl_ca_cert : String? = nil, @ssl_client_cert : String? = nil, @ssl_verify_mode : String? = nil)
+      def initialize(@uri : URI, @user : String? = nil, @password : String? = nil, @timeout : Int32 = 30, @retries : Int32 = 3, @mirror_url : String? = nil, @ssl_ca_cert : String? = nil, @ssl_client_cert : String? = nil, @ssl_verify_mode : String? = nil)
         @retries = @retries < 0 ? 0 : @retries
         @mirror_url = mirror_url
         @ssl_ca_cert = ssl_ca_cert
         @ssl_client_cert = ssl_client_cert
         @ssl_verify_mode = ssl_verify_mode
+        @timeout = @timeout < 1 ? 30 : @timeout
       end
 
-      def self.for(remote : String, credentials : {String, String}? = nil, retries : Int32 = 3, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil) : HttpFetcher
+      def self.for(remote : String, credentials : {String, String}? = nil, retries : Int32 = 3, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil, timeout : Int32 = 30) : HttpFetcher
         uri = URI.parse(remote)
         user = credentials.try(&.[0]) || uri.user
         password = credentials.try(&.[1]) || uri.password
-        new(uri, user, password, retries: retries, mirror_url: mirror_url, ssl_ca_cert: ssl_ca_cert, ssl_client_cert: ssl_client_cert, ssl_verify_mode: ssl_verify_mode)
+        new(uri, user, password, retries: retries, mirror_url: mirror_url, ssl_ca_cert: ssl_ca_cert, ssl_client_cert: ssl_client_cert, ssl_verify_mode: ssl_verify_mode, timeout: timeout)
       end
 
       def call(remote_path : String, headers : Hash(String, String)) : FetchResponse
@@ -151,6 +156,9 @@ module Celerite
           if ca = @ssl_ca_cert
             ctx.ca_certificates = ca
           end
+          if cert = @ssl_client_cert
+            ctx.certificate_chain = cert
+          end
           if mode = @ssl_verify_mode
             case mode.downcase
             when "none"
@@ -162,8 +170,8 @@ module Celerite
           tls_ctx = ctx
         end
         client = HTTP::Client.new(uri, tls: tls_ctx)
-        client.connect_timeout = @timeout
-        client.read_timeout = @timeout
+        client.connect_timeout = @timeout.seconds
+        client.read_timeout = @timeout.seconds
         user = @user || uri.user
         password = @password || uri.password
         client.basic_auth(user, password || "") if user
@@ -533,8 +541,12 @@ module Celerite
     class Client
       @parser : Parser
 
-      def initialize(remote : String, cache_root : String, credentials : {String, String}? = nil, retries : Int32 = 3, mirror_url : String? = nil)
-        fetcher = make_fetcher(remote, credentials, retries, mirror_url)
+      def initialize(remote : String, cache_root : String, credentials : {String, String}? = nil, retries : Int32 = 3, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil, timeout : Int32 = 30)
+        @ssl_ca_cert = ssl_ca_cert
+        @ssl_client_cert = ssl_client_cert
+        @ssl_verify_mode = ssl_verify_mode
+        @timeout = timeout
+        fetcher = make_fetcher(remote, credentials, retries, mirror_url, ssl_ca_cert: ssl_ca_cert, ssl_client_cert: ssl_client_cert, ssl_verify_mode: ssl_verify_mode, timeout: timeout)
         cache_dir = File.join(cache_root, cache_key(remote))
         @parser = Parser.new(Cache.new(cache_dir, Updater.new(fetcher)))
       end
@@ -551,7 +563,7 @@ module Celerite
         @parser.info(name)
       end
 
-      private def make_fetcher(remote : String, credentials : {String, String}?, retries : Int32, mirror_url : String? = nil) : Fetcher
+      private def make_fetcher(remote : String, credentials : {String, String}?, retries : Int32, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil, timeout : Int32 = 30) : Fetcher
         if remote.starts_with?("file:")
           # Use URI parsing so file:///C:/..., file:///home/... and
           # file:/C:/... all resolve to an absolute local path.
@@ -571,7 +583,7 @@ module Celerite
           path += "/" unless path.ends_with?("/")
           FileFetcher.new(path)
         else
-          HttpFetcher.for(remote, credentials, retries, mirror_url)
+          HttpFetcher.for(remote, credentials, retries, mirror_url, ssl_ca_cert: ssl_ca_cert, ssl_client_cert: ssl_client_cert, ssl_verify_mode: ssl_verify_mode, timeout: timeout)
         end
       end
 
