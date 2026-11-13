@@ -29,6 +29,12 @@ module Celerite
     getter max_redirects : Int32
     getter redirect_count : Int32
 
+    # Expose the configured per-request timeout as a Time::Span so callers
+    # and specs can assert the exact connect/read timeout applied to clients.
+    def connect_timeout : Time::Span
+      @timeout.seconds
+    end
+
     def initialize(@remote : String, cache_root : String, retries : Int32 = 3, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil, @credentials : {String, String}? = nil, timeout : Int32 = 30, max_redirects : Int32 = 5)
       @mirror_url = mirror_url
       @ssl_ca_cert = ssl_ca_cert
@@ -180,10 +186,10 @@ module Celerite
       if uri.scheme == "https"
         ctx = OpenSSL::SSL::Context::Client.new
         if ca = @ssl_ca_cert
-          ctx.ca_certificates = ca
+          ctx.ca_certificates = ca unless ca.empty?
         end
         if cert = @ssl_client_cert
-          ctx.certificate_chain = cert
+          ctx.certificate_chain = cert unless cert.empty?
         end
         if mode = @ssl_verify_mode
           case mode.downcase
@@ -237,7 +243,7 @@ module Celerite
           if loc = response.headers["Location"]?
             if @redirect_count >= @max_redirects
               client.close rescue nil
-              raise GemNotFoundError.new("Too many redirects")
+              raise DownloadError.new("Too many redirects (>#{@max_redirects}) for #{@remote}")
             end
             @redirect_count += 1
             client.close rescue nil

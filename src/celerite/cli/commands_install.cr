@@ -81,6 +81,12 @@ module Celerite
       if config.frozen? && !definition.lockfile_exists?
         raise ProductionError.new("Frozen mode is set, but there's no lockfile")
       end
+      # M7(4): fail fast on explicitly configured unsupported settings
+      # (and warn-but-continue for proxy env vars).
+      if unsupported = Commands.unsupported_setting_error(config, stderr)
+        stderr.puts unsupported
+        return 1
+      end
 
       bridge = Bridge::Client.new
       begin
@@ -108,7 +114,7 @@ module Celerite
 
         install_path = install_path(config)
         abi = ruby_abi(bridge)
-        downloader = Downloader.new(resolution.primary_remote, downloader_cache_root, Commands.retry_count(config), config.mirror_for(resolution.primary_remote), config["ssl_ca_cert"].to_s, config["ssl_client_cert"].to_s, config["ssl_verify_mode"].to_s, config.credentials_for(resolution.primary_remote))
+        downloader = Downloader.new(resolution.primary_remote, downloader_cache_root, Commands.retry_count(config), config.mirror_for(resolution.primary_remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(resolution.primary_remote), timeout: Commands.timeout_seconds(config))
         installer = Installer.new(install_path, abi, bridge, downloader, stdout)
         installer.config = config
         installers_by_remote = {resolution.primary_remote => installer}
@@ -206,7 +212,7 @@ module Celerite
         pending.each do |spec|
           stdout.puts "Fetching #{spec.name} #{spec.version}#{was_suffix.call(spec)}"
           remote = resolution.remote_for(spec.name)
-          spec_downloader = remote == resolution.primary_remote ? downloader : (installers_by_remote[remote]?.try(&.downloader) || Downloader.new(remote, downloader_cache_root, Commands.retry_count(config), config.mirror_for(remote), config["ssl_ca_cert"].to_s, config["ssl_client_cert"].to_s, config["ssl_verify_mode"].to_s, config.credentials_for(remote)))
+          spec_downloader = remote == resolution.primary_remote ? downloader : (installers_by_remote[remote]?.try(&.downloader) || Downloader.new(remote, downloader_cache_root, Commands.retry_count(config), config.mirror_for(remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(remote), timeout: Commands.timeout_seconds(config)))
           cached_paths[spec.full_name] = spec_downloader.fetch(
             spec.name, spec.version.to_s, spec.platform, spec.checksum
           )
@@ -226,7 +232,7 @@ module Celerite
           stdout.puts "Installing #{spec.name} #{spec.version}#{was_suffix.call(spec)}#{native_suffix(bridge, cached)}"
           remote = resolution.remote_for(spec.name)
           spec_installer = installers_by_remote[remote]? || begin
-            remote_downloader = Downloader.new(remote, downloader_cache_root, Commands.retry_count(config), config.mirror_for(remote), config["ssl_ca_cert"].to_s, config["ssl_client_cert"].to_s, config["ssl_verify_mode"].to_s, config.credentials_for(remote))
+            remote_downloader = Downloader.new(remote, downloader_cache_root, Commands.retry_count(config), config.mirror_for(remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(remote), timeout: Commands.timeout_seconds(config))
             next_installer = Installer.new(install_path, abi, bridge, remote_downloader, stdout)
             next_installer.config = config
             installers_by_remote[remote] = next_installer
@@ -362,6 +368,11 @@ module Celerite
     # cache / package / pack
     # ------------------------------------------------------------------
     def self.cache(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      definition = Definition.build
+      if unsupported = Commands.unsupported_setting_error(definition.config, stderr)
+        stderr.puts unsupported
+        return 1
+      end
       cache_arg = flag_value(rest, "--cache-path") if rest.any? { |a| a == "--cache-path" || a.starts_with?("--cache-path=") }
       cache_target = cache_arg ? File.expand_path(cache_arg) : File.join(Dir.current, "vendor", "cache")
       cache_label = cache_arg ? cache_arg.gsub(/\\/, "/") : "vendor/cache"
@@ -370,7 +381,6 @@ module Celerite
         return code if code != 0
       end
 
-      definition = Definition.build
       Commands.validate_ruby_runtime!(definition)
       Dir.mkdir_p(cache_target)
       # 2.7.x: cache options are remembered in .bundle/config (pinned probe:
@@ -788,7 +798,7 @@ module Celerite
       stdout.puts "Bundler #{resolution.bridge_bundler_version} is running, but your lockfile was generated with #{locked}. Installing Bundler #{locked} and restarting using that version."
       stdout.puts "Fetching bundler #{locked}"
 
-      downloader = Downloader.new("https://rubygems.org/", InstallPaths.downloader_cache_root, Commands.retry_count(definition.config), definition.config.mirror_for("https://rubygems.org/"), definition.config["ssl_ca_cert"].to_s, definition.config["ssl_client_cert"].to_s, definition.config["ssl_verify_mode"].to_s, definition.config.credentials_for("https://rubygems.org/"))
+      downloader = Downloader.new("https://rubygems.org/", InstallPaths.downloader_cache_root, Commands.retry_count(definition.config), definition.config.mirror_for("https://rubygems.org/"), Commands.ssl_option(definition.config, "ssl_ca_cert"), Commands.ssl_option(definition.config, "ssl_client_cert"), Commands.ssl_option(definition.config, "ssl_verify_mode"), definition.config.credentials_for("https://rubygems.org/"), timeout: Commands.timeout_seconds(definition.config))
       cached = downloader.fetch("bundler", locked, nil, nil)
       stdout.puts "Fetching gem metadata from https://rubygems.org/."
 

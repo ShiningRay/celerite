@@ -922,6 +922,74 @@ module Celerite
     end
 
     # ------------------------------------------------------------------
+    # M7(4) download/settings helpers (shared by install, update, etc.)
+    # ------------------------------------------------------------------
+    # Normalize a config SSL option to nil when absent/empty, so empty strings
+    # never reach the TLS context (which would raise on ca_certificates="").
+    def self.ssl_option(config : Config, key : String) : String?
+      value = config[key]
+      return nil unless value.is_a?(String)
+      value.empty? ? nil : value
+    end
+
+    # Normalize the BUNDLE_TIMEOUT config value (default 10) to a positive
+    # Int32; falls back to 10 for missing/invalid/zero/negative values.
+    def self.timeout_seconds(config : Config) : Int32
+      value = config["timeout"]
+      seconds = value.is_a?(Int32) ? value : 10
+      seconds < 1 ? 10 : seconds
+    end
+
+    # Return an error message for explicitly configured but unsupported
+    # settings (caller should print it and exit non-zero), or nil when no
+    # blocking unsupported setting is present.
+    #
+    # Policy:
+    # - Proxy environment variables (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY and
+    #   lowercase variants) are common in CI/enterprise shells; warn and
+    #   continue because hard-failing would regress those environments.
+    # - Explicitly configured proxy keys in .bundle/config (proxy,
+    #   http_proxy, https_proxy) are treated as intentional requests to route
+    #   through a proxy; Celerite does not support proxy routing, so fail
+    #   fast with a clear message.
+    # - ssl_client_key, legacy_index, full_index remain unsupported and fail
+    #   fast when explicitly set.
+    def self.unsupported_setting_error(config : Config, stderr : IO) : String?
+      proxy_vars = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy"]
+      proxy_vars.each do |pv|
+        if val = ENV[pv]?
+          unless val.empty?
+            stderr.puts "warning: HTTP proxy (#{pv}) is set but Celerite does not route through proxies"
+          end
+        end
+      end
+
+      if ssl_key = config["ssl_client_key"]
+        unless ssl_key.nil? || ssl_key.to_s.empty?
+          return "not supported by Celerite: ssl_client_key"
+        end
+      end
+
+      ["proxy", "http_proxy", "https_proxy"].each do |key|
+        value = config[key]
+        next if value.nil?
+        next if value.is_a?(Bool) && value == false
+        next if value.to_s.empty?
+        return "not supported by Celerite: proxy"
+      end
+
+      {"legacy_index", "full_index"}.each do |key|
+        if idx_setting = config[key]
+          unless idx_setting.nil? || idx_setting == false || idx_setting.to_s.empty?
+            return "not supported by Celerite: #{key}"
+          end
+        end
+      end
+
+      nil
+    end
+
+    # ------------------------------------------------------------------
     # lock (M2: native resolution + generation)
     # ------------------------------------------------------------------
     def self.lock(stdout : IO, stderr : IO, rest : Array(String)) : Int32
@@ -938,6 +1006,12 @@ module Celerite
       end
       add_platforms = platform_flag_values(rest, "--add-platform")
       remove_platforms = platform_flag_values(rest, "--remove-platform")
+
+      definition = Definition.build
+      if unsupported = Commands.unsupported_setting_error(definition.config, stderr)
+        stderr.puts unsupported
+        return 1
+      end
 
       print_mode = rest.includes?("--print")
       update = rest.includes?("--update") || rest.includes?("--all")

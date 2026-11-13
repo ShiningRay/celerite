@@ -96,4 +96,16 @@ module Celerite
       18
     end
   end
+
+  # Raised when a download fails due to too many redirects or other
+  # transport-level failures (mirrors Bundler::HTTPError).
+  class DownloadError < Error
+    def status_code : Int32
+      17
+    end
+
+    def wrap? : Bool
+      true
+    end
+  end
 end

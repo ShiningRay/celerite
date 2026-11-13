@@ -50,6 +50,12 @@ module Celerite
       if config.frozen? && !definition.lockfile_exists?
         raise ProductionError.new("Frozen mode is set, but there's no lockfile")
       end
+      # M7(4): fail fast on explicitly configured unsupported settings
+      # (and warn-but-continue for proxy env vars).
+      if unsupported = Commands.unsupported_setting_error(config, stderr)
+        stderr.puts unsupported
+        return 1
+      end
 
       unless definition.lockfile_exists?
         stderr.puts "This Gemfile does not contain a lockfile. Run `bundle install` first."
@@ -110,7 +116,7 @@ module Celerite
 
         install_path = InstallPaths.install_path(config)
         abi = InstallPaths.ruby_abi(bridge)
-        downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(config), config.mirror_for(resolution.primary_remote))
+        downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(config), config.mirror_for(resolution.primary_remote), ssl_option(config, "ssl_ca_cert"), ssl_option(config, "ssl_client_cert"), ssl_option(config, "ssl_verify_mode"), timeout: Commands.timeout_seconds(config))
         installer = Installer.new(install_path, abi, bridge, downloader, stdout)
         installer.config = config
 
@@ -991,7 +997,7 @@ module Celerite
         Dir.mkdir_p(plugin_root)
         install_path = InstallPaths.install_path(definition.config)
         abi = InstallPaths.ruby_abi(bridge)
-        downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(definition.config), definition.config.mirror_for(resolution.primary_remote), definition.config["ssl_ca_cert"].to_s, definition.config["ssl_client_cert"].to_s, definition.config["ssl_verify_mode"].to_s, definition.config.credentials_for(resolution.primary_remote))
+        downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(definition.config), definition.config.mirror_for(resolution.primary_remote), ssl_option(definition.config, "ssl_ca_cert"), ssl_option(definition.config, "ssl_client_cert"), ssl_option(definition.config, "ssl_verify_mode"), definition.config.credentials_for(resolution.primary_remote), timeout: Commands.timeout_seconds(definition.config))
         installer = Installer.new(install_path, abi, bridge, downloader, stdout)
         installer.config = definition.config
         stdin_specs.each do |spec|
@@ -1170,7 +1176,7 @@ module Celerite
         resolution = Resolution.new(definition, false, bridge)
         install_path = InstallPaths.install_path(definition.config)
         abi = InstallPaths.ruby_abi(bridge)
-        downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(definition.config), definition.config.mirror_for(resolution.primary_remote), definition.config["ssl_ca_cert"].to_s, definition.config["ssl_client_cert"].to_s, definition.config["ssl_verify_mode"].to_s, definition.config.credentials_for(resolution.primary_remote))
+        downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(definition.config), definition.config.mirror_for(resolution.primary_remote), ssl_option(definition.config, "ssl_ca_cert"), ssl_option(definition.config, "ssl_client_cert"), ssl_option(definition.config, "ssl_verify_mode"), definition.config.credentials_for(resolution.primary_remote), timeout: Commands.timeout_seconds(definition.config))
         installer = Installer.new(install_path, abi, bridge, downloader, stdout)
         installer.config = definition.config
         install_root = File.join(install_path, "ruby", abi)
@@ -1519,7 +1525,7 @@ module Celerite
     end
 
     private def self.release_date_for(definition : Definition, resolution : Resolution, name : String, version : String, checksum : String?) : String
-      downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(definition.config), definition.config.mirror_for(resolution.primary_remote), definition.config["ssl_ca_cert"].to_s, definition.config["ssl_client_cert"].to_s, definition.config["ssl_verify_mode"].to_s, definition.config.credentials_for(resolution.primary_remote))
+      downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(definition.config), definition.config.mirror_for(resolution.primary_remote), ssl_option(definition.config, "ssl_ca_cert"), ssl_option(definition.config, "ssl_client_cert"), ssl_option(definition.config, "ssl_verify_mode"), definition.config.credentials_for(resolution.primary_remote), timeout: Commands.timeout_seconds(definition.config))
       path = downloader.fetch(name, version, nil, checksum)
       info = Bridge::GemSpecInfo.from_json(bridge_read_spec_json(path).to_json)
       info.date.to_s.split(" ")[0]

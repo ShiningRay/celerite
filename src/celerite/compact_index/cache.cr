@@ -66,9 +66,6 @@ module Celerite
       getter ssl_client_cert : String?
       getter ssl_verify_mode : String?
       getter timeout : Int32
-      getter ssl_ca_cert : String?
-      getter ssl_client_cert : String?
-      getter ssl_verify_mode : String?
 
       def initialize(@uri : URI, @user : String? = nil, @password : String? = nil, @timeout : Int32 = 30, @retries : Int32 = 3, @mirror_url : String? = nil, @ssl_ca_cert : String? = nil, @ssl_client_cert : String? = nil, @ssl_verify_mode : String? = nil)
         @retries = @retries < 0 ? 0 : @retries
@@ -154,10 +151,10 @@ module Celerite
         if uri.scheme == "https"
           ctx = OpenSSL::SSL::Context::Client.new
           if ca = @ssl_ca_cert
-            ctx.ca_certificates = ca
+            ctx.ca_certificates = ca unless ca.empty?
           end
           if cert = @ssl_client_cert
-            ctx.certificate_chain = cert
+            ctx.certificate_chain = cert unless cert.empty?
           end
           if mode = @ssl_verify_mode
             case mode.downcase
@@ -540,6 +537,10 @@ module Celerite
     # Facade mirroring `Bundler::CompactIndexClient`.
     class Client
       @parser : Parser
+      getter ssl_ca_cert : String?
+      getter ssl_client_cert : String?
+      getter ssl_verify_mode : String?
+      getter timeout : Int32
 
       def initialize(remote : String, cache_root : String, credentials : {String, String}? = nil, retries : Int32 = 3, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil, timeout : Int32 = 30)
         @ssl_ca_cert = ssl_ca_cert

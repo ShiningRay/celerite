@@ -260,11 +260,11 @@ module Celerite
     end
 
     def compact_index_client : CompactIndex::Client
-      @compact_index_client ||= CompactIndex::Client.new(primary_remote, user_cache_root, @definition.config.credentials_for(primary_remote), Commands.retry_count(@definition.config), @definition.config.mirror_for(primary_remote))
+      @compact_index_client ||= CompactIndex::Client.new(primary_remote, user_cache_root, @definition.config.credentials_for(primary_remote), Commands.retry_count(@definition.config), @definition.config.mirror_for(primary_remote), ssl_ca_cert: Commands.ssl_option(@definition.config, "ssl_ca_cert"), ssl_client_cert: Commands.ssl_option(@definition.config, "ssl_client_cert"), ssl_verify_mode: Commands.ssl_option(@definition.config, "ssl_verify_mode"), timeout: Commands.timeout_seconds(@definition.config))
     end
 
     def compact_index_client_for(remote : String) : CompactIndex::Client
-      CompactIndex::Client.new(remote, user_cache_root, @definition.config.credentials_for(remote), Commands.retry_count(@definition.config), @definition.config.mirror_for(remote))
+      CompactIndex::Client.new(remote, user_cache_root, @definition.config.credentials_for(remote), Commands.retry_count(@definition.config), @definition.config.mirror_for(remote), ssl_ca_cert: Commands.ssl_option(@definition.config, "ssl_ca_cert"), ssl_client_cert: Commands.ssl_option(@definition.config, "ssl_client_cert"), ssl_verify_mode: Commands.ssl_option(@definition.config, "ssl_verify_mode"), timeout: Commands.timeout_seconds(@definition.config))
     end
 
     # Scoped Rubygems source (`gem "x", source: <remote>`), normalized like
