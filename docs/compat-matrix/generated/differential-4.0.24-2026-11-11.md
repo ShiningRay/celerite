@@ -573,7 +573,7 @@ Measured (shim bin `C:\Users\ShiningRay\AppData\Local\Temp\celerite-b1b2-fix.exe
 - **根因（归类：环境级阻塞，非 celerite 产品缺陷）**：两侧均把相对 URL `../subdep` 解析进 `bundle/ruby/*/cache/bundler/git/subdep`；参考侧 bundler 不传 `-c protocol.file.allow=always`，被 git ≥2.38 子模块 file 传输默认策略拦截；celerite 传了该标志（`src/celerite/git_source.cr:99-103`）但解析路径无仓库。本地 file 型子模块夹具在参考侧无法通过。
 - **处置**：按 harness 既有 documented-deferral 机制登记 `deferred-4.0.24` / `deferred-2.7.2`（原因见文件文本）。复跑两 profile 均输出 `SKIP git-submodules (deferred for ...)` 与 `differential (<v>): 0 passed, 0 failed, 1 skipped (documented deferrals)`，exit 0（保持套件全绿，同时保留上述实测失败证据）。
 - **解除阻塞需要**：网络可访问的子模块 URL，或 harness 层对两侧统一设置 `protocol.file.allow=always`（超出本夹具范围），或参考侧 git <2.38。
-- **未验证**：子模块成功路径下安装树内容一致性（`subdep/lib/subdep.rb` 是否进入 `ruby/*/gems/subgem-*/`）——本轮两侧均未到达该状态；celerite 侧 `submodule update` 标志行为仅由 stderr 间接证实。
+- **未验证**：子模块成功路径下安装树内容一致性（`subdep/lib/subdep.rb` 是否进入 `ruby/*/gems/subgem-*/`）——本轮两侧均未到达该状态；celerite 侧 `submodule update` 标志行为仅由 stderr 间接证实。该夹具在本环境永不执行、因此子模块成功路径仍未验证（登记为 documented deferral，详见上）。
 - **复现**：
   ```
   cd C:\Users\ShiningRay\projects\ShiningRay\celerite
