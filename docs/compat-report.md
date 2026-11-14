@@ -865,3 +865,50 @@ CELERITE_BIN="C:/temp/runner/celerite.exe" TMPDIR="C:\temp" CELERITE_BRIDGE_SERV
 Copy-Item -Recurse C:\temp\rails-min C:\temp\rails-min-cel13; Remove-Item C:\temp\rails-min-cel13\Gemfile.lock -ErrorAction SilentlyContinue
 CELERITE_BIN="C:/temp/runner/celerite.exe" TMPDIR="C:\temp" CELERITE_BRIDGE_SERVER="C:/Users/ShiningRay/projects/ShiningRay/celerite/assets/bridge/server.rb" & C:\temp\runner\celerite.exe install
 ```
+
+## 2026-11-15 M7(4) 子项：`mirror.<url>.fallback_timeout` 真实生效——本轮实测
+
+### 参考语义（权威来源：`C:\Ruby40-x64\lib\ruby\gems\4.0.0\gems\bundler-4.0.24\lib\bundler\mirror.rb`）
+
+- `Mirror#initialize(uri = nil, fallback_timeout = 0)`（L67）：**默认 fallback_timeout 为整数 0**，故未配置时 `validate!` 短路不探测。
+- `Mirror#fallback_timeout=`（L82-92）：`true`/"true" → `DEFAULT_FALLBACK_TIMEOUT = 0.1`（L63）；`false`/"false" → 0；其他 → `timeout.to_i`（**整数截断**：`"2.5"`→2、`"0.5"`→0；`"abc".to_i`→0）。
+- `Mirror#validate!`（L104-110）：`@valid = fallback_timeout == 0 || (probe || TCPSocketProbe.new).replies?(self)`。
+- `TCPSocketProbe#replies?`（L148-176）+ `MirrorSockets`（L185-202）：遍历 host 的全部解析地址做非阻塞 connect，带 `fallback_timeout` 的 `IO.select` 等待可写，`SO_ERROR == 0` 才算可达。
+- `Mirrors#for`（L22-28）与 `fetch_valid_mirror_for`（L48-54）：mirror 无效（探测失败）时回退到 `Mirror.new(uri)`，即使用原 remote。
+
+### 实现（本次改动 6 个文件）
+
+- 新增 `src/celerite/mirror.cr`（53 行，`Celerite::Mirror`）：
+  - `DEFAULT_FALLBACK_TIMEOUT = 0.1`（L15）
+  - `fallback_timeout_seconds(value : Config::ConvertedValue) : Float64?`（L21-23，委托 `Config.fallback_timeout_seconds`，避免 config.cr 反向依赖）
+  - `reachable?(url : String, timeout : Float64) : Bool`（L28-39）：`timeout <= 0` 直接 true（对齐 0 短路）；否则 `TCPSocket.new(host, port, connect_timeout: timeout.seconds)`，`rescue` → false；port 缺省按 scheme 取 443/80
+  - `resolve(config : Config, remote : String) : String?`（L45-51）：无 mirror → nil；`fallback_timeout` 为 nil 或 0.0 → 保留 mirror（等价默认 0）；非 0 且探测失败 → nil（调用方沿用既有「mirror 为空即用原 remote」逻辑）
+- `src/celerite/config.cr`：
+  - `Config.key_for`（L173-190）：先剥离尾部 `.fallback_timeout`（长键）或 `__FALLBACK_TIMEOUT`（环境变量形态），URI 部分补尾斜杠、`.`→`__`、`-`→`___` 后再拼回 `__FALLBACK_TIMEOUT`
+  - `mirror_fallback_timeout(remote) : Int32?` → `Float64?`（L346-353），候选键仍为带/不带尾斜杠
+  - 新增 `Config.fallback_timeout_seconds(value : ConvertedValue) : Float64?`（L355-378）
+- 调用点：`config.mirror_for(remote)` → `Celerite::Mirror.resolve(config, remote)`，共 12 处——`src/celerite/resolution.cr:268,272`、`src/celerite/cli/commands_install.cr:119,217,237,802`、`src/celerite/cli/commands_surface.cr:120,1002,1181,1529`
+- `spec/m7_download_settings_spec.cr`：新增 `describe Mirror` 共 11 例（`fallback_timeout_seconds` 映射与整数截断、`reachable?` 开/闭端口与非正超时、`resolve` 的未配置/0/非 0/可达/不可达/`.bundle/config` 文件读取、以及本地 `HTTP::Server` 端到端「mirror 不可达时从原 remote 下载成功」），文件内自 6 例增至 17 例
+
+### 本轮门禁实测（首辅独立复跑，2026-11-15，HEAD=27758b2 + 本工作树）
+
+本宿主必需前缀：PATH 追加 `C:\Program Files\Git\usr\bin;C:\Program Files\Git\cmd;C:\msys64\usr\bin;C:\msys64\ucrt64\bin;C:\Ruby40-x64\bin`；链接参数 `<flags>` = `C:/Users/ShiningRay/AppData/Local/Temp/celerite-shim-m7wip/evp_md_size_shim.o -LC:/msys64/ucrt64/lib -lssl -lcrypto`（本机无 pkg-config，Crystal 不会自动注入 `-lcrypto/-lssl`）。
+
+| 门禁 | 命令 | 结果 |
+|---|---|---|
+| 格式 | `crystal tool format --check src spec` | EXIT 0 |
+| 类型检查 | `crystal build src/celerite.cr -o bin/celerite-m7wip.exe --no-codegen --link-flags <flags>` | EXIT 0（仅既有 2 条 `File.executable?` deprecation：`commands_install.cr:596,660`） |
+| 定向 spec | `crystal spec spec/m7_download_settings_spec.cr spec/downloader_spec.cr --link-flags <flags>` | **23 examples, 0 failures, 0 errors, 0 pending**，EXIT 0（5.05s） |
+| 全量 spec | `crystal spec --link-flags <flags>` | **263 examples, 1 failures, 0 errors, 0 pending**，EXIT 1（1:02） |
+| 空白 | `git diff --check` | EXIT 0 |
+
+全量唯一失败：`spec/config_spec.cr:97 # Celerite::Config writes config set/unset round-trip like the reference`，实际多出 `gem.changelog/gem.ci/gem.mit/gem.coc/gem.linter/gem.test` 与 `http(s)://localgemserver.test/` 等 `Config#all` 项。**归因：既存环境耦合，非本改动引入**——(a) 首辅直读 `C:\Users\ShiningRay\.bundle\config` 证实 8 个非本仓库键；(b) 子代理 `git stash push -u` 后于基线单跑 `crystal spec spec/config_spec.cr` 得 9 examples/1 failures，同一用例、同一 diff 输出；(c) 该现象已记录于 `docs/roadmap.md` L144（2026-11-13 config_spec round-trip 既存失败）。
+
+### 残余风险 / 未验证
+
+1. **探测无缓存**：Bundler 把 `validate!` 结果缓存在 `Mirror` 对象上（每 mirror 一次），本实现每次 `Mirror.resolve` 都建一次 TCP；install/surface 路径按 definition 多次调用，重复建连次数与对时延的实际影响未测量（未验证）。
+2. **单地址探测**：`reachable?` 只连 `URI#host` 的单个解析结果，Bundler `MirrorSockets` 遍历全部 A/AAAA 记录；多记录或双栈下可能出现「Bundler 判可达、本实现判不可达」。
+3. **负数边界**：`"-1"` → -1.0，走 `timeout <= 0` → 视为可达；Bundler 侧 `-1 != 0` 会进入探测。未加断言（负值非合法配置），风险低。
+4. **未做真实镜像 e2e**：本轮以本地 `HTTP::Server` + 关闭端口模拟可达/不可达，未对公网真实 mirror 跑 `install`；`mirror.all` 形态未覆盖。
+5. **环境前提**：本机缺 pkg-config，原样「仅带 shim」的 spec 命令会在链接阶段失败（`undefined reference to 'EVP_MD_get_size'`），故所有 spec/build 证据命令均带 `-LC:/msys64/ucrt64/lib -lssl -lcrypto`。
+6. **M7(4) 其余 GAP 未动**：proxy 实际路由、legacy/full index 回退、`ssl_client_key` 接线到 TLS 均未实现；M7(4) 复选框保持未勾。

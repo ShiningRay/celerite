@@ -173,10 +173,21 @@ module Celerite
     # BUNDLE_ prefix; URI-style keys get the reference's trailing slash.
     def self.key_for(key : String) : String
       key = key.lchop("BUNDLE_")
-      key += "/" if key.matches?(/https?:/i) && !key.ends_with?("/") && !key.ends_with?("__FALLBACK_TIMEOUT")
+      # `mirror.<url>.fallback_timeout` keeps its option suffix outside URI
+      # normalization: the reference normalizes the URI part (trailing slash)
+      # and re-appends `.__FALLBACK_TIMEOUT` (settings.rb L519-550).
+      suffix = ""
+      if key.ends_with?(".fallback_timeout")
+        key = key[0, key.size - ".fallback_timeout".size]
+        suffix = "__FALLBACK_TIMEOUT"
+      elsif key.ends_with?("__FALLBACK_TIMEOUT")
+        key = key[0, key.size - "__FALLBACK_TIMEOUT".size]
+        suffix = "__FALLBACK_TIMEOUT"
+      end
+      key += "/" if key.matches?(/https?:/i) && !key.ends_with?("/")
       key = key.gsub(".", "__")
       key = key.gsub("-", "___")
-      "BUNDLE_#{key.upcase}"
+      "BUNDLE_#{key.upcase}#{suffix}"
     end
 
     def self.global_config_file : String?
@@ -332,13 +343,39 @@ module Celerite
       nil
     end
 
-    def mirror_fallback_timeout(remote : String) : Int32?
+    # Bundler `mirror.<url>.fallback_timeout` (mirror.rb L82-92). `nil` means
+    # the option is not configured; 0 means "do not probe the mirror".
+    def mirror_fallback_timeout(remote : String) : Float64?
       candidates = [remote, remote.chomp("/"), "#{remote}/"].uniq
       candidates.each do |candidate|
         value = self["mirror.#{candidate}.fallback_timeout"]
-        return value.to_s.to_i? if value
+        return Config.fallback_timeout_seconds(value) unless value.nil?
       end
       nil
+    end
+
+    # Shared parser for the `fallback_timeout` option value. Bundler maps
+    # `true`/`"true"` to 0.1 seconds, `false`/`"false"` to 0 and everything
+    # else through a numeric conversion (mirror.rb L82-92).
+    def self.fallback_timeout_seconds(value : ConvertedValue) : Float64?
+      case value
+      when Nil
+        nil
+      when Bool
+        value ? 0.1 : 0.0
+      when Int32
+        value.to_f64
+      else
+        text = value.to_s.strip
+        case text.downcase
+        when "true"  then 0.1
+        when "false" then 0.0
+        else
+          # Bundler truncates the numeric branch (`timeout.to_i`), so "2.5"
+          # becomes 2 and "0.5" becomes 0 (= no probe).
+          (text.to_f? || 0.0).to_i.to_f64
+        end
+      end
     end
 
     # Bundler `Settings#credentials_for`: the full URI string is consulted
