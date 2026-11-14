@@ -739,3 +739,28 @@ edirect (NUMBER_KEY, default 5): Downloader follows 301/302/303/307/308 uncondit
 
 - #27 修复（`93e7df9`）后，用同一树外二进制（`C:\temp\runner\celerite.exe`，含 client.cr 类型放宽）对 H1 轮 12 fixture 定向集重跑双 profile：4.0.24 `12 passed, 0 failed, 0 skipped (documented deferrals)` EXIT 0（`C:\temp\h-post27-4024.log`）；2.7.2（`BUNDLER_REF_VERSION=2.7.2`）同 `12 passed, 0 failed, 0 skipped (documented deferrals)` EXIT 0（`C:\temp\h-post27-272.log`）。集合含 `platform-variant-fail` canary 与 `ruby-metadata-boundary-match`/`rubygems-metadata-boundary-match` 两个 metadata 边界夹具，无新回归。
 - 命令（MSYS bash PATH 前缀，cwd 仓库根，串行）：`CELERITE_BIN=C:/temp/runner/celerite.exe CELERITE_BRIDGE_SERVER=<repo>/assets/bridge/server.rb TMPDIR=/c/temp bash script/differential install-check install-fresh lock-bundler lock-file-pin lock-normalize lock-print list-missing no-matching-version platform-variant-fail multi-platform-lock ruby-metadata-boundary-match rubygems-metadata-boundary-match`（2.7.2 加 `BUNDLER_REF_VERSION=2.7.2`）。
+
+
+## 2026-11-14 K：平台变体选择修复（本地平台精确匹配 > ruby）——本轮实测
+
+缺陷：rails-min（`source "https://rubygems.org"` + `gem "rails", "8.0.2"`）`celerite lock` 写入 `nokogiri (1.19.7)` / `prism (2.1.0)` 的 ruby 变体，参照 Bundler 4.0.24 写入 `nokogiri (1.19.7-x64-mingw-ucrt)` / `prism (2.1.0-x64-mingw-ucrt)`；后果是 install 走源码构建（bigdecimal 原生扩展，本机缺 make 失败），命中 M7(1)/(2) 平台变体要求。
+
+参照语义（K1，.upstream-specs/v4.0.24/bundler）：resolver.rb:257-303 all_versions_for 每版本构造 ruby 候选（priority -1）+ 平台候选（priority 1）；物化时 MatchPlatform.select_best_platform_match（match_platform.rb:12-16）按 platform.rb:326-348 sort_and_filter_best_platform_match 取精确平台（specificity -1）> ruby（1_000_000）> 其它；lockfile_generator.rb:44-51 按 full_name 排序写 specs，PLATFORMS 来自 definition.platforms（definition.rb:850-858）。
+
+celerite 缺陷定位（K1）：求解侧正确（resolver/source.cr:217-238 候选 priority ±1；ranges.cr CandidateVersion <=> 先版本后 priority）；**缺陷在 src/celerite/resolution.cr:735-736 decisions_to_specs 硬编码 `s.platform_ruby?` 查找**，丢弃已选平台变体（写 ruby 形式 + ruby 依赖 mini_portile2）。
+
+修复（K2）：
+- src/celerite/resolver/source.cr：新增 `select_variant`（同版本候选中 gate `platform_ruby? || platform == Gem::Platform.local`，按 `Gem::Platform.platform_specificity_match` 取 min，ruby 兜底）；
+- src/celerite/resolution.cr：新增 `platform_mergeable?`（平台变体依赖集 == ruby 依赖集时 ruby 候选组已含两者，参照 SpecGroup#merge/equivalent? 语义，覆盖 prism 类 deps-equal 情形）；decisions_to_specs 按 `candidate_version.priority == 1 || platform_mergeable?(same_version)` 走 select_variant(index) → select_variant(locked_index) → ruby 查找链；ResolvedSpec platform 参数由硬编码 nil 改为 `spec.platform_ruby? ? nil : spec.platform.to_s`（驱动 PLATFORMS writer :954-958、checksum 后缀、install full_name）。
+
+验收（本轮实测）：
+- 离线 spec `spec/m7_platform_variant_selection_spec.cr`：5 examples, 0 failures, 0 errors, 0 pending, EXIT 0（本地变体优先 / ruby 回退 / priority 语义）。
+- 树外副本 C:	empails-min-cel9 `celerite lock` EXIT 0：`nokogiri (1.19.7-x64-mingw-ucrt)`、`prism (2.1.0-x64-mingw-ucrt)`、无 mini_portile2、PLATFORMS `x64-mingw-ucrt` 与参照一致；结构化比对（C:\Temp\compare_sections.py，对照 C:	empails-min-ref4 `bundle _4.0.24_ lock` EXIT 0、265 行/64 specs）：DEPENDENCIES/PLATFORMS/BUNDLED WITH 全等；GEM 65 vs 64，cel 多出仅 `bundler (4.0.24)` 自引用（已知差异）；nokogiri/prism 变体与参照逐行一致。
+- install 验收（C:	empails-min-cel9，树外 exe）：日志 `Installing nokogiri 1.19.7` / `Installing prism 2.1.0` **无 "with native extensions"**（预编译平台变体命中）；后续 `bigdecimal 4.1.3 with native extensions` 失败 + bridge 30s 超时 = 环境（缺 make）与桥接超时，与本 gap 无关；EXIT 1。
+- 定向差分双 profile（platform-variant-fail / multi-platform-install / multi-platform-install-ruby / multi-platform-lock / install-check / no-matching-version）：4.0.24 与 2.7.2 均 `6 passed, 0 failed, 0 skipped` EXIT 0（C:	emp\h-k-diff-4024.log / h-k-diff-272.log；platform-variant-fail 金丝雀未改期望仍 PASS）。
+- 门禁三件套 EXIT 0（format --check / build --no-codegen / git diff --check）。
+
+新发现（本轮登记，未在本提交修）：真实远端 lockfile CHECKSUMS 段 sha256 系统性错误——src/celerite/resolution.cr:47-49 `info_checksum_value` 对 rubygems.org /info 的**原始 hex** checksum 无条件 `Base64.decode(...).hexstring`（96 hex 位）；实测 `b64decode(参照值) == celerite 值` 为真（actioncable 8.0.2 参照 7bcce2df… → cel edb71c7b…），live /info 与参照一致；downloader.cr:129-137 normalize_checksum 已正确处理 hex/base64/sha256= 三种形态但 lockfile 路径未复用。列为 K' 独立子项。
+
+未验证：修复后二进制重跑上游全量 64 例（L 步）；rails-min install 端到端（缺 make）。
+复现：`CELERITE_BIN="C:/temp/runner/celerite.exe" TMPDIR=/c/temp bash script/differential platform-variant-fail multi-platform-install multi-platform-install-ruby multi-platform-lock install-check no-matching-version`；参照 `bundle _4.0.24_ lock`（C:	empails-min-ref4）；比对 `python C:\Temp\compare_sections.py`。

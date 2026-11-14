@@ -725,6 +725,22 @@ module Celerite
       {unlock: unlock_names, prerelease: prerelease_names}
     end
 
+    # Reference `SpecGroup#merge`/`equivalent?` (bundler resolver.rb:285-293):
+    # when a platform variant's dep set equals the ruby variant's, the ruby
+    # candidate group carries both, and materialization still picks the
+    # local-platform variant.
+    private def platform_mergeable?(specs : Array(Resolver::IndexSpec)?) : Bool
+      return false unless specs
+      ruby = specs.select(&.platform_ruby?)
+      plat = specs.reject(&.platform_ruby?)
+      return false if ruby.empty? || plat.empty?
+
+      signature = ->(s : Resolver::IndexSpec) { s.dependencies.map { |d| "#{d.name} #{d.requirement}" }.sort.join("|") }
+      ruby_sigs = ruby.map { |s| signature.call(s) }.uniq
+      plat_sigs = plat.map { |s| signature.call(s) }.uniq
+      ruby_sigs == plat_sigs
+    end
+
     private def decisions_to_specs(decisions : Hash(Resolver::Package, Resolver::CandidateVersion),
                                    index : Hash(String, Array(Resolver::IndexSpec)),
                                    locked_index : Hash(String, Array(Resolver::IndexSpec))) : Array(ResolvedSpec)
@@ -732,8 +748,23 @@ module Celerite
       decisions.each do |package, candidate_version|
         next if package.root? || package.meta?
         name = package.name
-        spec = index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? }) ||
-               locked_index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? })
+        same_version = index[name]?.try(&.select { |s| s.version == candidate_version.version }) ||
+                       locked_index[name]?.try(&.select { |s| s.version == candidate_version.version })
+        spec =
+          if candidate_version.priority == 1 || platform_mergeable?(same_version)
+            # Platform-variant candidate, or a ruby candidate whose group carries
+            # merged platform variants: materialize the local-platform variant
+            # (reference `Materialization#specs` +
+            # `MatchPlatform.select_best_platform_match`), falling back to the
+            # ruby spec when no local-platform variant is indexed.
+            Resolver::ResolutionSource.select_variant(index, name, candidate_version.version) ||
+              Resolver::ResolutionSource.select_variant(locked_index, name, candidate_version.version) ||
+              index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? }) ||
+              locked_index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? })
+          else
+            index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? }) ||
+              locked_index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? })
+          end
         next unless spec
 
         lock_deps = spec.dependencies.map do |dep|
@@ -742,7 +773,7 @@ module Celerite
         source = non_gem_sources[name]?
         source_type = source ? source.type.upcase : "GEM"
         source_type = "PATH" if source_type == "GEMSPEC"
-        specs << ResolvedSpec.new(name, spec.version, nil, lock_deps, spec.checksum, 0, source_type, source, remote_for(name))
+        specs << ResolvedSpec.new(name, spec.version, spec.platform_ruby? ? nil : spec.platform.to_s, lock_deps, spec.checksum, 0, source_type, source, remote_for(name))
       end
       specs.sort_by!(&.full_name)
       specs

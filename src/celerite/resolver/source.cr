@@ -240,6 +240,21 @@ module Celerite
         groups
       end
 
+      # Reference `MatchPlatform.select_best_platform_match` +
+      # `Materialization#specs` (bundler resolver.rb:88, materialization.rb:21-29,
+      # match_platform.rb:5-10, platform.rb:326-348): a spec is installable when
+      # its platform is ruby or exactly the target platform; among installable
+      # same-version specs the exact local-platform match wins (specificity
+      # -1) over ruby (1_000_000).
+      def self.select_variant(specs : Hash(String, Array(IndexSpec))?, name : String, version : Gem::Version) : IndexSpec?
+        return nil unless specs
+        same = specs[name]?.try(&.select { |s| s.version == version })
+        return nil if same.nil? || same.empty?
+
+        same.select { |s| s.platform_ruby? || s.platform == Gem::Platform.local }
+          .min_by? { |s| Gem::Platform.platform_specificity_match(s.platform, Gem::Platform.local) }
+      end
+
       private def merged_dependencies(specs : Array(IndexSpec)) : Array(DepSpec)
         deps = Hash(String, Gem::Requirement).new
         order = [] of String
