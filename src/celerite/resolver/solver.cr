@@ -524,7 +524,50 @@ module Celerite
           incompatibility = new_incompatibility
         end
 
+        log_failure_chain(incompatibility)
         raise SolveFailure.new(incompatibility)
+      end
+
+      # Diagnostic exit only: with CELERITE_SOLVER_DEBUG=1 dump the final
+      # failure derivation chain (terms, cause type, satisfier, decisions)
+      # plus every incompatibility mentioning a package in that chain and the
+      # root package's dependency incompatibilities (Gemfile direct
+      # constraints), so a bogus term like `not >= x` can be traced to the
+      # incompatibility that produced it. Default off; production output
+      # unchanged.
+      private def log_failure_chain(incompatibility : Incompatibility) : Nil
+        return unless ENV["CELERITE_SOLVER_DEBUG"]?
+
+        chain_packages = [] of String
+        current = incompatibility
+        12.times do |depth|
+          STDERR.puts "[solver-debug] depth=#{depth} #{current.to_s}"
+          current.terms.each do |term|
+            chain_packages << term.package.name
+            STDERR.puts "[solver-debug]   term #{term.package.name} positive=#{term.positive?} constraint=#{term.constraint.constraint_string}"
+          end
+          STDERR.puts "[solver-debug]   cause=#{current.cause.class.name}"
+          cause = current.cause
+          break unless cause.is_a?(IncompatibilityCause::Conflict)
+          satisfier = cause.satisfier
+          STDERR.puts "[solver-debug]   satisfier #{satisfier.term.package.name}#{satisfier.term.positive? ? "" : " not"} #{satisfier.term.constraint.constraint_string} decision_level=#{satisfier.decision_level} decision=#{satisfier.decision?}"
+          current = cause.incompatibility
+        end
+        STDERR.puts "[solver-debug] decisions=#{solution.decisions.map { |package, version| "#{package.name}=#{version.version}" }.join(", ")}"
+
+        chain_packages.uniq!
+        STDERR.puts "[solver-debug] incompatibilities mentioning #{chain_packages.join(", ")}:"
+        @incompatibilities.each do |package, list|
+          next unless chain_packages.includes?(package.name)
+          list.each do |inc|
+            STDERR.puts "[solver-debug]   inc #{inc.terms.map { |term| "#{term.package.name}#{term.positive? ? "" : " not"} #{term.constraint.constraint_string}" }.join(" | ")} cause=#{inc.cause.class.name} failure=#{inc.failure?}"
+          end
+        end
+        STDERR.puts "[solver-debug] root dependency incompatibilities (#{@root.name}):"
+        (@incompatibilities[@root]? || [] of Incompatibility).each do |inc|
+          next unless inc.cause.is_a?(IncompatibilityCause::Dependency)
+          STDERR.puts "[solver-debug]   inc #{inc.terms.map { |term| "#{term.package.name}#{term.positive? ? "" : " not"} #{term.constraint.constraint_string}" }.join(" | ")}"
+        end
       end
 
       private def add_incompatibility(incompatibility : Incompatibility) : Nil

@@ -473,7 +473,14 @@ module Celerite
         while my_range && other_range
           return true if my_range.intersects?(other_range)
 
-          if my_range.max.nil? || other_range.max.nil? || other_range.max.not_nil! < my_range.max.not_nil!
+          # Advance the side whose upper bound is smaller; an unbounded-above
+          # side must NOT be exhausted: its infinite tail still intersects the
+          # other side's remaining pieces (same sweep rule as #intersect).
+          if my_range.max.nil?
+            other_range = other_ranges.shift?
+          elsif other_range.max.nil?
+            my_range = my_ranges.shift?
+          elsif other_range.max.not_nil! < my_range.max.not_nil!
             other_range = other_ranges.shift?
           else
             my_range = my_ranges.shift?
@@ -505,7 +512,16 @@ module Celerite
         while my_range && other_range
           new_ranges << my_range.intersect(other_range)
 
-          if my_range.max.nil? || other_range.max.nil? || other_range.max.not_nil! < my_range.max.not_nil!
+          # Advance the side whose upper bound is smaller. An unbounded-above
+          # side must NOT be exhausted: the other side's remaining pieces still
+          # intersect its infinite tail. Exhausting it here silently dropped
+          # every remaining piece, truncating a union into its first interval
+          # (e.g. ">= 1.15.7, != 1.16.0.rc1" collapsed to ">= 1.15.7, < 1.16.0.rc1").
+          if my_range.max.nil?
+            other_range = other_ranges.shift?
+          elsif other_range.max.nil?
+            my_range = my_ranges.shift?
+          elsif other_range.max.not_nil! < my_range.max.not_nil!
             other_range = other_ranges.shift?
           else
             my_range = my_ranges.shift?
