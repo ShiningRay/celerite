@@ -922,6 +922,38 @@ module Celerite
     # each downloaded package in the lockfile even for file:// sources.
     property install_checksums : Hash(String, String) = {} of String => String
 
+    # Lockfile form of a PATH source remote (reference
+    # `Bundler::Source::Path#lockfile_path`, source/path.rb:136-139, with
+    # `relative_path` at :210-215): a project-relative path stays relative, an
+    # absolute path under the Gemfile directory becomes relative to it, and any
+    # other absolute path is kept absolute. Output uses forward slashes and no
+    # leading "./".
+    private def lockfile_path_for(remote : String) : String
+      return remote if remote.empty?
+      root = File.expand_path(File.dirname(@definition.gemfile_path))
+      expanded = File.expand_path(remote, root)
+      relative = relative_under_root(expanded, root)
+      return relative if relative
+      local_absolute_path?(remote) ? expanded.gsub('\\', "/") : remote.gsub('\\', "/")
+    end
+
+    private def relative_under_root(expanded : String, root : String) : String?
+      base = root.gsub('\\', "/").chomp('/')
+      path = expanded.gsub('\\', "/").chomp('/')
+      return "." if path == base
+      prefix = "#{base}/"
+      {% if flag?(:windows) %}
+        return nil unless path.downcase.starts_with?(prefix.downcase)
+      {% else %}
+        return nil unless path.starts_with?(prefix)
+      {% end %}
+      path[prefix.size..]
+    end
+
+    private def local_absolute_path?(path : String) : Bool
+      path.starts_with?("/") || path.starts_with?("\\\\") || path.matches?(/\A[A-Za-z]:[\/\\]/)
+    end
+
     def generated_lockfile : Lockfile::Data
       resolve! unless @resolved
 
@@ -943,7 +975,7 @@ module Celerite
         options << Lockfile::Option.new("submodules", "true") if info.submodules == true
         sections << Lockfile::TypedSection.new(Lockfile::SourceSection.new("GIT", options, source_specs))
       end
-      non_gem.select(&.source_type.==("PATH")).group_by(&.source_info.not_nil!.remote).each do |remote, specs|
+      non_gem.select(&.source_type.==("PATH")).group_by { |spec| lockfile_path_for(spec.source_info.not_nil!.remote) }.each do |remote, specs|
         source_specs = specs.map do |spec|
           Lockfile::Spec.new(spec.name, spec.version.to_s, spec.platform, spec.dependencies)
         end

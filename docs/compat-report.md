@@ -958,3 +958,57 @@ CELERITE_BIN="C:/temp/runner/celerite.exe" TMPDIR="C:\temp" CELERITE_BRIDGE_SERV
 4. **未对真实远端 mTLS 场景验证**：全部为本地回环离线夹具。
 5. 夹具中的 `*.key` 为自签测试材料，不含生产凭据；轮换按 `spec/m7_client_cert_spec.cr` L6-24 的命令重建。
 6. `ssl_client_key` 仍 fast-fail（政策不变）；proxy 路由、legacy/full index 回退仍未实现，M7(4) 复选框保持未勾。
+
+## 2026-11-15 M7(8) 产品差异①：path 源锁文件相对化
+
+### 参考语义（bundler 4.0.24，`lib/bundler/source/path.rb`）
+- L23-31 `initialize`：相对输入→`expanded.relative_path_from(root)`；绝对输入→保留 expanded 绝对；L38 `@original_path = @path`。
+- L45-49 `to_lock` → `remote: #{lockfile_path}`。
+- L136-139 `lockfile_path`：绝对→`relative_path(original_path)`；相对→`expand(original_path).relative_path_from(root)`。
+- L210-215 `relative_path`：仅当 `path.to_s.start_with?(root_path.to_s)` 才相对化，否则原样返回（项目外/跨盘保持原样）。
+- 上游用例 `spec/lock/lockfile_spec.rb:1154`：Gemfile `path File.expand_path("foo", __dir__)` → 期望 `PATH\n  remote: foo\n  specs:\n    foo (1.0)\n`。
+
+### 修复前行为（实测）
+`Resolution#generated_lockfile` 原 L946-952 把 `source_info.remote` 原样写入 PATH 段，Gemfile 写绝对路径时锁文件得到绝对 `remote:`。修复前跑新 spec：**4 examples, 3 failures, 0 errors**（2.17s），失败原文关键行：
+
+```
+PATH
+  remote: C:/Users/ShiningRay/AppData/Local/Temp/celerite-spec-20261115-15640-zjmsfzproj/vendor/example
+  specs:
+    example (1.0.0)
+```
+
+（`spec/m7_path_lockfile_relative_spec.cr:36` 期望 `remote: vendor/example`；`:56` 相对写法前后字节不一致；`:98` 归一后 remote 缺失。项目外绝对路径用例修复前即通过，符合参考「不在 root 下保持原样」。）
+
+### 实现
+- `src/celerite/resolution.cr`（HEAD=8de9eb4 + 本工作树）：
+  - L931-938 `lockfile_path_for(remote : String) : String`：空串原样；`root = File.expand_path(File.dirname(@definition.gemfile_path))`；`expanded = File.expand_path(remote, root)`；`relative_under_root` 命中→相对路径；否则绝对路径（`local_absolute_path?` 判 `/`、`\\`、盘符）→ expanded 转 `/`；相对且不在 root 下→原样（`/` 归一）。
+  - L940-951 `relative_under_root`：根相等→`"."`；`path` 以 `root + "/"` 开头（Windows 大小写不敏感，编译期 `{% if flag?(:windows) %}`）→去前缀；否则 nil。
+  - L953-955 `local_absolute_path?`：`/`、`\\`、`[A-Za-z]:[\/\\]`。
+  - L978-984 PATH 段 `group_by { |spec| lockfile_path_for(...) }`，分组 key 与 `remote:` 同用归一值（同一源两种写法不再裂段）。
+- 未改 `ensure_source_dir`（解析侧仍按 Gemfile 目录展开）、GIT/GEM 段与 `sources_compatible?`（后者只比 GEM remote；实测再跑不抖动）。
+
+### 门禁实测（2026-11-15，HEAD=8de9eb4 + 本工作树）
+
+`<flags>` = `C:/Users/ShiningRay/AppData/Local/Temp/celerite-shim-m7wip/evp_md_size_shim.o -LC:/msys64/ucrt64/lib -lssl -lcrypto`。
+
+| 门禁 | 结果 |
+|---|---|
+| `crystal tool format src spec` / `crystal tool format --check src spec` | EXIT 0 / EXIT 0 |
+| `crystal build --no-codegen --link-flags <flags> src/cli.cr` | EXIT 0（仅既有 2 条 `File.executable?` deprecation：`commands_install.cr:596,660`） |
+| `crystal spec spec/m7_path_lockfile_relative_spec.cr --link-flags <flags>`（修复后） | **4 examples, 0 failures, 0 errors, 0 pending**, EXIT 0（2.26s） |
+| 全量 `crystal spec --link-flags <flags>` | **272 examples, 1 failures, 0 errors, 0 pending**, EXIT 1（唯一失败 `spec/config_spec.cr:97`，既存机器级 `~/.bundle/config` 污染，见上一节） |
+| `git diff --check` | EXIT 0 |
+
+### 覆盖
+1. 项目内绝对路径（`File.expand_path("vendor/example", dir)` 写入 Gemfile）→ 锁文件 `remote: vendor/example`，不含绝对前缀、不含反斜杠。
+2. 首轮绝对、次轮相对写法 → 锁文件逐字节不变（幂等）。
+3. 项目外绝对路径（`File.tempname` 造 gem）→ 锁文件保留绝对（正斜杠）。
+4. 同一绝对 Gemfile 连跑两次 `lock` → 均 EXIT 0、锁文件字节一致、remote 保持相对（锁复用不抖动）。
+
+### 未验证 / 边界
+1. **Windows 跨盘**（`D:\...` 相对 `C:\...` 项目）与 **UNC**（`\\server\share`）未实测；代码按「不在 root 下→保持绝对」处理，但无 spec。
+2. `glob:` 未实现（本轮明确不动）。
+3. 真实 `bundle install` e2e 未跑：本轮只验证 `lock` 生成/复用；安装侧 `ensure_source_dir` 未改，依赖既有行为。
+4. 大小写：仅 Windows 比较大小写不敏感；macOS 默认大小写不敏感文件系统上，若 Gemfile 路径大小写与目录实际大小写不同，可能判为「不在 root 下」而保持绝对（未验证）。
+5. 上游 differential 未重跑；`lockfile_spec.rb:1154` 场景尚未 fixture 化到 `fixtures/differential/`。
