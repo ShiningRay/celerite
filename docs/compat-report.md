@@ -790,3 +790,35 @@ celerite 缺陷定位（K1）：求解侧正确（resolver/source.cr:217-238 候
 - `celerite install` 端到端仍受本机缺 `make` 阻塞（`bigdecimal` 原生构建），M7(9) 未达成；
 - 上游 64 例未在修复后重跑（L 即将进行）；
 - 树外 exe 纪律与复现命令同 K 节（`C:\temp\runner\celerite.exe`；重建 `crystal build src/cli.cr -o bin/celerite.exe --link-flags "C:/Users/ShiningRay/AppData/Local/Temp/celerite-shim-m7wip/evp_md_size_shim.o"`，正斜杠，shim 仅本地不入库）。
+
+## 2026-11-14 rerun after K/K'/K'' fixes
+
+命令（trace 直跑，树外 exe，串行）：
+
+```
+cd .upstream-specs/v4.0.24/bundler
+CELERITE_BIN="C:/Ruby40-x64/bin/ruby.exe C:/temp/runner/trace-celerite.rb" \
+CELERITE_BRIDGE_SERVER="C:/Users/ShiningRay/projects/ShiningRay/celerite/assets/bridge/server.rb" \
+CELERITE_SKIP_TEST_DEPS=1 RSPEC_FORMATTER_OUTPUT_ID=celerite-harness BUNDLE_GEMFILE= \
+ruby -S rspec -r "C:/Users/ShiningRay/projects/ShiningRay/celerite/script/upstream-specs-celerite-override.rb" \
+  spec/lock/lockfile_spec.rb --format documentation --out C:\temp\rspec-outputL.txt
+```
+
+前置：先 `ruby -I spec/support C:/temp/populate_pristine.rb` 重建 pristine_system（setup 链在 RSPEC_FORMATTER_OUTPUT_ID 设置时跳过自装）；二进制为 K/K'/K'' 后重建副本 `C:\temp\runner\celerite.exe`（`--version` 0.1.0）。
+
+实测：`64 examples, 53 failures`（11 通过），seed 27921，`Finished in 3 minutes 37 seconds (files took 1.42 seconds to load)`，celerite 调用 57 次（install 51 / config 3 / lock 2 / cache 1），rspec exit 1。日志 `C:\temp\rspec-outputL.txt`。
+
+四桶重判（加总 = 53 = 新失败数）：
+
+- 环境 37：DNS 36（日志主机名出现合计 44 次：gem.repo1×3、gem.repo2×29、gem.repo4×11、othergemserver.test×1，部分例输出中主机名出现多次；artifice 桩仅进程内有效，子进程 celerite 不可达）+ HTTP 403 ×1；本轮无 SSL / make / sinatra 类失败。
+- 夹具 12：`checksums.rb:24` ENOENT `remote2/gems/*.gem`、`install_gem` does-not-exist、`lockfile_spec.rb:1683` ArgumentError 等上游夹具本身缺口。
+- 产品 4（较 G2 轮 5 减 1）：#27 `does not add the :require option to the lockfile` 已由 `93e7df9` 修复——本轮不再出现 `Couldn't parse (String | Nil)`，该例转为 env-DNS（gem.repo2）失败；剩余 4 项为既有内容差异：绝对路径未 relativize（`stores relative paths when the path is provided in an absolute fashion but is relative`）、空 specs（`regenerates a lockfile with no specs`）、嵌套 net-protocol 边缺失（`automatically fixes the lockfile when it has incorrect deps, keeping the locked version`）、冲突标记信息含绝对 Windows 路径破坏 `/Your Gemfile.lock contains merge conflicts/i` 正则（`refuses to install if Gemfile.lock contains conflict markers`，exit 20 正确）。
+- shim 0。
+
+lead 编号 #30/#33/#44/#12 与上述 4 项产品差异的逐项映射未在 docs 中找到对应记录，按名称列出，请 lead 对照（未验证）。
+
+G2 对照（同条件前轮，`C:\temp\rspec-outputG2.txt`：64/53，seed 31121）：line-ending 5 例与 `without credentials` 例在 G2 即以同型 DNS 失败，本轮无新增回归；唯一成员变化为 #27 产品→环境。
+
+make 新条件（lead m04964）：`make.exe` 实存于 `C:\Ruby40-x64\msys64\usr\bin` 但既往不在 PATH；本轮上游 64 例中 0 例达原生构建阶段（DNS/403 先失败），故 make 入 PATH 不改变本轮计数；A 类 differential 与 M7(9) Rails install 的 make 重跑在 N 子项单独记录。
+
+未验证/边界：本结果仅针对 `spec/lock/lockfile_spec.rb` 单文件；2.7.2 profile 因布局不兼容未重跑；install 成功例的端到端锁定内容以 env 桩为准。
