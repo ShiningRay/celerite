@@ -539,6 +539,11 @@ module Celerite
         locked.requirement == dep.requirement
       end
       return false unless all_ok
+      # Reference `converge_dependencies` (definition.rb:1051-1076) and
+      # `check_lockfile` (definition.rb:973-1014): the locked specs must cover
+      # every dependency, otherwise `@missing_lockfile_dep` (etc.) makes
+      # `something_changed?` (definition.rb:630-645) true and we re-resolve.
+      return false unless lockfile_covers_dependencies?(lockfile, deps)
       return false unless sources_compatible?(lockfile)
       # Reference parity: a lockfile that does not cover the local platform
       # (no `ruby`, no matching entry) makes the definition re-resolve
@@ -547,6 +552,38 @@ module Celerite
       return false unless covers_local_platform?(lockfile)
 
       ruby_compatible?(lockfile)
+    end
+
+    # `@missing_lockfile_dep` / `@locked_spec_with_missing_deps` /
+    # `@locked_spec_with_invalid_deps` equivalents: an empty `specs:` section
+    # (or a dependency edge pointing at a gem that is not locked, or at a
+    # locked version outside the requirement) must not be reused, otherwise
+    # `materialize_locked` would silently install nothing.
+    private def lockfile_covers_dependencies?(lockfile : Lockfile::Data,
+                                              deps : Array(Resolver::DepSpec)) : Bool
+      locked = Hash(String, Array(Lockfile::Spec)).new
+      lockfile.sources.each do |source|
+        source.specs.each do |spec|
+          (locked[spec.name] ||= [] of Lockfile::Spec) << spec
+        end
+      end
+
+      deps.each do |dep|
+        next if dep.name == "bundler"
+        return false unless locked.has_key?(dep.name)
+      end
+
+      locked.each_value do |specs|
+        specs.each do |spec|
+          spec.dependencies.each do |edge|
+            targets = locked[edge.name]?
+            return false unless targets
+            return false unless targets.any? { |target| edge.requirement.satisfied_by?(Gem::Version.new(target.version)) }
+          end
+        end
+      end
+
+      true
     end
 
     # Reference `current_platform_locked?`: `ruby` covers every local platform

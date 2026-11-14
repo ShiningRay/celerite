@@ -1012,3 +1012,21 @@ PATH
 3. 真实 `bundle install` e2e 未跑：本轮只验证 `lock` 生成/复用；安装侧 `ensure_source_dir` 未改，依赖既有行为。
 4. 大小写：仅 Windows 比较大小写不敏感；macOS 默认大小写不敏感文件系统上，若 Gemfile 路径大小写与目录实际大小写不同，可能判为「不在 root 下」而保持绝对（未验证）。
 5. 上游 differential 未重跑；`lockfile_spec.rb:1154` 场景尚未 fixture 化到 `fixtures/differential/`。
+
+## M7(8) 第二子项：锁文件 specs 为空时重解析（2026-11-15，HEAD=8de9eb4 + 本工作树）
+
+- **参考语义（bundler 4.0.24）**：`definition.rb` L630-645 `something_changed?` 把 `@missing_lockfile_dep` / `@locked_spec_with_missing_deps` / `@locked_spec_with_invalid_deps` 计入变化源；L1051-1076 `converge_dependencies` 对「DEPENDENCIES 有、specs 中无该 gem」的依赖置 `@missing_lockfile_dep`（L1068-1069）；L973-1014 `check_lockfile` 对依赖边 `:missing`（指向未锁定 gem）与 `:invalid`（版本不满足）删除 spec 并置对应标志。上游用例 `lockfile_spec.rb:1882` `regenerates a lockfile with no specs`：预置 `GEM remote: ... specs:`（空）+ `DEPENDENCIES direct_dependency`，install 后须出现 `direct_dependency (4.5.6)` 与 `indirect_dependency (1.2.3)`。
+- **修复前缺陷**：`resolution.cr` L526-550 `reuse_locked_resolution?` 只比较 DEPENDENCIES 集合 + requirement + sources + platform + ruby 版本，不检查 `specs:` 是否覆盖依赖；一旦判可复用，`materialize_locked`（L603-614）从空 specs 返回空数组，install 的复用路径（`commands_install.cr:177 resolve!(reuse)`）既不安装也不重写锁文件。实测：新 spec 修复前 **4 examples, 2 failures**——`:47`/`:87` 两处 `reuse_locked?` 期望 false 实得 true（空 specs、依赖边缺失各一）。注：`lock` 命令走 `commands_surface.cr:247 no_reuse: true`，修复前不暴露该缺陷；真实入口是 install 的复用路径，故负对照在 `resolve!(reuse: true)` 上做。
+- **实现**：`src/celerite/resolution.cr` L546 在 DEPENDENCIES 对齐后 `return false unless lockfile_covers_dependencies?(lockfile, deps)`；L558-587 新增私有 `lockfile_covers_dependencies?`——把所有 source 的锁定 spec 聚合为 `Hash(String, Array(Lockfile::Spec))`；每个顶层依赖（跳过 `bundler`）必须存在锁定 spec（`@missing_lockfile_dep` 等价）；每条 `Spec` 的 `SpecDependency` 边必须命中锁定 gem 且 `edge.requirement.satisfied_by?(Gem::Version.new(target.version))`（missing/invalid 两类等价）。未改锁文件写出格式、PATH/GIT 段、`materialize_locked`、`build_locked_index`/`locked_index`。
+- **修复后**：`spec/m7_lockfile_regen_spec.cr` **4 examples, 0 failures, 0 errors, 0 pending**（1.4s，EXIT 0）：①空 specs + `gem "thor"` 经 `resolve!(reuse: true)` 得 `thor 1.3.2`；②已覆盖锁文件仍 `reuse_locked? == true` 且返回 `["thor"]`（不误触发重解析）；③锁定 spec 声明 `racc (~> 1.4)` 但锁文件无 racc → 判不可复用，重解析后为 `json_pure 2.6.0`；④`lock` 端到端把空 specs 重写为 `    thor (1.3.2)`，EXIT 0。
+- **门禁**（`<flags>` = `C:/Users/ShiningRay/AppData/Local/Temp/celerite-shim-m7wip/evp_md_size_shim.o -LC:/msys64/ucrt64/lib -lssl -lcrypto`）：
+
+| 门禁 | 结果 |
+|---|---|
+| `crystal tool format src spec` / `crystal tool format --check src spec` | EXIT 0 / EXIT 0 |
+| `crystal build --no-codegen --link-flags <flags> src/cli.cr` | EXIT 0（仅既有 2 条 `File.executable?` deprecation：`commands_install.cr:596,660`） |
+| `crystal spec spec/m7_lockfile_regen_spec.cr --link-flags <flags>` | **4 examples, 0 failures, 0 errors, 0 pending**, EXIT 0（1.4s） |
+| 全量 `crystal spec --link-flags <flags>` | **276 examples, 1 failures, 0 errors, 0 pending**, EXIT 1（唯一 `spec/config_spec.cr:97` 机器级 `~/.bundle/config` 污染，非回归；修复前基线 272/1） |
+
+- **负对照**：修复前同 spec 在 `:47`/`:87` 报 `Expected: false / got: true`；②合法复用与④`lock` 端到端修复前即通过，说明新谓词不是恒 `false`。
+- **未验证/边界**：真实 `bundle install` e2e 未跑（复用路径由 `Resolution#resolve!(reuse: true)` 直接驱动，不落 gem 安装副作用）；锁文件 `specs:` 与 DEPENDENCIES 集合不一致时仍由既有 L533-541 判定，本轮未另加用例；平台变体缺失由既有 `covers_local_platform?` 处理，未扩；`bundler` 顶层依赖键被跳过（参考锁文件通常不含）；上游 `lockfile_spec.rb:1882` 场景尚未 fixture 化到 differential。
