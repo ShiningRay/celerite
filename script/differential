@@ -26,6 +26,10 @@
 #      prepends the Ruby-bundled toolchain dir so reference and celerite
 #      builds use the same compiler revision.  Set CELERITE_DIFF_EXTRA_PATH
 #      to prepend additional directories to PATH for both sides.
+#   N9 installed-tree binary artifacts (.so/.dll/.bundle/.o/.a) compare by
+#      presence + non-empty size + optional ruby loadability, never bytes:
+#      native builds are non-deterministic; the observable contract is
+#      "compiled and loadable", not byte-identical output.
 # Note (2026-11-14 N): earlier "make not found" failures for class A
 #   (racc/make) fixtures were an ENVIRONMENT issue, not a missing tool:
 #   make.exe exists at C:\Ruby40-x64\msys64\usr\bin\make.exe (GNU 4.4.1)

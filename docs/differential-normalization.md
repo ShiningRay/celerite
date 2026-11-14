@@ -15,6 +15,7 @@ pinned profiles.
 | N5 | `## Environment` body up to `## Bundle Doctor` is dropped | Host Ruby/gem installation paths are machine-specific, not engine output. |
 | N6 | Ruby backtrace frames (`   from ...`) are dropped | Frame paths are machine-specific; the exception line itself is kept. |
 | N7 | Runs of consecutive `Fetching ` lines are sorted | Concurrent downloads complete in arbitrary order; no other line order is changed. |
+| N9 | Installed-tree binary artifacts (`.so`/`.dll`/`.bundle`/`.o`/`.a`) compare presence + non-empty size + optional `ruby` loadability, not bytes | Native builds are non-deterministic (compiler revision, debug info, timestamps); Bundler's observable contract is "extension compiled and loadable", not identical bytes. |
 
 ## What is *not* normalized
 
@@ -44,11 +45,14 @@ ruby/*/bin
    `symlink target differs: ref=<x> cel=<y>` 并返回 1。符号链接本身跳过后续内容/可执行位比较。
 3. **相对路径集合**：目录树内相对路径集合必须一致（缺失/多余项失败；基于 `diff -r --brief` 结果，排除 `Files ... differ` 行）。
 4. **文件内容**：`diff -r --brief` 报告为内容不同的**非符号链接**文件，经 harness `normalize`（N1–N7 文本归一化，见上表；二进制载荷中替换串不出现时等效字节比较）后必须一致，否则 `content differs after normalization`。
+   **N9（编译产物）**：扩展名为 `.so`/`.dll`/`.bundle`/`.o`/`.a` 的编译产物不比字节，改比 ①两侧都存在 ②非空 ③可选 `ruby -e "require '<rel path without ext>'"` 可加载（ruby 可用时）；其余文件仍按 N1–N7 归一化后逐字节比较。
 5. **可执行权限（平台差异）**：仅在非 Windows（`uname -s` 非 MINGW/MSYS）比较内容已归一化一致文件的 executable bit；Windows/git 通常不保留该位，因此跳过。
 
 **N1–N7 索引**：路径/换行/时间戳/日期/Environment 体/backtrace 帧/连续 `Fetching` 行排序的归一化规则见本文档顶部表格；安装树内容比较复用同一 `normalize`。
 
 **自测**：`script/differential-installed-tree-selftest` 覆盖 6 断言——(a) 完全一致 PASS、(b) 内容差异 FAIL 且含 `content differs`、(c) symlink 目标差异 FAIL 且含 `symlink target differs`、(d) 缺 symlink FAIL、(e) ref 普通文件 vs cel 同名 symlink（内容相同）FAIL 且含 `entry type differs`、(f) cel 多一个 symlink FAIL 且含 `unexpected symlink`。Windows 使用 `MSYS=winsymlinks:nativestrict ln -s` 探测/创建真实符号链接；若无法创建时 (c)/(d)/(e)/(f) 记为 SKIP 并输出错误与复现命令（不伪报 PASS）。
+
+**N9 补充**：编译产物（`.so`/`.dll`/`.bundle`/`.o`/`.a`）走存在性+非空+可选可加载判定，不比字节（编译器非确定性，字节差异不属可观察契约；边界：不校验 ABI 兼容性，仅存在性+可加载性）。
 
 **5 类判定**（安装树 `compare_installed_tree`）：① 路径集合（matched dirs / relative path set，missing/extra）；② 类型（symlink vs regular file，输出 `entry type differs: ref=<file|symlink> cel=<file|symlink>`）；③ 链接目标（`readlink` 不一致，输出 `symlink target differs: ref=<x> cel=<y>`；仅单侧存在时 `symlink missing on celerite side` / `unexpected symlink on celerite side`）；④ 内容（非 symlink 文件经 N1–N7 normalize 后一致，否则 `content differs after normalization`）；⑤ 可执行位（仅非 Windows，executable bit differs）。消息文本与上述输出字面一致。
 

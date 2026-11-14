@@ -17,6 +17,13 @@
 # - Symbolic links are compared by relative path and link target (readlink).
 # - Executable-bit differences are reported (POSIX only; Windows git does not
 #   preserve the bit).
+# - N9 (binary artifacts): compiled native artifacts (extensions .so/.dll/.bundle/
+#   .o/.a) are NOT byte-compared. Native builds are non-deterministic (compiler
+#   version, debug info, timestamps, paths) and Bundler's observable contract is
+#   "extension compiled and loadable", not "identical bytes". They are checked
+#   for: (1) presence on both sides, (2) non-empty size, (3) optional loadability
+#   via `ruby -e "require '<relpath without ext>'"` when a ruby is available.
+#   All other files still compare byte-for-byte after N1-N7 normalization.
 
 # compare_installed_tree <ref_sandbox> <cel_sandbox> <marker_file> <ref_dir> <cel_dir>
 # Prints a human-readable diff description; returns 1 when trees differ.
@@ -109,6 +116,28 @@ compare_installed_tree() {
         if [ -L "$ref_file" ] || [ -L "$cel_file" ]; then
           continue
         fi
+        # N9: compiled native artifacts are compared by existence + size +
+        # loadability, never by bytes (see header).
+        case "$rel_file" in
+          *.so|*.dll|*.bundle|*.o|*.a)
+            if [ ! -s "$ref_file" ] || [ ! -s "$cel_file" ]; then
+              problems+="  $rel/$rel_file binary artifact missing or empty"$'\n'
+              continue
+            fi
+            if command -v ruby >/dev/null 2>&1; then
+              rel_noext="${rel_file%.*}"
+              if ! (cd "$ref_dir" && ruby -e "require './$rel_noext'" >/dev/null 2>&1); then
+                problems+="  $rel/$rel_file binary artifact not loadable on reference side"$'\n'
+                continue
+              fi
+              if ! (cd "$cel_dir" && ruby -e "require './$rel_noext'" >/dev/null 2>&1); then
+                problems+="  $rel/$rel_file binary artifact not loadable on celerite side"$'\n'
+                continue
+              fi
+            fi
+            continue
+            ;;
+        esac
         if ! diff -q \
               <(normalize "$ref_sandbox" "$cel_sandbox" < "$ref_file") \
               <(normalize "$ref_sandbox" "$cel_sandbox" < "$cel_file") >/dev/null 2>&1; then
