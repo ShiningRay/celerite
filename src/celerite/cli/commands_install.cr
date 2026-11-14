@@ -253,6 +253,26 @@ module Celerite
           installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum, true)
         end
 
+        # Locked-path repair (reference `spec_set.rb#materialize`): the lockfile
+        # records each locked spec's dependency edges, and a lockfile written
+        # without them (Bundler's locked specs never carry edges,
+        # `lazy_specification.rb:26-39`) would otherwise be reused unchanged
+        # forever — `check_lockfile` (`definition.rb:973-1014`) cannot see the
+        # gap. Refresh the edges of the locked specs fetched in this run from
+        # their real gemspecs, keeping every locked version. Runs before the
+        # lockfile is written and does not touch the pending/install flow.
+        if reuse && cached_paths.any?
+          resolution.refresh_locked_dependencies(cached_paths) do |package|
+            info = Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(package).to_json)
+            (info.dependencies || [] of JSON::Any).compact_map do |dep|
+              next unless dep["type"]?.try(&.as_s?) == "runtime"
+              name = dep["name"].as_s
+              requirements = dep["requirements"]?.try(&.as_a?).try { |values| values.map(&.as_s) }
+              Lockfile::SpecDependency.new(name, requirements)
+            end
+          end
+        end
+
         # PATH/GIT sources don't print fetch/install lines; materialize
         # bundle binstubs from their checked-out gemspec directory so
         # `bundle exec <executable>` can resolve them.

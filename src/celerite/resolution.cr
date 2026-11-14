@@ -650,6 +650,32 @@ module Celerite
       specs
     end
 
+    # Reuse-path repair for stale dependency edges. The lockfile records each
+    # locked spec's edges and the reuse path trusts them, so a lockfile written
+    # without them (Bundler's locked specs report an empty dependency list —
+    # `lazy_specification.rb:26-39`, which is why `check_lockfile`
+    # `definition.rb:973-1014` never flags the gap) would stay stale forever.
+    # The reference repairs the edges from materialized gemspecs
+    # (`spec_set.rb#materialize`) while keeping every locked version, so we
+    # refresh them from the .gem packages fetched for this run.
+    #
+    # Only GEM sources are refreshed, and only from the locked/reuse path: a
+    # fresh resolve already carries the index metadata (including platform
+    # variants) and must not be rewritten, while PATH/GIT specs keep the edges
+    # recorded in the lockfile.
+    def refresh_locked_dependencies(packages : Hash(String, String), & : String -> Array(Lockfile::SpecDependency)) : Nil
+      return if packages.empty?
+      @resolved_specs = @resolved_specs.map do |spec|
+        next spec unless spec.source_type == "GEM"
+        package = packages[spec.full_name]?
+        next spec if package.nil?
+        dependencies = yield package
+        next spec if dependencies == spec.dependencies
+        ResolvedSpec.new(spec.name, spec.version, spec.platform, dependencies, spec.checksum,
+          spec.source_index, spec.source_type, spec.source_info, spec.source_remote)
+      end
+    end
+
     private def run_resolution(deps : Array(Resolver::DepSpec)) : Array(ResolvedSpec)
       unlocked = Set(String).new
       prerelease_exceptions = Set(String).new

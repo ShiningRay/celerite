@@ -1049,3 +1049,33 @@ PATH
 | 全量 `crystal spec --link-flags <flags>` | **281 examples, 1 failures, 0 errors, 0 pending**, EXIT 1（唯一 `spec/config_spec.cr:97` 机器级 `~/.bundle/config` 污染，非回归；本轮前基线 276/1） |
 
 - **未验证/边界**：真实 `bundle install` 命令级 e2e 未跑（spec 通过 `run_cli(["install"])` 进程内驱动，但未验证真实 gem 安装）；UNC 路径（`\\server\share`）未实测（仅按盘符分支推断回退，Windows 下 `expand_path` 处理 UNC 的形态未验证）；`Dir.pwd` 在符号链接目录下的表现（`Pathname` 不做 realpath，我们的实现同样按字面展开）未验证；非 Windows 下同根路径总能相对化，因此「不可相对化回退」分支只在 Windows spec 中覆盖；上游 `lockfile_spec.rb:2431` 场景尚未 fixture 化到 differential。
+
+## 2026-11-15 M7(8) 第四子项：锁定 spec 的依赖边缺失时 install 补齐（产品差异④）
+
+- **参考语义（逐行锚定）**：
+  - 上游用例 `spec/lock/lockfile_spec.rb:2088-2142`（`automatically fixes the lockfile when it has incorrect deps, keeping the locked version`）：repo4 提供 `net-smtp 0.5.0`／`net-smtp 0.5.1`（两者都依赖 `net-protocol`）与 `net-protocol 0.2.2`；预置锁文件只列 `net-protocol (0.2.2)` 与 `net-smtp (0.5.0)` 且**没有** `net-smtp` 的依赖子行。install 后锁文件必须补出 `      net-protocol`，且版本保持 0.5.0/0.2.2（不得升到 0.5.1）。
+  - 为什么 `check_lockfile`（`definition.rb:973-1014`）抓不到这条缺失边：`LazySpecification#initialize`（`lazy_specification.rb:26-39`）把 `@dependencies` 置为 `[]`，`spec_set.rb#validate_deps` 看到的是空边；真实依赖只在 `SpecSet#materialize` 载入已安装/真实 gemspec 后出现，锁文件因此由 materialize 后的 spec 生成。故修法必须来自真实 gemspec 元数据，而不是锁文件自省。
+- **修复前行为**：`install` 走复用路径（`commands_install.cr:177` `resolution.resolve!(reuse)`），`materialize_locked`（`resolution.cr:640-651`）原样复制锁文件里缺失的依赖边，写回时语义不变 → 空边永久保留。实测负对照：`spec/m7_lockfile_locked_deps_spec.cr` **2 examples, 1 failures, 0 errors**（2.07s，EXIT 1），失败断言 `lock.should contain("    net-smtp (0.5.0)\n      net-protocol\n")`（`spec/m7_lockfile_locked_deps_spec.cr:89`，首辅负对照复跑同一点）：install 退出码为 0、无错误输出，但锁文件 `net-smtp (0.5.0)` 下没有 `      net-protocol` 子行。
+- **实现**：
+  - `src/celerite/resolution.cr` L653-680：新增 `def refresh_locked_dependencies(packages : Hash(String, String), & : String -> Array(Lockfile::SpecDependency)) : Nil`（L666）。仅处理 `source_type == "GEM"` 且本次确实拿到 `.gem` 路径的 spec；依赖边与当前相同时不重建（避免无谓改写）；不同时以原 `name/version/platform/checksum/source_index/source_type/source_info/source_remote` 重建 `ResolvedSpec`，只替换 `dependencies`。PATH/GIT 不计入，fresh resolve 不调用（注释注明这是锁定路径的对齐行为）。
+  - `src/celerite/cli/commands_install.cr` L256-276：`if reuse && cached_paths.any?` 时、写锁文件（L290+）之前调用；block 内 `Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(package).to_json)` 取真实 gemspec，过滤 `type == "runtime"`，`requirements` 转 `Array(String)` 后构造 `Lockfile::SpecDependency`（无新增网络请求；读的是本次已下载的 `.gem`）。
+  - 未改 `materialize_locked`、锁文件写出格式、PATH/GIT 段、`pending` 计算与下载输出顺序。
+- **修复后**：**2 examples, 0 failures, 0 errors, 0 pending**（2.25s，EXIT 0）：①空边锁文件 install 后出现 `    net-smtp (0.5.0)\n      net-protocol`、`net-protocol (0.2.2)` 仍在、无 `net-smtp (0.5.1)`；②依赖边已完整时第二次 install 锁文件逐字节不变且不打印 `Fetching net-smtp`。
+- **负对照**：修复前 1/2 失败（断言级 diff 见上），修复后 2/2 通过；测试②修复前后均通过，用于防止“无条件改写锁文件”。
+- **夹具（离线、可重复）**：`spec/fixtures/locked-deps/gems/` 下 `net-protocol-0.2.2.gem`、`net-smtp-0.5.0.gem`、`net-smtp-0.5.1.gem`（各 4096B；两个 net-smtp 版本均 `add_runtime_dependency "net-protocol"`）。生成命令：`ruby -S gem build <name>.gemspec --output <dest>`（gemspec 仅 name/version/summary/authors/files/require_paths）。Downloader 下载路径为 `<remote>/gems/<full name>.gem`，故 Gemfile 的 `source` 取 `spec/fixtures/locked-deps` 这一层（`file_source_url(...)`）。
+- **门禁**（`<flags>` = `C:/Users/ShiningRay/AppData/Local/Temp/celerite-shim-m7wip/evp_md_size_shim.o -LC:/msys64/ucrt64/lib -lssl -lcrypto`）：
+
+| 门禁 | 结果 |
+|---|---|
+| `crystal tool format src spec` / `crystal tool format --check src spec` | EXIT 0 / EXIT 0 |
+| `crystal build --no-codegen --link-flags <flags> src/cli.cr` | EXIT 0（仅既有 2 条 `File.executable?` deprecation：`commands_install.cr:616,680`） |
+| `crystal spec spec/m7_lockfile_locked_deps_spec.cr --link-flags <flags>` | **2 examples, 0 failures, 0 errors, 0 pending**, EXIT 0（2.25s） |
+| 全量 `crystal spec --link-flags <flags>` | **283 examples, 1 failures, 0 errors, 0 pending**, EXIT 1（唯一 `spec/config_spec.cr:97` 机器级 `~/.bundle/config` 污染，非回归；本轮前实测基线 281/1） |
+
+- **未验证/限制**：
+  1. 只覆盖“本次确实下载到 `.gem`”的场景；参考在 gem 已安装时会读已安装 gemspec，本轮未接（已安装且缓存外时依赖边保持锁文件原样，不报错）。
+  2. `--force/--redownload` 分支（`force_install`）不产生 `cached_paths`，同样不刷新。
+  3. fresh resolve（`lock`/`update`）不刷新边，依赖索引元数据正确；若索引元数据本身缺失边，与本修复无关、未覆盖。
+  4. 平台变体 spec 的边满足语义未做差分；上游 `lockfile_spec.rb:2088` 未 fixture 化到 differential。
+  5. 真实 `bundle install` 命令级 e2e 未跑（仅 `run_cli(["install"])` 进程内驱动）。
+  6. spec 通过把 `HOME`/`USERPROFILE` 指向临时项目隔离下载缓存（`InstallPaths.downloader_cache_root` = `~/.bundle/cache`，产品本身仍是全局缓存，未改）。
