@@ -39,7 +39,11 @@ module Celerite
       getter requirements : Array(String)
       getter groups : Array(String)
       getter platforms : Array(String)
-      getter autorequire : String?
+      # Bundler always array-wraps `:require` when present
+      # (`Array(options["require"] || [])`, bundler/dependency.rb#autorequire
+      # in 2.2/2.7/4.0) and leaves it nil when absent; symbols serialize as
+      # JSON strings, `false`/empty become `[]`.
+      getter autorequire : Array(String) | Nil
       getter force_ruby_platform : Bool?
       getter gemspec_dev_dep : Bool
       getter source : EvaluatedSource?
