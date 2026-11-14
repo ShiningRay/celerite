@@ -41,11 +41,15 @@ module Celerite
   # -> PubGrub resolution -> lockfile generation (pinned contracts:
   # `Bundler::Definition` + `Bundler::Resolver`).
   class Resolution
-    # The compact-index `checksum` requirement is base64-encoded SHA-256 of
-    # the .gem bytes; lockfiles render `sha256=<hex>` (reference
-    # `Checksum::API_SHA256_HEX`).
+    # The compact-index `checksum` requirement may be raw hex (rubygems.org
+    # /info), raw base64 or `sha256=<hex>`; lockfiles render `sha256=<hex>`
+    # (reference `Checksum::API_SHA256_HEX`). Shared normalization lives in
+    # Celerite::Checksum; invalid input raises here so the failure names the
+    # value instead of writing a mangled checksum.
     def self.info_checksum_value(raw : String) : String
-      "sha256=#{Base64.decode(raw).hexstring}"
+      normalized = Celerite::Checksum.normalize_hex(raw)
+      raise ArgumentError.new("invalid compact-index checksum #{raw.inspect}") if normalized.nil?
+      "sha256=#{normalized}"
     end
 
     struct LockedSpec

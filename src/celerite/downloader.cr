@@ -126,18 +126,10 @@ module Celerite
       actual.downcase == expected.downcase
     end
 
-    # Compact index checksums are raw hex, raw base64 or `sha256=<...>`.
+    # Compact index checksums are raw hex, raw base64 or `sha256=<...>`;
+    # normalization is shared with the lockfile writer (Checksum.normalize_hex).
     private def normalize_checksum(raw : String) : String?
-      value = raw.lchop("sha256=").strip
-      return nil if value.empty?
-      if value.matches?(/\A[0-9a-f]{64}\z/i)
-        return value
-      end
-      if value.matches?(/\A[-0-9a-z_+\/]{43}={0,2}\z/i)
-        decoded = Base64.decode_string(value.tr("-_", "+/"))
-        return decoded.bytes.map { |b| b.to_s(16, precision: 2) }.join
-      end
-      nil
+      Celerite::Checksum.normalize_hex(raw)
     end
 
     private def download_to(name : String, version : String, platform : String?, path : String, allow_mirror : Bool = true) : Nil
