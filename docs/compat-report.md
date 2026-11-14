@@ -822,3 +822,46 @@ G2 对照（同条件前轮，`C:\temp\rspec-outputG2.txt`：64/53，seed 31121�
 make 新条件（lead m04964）：`make.exe` 实存于 `C:\Ruby40-x64\msys64\usr\bin` 但既往不在 PATH；本轮上游 64 例中 0 例达原生构建阶段（DNS/403 先失败），故 make 入 PATH 不改变本轮计数；A 类 differential 与 M7(9) Rails install 的 make 重跑在 N 子项单独记录。
 
 未验证/边界：本结果仅针对 `spec/lock/lockfile_spec.rb` 单文件；2.7.2 profile 因布局不兼容未重跑；install 成功例的端到端锁定内容以 env 桩为准。
+
+## 2026-11-14 N1：native-ext “缺 make”更正为 harness PATH 未配置 + PATH 归一化（本轮实测）
+
+**更正（追加，不删历史）**：此前记录把 native-ext 失败归因为“本机缺 make / racc 原生构建缺 make”。实测 `C:\Ruby40-x64\msys64\usr\bin\make.exe` 存在（GNU Make 4.4.1）、`gcc` 存在；真实原因是 harness PATH 未含 `C:\Ruby40-x64\msys64\usr\bin`，且独立 msys64 的 gcc（Rev6 16.2.0）与 Ruby 自带工具链的 gcc（Rev5 16.1.0）版本不一致，导致两侧各自编译的 `racc-1.8.1/lib/racc/cparse.so` 字节不同。归属：环境（PATH 排序 → 不同编译器 → 不同产物），非产品缺陷。
+
+### 根因（post-mortem，sandbox `C:\temp\tmp.6PaKvxdzRf`，`KEEP_DIFFERENTIAL=1`）
+- 参照侧 cparse.so：24576 B，sha256 `973701316BDA3124B57DC394CE86AB375DA4370A90C6E5E538AC42E868E9180F`；celerite 侧：20992 B，sha256 `DD4F105F24C2551CCF27330B0899A9A2DB3DD1DB205902AE7236A803AAE06244`（ materially different，非嵌入路径问题）。
+- `.comment` 段：参照 `GCC: (Rev5, Built by MSYS2 project) 16.1.0`（`C:\Ruby40-x64\msys64\ucrt64\bin\gcc.exe`），celerite `GCC: (Rev6, Built by MSYS2 project) 16.2.0`（`C:\msys64\ucrt64\bin\gcc.exe`）；objdump：MinorLinkerVersion 46 vs 47、SizeOfCode 0x3400 vs 0x2e00、SizeOfImage 0xe000 vs 0xc000。
+- 两侧 Makefile 路径归一后字节一致（`CC = gcc`，同 CFLAGS/ARCH_FLAG）；参照 `gem_make.out` 为 `make -j3`（Bundler jobs），celerite 为 `make`。
+- 修复验证：PATH 以 `C:\Ruby40-x64\msys64\ucrt64\bin` 前缀后，native-ext PASS（exit=0）；新 sandbox `C:\temp\tmp.L8atVS93vQ` 两侧 cparse.so 均 24576 B、sha256 `973701316BDA…`，identical=True。
+
+### 修复（`script/differential`，+24 行，未改产品代码）
+- 头部注释新增 N8 说明：native-ext 夹具需要 C 编译器在 PATH；make.exe 本已存在，此前“缺 make”为误判。
+- 新增 `CELERITE_DIFF_EXTRA_PATH` 支持；PATH 归一化循环在 `C:\Ruby40-x64\msys64\ucrt64\bin`、`C:\Ruby40-x64\msys64\usr\bin` 存在时前置，然后 `export PATH`。`bash -n script/differential` EXIT 0。
+
+### 本轮实测（A 类 7 例双 profile，树外 exe `C:\temp\runner\celerite.exe`，`CELERITE_BRIDGE_SERVER` 已设）
+- 4.0.24：`differential (4.0.24): 7 passed, 0 failed, 0 skipped (documented deferrals)` EXIT 0 —— native-ext / native-ext-target / add-group / add-optimistic / add-remove / add-version / cache-all-platforms 全 PASS。日志 `C:\temp\n-a1-4024.log`。
+- 2.7.2：`differential (2.7.2): 6 passed, 0 failed, 1 skipped (documented deferrals)` EXIT 0 —— add-group 为已登记 deferred skip。日志 `C:\temp\n-a1-272.log`。
+- 修复前对照：4.0.24 `6 passed, 1 failed, 0 skipped`（`C:\temp\n-a-4024.log`）、2.7.2 `5 passed, 1 failed, 1 skipped`（`C:\temp\n-a-272.log`），失败均为 native-ext `cparse.so content differs after normalization`。
+- 全量 4.0.24 differential（PATH 归一化后）：`135 passed, 0 failed, 1 skipped (documented deferrals)` EXIT 0（基线 133:126/7/0 → 失败 7→0；总数 +3 为新夹具，其中 git-submodules 为登记 skip）。诚实注记：该次全量输出流式未 tee 到文件，计数取自作业输出尾部；如需文件证据可重跑。
+
+### Rails e2e（cel13）尝试与归属（记录，非本轮验收项）
+- cel13（真实 HOME）：`Installing bigdecimal 4.1.3 with native extensions` → `extension build failed for bigdecimal-4.1.3: File exists @ dir_s_mkdir - C:\Users\ShiningRay\.bundle\ruby\4.0.0\extensions\x64-mingw-ucrt\4.0.0\bigdecimal-4.1.3`（EEXIST；早前 cel4 残留目录未清理）。归属：环境残留 + 安装目录创建幂等性缺陷 → 转 N3 缺陷 1 处理。
+- cel13b（隔离 GEM_HOME）：`Could not find 'bundler' (= 4.0.24) - did find: [bundler-4.0.16]`（我方 setup 错误：隔离 GEM_HOME 缺 reference bundler，非产品）。
+- cel13c（隔离 HOME+BUNDLE_PATH）：`Fetching gem metadata from https://rubygems.org/.` → `celerite internal error: WSARecv timed out`（网络/TLS 抖动；bundle 目录仅 bundler.lock）。归属：环境。
+- 结论：Rails install 端到端未验证（环境阻塞），复现命令见下。
+
+### 未验证 / 边界
+- N9 二进制产物归一化（.so 等不比字节、比存在性+非空+可加载）在 N2 单独提交；本节只固化 PATH 归一化。
+- M7(9) install 端到端仍未验证（make/编译已通，bigdecimal EEXIST + TLS 抖动阻塞）。
+- 全量 135/0/1 的文件日志缺失（流式输出），计数来自作业输出尾部。
+
+### 复现命令
+```
+# A 类双 profile（树外 exe）
+CELERITE_BIN="C:/temp/runner/celerite.exe" TMPDIR="C:\temp" CELERITE_BRIDGE_SERVER="C:/Users/ShiningRay/projects/ShiningRay/celerite/assets/bridge/server.rb" bash script/differential native-ext native-ext-target add-group add-optimistic add-remove add-version cache-all-platforms
+BUNDLER_REF_VERSION=2.7.2 CELERITE_BIN="C:/temp/runner/celerite.exe" TMPDIR="C:\temp" CELERITE_BRIDGE_SERVER="C:/Users/ShiningRay/projects/ShiningRay/celerite/assets/bridge/server.rb" bash script/differential native-ext native-ext-target add-group add-optimistic add-remove add-version cache-all-platforms
+# 全量 4.0.24
+CELERITE_BIN="C:/temp/runner/celerite.exe" TMPDIR="C:\temp" CELERITE_BRIDGE_SERVER="C:/Users/ShiningRay/projects/ShiningRay/celerite/assets/bridge/server.rb" bash script/differential
+# Rails e2e（环境阻塞，复现用）
+Copy-Item -Recurse C:\temp\rails-min C:\temp\rails-min-cel13; Remove-Item C:\temp\rails-min-cel13\Gemfile.lock -ErrorAction SilentlyContinue
+CELERITE_BIN="C:/temp/runner/celerite.exe" TMPDIR="C:\temp" CELERITE_BRIDGE_SERVER="C:/Users/ShiningRay/projects/ShiningRay/celerite/assets/bridge/server.rb" & C:\temp\runner\celerite.exe install
+```

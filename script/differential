@@ -21,6 +21,15 @@
 #   N5 `## Environment` body (until `## Bundle Doctor`) dropped
 #   N6 Ruby backtrace `   from ...` frames dropped
 #   N7 runs of consecutive `Fetching ` lines sorted (parallel download order)
+#   N8 native-extension fixtures require a C compiler on PATH (Ruby-bundled
+#      gcc at C:\Ruby40-x64\msys64\ucrt64\bin on this host); the harness
+#      prepends the Ruby-bundled toolchain dir so reference and celerite
+#      builds use the same compiler revision.  Set CELERITE_DIFF_EXTRA_PATH
+#      to prepend additional directories to PATH for both sides.
+# Note (2026-11-14 N): earlier "make not found" failures for class A
+#   (racc/make) fixtures were an ENVIRONMENT issue, not a missing tool:
+#   make.exe exists at C:\Ruby40-x64\msys64\usr\bin\make.exe (GNU 4.4.1)
+#   but was not on PATH.  The PATH normalization below resolves this.
 # Exit codes, all other line ordering, trees and file contents must match.
 set -uo pipefail
 
@@ -35,6 +44,21 @@ celerite_bin_default="$repo_root/bin/celerite"
 celerite_bin="${CELERITE_BIN:-$celerite_bin_default}"
 fixtures_root="$repo_root/fixtures/differential"
 selected=("$@")
+
+# Normalize PATH so reference Bundler and celerite use the same C compiler
+# revision for native-extension builds.  On Windows the Ruby-bundled toolchain
+# (C:\Ruby40-x64\msys64\ucrt64\bin) must precede the standalone MSYS2
+# toolchain (C:\msys64\ucrt64\bin) which ships a different GCC revision.
+# CELERITE_DIFF_EXTRA_PATH (colon-separated) is prepended first, allowing
+# callers to inject additional tool directories.
+if [ -n "${CELERITE_DIFF_EXTRA_PATH:-}" ]; then
+  PATH="$CELERITE_DIFF_EXTRA_PATH:$PATH"
+fi
+# Prefer Ruby-bundled toolchain when present (same revision as reference).
+for _d in /c/Ruby40-x64/msys64/ucrt64/bin /c/Ruby40-x64/msys64/usr/bin; do
+  [ -d "$_d" ] && PATH="$_d:$PATH"
+done
+export PATH
 
 if [ -n "${CELERITE_BIN:-}" ]; then
   if [ ! -f "$celerite_bin" ]; then
