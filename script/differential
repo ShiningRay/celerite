@@ -63,6 +63,8 @@ if [ -n "${CELERITE_DIFF_EXTRA_PATH:-}" ]; then
   PATH="$CELERITE_DIFF_EXTRA_PATH:$PATH"
 fi
 # Prefer Ruby-bundled toolchain when present (same revision as reference).
+# The usr/bin directory supplies msys `make`/`sed`; it is required for native
+# extension builds even though its Cygwin shared-memory namespace is distinct.
 for _d in /c/Ruby40-x64/msys64/ucrt64/bin /c/Ruby40-x64/msys64/usr/bin; do
   [ -d "$_d" ] && PATH="$_d:$PATH"
 done
@@ -142,21 +144,43 @@ run_fixture() {
   command_line="$(cat "$fixture_dir/command")"
 
   local work
-  work="$(mktemp -d)"
-  local ref_sandbox="$work/reference"
-  local cel_sandbox="$work/celerite"
+  # Sandboxes default to the repository checkout because on Windows hosts with a
+  # workspace-write file policy the celerite binary may only write under the
+  # workspace.  The Ruby-bundled MSYS2 toolchain prepended to PATH also has a
+  # different `/tmp` mount than the caller's Git-bash, so relying on `/tmp`
+  # mixes directories (mkdir lands in one root, redirections in another).
+  # CELERITE_DIFF_WORK_ROOT still overrides the location.
+  # The sandbox path must stay short enough that absolute paths in bundled
+  # output are not column-wrapped: a wrapped path cannot be replaced by the
+  # {SANDBOX} normalisation and shows up as a false difference. The repo lives
+  # inside the workspace because celerite can only write inside it here.
+  local work_root="${CELERITE_DIFF_WORK_ROOT:-$repo_root/.d}"
+  mkdir -p "$work_root"
+  work="$(mktemp -d "$work_root/XXXXXX")"
+  # Both sandbox directory names must have the same length: reference output
+  # wraps long paths at a fixed column, so a one-character difference would
+  # move the wrap point and make normalization compare different fragments.
+  local ref_sandbox="$work/ref"
+  local cel_sandbox="$work/cel"
   mkdir -p "$ref_sandbox/project" "$ref_sandbox/home" "$ref_sandbox/gems" "$ref_sandbox/bundle"
   mkdir -p "$cel_sandbox/project" "$cel_sandbox/home" "$cel_sandbox/gems" "$cel_sandbox/bundle"
+  # Isolated temp root: MSYS2 `make` creates its shared-memory backing files
+  # under TMP; when celerite runs under a workspace-write file policy, a TMP
+  # outside the workspace is denied (NtCreateDirectoryObject 0xC0000022) and
+  # native extension builds fail. Both sides therefore share this sandbox tmp.
+  mkdir -p "$work/tmp"
+  work_tmp_win="$(cygpath -w "$work/tmp" 2>/dev/null || echo "$work/tmp")"
 
   # Ruby (native Windows) needs a Windows path for file:// sources
   index_dir="$(cygpath -m "$repo_root/fixtures/gem-index" 2>/dev/null || echo "$repo_root/fixtures/gem-index")"
   scoped_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-scoped" 2>/dev/null || echo "$repo_root/fixtures/gem-index-scoped")"
+  locked_deps_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-locked-deps" 2>/dev/null || echo "$repo_root/fixtures/gem-index-locked-deps")"
   index_url="file://$index_dir"
   for side in ref cel; do
     sandbox="$ref_sandbox"; [ "$side" = "cel" ] && sandbox="$cel_sandbox"
     for f in Gemfile Gemfile.lock; do
       [ -f "$fixture_dir/$f" ] || continue
-      sed -e "s|@INDEX_DIR@|$index_dir|" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|" -e "s|@BUNDLER_VERSION@|$bundler_version|"         "$fixture_dir/$f" > "$sandbox/project/$f"
+      sed -e "s|@INDEX_DIR@|$index_dir|" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|" -e "s|@BUNDLER_VERSION@|$bundler_version|"         "$fixture_dir/$f" > "$sandbox/project/$f"
     done
   done
   # extra files, if any (including dotfiles such as .bundle/config: `*` glob
@@ -168,7 +192,7 @@ run_fixture() {
     for side in ref cel; do
       sandbox="$ref_sandbox"; [ "$side" = "cel" ] && sandbox="$cel_sandbox"
       while IFS= read -r ef; do
-        sed -i -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g" "$ef"
+        sed -i -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g" "$ef"
       done < <(find "$sandbox/project" -type f \( -name "*.rb" -o -name "*.txt" \) 2>/dev/null)
     done
   fi
@@ -208,6 +232,7 @@ run_fixture() {
     HOME="$ref_sandbox/home" USERPROFILE="$ref_sandbox/home"
     GEM_HOME="$ref_sandbox/gems" GEM_PATH="$ref_sandbox/gems"
     BUNDLE_PATH="$ref_sandbox/bundle" RUBYOPT=""
+    TMP="$work_tmp_win" TEMP="$work_tmp_win" TMPDIR="$work/tmp"
   )
 
   # HTTP-index fixtures (http-index marker): serve fixtures/gem-index as a
@@ -215,43 +240,95 @@ run_fixture() {
   # semantics that file:// marshal indexes never exercise.
   http_server_pid=""
   if [ -f "$fixture_dir/http-index" ]; then
+    # Refuse to reuse a foreign listener: a stale server from an earlier run
+    # would silently serve the wrong index and mask harness regressions.
+    if curl -sf -o /dev/null --max-time 1 "http://127.0.0.1:8765/versions" 2>/dev/null; then
+      echo "SKIP $(basename "$fixture_dir") (http-index port 127.0.0.1:8765 already in use; refusing to reuse a foreign server)" >&2
+      skipped=$((skipped + 1))
+      return 0
+    fi
     node "$repo_root/script/http_index_server.js" "$repo_root/fixtures/gem-index" 8765 >/dev/null 2>&1 &
     http_server_pid=$!
+    # Bounded readiness wait (~10s, 100ms poll). Without this the first command
+    # races the server's listen() and fails with ECONNREFUSED.
+    http_ready=0
+    for _ in $(seq 1 100); do
+      if curl -sf -o /dev/null --max-time 1 "http://127.0.0.1:8765/versions" 2>/dev/null; then
+        http_ready=1
+        break
+      fi
+      sleep 0.1
+    done
+    if [ "$http_ready" -ne 1 ]; then
+      echo "SKIP $(basename "$fixture_dir") (http-index server did not answer http://127.0.0.1:8765/versions within 10s)" >&2
+      kill "$http_server_pid" 2>/dev/null || true
+      wait "$http_server_pid" 2>/dev/null || true
+      http_server_pid=""
+      skipped=$((skipped + 1))
+      return 0
+    fi
   fi
 
   # Reference run(s): one per command line (multi-line command files run the
   # commands in sequence), outputs concatenated, last exit code kept. Loops
   # use dedicated fds so the sandboxed commands cannot eat the command list.
-  : > "$work/ref.out"; : > "$work/ref.err"; ref_code=0
+  #
+  # Each command writes its own file and the files are concatenated afterwards.
+  # Re-opening a shared `ref.out` with `>>` in this MSYS bash hands the child an
+  # fd that starts at offset 0, so the second command overwrote the beginning of
+  # the first command's output (seen as truncated/duplicated lines in
+  # `install-check`/`cache`). Per-command files make the capture append-only.
+  : > "$work/ref.out"; : > "$work/ref.err"; ref_code=0; ref_n=0
   while IFS= read -r cmd <&3; do
     [ -z "$cmd" ] && continue
-    cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+    cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+    ref_n=$((ref_n + 1))
     (
       cd "$ref_sandbox/project" || exit 99
       env "${isolated_env[@]}" ruby "$bundler_exe" $cmd
-    ) >> "$work/ref.out" 2>> "$work/ref.err"
+    ) > "$work/ref.part.$ref_n.out" 2> "$work/ref.part.$ref_n.err"
     ref_code=$?
   done 3< "$fixture_dir/command"
+  ref_parts=(); ref_err_parts=()
+  for i in $(seq 1 "$ref_n"); do
+    ref_parts+=("$work/ref.part.$i.out")
+    ref_err_parts+=("$work/ref.part.$i.err")
+  done
+  # Single `cat` with one open of the destination: opening the same file for
+  # append twice in this MSYS bash resets the write offset to 0, which truncated
+  # the concatenation again. `cat a b > out` opens `out` exactly once.
+  cat "${ref_parts[@]}" > "$work/ref.out"
+  cat "${ref_err_parts[@]}" > "$work/ref.err"
 
-  # Celerite run(s)
-  : > "$work/cel.out"; : > "$work/cel.err"; cel_code=0
+  # Celerite run(s) — same per-command capture.
+  : > "$work/cel.out"; : > "$work/cel.err"; cel_code=0; cel_n=0
   while IFS= read -r cmd <&4; do
     [ -z "$cmd" ] && continue
-    cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+    cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+    cel_n=$((cel_n + 1))
     (
       cd "$cel_sandbox/project" || exit 99
       env HOME="$cel_sandbox/home" USERPROFILE="$cel_sandbox/home" \
         GEM_HOME="$cel_sandbox/gems" GEM_PATH="$cel_sandbox/gems" \
         BUNDLE_PATH="$cel_sandbox/bundle" RUBYOPT="" \
+        TMP="$work_tmp_win" TEMP="$work_tmp_win" TMPDIR="$work/tmp" \
         CELERITE_REFERENCE_BUNDLER_LIB="$bundler_lib" \
         CELERITE_PROFILE_BUNDLER_VERSION="$bundler_version" \
         "$celerite_bin" $cmd
-    ) >> "$work/cel.out" 2>> "$work/cel.err"
+    ) > "$work/cel.part.$cel_n.out" 2> "$work/cel.part.$cel_n.err"
     cel_code=$?
   done 4< "$fixture_dir/command"
+  cel_parts=(); cel_err_parts=()
+  for i in $(seq 1 "$cel_n"); do
+    cel_parts+=("$work/cel.part.$i.out")
+    cel_err_parts+=("$work/cel.part.$i.err")
+  done
+  cat "${cel_parts[@]}" > "$work/cel.out"
+  cat "${cel_err_parts[@]}" > "$work/cel.err"
 
   if [ -n "$http_server_pid" ]; then
     kill "$http_server_pid" 2>/dev/null || true
+    wait "$http_server_pid" 2>/dev/null || true
   fi
 
   normalize "$ref_sandbox" "$cel_sandbox" < "$work/ref.out" > "$work/ref.out.n"
@@ -313,7 +390,7 @@ run_fixture() {
   if [ -f "$fixture_dir/file-contains" ]; then
     while IFS=$'\t' read -r rel needle; do
       [ -z "$rel" ] && continue
-      needle="$(printf '%s' "$needle" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+      needle="$(printf '%s' "$needle" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
       if ! grep -Fq -- "$needle" "$ref_sandbox/project/$rel" 2>/dev/null || \
          ! grep -Fq -- "$needle" "$cel_sandbox/project/$rel" 2>/dev/null; then
         ok=0; detail+="  file-contains differs ($rel): needle=$needle"$'\n'

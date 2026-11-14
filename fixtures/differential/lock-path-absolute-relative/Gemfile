@@ -1,0 +1,5 @@
+source "file:///@INDEX_DIR@"
+
+path File.expand_path("foo", __dir__) do
+  gem "foo"
+end

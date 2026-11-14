@@ -64,3 +64,46 @@ ruby/*/bin
   not detected; the checksum verification in the installer covers those.
 - N5/N7 are the only reductions that could hide a real ordering/content bug;
   they are reviewed whenever a fixture's expected output changes shape.
+
+## 2026-11-15 harness fixes
+
+- `installed tree` content comparison normalizes through temp files inside each
+  sandbox and then runs `cmp`. The Ruby-bundled msys `diff` on this host does
+  not support bash process substitution (`/dev/fd/63: No such file or
+  directory`), which previously misreported the CRLF `thor.bat` as different.
+- CRLF vs LF inside `.bat` binstubs is tolerated by N2 on both sides; the
+  product is not changed (the reference writes CRLF).
+- Sandbox roots are `$work/ref` and `$work/cel` (equal length), so
+  column-wrapped output breaks at the same point after `{SANDBOX}`
+  substitution.
+- The default work root is `$repo_root/.d` (override with
+  `CELERITE_DIFF_WORK_ROOT`), because celerite can only write inside the
+  workspace on this host; `TMP`/`TEMP`/`TMPDIR` point into the sandbox.
+- HTTP-index fixtures (`http-index` marker) wait for the server before the
+  first command: the harness probes `http://127.0.0.1:8765/versions` every
+  100ms for up to 10s, skips the fixture with an explicit message if the port
+  is already served by a foreign process or the server never becomes ready,
+  and `kill`s plus `wait`s the child afterwards. Without the wait the first
+  command raced `listen()` and failed with `ECONNREFUSED`, which surfaced as
+  spurious `cooldown*`, `outdated-cooldown-*` and `plugin-source` failures.
+  These fixtures need `node` on the bash `PATH`; when it is absent they SKIP
+  explicitly (never pass) — add
+  `CELERITE_DIFF_EXTRA_PATH="/c/Program Files/nodejs"`. The 121/15/2 baseline
+  assumes node is available; without it the same run is 115/15/8 (the six
+  http-index fixtures move to SKIP, the same 15 failures remain).
+- Native extension builds still fail for celerite descendants here
+  (`NtCreateDirectoryObject ... 0xC0000022` from msys `make`), so fixtures that
+  build gems are classified as environment failures, not harness or product
+  failures.
+- Each command of a multi-command fixture writes its own `ref.part.$n.out` /
+  `.err` (and `cel.part.$n.*`); the per-side files are combined once with
+  `cat "${parts[@]}" > "$work/ref.out"`. On this host a second `>>` reopen of
+  the same file resets the write offset, so the next command overwrote the
+  previous command's output from byte 0. That artifact produced spurious
+  one-character wrap shifts after whitespace normalization; it was *not* a
+  product `word_wrap` defect and no product code was changed for it.
+- Fixtures that pass a relative git path (`--git=./gitgem`) differ from the
+  reference because the reference `chdir`s into its cache directory and then
+  clones the still-relative path (`fatal: repository './gitgem' does not
+  exist`), while celerite resolves it against the project directory. This is a
+  fixture/host difference, not a harness normalization rule.

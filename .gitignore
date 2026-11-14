@@ -7,3 +7,5 @@
 dist/
 .upstream-specs/
 pkg/
+.difftmp/
+.d/

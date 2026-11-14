@@ -138,12 +138,21 @@ compare_installed_tree() {
             continue
             ;;
         esac
-        if ! diff -q \
-              <(normalize "$ref_sandbox" "$cel_sandbox" < "$ref_file") \
-              <(normalize "$ref_sandbox" "$cel_sandbox" < "$cel_file") >/dev/null 2>&1; then
+        # Materialize the normalized sides into files before comparing: the
+        # Ruby-bundled MSYS2 `diff` cannot read bash process substitution
+        # (/dev/fd/N is not available there), which used to report a spurious
+        # "content differs" for CRLF/LF binstubs such as thor.bat.
+        local ref_norm cel_norm
+        ref_norm="$ref_sandbox/.celerite-norm-ref.$$"
+        cel_norm="$cel_sandbox/.celerite-norm-cel.$$"
+        normalize "$ref_sandbox" "$cel_sandbox" < "$ref_file" > "$ref_norm"
+        normalize "$ref_sandbox" "$cel_sandbox" < "$cel_file" > "$cel_norm"
+        if ! cmp -s "$ref_norm" "$cel_norm"; then
+          rm -f "$ref_norm" "$cel_norm"
           problems+="  $rel/$rel_file content differs after normalization"$'\n'
           continue
         fi
+        rm -f "$ref_norm" "$cel_norm"
         # Executable bit (POSIX only).
         if [ "$(uname -s)" != "MINGW"* ] && [ "$(uname -s)" != "MSYS"* ]; then
           local ref_exec cel_exec
