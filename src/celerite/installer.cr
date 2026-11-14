@@ -11,16 +11,17 @@ module Celerite
   # (pinned observation from the reference oracle). Writes happen into
   # per-gem temp directories and are renamed into place atomically.
   class Installer
-    getter install_path : String
+    getter install_root : String
     getter ruby_abi : String
     getter downloader : Downloader
     property config : Config?
     property target_rbconfig : String?
 
-    def initialize(@install_path : String, @ruby_abi : String, @bridge : Bridge::Client,
+    # `install_root` is the gem root: `<base>/ruby/<abi>`, or `Gem.dir` itself
+    # for `path.system` (see InstallPaths.gem_root).
+    def initialize(@install_root : String, @ruby_abi : String, @bridge : Bridge::Client,
                    @downloader : Downloader, progress : IO)
       @progress = progress
-      @install_root = File.join(install_path, "ruby", ruby_abi)
     end
 
     # Extension directory layout: <install_root>/extensions/<platform>/<abi>/<full_name>

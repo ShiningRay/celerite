@@ -119,8 +119,9 @@ module Celerite
 
         install_path = InstallPaths.install_path(config)
         abi = InstallPaths.ruby_abi(bridge)
+        gem_root = InstallPaths.gem_root(config, bridge.ruby_environment.default_gem_dir, abi)
         downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, resolution.primary_remote), ssl_option(config, "ssl_ca_cert"), ssl_option(config, "ssl_client_cert"), ssl_option(config, "ssl_verify_mode"), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config))
-        installer = Installer.new(install_path, abi, bridge, downloader, stdout)
+        installer = Installer.new(gem_root, abi, bridge, downloader, stdout)
         installer.config = config
 
         specs = resolution.resolve!
@@ -374,7 +375,7 @@ module Celerite
       bridge = Bridge::Client.new
       begin
         abi = InstallPaths.ruby_abi(bridge)
-        install_root = File.join(InstallPaths.install_path(definition.config), "ruby", abi)
+        install_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi)
         used = Set(String).new
         definition.lockfile!.specs.each { |s| used << s.full_name }
         gems_dir = File.join(install_root, "gems")
@@ -576,9 +577,19 @@ module Celerite
         end
       end
 
+      # `path.system` puts gems directly in `Gem.dir` (`<Gem.dir>/gems`), with no
+      # `ruby/<abi>` scope. Discover them explicitly instead of relying on the
+      # fallback search below (which used to make this order-dependent).
+      if (source.nil? || source.type == "GEM") && InstallPaths.system_gems?(definition.config)
+        if system_dir = system_gem_search_dirs.first?
+          gem_dir = File.join(system_dir, "gems", spec.full_name)
+          return gem_dir if Dir.exists?(gem_dir)
+        end
+      end
+
       # Default: RubyGems-installed spec under bundle install path.
       install_path = InstallPaths.install_path(definition.config)
-      ruby_root = File.join(install_path, "ruby")
+      ruby_root = File.join(InstallPaths.install_path(definition.config), "ruby")
       if Dir.exists?(ruby_root)
         Dir.each_child(ruby_root) do |abi|
           gem_dir = File.join(ruby_root, abi, "gems", spec.full_name)
@@ -603,13 +614,19 @@ module Celerite
     end
 
     @@system_gem_search_dirs : Array(String)? = nil
+    @@system_gem_search_signature : String? = nil
 
     # Cached system gem base directories (GEM_PATH/default/user gem dirs) used
     # as a fallback when resolving installed RubyGems specs for read-only commands.
+    # The cache is keyed by the environment that feeds it (GEM_HOME/GEM_PATH and
+    # the home dir used by user_gem_dir), so a process that changes those env
+    # vars inside one run (specs, `--deployment` toggles) recomputes instead of
+    # reusing directories derived from a different environment.
     # Requires the bridge for ruby_environment; returns empty when unavailable.
     def self.system_gem_search_dirs : Array(String)
+      signature = system_gem_environment_signature
       if dirs = @@system_gem_search_dirs
-        return dirs
+        return dirs if @@system_gem_search_signature == signature
       end
       dirs = [] of String
       begin
@@ -637,18 +654,34 @@ module Celerite
       end
       dirs = dirs.uniq
       @@system_gem_search_dirs = dirs
+      @@system_gem_search_signature = signature
       dirs
     end
 
+    private def self.system_gem_environment_signature : String
+      [ENV["GEM_HOME"]?, ENV["GEM_PATH"]?, ENV["HOME"]?, ENV["USERPROFILE"]?].join('\u0000')
+    end
+
     private def self.installed_git_checkout(definition : Definition, name : String, remote : String, revision : String) : String?
-      install_path = InstallPaths.install_path(definition.config)
-      ruby_root = File.join(install_path, "ruby")
-      return nil unless Dir.exists?(ruby_root)
+      roots = [] of String
+      if InstallPaths.system_gems?(definition.config)
+        # `path.system`: git checkouts live in `<Gem.dir>/bundler/gems`, i.e. the
+        # base itself, without the `ruby/<abi>` scope.
+        if system_dir = system_gem_search_dirs.first?
+          roots << system_dir
+        end
+      else
+        ruby_root = File.join(InstallPaths.install_path(definition.config), "ruby")
+        return nil unless Dir.exists?(ruby_root)
+        Dir.each_child(ruby_root) do |abi|
+          roots << File.join(ruby_root, abi)
+        end
+      end
 
       base = GitSource.base_name(remote)
       short = revision.empty? ? nil : revision[0, 12]
-      Dir.each_child(ruby_root) do |abi|
-        checkout_root = File.join(ruby_root, abi, "bundler", "gems")
+      roots.each do |root|
+        checkout_root = File.join(root, "bundler", "gems")
         next unless Dir.exists?(checkout_root)
         if short
           dir = File.join(checkout_root, "#{base}-#{short}")
@@ -670,7 +703,7 @@ module Celerite
       bridge = Bridge::Client.new
       begin
         abi = InstallPaths.ruby_abi(bridge)
-        install_root = File.join(InstallPaths.install_path(definition.config), "ruby", abi)
+        install_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi)
         definition.lockfile!.specs.each do |spec|
           next if spec.name == "bundler"
           license = spec_license(bridge, install_root, spec)
@@ -763,7 +796,7 @@ module Celerite
       return source_funding if source_funding
 
       install_path = InstallPaths.install_path(definition.config)
-      ruby_root = File.join(install_path, "ruby")
+      ruby_root = File.join(InstallPaths.install_path(definition.config), "ruby")
       return nil unless Dir.exists?(ruby_root)
 
       Dir.each_child(ruby_root) do |abi|
@@ -813,7 +846,7 @@ module Celerite
       bridge = Bridge::Client.new
       begin
         abi = InstallPaths.ruby_abi(bridge)
-        install_root = File.join(InstallPaths.install_path(definition.config), "ruby", abi)
+        install_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi)
         spec = definition.lockfile!.specs.find(&.name.==(name))
         unless spec
           stderr.puts "Could not find '#{name}' in the bundle."
@@ -998,10 +1031,10 @@ module Celerite
         host_root = old_env ? Dir.current : Dir.current
         plugin_root = File.join(host_root, ".bundle", "plugin")
         Dir.mkdir_p(plugin_root)
-        install_path = InstallPaths.install_path(definition.config)
         abi = InstallPaths.ruby_abi(bridge)
+        gem_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi)
         downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(definition.config), Celerite::Mirror.resolve(definition.config, resolution.primary_remote), ssl_option(definition.config, "ssl_ca_cert"), ssl_option(definition.config, "ssl_client_cert"), ssl_option(definition.config, "ssl_verify_mode"), definition.config.credentials_for(resolution.primary_remote), timeout: Commands.timeout_seconds(definition.config), proxy: Celerite::Proxy.resolve(definition.config))
-        installer = Installer.new(install_path, abi, bridge, downloader, stdout)
+        installer = Installer.new(gem_root, abi, bridge, downloader, stdout)
         installer.config = definition.config
         stdin_specs.each do |spec|
           next unless names.includes?(spec.name)
@@ -1009,12 +1042,12 @@ module Celerite
           # is cloned/checked out by `ensure_source_dir`); gems stay in the
           # bundler/gems checkout directory, like regular git gems.
           plugin_dir = if git_remote
-                         Dir.glob(File.join(install_path, "ruby", abi, "bundler", "gems", "#{GitSource.base_name(git_remote)}-*")).first?
+                         Dir.glob(File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "bundler", "gems", "#{GitSource.base_name(git_remote)}-*")).first?
                        else
                          stdout.puts "Fetching #{spec.name} #{spec.version}"
                          stdout.puts "Installing #{spec.name} #{spec.version}"
                          installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum)
-                         File.join(install_path, "ruby", abi, "gems", spec.full_name)
+                         File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "gems", spec.full_name)
                        end
           if git_remote
             Dir.mkdir_p(File.join(plugin_root, "bundler", "gems"))
@@ -1025,7 +1058,7 @@ module Celerite
               dst = File.join(plugin_root, "bundler", "gems", File.basename(plugin_dir.to_s))
               Process.run("cp", ["-r", plugin_dir.to_s, dst], output: :inherit, error: :inherit)
             end
-            cache_root = File.join(install_path, "ruby", abi, "cache", "bundler", "git")
+            cache_root = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "cache", "bundler", "git")
             Dir.glob(File.join(cache_root, "*")).each do |dir|
               next unless Dir.exists?(dir) && Dir.exists?(File.join(dir, "HEAD"))
               dst = File.join(plugin_root, "cache", "bundler", "git", File.basename(dir))
@@ -1037,18 +1070,18 @@ module Celerite
             # Materialize the installed plugin gem into the plugin tree
             # (Bundler::Plugin::Installer parity: gems/, specifications/,
             # cache/ plus empty extensions/doc/build_info/plugins dirs).
-            installed_gem_dir = File.join(install_path, "ruby", abi, "gems", spec.full_name)
+            installed_gem_dir = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "gems", spec.full_name)
             if Dir.exists?(installed_gem_dir)
               dst = File.join(plugin_root, "gems", spec.full_name)
               Dir.mkdir_p(File.dirname(dst))
               Process.run("cp", ["-r", installed_gem_dir, dst], output: :inherit, error: :inherit)
             end
-            cached_gem = File.join(install_path, "ruby", abi, "cache", "#{spec.full_name}.gem")
+            cached_gem = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "cache", "#{spec.full_name}.gem")
             if File.file?(cached_gem)
               Dir.mkdir_p(File.join(plugin_root, "cache"))
               FileUtils.cp(cached_gem, File.join(plugin_root, "cache", "#{spec.full_name}.gem"))
             end
-            installed_spec = File.join(install_path, "ruby", abi, "specifications", "#{spec.full_name}.gemspec")
+            installed_spec = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "specifications", "#{spec.full_name}.gemspec")
             if File.file?(installed_spec)
               Dir.mkdir_p(File.join(plugin_root, "specifications"))
               FileUtils.cp(installed_spec, File.join(plugin_root, "specifications", "#{spec.full_name}.gemspec"))
@@ -1070,9 +1103,9 @@ module Celerite
           load_paths = index["load_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any
           plugin_paths = index["plugin_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any
           gem_dir = if git_remote
-                      File.join(install_path, "ruby", abi, "bundler", "gems", "#{GitSource.base_name(git_remote)}-#{spec.version}").gsub(/\\/, "/")
+                      File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "bundler", "gems", "#{GitSource.base_name(git_remote)}-#{spec.version}").gsub(/\\/, "/")
                     else
-                      File.join(install_path, "ruby", abi, "gems", spec.full_name).gsub(/\\/, "/")
+                      File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "gems", spec.full_name).gsub(/\\/, "/")
                     end
           lib_dir = File.join(gem_dir, "lib").gsub(/\\/, "/")
           yaml = String.build do |y|
@@ -1177,12 +1210,12 @@ module Celerite
       bridge = Bridge::Client.new
       begin
         resolution = Resolution.new(definition, false, bridge)
-        install_path = InstallPaths.install_path(definition.config)
         abi = InstallPaths.ruby_abi(bridge)
+        gem_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi)
         downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(definition.config), Celerite::Mirror.resolve(definition.config, resolution.primary_remote), ssl_option(definition.config, "ssl_ca_cert"), ssl_option(definition.config, "ssl_client_cert"), ssl_option(definition.config, "ssl_verify_mode"), definition.config.credentials_for(resolution.primary_remote), timeout: Commands.timeout_seconds(definition.config), proxy: Celerite::Proxy.resolve(definition.config))
-        installer = Installer.new(install_path, abi, bridge, downloader, stdout)
+        installer = Installer.new(gem_root, abi, bridge, downloader, stdout)
         installer.config = definition.config
-        install_root = File.join(install_path, "ruby", abi)
+        install_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi)
         cache_dir = File.join(install_root, "cache")
         gems_root = File.join(install_root, "gems")
 
@@ -1219,7 +1252,7 @@ module Celerite
               next
             end
             if source = resolution.non_gem_sources[spec.name]?
-              bundle_root = File.join(install_path, "ruby", abi)
+              bundle_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi)
               checkout_root = File.join(bundle_root, "bundler", "gems")
               FileUtils.rm_rf(Dir.glob(File.join(checkout_root, "#{GitSource.base_name(source.remote)}-*")).first? || "")
               ext_dir = File.join(install_root, "extensions", Gem::Platform.local.to_s, abi, spec.full_name)
@@ -1446,7 +1479,7 @@ module Celerite
           end
           if verbose
             abi = InstallPaths.ruby_abi(bridge)
-            path = File.join(InstallPaths.install_path(definition.config), "ruby", abi, "specifications", "#{spec.name}-#{latest}.gemspec")
+            path = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "specifications", "#{spec.name}-#{latest}.gemspec")
             row << (File.file?(path) ? path.gsub(/\\/, "/") : "")
           end
           rows << row
@@ -1510,7 +1543,7 @@ module Celerite
 
     private def self.local_cached_versions(definition : Definition, bridge : Bridge::Client, resolution : Resolution) : Hash(String, Array(Gem::Version))
       abi = InstallPaths.ruby_abi(bridge)
-      cache_dir = File.join(InstallPaths.install_path(definition.config), "ruby", abi, "cache")
+      cache_dir = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "cache")
       versions = {} of String => Array(Gem::Version)
       return versions unless Dir.exists?(cache_dir)
 
@@ -1657,7 +1690,7 @@ module Celerite
                      re.default_gem_dir.gsub(/\\/, "/")
                    else
                      abi = InstallPaths.ruby_abi(bridge)
-                     File.join(InstallPaths.install_path(config), "ruby", abi).gsub(/\\/, "/")
+                     File.join(InstallPaths.gem_root(config, bridge.ruby_environment.default_gem_dir, abi)).gsub(/\\/, "/")
                    end
         stdout.puts "  Gem Home    #{gem_home}"
         stdout.puts "  Gem Path    #{gem_home}"

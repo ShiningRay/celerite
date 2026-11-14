@@ -11,15 +11,49 @@ require "./git_source"
 
 module Celerite
   # Install path helpers shared by Resolution and the CLI commands.
+  #
+  # Mirrors `Bundler::Settings::Path` (settings.rb L238-297): an explicit
+  # `path` wins; `path.system` selects the RubyGems install dir (`Gem.dir`);
+  # otherwise the product default `<home>/.bundle` is used. The ruby scope
+  # (`ruby/<abi>`) is appended only when system gems are **not** in use.
   module InstallPaths
-    def self.install_path(config : Config) : String
+    # Base directory (without the ruby scope). Kept as the compatibility entry
+    # used by process locks and other non-gem-root call sites.
+    def self.install_path(config : Config, system_gem_dir : String = "") : String
+      base_path(config, system_gem_dir)
+    end
+
+    # `Path#use_system_gems?` (settings.rb L246-253): an explicit `path`
+    # disables system gems, so both keys can never be "active" together (the
+    # reference validator clears the earlier one at settings/validator.rb
+    # L57-63).
+    def self.system_gems?(config : Config) : Bool
+      config["path"].to_s.empty? && config["path.system"] == true
+    end
+
+    # `Path#base_path` (settings.rb L255-260).
+    def self.base_path(config : Config, system_gem_dir : String) : String
       configured = config["path"].to_s
-      if configured.empty? && config["path.system"] == true
-        # path.system: install into the system gem location (user gem dir)
-        return File.expand_path(Config.user_home || ".")
+      return File.expand_path(configured) unless configured.empty?
+      if system_gems?(config) && !system_gem_dir.empty?
+        return File.expand_path(system_gem_dir)
       end
-      base = configured.empty? ? File.join(Config.user_home || ".", ".bundle") : configured
-      File.expand_path(base)
+      File.expand_path(File.join(Config.user_home || ".", ".bundle"))
+    end
+
+    # `Path#path` (settings.rb L270-280): the ruby scope is appended only when
+    # system gems are not in use; with `path.system` `Gem.dir` itself is the
+    # gem root (no `ruby/<abi>` level).
+    def self.gem_root(config : Config, system_gem_dir : String, abi : String) : String
+      base = base_path(config, system_gem_dir)
+      system_gems?(config) ? base : File.join(base, "ruby", abi)
+    end
+
+    # Directory holding every ruby scope (`<base>/ruby`), or the gem dir itself
+    # for `path.system` (there is no ruby scope then).
+    def self.ruby_root(config : Config, system_gem_dir : String) : String
+      base = base_path(config, system_gem_dir)
+      system_gems?(config) ? base : File.join(base, "ruby")
     end
 
     def self.downloader_cache_root : String

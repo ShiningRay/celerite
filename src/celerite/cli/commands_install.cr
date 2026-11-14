@@ -117,8 +117,9 @@ module Celerite
 
         install_path = install_path(config)
         abi = ruby_abi(bridge)
+        gem_root = InstallPaths.gem_root(config, bridge.ruby_environment.default_gem_dir, abi)
         downloader = Downloader.new(resolution.primary_remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, resolution.primary_remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(resolution.primary_remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config))
-        installer = Installer.new(install_path, abi, bridge, downloader, stdout)
+        installer = Installer.new(gem_root, abi, bridge, downloader, stdout)
         installer.config = config
         installers_by_remote = {resolution.primary_remote => installer}
         if target_rbconfig = flag_value(rest, "--target-rbconfig")
@@ -236,7 +237,7 @@ module Celerite
           remote = resolution.remote_for(spec.name)
           spec_installer = installers_by_remote[remote]? || begin
             remote_downloader = Downloader.new(remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config))
-            next_installer = Installer.new(install_path, abi, bridge, remote_downloader, stdout)
+            next_installer = Installer.new(gem_root, abi, bridge, remote_downloader, stdout)
             next_installer.config = config
             installers_by_remote[remote] = next_installer
             next_installer
@@ -417,7 +418,7 @@ module Celerite
       bridge = Bridge::Client.new
       begin
         abi = ruby_abi(bridge)
-        install_root = File.join(install_path(definition.config), "ruby", abi, "cache")
+        install_root = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "cache")
         stdout.puts "Updating files in #{cache_label}"
         if rest.includes?("--all-platforms") && bundle_version.starts_with?("4.")
           # The 4.x reference re-fetches the source index to enumerate the
@@ -467,7 +468,7 @@ module Celerite
         rescue
         end
         abi = ruby_abi(bridge)
-        install_root = File.join(install_path(definition.config), "ruby", abi)
+        install_root = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi))
         lockfile = definition.lockfile!
         profile = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
         # specs_to_keep (pinned `Bundler::Runtime#clean`): lockfile specs plus
@@ -579,7 +580,7 @@ module Celerite
         bundler_lib = bundler_lib.not_nil!
 
         abi = ruby_abi(bridge)
-        bin_dir = File.join(install_path(definition.config), "ruby", abi, "bin")
+        bin_dir = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "bin")
 
         process_env = ENV.to_h
         # Windows environment variable names are case-insensitive at the OS
@@ -828,7 +829,7 @@ module Celerite
       bridge = Bridge::Client.new
       begin
         abi = InstallPaths.ruby_abi(bridge)
-        installer = Installer.new(InstallPaths.install_path(definition.config), abi, bridge, downloader, stdout)
+        installer = Installer.new(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), abi, bridge, downloader, stdout)
         stdout.puts "Installing bundler #{locked}"
         installer.install("bundler", locked, nil, nil)
         # The reference restarts under the installed version; the lockfile
@@ -892,7 +893,7 @@ module Celerite
       bridge = Bridge::Client.new
       begin
         abi = ruby_abi(bridge)
-        install_root = File.join(install_path(definition.config), "ruby", abi)
+        install_root = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi))
         bin_dir = File.join(install_root, "bin")
         config_bin = definition.config["bin"].to_s
         target = config_bin.empty? ? File.join(Dir.current, "bin") : File.expand_path(config_bin, Dir.current)
