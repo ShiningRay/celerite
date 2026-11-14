@@ -1030,3 +1030,22 @@ PATH
 
 - **负对照**：修复前同 spec 在 `:47`/`:87` 报 `Expected: false / got: true`；②合法复用与④`lock` 端到端修复前即通过，说明新谓词不是恒 `false`。
 - **未验证/边界**：真实 `bundle install` e2e 未跑（复用路径由 `Resolution#resolve!(reuse: true)` 直接驱动，不落 gem 安装副作用）；锁文件 `specs:` 与 DEPENDENCIES 集合不一致时仍由既有 L533-541 判定，本轮未另加用例；平台变体缺失由既有 `covers_local_platform?` 处理，未扩；`bundler` 顶层依赖键被跳过（参考锁文件通常不含）；上游 `lockfile_spec.rb:1882` 场景尚未 fixture 化到 differential。
+
+## M7(8) 第三子项：冲突标记消息使用相对 lockfile 路径（2026-11-15）
+
+- **参考锚点（bundler 4.0.24）**：`lockfile_parser.rb` L105-109 `@lockfile_path = SharedHelpers.relative_lockfile_path`（`relative_path_to(Bundler.default_lockfile)` = `Pathname#relative_path_from(Pathname.new(Dir.pwd))`，`rescue ArgumentError` 时原样返回）；L113-116 冲突消息与 L123-124（invalid lockfile）、L169-171（unreadable 位置）同用该相对值；上游用例 `lockfile_spec.rb:2431-2437` 断言 `/your Gemfile.lock contains merge conflicts/i` 与 `/git checkout HEAD -- Gemfile.lock/i`。
+- **修复前缺陷与实测输出**：`parser.cr` 的冲突消息与 unreadable 消息直接插入 `@lockfile_path`，而 `definition.cr:80` 传入绝对路径（`Definition.resolve_lockfile` 的 expand 结果）。新 spec 修复前 `crystal spec spec/m7_lockfile_conflict_spec.cr` 得 **5 examples, 4 failures, 0 errors**（744ms，EXIT 1），实际 stderr（Thor 风格按 80 列 word-wrap，路径过长被单独折行）：
+  `Your` / `C:\Users\...\celerite-spec-...\Gemfile.lock` / `contains merge conflicts.` / `Run \`git checkout HEAD --` / `C:\Users\...\Gemfile.lock\`` / `first to get a clean lock.`；单元级 `Parser.parse(text, 项目外绝对路径)` 同样输出绝对路径。exit 20 正确（`LockfileError` → 20）。
+- **实现**：`src/celerite/lockfile/parser.cr` 新增私有 `display_lockfile_path`（L162-184）与 `same_path_component?`（L186-192）：`File.expand_path(@lockfile_path)` 与 `File.expand_path(Dir.current)` 按组件比较（Windows 盘符与组件均大小写不敏感），公共前缀之外的当前路径组件补 `..`，拼接结果以 `/` 连接；Windows 盘符不同（跨盘）或 UNC 与本地根不同时直接回退 `@lockfile_path` 原值。冲突消息（L126-127）与 unreadable 消息（L150-152）改用该值；`Lockfile::Data#lockfile_path` 保持原样（`model.cr:286` getter 未动），解析状态机、退出码未动。
+- **修复后**：**5 examples, 0 failures, 0 errors, 0 pending**（713ms，EXIT 0）：①`install` 退出 20 且 stderr 含 `Your Gemfile.lock contains merge conflicts.`／`Run \`git checkout HEAD -- Gemfile.lock\``，不含项目绝对路径、不含任何盘符路径；②`err.chomp` 与参考两行逐字相等；③项目外（父目录）锁文件显示为 `../celerite-spec-elsewhere/Gemfile.lock`（`Pathname#relative_path_from` 语义）；④Windows 下另一盘符 `D:/celerite-spec-elsewhere/Gemfile.lock` 不可相对化 → 消息保留原绝对路径；⑤unreadable 消息同样相对化（`Your Gemfile.lock is unreadable.`／``Run `rm Gemfile.lock` ``）。
+- **负对照**：修复前 **4/5 失败**（测试 ①②③⑤），修复后 **5/5 通过**，同一文件同一断言；其中 ①②③ 是路径断言的直接失败证据（stderr 折行内含项目绝对路径、父目录未相对化），⑤ 修复前的失败原因是夹具 `thor (bogus` 未闭合未被识别为 spec 行、未触发 unreadable 分支（非路径证据；改为 `thor (bogus)` 后该例只验证了修复后行为）；④（跨盘回退）修复前后均通过，证明新逻辑不是无条件相对化。
+- **门禁**（`<flags>` = `C:/Users/ShiningRay/AppData/Local/Temp/celerite-shim-m7wip/evp_md_size_shim.o -LC:/msys64/ucrt64/lib -lssl -lcrypto`）：
+
+| 门禁 | 结果 |
+|---|---|
+| `crystal tool format src spec` / `crystal tool format --check src spec` | EXIT 0 / EXIT 0 |
+| `crystal build --no-codegen --link-flags <flags> src/cli.cr` | EXIT 0（仅既有 2 条 `File.executable?` deprecation：`commands_install.cr:596,660`） |
+| `crystal spec spec/m7_lockfile_conflict_spec.cr --link-flags <flags>` | **5 examples, 0 failures, 0 errors, 0 pending**, EXIT 0（713ms） |
+| 全量 `crystal spec --link-flags <flags>` | **281 examples, 1 failures, 0 errors, 0 pending**, EXIT 1（唯一 `spec/config_spec.cr:97` 机器级 `~/.bundle/config` 污染，非回归；本轮前基线 276/1） |
+
+- **未验证/边界**：真实 `bundle install` 命令级 e2e 未跑（spec 通过 `run_cli(["install"])` 进程内驱动，但未验证真实 gem 安装）；UNC 路径（`\\server\share`）未实测（仅按盘符分支推断回退，Windows 下 `expand_path` 处理 UNC 的形态未验证）；`Dir.pwd` 在符号链接目录下的表现（`Pathname` 不做 realpath，我们的实现同样按字面展开）未验证；非 Windows 下同根路径总能相对化，因此「不可相对化回退」分支只在 Windows spec 中覆盖；上游 `lockfile_spec.rb:2431` 场景尚未 fixture 化到 differential。

@@ -123,8 +123,8 @@ module Celerite
       def parse : Data
         if @text.matches?(MERGE_CONFLICT_PATTERN)
           raise LockfileError.new(
-            "Your #{@lockfile_path} contains merge conflicts.\n" \
-            "Run `git checkout HEAD -- #{@lockfile_path}` first to get a clean lock."
+            "Your #{display_lockfile_path} contains merge conflicts.\n" \
+            "Run `git checkout HEAD -- #{display_lockfile_path}` first to get a clean lock."
           )
         end
 
@@ -147,10 +147,48 @@ module Celerite
         @data
       rescue ex : Celerite::VersionError | Celerite::BadRequirementError
         raise LockfileError.new(
-          "Your #{@lockfile_path} is unreadable. Run `rm #{@lockfile_path}` " \
+          "Your #{display_lockfile_path} is unreadable. Run `rm #{display_lockfile_path}` " \
           "and then `bundle install` to generate a new lockfile. The error occurred while " \
-          "evaluating #{@lockfile_path}:#{@pos}"
+          "evaluating #{display_lockfile_path}:#{@pos}"
         )
+      end
+
+      # Reference `lockfile_parser.rb:105-109` stores
+      # `SharedHelpers.relative_lockfile_path` (i.e. the lockfile relative to
+      # `Dir.pwd`, `shared_helpers.rb` `relative_path_to`) and uses it in every
+      # message (`:113-116`, `:123-124`, `:169-171`). A path that cannot be made
+      # relative (another Windows drive, UNC share) keeps its original form,
+      # matching `relative_path_to`'s `rescue ArgumentError`.
+      private def display_lockfile_path : String
+        expanded = File.expand_path(@lockfile_path).gsub('\\', "/")
+        current = File.expand_path(Dir.current).gsub('\\', "/").chomp('/')
+        target_parts = expanded.split('/')
+        current_parts = current.split('/')
+
+        {% if flag?(:windows) %}
+          return @lockfile_path unless target_parts.first?.try(&.downcase) == current_parts.first?.try(&.downcase)
+        {% end %}
+
+        common = 0
+        limit = Math.min(target_parts.size, current_parts.size)
+        while common < limit && same_path_component?(target_parts[common], current_parts[common])
+          common += 1
+        end
+
+        relative_parts = [] of String
+        (common...current_parts.size).each { relative_parts << ".." }
+        relative_parts.concat(target_parts[common..])
+        return "." if relative_parts.empty?
+
+        relative_parts.join('/')
+      end
+
+      private def same_path_component?(left : String, right : String) : Bool
+        {% if flag?(:windows) %}
+          left.downcase == right.downcase
+        {% else %}
+          left == right
+        {% end %}
       end
 
       # 4.0.24 validity rule: empty lockfile or at least one known section.
