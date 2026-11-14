@@ -1079,3 +1079,24 @@ PATH
   4. 平台变体 spec 的边满足语义未做差分；上游 `lockfile_spec.rb:2088` 未 fixture 化到 differential。
   5. 真实 `bundle install` 命令级 e2e 未跑（仅 `run_cli(["install"])` 进程内驱动）。
   6. spec 通过把 `HOME`/`USERPROFILE` 指向临时项目隔离下载缓存（`InstallPaths.downloader_cache_root` = `~/.bundle/cache`，产品本身仍是全局缓存，未改）。
+
+## 2026-11-15 M7(4) 第三子项：HTTP(S) proxy 路由真实生效
+
+- **参考语义（逐行锚定）**：Bundler vendored `net-http-persistent` 的 `persistent.rb` L843-859（`proxy_uri`）、L860-875（`proxy_from_env`：只读 `http_proxy`/`HTTP_PROXY`，空值即无代理）、L629-635（`proxy_bypass?`），以及 `fetcher.rb:313-316`、`remote_fetcher.rb:62-69`；`https_proxy`/`ALL_PROXY` 在参考实现中不参与，`~/.gemrc` 的代理条目也不读取。
+- **修复前行为**：`src/celerite/cli/commands.cr` 的 `Commands.unsupported_setting_error` 对 proxy env 只打印 `warning: HTTP proxy (...) is set but Celerite does not route through proxies`，显式 config `proxy`/`http_proxy`/`https_proxy` 则返回 `not supported by Celerite: proxy` 并非零退出；`Downloader` 与 `CompactIndex::HttpFetcher` 都直接 `HTTP::Client.new`，代理配置完全不生效。
+- **实现**：
+  - 新增 `src/celerite/proxy.cr`：`Proxy.from_environment`（`http_proxy` 优先、`HTTP_PROXY` 次之、空/空白→nil）、`Proxy.resolve(config)`（config `proxy`→`http_proxy`→env）、`bypass?(host, port)`（`no_proxy`/`NO_PROXY` 逗号项后缀匹配，`*` 全绕过）、`authorization`、`port` 默认 80，无 scheme 补 `http://`。
+  - 新增 `src/celerite/http_transport.cr`：`HttpTransport.get(uri, path, headers, tls, proxy, timeout)`；直连走 `HTTP::Client`；http 代理用绝对 URI 请求行；https 代理先 `CONNECT` 建隧道再 `OpenSSL::SSL::Socket::Client`（SNI=目标 host），响应统一 `HTTP::Client::Response.from_io`。
+  - 接线：`src/celerite/downloader.cr`（重试/redirect/Authorization 保留）、`src/celerite/compact_index/cache.cr`（`HttpFetcher`、`Client`、`make_fetcher` 传递 `proxy`）、`src/celerite/resolution.cr` L268/L272、`src/celerite/cli/commands_install.cr` 4 处与 `commands_surface.cr` 4 处 `Downloader.new` 传 `proxy:`；`src/celerite/cli/commands.cr` 删除 proxy warn 与 config fast-fail（`ssl_client_key`、`legacy_index`、`full_index` 保持 fast-fail）。
+- **负对照**：接线前 `spec/m7_proxy_spec.cr` 首例 `1 examples, 1 failures, 0 errors`（`proxy.requests.size.should eq(1)` got 0）；接线后同例 `1 examples, 0 failures, 0 errors`。实现过程中一次 404 由 `absolute_target` 误用基址 `request_target` 造成，修正为使用显式 `path` 参数。
+- **门禁**（`<flags>` = `C:/Users/ShiningRay/AppData/Local/Temp/celerite-shim-m7wip/evp_md_size_shim.o -LC:/msys64/ucrt64/lib -lssl -lcrypto`）：
+
+| 门禁 | 结果 |
+|---|---|
+| `crystal tool format src spec` / `crystal tool format --check src spec` | EXIT 0 / EXIT 0 |
+| `crystal build --no-codegen --link-flags <flags> src/cli.cr` | EXIT 0（仅既有 2 条 `File.executable?` deprecation） |
+| `crystal spec spec/m7_proxy_spec.cr --link-flags <flags>` | **7 examples, 0 failures, 0 errors, 0 pending**, EXIT 0 |
+| 全量 `crystal spec --link-flags <flags>` | **290 examples, 1 failures, 0 errors, 0 pending**, EXIT 1（唯一 `spec/config_spec.cr:97` 机器级 `~/.bundle/config` 污染，非回归） |
+
+- **覆盖**：http 代理绝对 URI、https CONNECT 隧道、`no_proxy` host:port 后缀命中、`no_proxy=*`、config `proxy` 覆盖 env、`https_proxy`/`ALL_PROXY` 被忽略、无 scheme 补 `http://`。
+- **未验证/限制**：真实公网代理与代理鉴权（`http_proxy_user/pass` 仅构造 `Proxy-Authorization`，未在真代理上验证）；SOCKS 代理未实现；NTLM/挑战式代理认证未支持；`~/.gemrc` 代理条目不读取；HTTPS 隧道仅靠 `CONNECT` 200 状态判断，未校验隧道内首包；`no_proxy` 仅后缀匹配（参考实现同为后缀，但 IPv6 字面量未测）。

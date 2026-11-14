@@ -56,14 +56,14 @@ module Celerite
     end
 
     describe ".unsupported_setting_error" do
-      it "warns but continues when a proxy env var is set" do
+      it "does not warn when a proxy env var is set (routing is supported)" do
         previous = ENV["HTTP_PROXY"]?
         begin
           ENV["HTTP_PROXY"] = "http://proxy.example:8080"
           stderr = IO::Memory.new
           config = Config.new
           Commands.unsupported_setting_error(config, stderr).should be_nil
-          stderr.to_s.should contain("warning: HTTP proxy (HTTP_PROXY) is set but Celerite does not route through proxies")
+          stderr.to_s.should be_empty
         ensure
           if previous
             ENV["HTTP_PROXY"] = previous
@@ -73,11 +73,10 @@ module Celerite
         end
       end
 
-      it "fails fast when proxy is explicitly configured" do
+      it "accepts an explicitly configured proxy" do
         stderr = IO::Memory.new
         config = Config.new(nil, {"BUNDLE_PROXY" => "http://proxy.example:8080"} of String => Config::Value)
-        error = Commands.unsupported_setting_error(config, stderr)
-        error.should eq("not supported by Celerite: proxy")
+        Commands.unsupported_setting_error(config, stderr).should be_nil
       end
     end
   end

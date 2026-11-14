@@ -1,5 +1,7 @@
 require "./compact_index/cache"
 require "./tls"
+require "./proxy"
+require "./http_transport"
 require "./gem/platform"
 require "./errors"
 require "digest/sha256"
@@ -29,6 +31,7 @@ module Celerite
     getter timeout : Int32
     getter max_redirects : Int32
     getter redirect_count : Int32
+    getter proxy : Proxy?
 
     # Expose the configured per-request timeout as a Time::Span so callers
     # and specs can assert the exact connect/read timeout applied to clients.
@@ -36,11 +39,14 @@ module Celerite
       @timeout.seconds
     end
 
-    def initialize(@remote : String, cache_root : String, retries : Int32 = 3, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil, @credentials : {String, String}? = nil, timeout : Int32 = 30, max_redirects : Int32 = 5)
+    def initialize(@remote : String, cache_root : String, retries : Int32 = 3, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil, @credentials : {String, String}? = nil, timeout : Int32 = 30, max_redirects : Int32 = 5, proxy : Proxy? = nil)
       @mirror_url = mirror_url
       @ssl_ca_cert = ssl_ca_cert
       @ssl_client_cert = ssl_client_cert
       @ssl_verify_mode = ssl_verify_mode
+      # An explicit proxy (from `.bundle/config`) wins; otherwise honor the
+      # `http_proxy` environment like the reference fetcher does.
+      @proxy = proxy || Proxy.from_environment
       @timeout = timeout < 1 ? 30 : timeout
       @max_redirects = max_redirects < 0 ? 0 : max_redirects
       @redirect_count = 0
@@ -194,13 +200,11 @@ module Celerite
         end
         tls_ctx = ctx
       end
-      client = HTTP::Client.new(uri, tls: tls_ctx)
-      client.connect_timeout = @timeout.seconds
-      client.read_timeout = @timeout.seconds
+      headers = HTTP::Headers.new
       if creds = @credentials
-        client.basic_auth(creds[0], creds[1])
+        headers["Authorization"] = basic_authorization(creds[0], creds[1])
       elsif uri.user || uri.password
-        client.basic_auth(uri.user || "", uri.password || "")
+        headers["Authorization"] = basic_authorization(uri.user || "", uri.password || "")
       end
       # Retry with exponential backoff (pinned Bundler behavior).
       max_attempts = {@retries + 1, 1}.max
@@ -208,38 +212,24 @@ module Celerite
       loop do
         attempt += 1
         begin
-          response = client.get(remote_path)
+          response = HttpTransport.get(URI.parse(@remote), remote_path, headers, tls_ctx, @proxy, @timeout)
         rescue ex
-          client.close rescue nil
           if attempt < max_attempts
             sleep (0.5 * (2 ** (attempt - 1))).seconds
-            client = HTTP::Client.new(URI.parse(@remote), tls: tls_ctx)
-            client.connect_timeout = @timeout.seconds
-            client.read_timeout = @timeout.seconds
-            if creds = @credentials
-              client.basic_auth(creds[0], creds[1])
-            elsif retry_uri = URI.parse(@remote)
-              if retry_uri.user || retry_uri.password
-                client.basic_auth(retry_uri.user || "", retry_uri.password || "")
-              end
-            end
             next
           end
           raise ex
         end
         if response.status_code == 200
           File.write(path, response.body)
-          client.close rescue nil
           return
         elsif response.status_code == 301 || response.status_code == 302 || response.status_code == 303 || response.status_code == 307 || response.status_code == 308
           # Follow redirect, honoring BUNDLE_REDIRECT max-redirect limit.
           if loc = response.headers["Location"]?
             if @redirect_count >= @max_redirects
-              client.close rescue nil
               raise DownloadError.new("Too many redirects (>#{@max_redirects}) for #{@remote}")
             end
             @redirect_count += 1
-            client.close rescue nil
             @remote = loc
             return download_to(name, version, platform, path, allow_mirror: false)
           end
@@ -248,9 +238,12 @@ module Celerite
           sleep (0.5 * (2 ** (attempt - 1))).seconds
           next
         end
-        client.close rescue nil
         raise GemNotFoundError.new("Could not fetch gem #{full_name} from #{@remote} (HTTP #{response.status_code})")
       end
+    end
+
+    private def basic_authorization(user : String, password : String) : String
+      "Basic " + Base64.strict_encode("#{user}:#{password}")
     end
   end
 end

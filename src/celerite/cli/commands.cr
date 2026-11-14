@@ -945,13 +945,12 @@ module Celerite
     # blocking unsupported setting is present.
     #
     # Policy:
-    # - Proxy environment variables (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY and
-    #   lowercase variants) are common in CI/enterprise shells; warn and
-    #   continue because hard-failing would regress those environments.
-    # - Explicitly configured proxy keys in .bundle/config (proxy,
-    #   http_proxy, https_proxy) are treated as intentional requests to route
-    #   through a proxy; Celerite does not support proxy routing, so fail
-    #   fast with a clear message.
+    # - Proxy routing is supported: `Proxy.resolve` honors the `proxy` and
+    #   `http_proxy` config keys and the `http_proxy`/`HTTP_PROXY` env vars,
+    #   and both the downloader and the compact-index fetcher route through
+    #   it. Bundler reads no other proxy env var (`https_proxy`/`ALL_PROXY`)
+    #   and no `~/.gemrc` proxy entries, so those are silently ignored here
+    #   instead of warning or failing.
     # - ssl_client_key: Bundler 4.0.24 / 4.0.16 / 2.7.2 do not define this
     #   setting at all (`settings.rb` has no such key); a client private key
     #   belongs in the same PEM referenced by `ssl_client_cert`. Because some
@@ -959,27 +958,10 @@ module Celerite
     # - legacy_index, full_index remain unsupported and fail fast when
     #   explicitly set.
     def self.unsupported_setting_error(config : Config, stderr : IO) : String?
-      proxy_vars = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy"]
-      proxy_vars.each do |pv|
-        if val = ENV[pv]?
-          unless val.empty?
-            stderr.puts "warning: HTTP proxy (#{pv}) is set but Celerite does not route through proxies"
-          end
-        end
-      end
-
       if ssl_key = config["ssl_client_key"]
         unless ssl_key.nil? || ssl_key.to_s.empty?
           return "not supported by Celerite: ssl_client_key"
         end
-      end
-
-      ["proxy", "http_proxy", "https_proxy"].each do |key|
-        value = config[key]
-        next if value.nil?
-        next if value.is_a?(Bool) && value == false
-        next if value.to_s.empty?
-        return "not supported by Celerite: proxy"
       end
 
       {"legacy_index", "full_index"}.each do |key|
