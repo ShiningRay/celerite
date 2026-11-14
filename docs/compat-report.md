@@ -764,3 +764,29 @@ celerite 缺陷定位（K1）：求解侧正确（resolver/source.cr:217-238 候
 
 未验证：修复后二进制重跑上游全量 64 例（L 步）；rails-min install 端到端（缺 make）。
 复现：`CELERITE_BIN="C:/temp/runner/celerite.exe" TMPDIR=/c/temp bash script/differential platform-variant-fail multi-platform-install multi-platform-install-ruby multi-platform-lock install-check no-matching-version`；参照 `bundle _4.0.24_ lock`（C:	empails-min-ref4）；比对 `python C:\Temp\compare_sections.py`。
+
+## 2026-11-14 K/K'/K''：平台变体 + checksum 归一化 + bundler 自列入修复——本轮实测
+
+三项修复（各独立 commit，均已推送；调查细节见上 K 节），按首辅 D1 要求合并记录证据如下。
+
+### K：平台变体选择修复（本地平台精确匹配 > ruby）
+- 缺陷位置（修复前）：`src/celerite/resolution.cr:735-736` `decisions_to_specs` 硬编码 `platform_ruby?` 查找，丢弃已选本地平台变体 → `rails-min` lock 写 `nokogiri (1.19.7)` ruby 形态 + ruby 依赖 `mini_portile2`，参照写 `nokogiri (1.19.7-x64-mingw-ucrt)`。
+- 修复：`src/celerite/resolver/source.cr` 新增 `select_variant`（gate `platform_ruby? || platform == Gem::Platform.local`，按 `Gem::Platform.platform_specificity_match` 取 min，ruby 兜底）+ `src/celerite/resolution.cr` `platform_mergeable?`（平台变体依赖集 == ruby 依赖集时 ruby 候选组已含两者，参照 `SpecGroup#merge`/`equivalent?` 语义，覆盖 prism 类 deps-equal 形态）；`decisions_to_specs` 按 `candidate_version.priority == 1 || platform_mergeable?(same_version)` 走 `select_variant(index)` → `select_variant(locked_index)` → ruby 查找链；`ResolvedSpec` platform 参数由硬编码 `nil` 改为 `spec.platform_ruby? ? nil : spec.platform.to_s`（驱动 PLATFORMS writer :954-958 + checksum 后缀 + install full_name）。
+- 证据：离线 spec `spec/m7_platform_variant_selection_spec.cr` `5 examples, 0 failures, 0 errors, 0 pending EXIT 0`；树外 `rails-min-cel9` `celerite lock` EXIT 0 → `nokogiri (1.19.7-x64-mingw-ucrt)` / `prism (2.1.0-x64-mingw-ucrt)` 与参照 `rails-min-ref4` 一致、无 `mini_portile2`、`PLATFORMS x64-mingw-ucrt` 全等；定向差分双 profile 6 夹具（含 `platform-variant-fail` 金丝雀，未改期望）`6 passed, 0 failed, 0 skipped (documented deferrals)` EXIT 0（`C:\temp\h-k-diff-4024.log` / `h-k-diff-272.log`）；install 对 nokogiri/prism 不再触发源码构建（`Installing nokogiri 1.19.7` / `Installing prism 2.1.0`，无 `with native extensions`），`bigdecimal 4.1.3 with native extensions` 仍因本机缺 make 失败（环境，与本修复无关，`C:\temp\rails-cel9-install.log`）。
+
+### K'：checksum 归一化
+- 缺陷位置（修复前）：`src/celerite/resolution.cr:47-49` `info_checksum_value` 对 rubygems.org /info 的原始 hex checksum 无条件 `Base64.decode(raw).hexstring` → 64-hex 系统性错位。
+- 修复：抽 `src/celerite/checksum.cr` `Celerite::Checksum.normalize_hex`（64-hex / base64 std+url-safe padded/unpadded / `sha256=` 前缀 → 裸小写 64-hex，非法 → nil）单一事实源；`resolution.cr` `info_checksum_value` 改用它（nil 抛 `ArgumentError`）；`downloader.cr:129-137` `normalize_checksum` 同步复用。
+- 证据：`spec/m7_checksum_normalize_spec.cr` + `spec/m7_info_checksum_value_spec.cr` 合计 `13 examples, 0 failures, 0 errors, 0 pending EXIT 0`（与 platform-variant 5 例合跑 18/0/0）；`rails-min-cel12` 与参照 `rails-min-ref4` CHECKSUMS `bundler (4.0.24) sha256=16ca64e20816a0cf151a948fb141d788602996d2b4d73577b74388fe84fa98bc` 逐字节相同；全部 CHECKSUMS 65 vs 65 行 multiset diff = 0。
+
+### K''：bundler 自列入 / CHECKSUMS 重复
+- 缺陷位置：`src/celerite/resolution.cr` lockfile 渲染循环遍历 `@resolved_specs` 含 bundler → GEM specs 列 `bundler (4.0.24)` 且 CHECKSUMS 发一条；随后 self-verify 块再发一条 → 重复。
+- 修复：specs 渲染与 CHECKSUMS 循环均跳过 bundler；self-verify 块为唯一写出点；按 (name, version, platform) 去重兜底。
+- 证据（修复前后计数对照，4-space `bundler (4.0.24)` = GEM specs 自列入，2-space `bundler (` = CHECKSUMS 行）：
+  - 修复前 `rails-min-cel10`：GEM specs bundler **1**（参照 0）/ CHECKSUMS bundler **2**（参照 1）/ 总 bundler 行 4。
+  - 修复后 `rails-min-cel12`：GEM specs bundler **0** / CHECKSUMS bundler **1** / 总 bundler 行 2（与参照 `rails-min-ref4` 完全一致）；CHECKSUMS 段 multiset diff 0（65 vs 65）。
+
+### 未验证/边界
+- `celerite install` 端到端仍受本机缺 `make` 阻塞（`bigdecimal` 原生构建），M7(9) 未达成；
+- 上游 64 例未在修复后重跑（L 即将进行）；
+- 树外 exe 纪律与复现命令同 K 节（`C:\temp\runner\celerite.exe`；重建 `crystal build src/cli.cr -o bin/celerite.exe --link-flags "C:/Users/ShiningRay/AppData/Local/Temp/celerite-shim-m7wip/evp_md_size_shim.o"`，正斜杠，shim 仅本地不入库）。
