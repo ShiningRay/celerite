@@ -1,4 +1,5 @@
 require "./compact_index/cache"
+require "./tls"
 require "./gem/platform"
 require "./errors"
 require "digest/sha256"
@@ -181,7 +182,7 @@ module Celerite
           ctx.ca_certificates = ca unless ca.empty?
         end
         if cert = @ssl_client_cert
-          ctx.certificate_chain = cert unless cert.empty?
+          Celerite::TLS.configure_client_certificate(ctx, cert)
         end
         if mode = @ssl_verify_mode
           case mode.downcase

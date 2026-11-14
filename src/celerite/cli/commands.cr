@@ -952,8 +952,12 @@ module Celerite
     #   http_proxy, https_proxy) are treated as intentional requests to route
     #   through a proxy; Celerite does not support proxy routing, so fail
     #   fast with a clear message.
-    # - ssl_client_key, legacy_index, full_index remain unsupported and fail
-    #   fast when explicitly set.
+    # - ssl_client_key: Bundler 4.0.24 / 4.0.16 / 2.7.2 do not define this
+    #   setting at all (`settings.rb` has no such key); a client private key
+    #   belongs in the same PEM referenced by `ssl_client_cert`. Because some
+    #   users write it anyway we keep failing fast with the historical message.
+    # - legacy_index, full_index remain unsupported and fail fast when
+    #   explicitly set.
     def self.unsupported_setting_error(config : Config, stderr : IO) : String?
       proxy_vars = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy"]
       proxy_vars.each do |pv|

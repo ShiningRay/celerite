@@ -912,3 +912,49 @@ CELERITE_BIN="C:/temp/runner/celerite.exe" TMPDIR="C:\temp" CELERITE_BRIDGE_SERV
 4. **未做真实镜像 e2e**：本轮以本地 `HTTP::Server` + 关闭端口模拟可达/不可达，未对公网真实 mirror 跑 `install`；`mirror.all` 形态未覆盖。
 5. **环境前提**：本机缺 pkg-config，原样「仅带 shim」的 spec 命令会在链接阶段失败（`undefined reference to 'EVP_MD_get_size'`），故所有 spec/build 证据命令均带 `-LC:/msys64/ucrt64/lib -lssl -lcrypto`。
 6. **M7(4) 其余 GAP 未动**：proxy 实际路由、legacy/full index 回退、`ssl_client_key` 接线到 TLS 均未实现；M7(4) 复选框保持未勾。
+
+## 2026-11-15 M7(4) 第二子项：`ssl_client_cert` 的 mTLS 私钥接线（客户端证书真实生效）——本轮实测
+
+### 参考语义（`C:\Ruby40-x64\lib\ruby\gems\4.0.0\gems\bundler-4.0.24\lib\bundler\fetcher.rb`）
+
+- L324-331：`ssl_client_cert` 指向的**同一个 PEM 同时承载证书与私钥**；Bundler 无条件 `con.cert = OpenSSL::X509::Certificate.new(File.read(pem))`，随后 `con.key = OpenSSL::PKey.read(pem)`；若 PEM 只有证书，Ruby 侧 key 为 nil（不报错，握手时由服务端拒绝）。
+- L302-304：`ssl_verify_mode`/`ssl_client_cert` 任一存在即加载 openssl。
+- **`ssl_client_key` 在 bundler 4.0.24 / 4.0.16 / 2.7.2 三棵树全无**（首辅 `Get-ChildItem -Recurse -Filter *.rb | Select-String 'ssl_client_key'` 无命中；`settings.rb` 亦无该键，未知键无 `Validator` 规则即被静默保存）。因此本产品对 `ssl_client_key` fast-fail 属**既定政策**（roadmap M7(4)「为不支持项快速失败」），不是参考行为镜像；返回文案 `not supported by Celerite: ssl_client_key` 与退出码路径本轮**未改**，只更正 `commands.cr` L955-960 注释（说明参考无此键、私钥应并入 `ssl_client_cert` 的 PEM）。
+- RubyGems 侧同类语义：`Gem.configuration.ssl_client_cert` 亦为 cert+key 单文件（`fetcher.rb` L325）。
+
+### 修复前的缺陷
+
+`src/celerite/downloader.cr` 原 L183-185 与 `src/celerite/compact_index/cache.cr` 原 L156-158 只做 `ctx.certificate_chain = cert`，**从不调用 `ctx.private_key=`**。Crystal/OpenSSL 的 `SSL_CTX_use_certificate_chain_file` 只加载证书链，所以任何要求客户端证书的服务端都会在握手期拒绝——即 roadmap L157 声称的「`ssl_client_cert`（Downloader+HttpFetcher TLS chain）已接线」只是半接线，mTLS 实际不可用。
+
+### 实现
+
+- 新增 `src/celerite/tls.cr`（25 行）：`Celerite::TLS.configure_client_certificate(ctx : OpenSSL::SSL::Context::Client, pem_path : String)`——L13 空路径返回；L15 `ctx.certificate_chain = pem_path`；L20 `return unless File.read(pem_path).includes?("PRIVATE KEY")`（覆盖 RSA/EC/ENCRYPTED marker，证书-only PEM 不含该串）；L22 `ctx.private_key = pem_path`。无 key 时不设置，等价 Bundler 的 `key = nil`；口令错/不匹配的真实错误**不 rescue**。
+- `src/celerite/downloader.cr` L2 `require "./tls"`、L185 改调用 helper；`src/celerite/compact_index/cache.cr` L2 `require "../tls"`、L158 同。
+- 夹具 `spec/fixtures/tls/`（8 文件，自签测试材料，100 年有效期、无口令，随仓库提交）：`ca.pem`/`ca.key`、`server.pem`/`server.key`（CN=localhost，SAN `DNS:localhost, IP Address:127.0.0.1`）、`client.pem`/`client.key`、`client-combined.pem`（cert+key）、`client-cert-only.pem`（仅 cert）。首辅已独立核验：`openssl x509` 显示 `notAfter=Oct 21 16:17:08 2126 GMT` + 正确 SAN，`openssl verify -CAfile ca.pem` 对 server/client 均 `OK`，`git check-ignore` 确认未被仓库忽略规则命中。
+- `spec/m7_client_cert_spec.cr`（163 行，5 例）：私有 `ClientCertServer`（`TCPServer`+`OpenSSL::SSL::Server`，ctx = `server.pem`/`server.key`/`ca.pem` + `verify_mode = PEER | FAIL_IF_NO_PEER_CERT`，极简 HTTP/1.1 200 响应，握手异常不杀 accept 循环）。
+
+### 本轮门禁实测（首辅独立复跑，2026-11-15，HEAD=cd16bae + 本工作树）
+
+`<flags>` = `C:/Users/ShiningRay/AppData/Local/Temp/celerite-shim-m7wip/evp_md_size_shim.o -LC:/msys64/ucrt64/lib -lssl -lcrypto`。
+
+| 门禁 | 结果 |
+|---|---|
+| `crystal tool format --check src spec` | EXIT 0 |
+| `crystal build src/celerite.cr -o bin/celerite-m7wip.exe --no-codegen --link-flags <flags>` | EXIT 0（仅既有 2 条 `File.executable?` deprecation：`commands_install.cr:596,660`） |
+| `crystal spec spec/m7_client_cert_spec.cr --link-flags <flags>` | **5 examples, 0 failures, 0 errors, 0 pending**, EXIT 0（63.5ms） |
+| `crystal spec spec/m7_download_settings_spec.cr spec/downloader_spec.cr --link-flags <flags>` | **23 examples, 0 failures, 0 errors, 0 pending**, EXIT 0 |
+| 全量 `crystal spec --link-flags <flags>` | **268 examples, 1 failures, 0 errors, 0 pending**, EXIT 1（唯一失败 `spec/config_spec.cr:97`，既存机器级 `~/.bundle/config` 污染，见上一节） |
+| `git diff --check` | EXIT 0 |
+
+### 负对照（证明正例确由私钥接线决定，首辅亲手复跑）
+
+把 `src/celerite/tls.cr:22` 的 `ctx.private_key = pem_path` 临时注释后重跑同一 spec：**`5 examples, 0 failures, 2 errors`**，两条正例失败（`m7_client_cert_spec.cr:114` Downloader、`:152` HttpFetcher），错误为 `SSL_read: error:0A00045C:SSL routines::tlsv13 alert certificate required (OpenSSL::SSL::Error)`；恢复该行后回到 5/0/0/0。反例（`client-cert-only.pem`、不给 client cert）同样以该 TLS alert 失败，`fetch` 不成功。
+
+### 未验证 / 边界
+
+1. **带口令的加密私钥**（`ENCRYPTED PRIVATE KEY`）未验证：会命中 marker 并调用 `ctx.private_key=`，无口令时 OpenSSL 抛错（不 rescue）；Bundler 的 `PKey.read` 亦失败但文案不同，未加断言。
+2. **多级证书链 + 分离 key 文件**未实测：`ssl_client_cert` 指向含中间 CA 的 PEM 时预期按整链加载，本轮只验证「单 cert+同 PEM key」与「仅 cert」两态。
+3. **仅 TLS 1.3 实测**：服务端/客户端均默认 TLS 1.3；TLS 1.2 下的 client-cert 失败路径未单独覆盖。
+4. **未对真实远端 mTLS 场景验证**：全部为本地回环离线夹具。
+5. 夹具中的 `*.key` 为自签测试材料，不含生产凭据；轮换按 `spec/m7_client_cert_spec.cr` L6-24 的命令重建。
+6. `ssl_client_key` 仍 fast-fail（政策不变）；proxy 路由、legacy/full index 回退仍未实现，M7(4) 复选框保持未勾。
