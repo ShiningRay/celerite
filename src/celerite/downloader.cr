@@ -139,10 +139,10 @@ module Celerite
       Celerite::Checksum.normalize_hex(raw)
     end
 
-    private def download_to(name : String, version : String, platform : String?, path : String, allow_mirror : Bool = true) : Nil
+    private def download_to(name : String, version : String, platform : String?, path : String, allow_mirror : Bool = true, request_path : String? = nil) : Nil
       @redirect_count = 0 if allow_mirror
       full_name = (platform.nil? || platform == "ruby") ? "#{name}-#{version}" : "#{name}-#{version}-#{platform}"
-      remote_path = "/gems/#{full_name}.gem"
+      remote_path = request_path || "/gems/#{full_name}.gem"
 
       # Bundler mirror support: try the mirror first, then fall back to the
       # original remote. allow_mirror=false prevents retrying the mirror
@@ -230,8 +230,17 @@ module Celerite
               raise DownloadError.new("Too many redirects (>#{@max_redirects}) for #{@remote}")
             end
             @redirect_count += 1
-            @remote = loc
-            return download_to(name, version, platform, path, allow_mirror: false)
+            # `Location` may be absolute or relative (RFC 9110 §10.2.2);
+            # resolve it against the URL that produced the redirect so the
+            # follow-up request carries a host. The redirect target also
+            # replaces the request path (Bundler requests the Location URL
+            # verbatim); rebuilding "/gems/<full>.gem" would loop forever.
+            resolved = resolve_redirect_location(@remote, loc)
+            target = URI.parse(resolved)
+            request = target.request_target
+            request = "/" if request.empty?
+            @remote = resolved
+            return download_to(name, version, platform, path, allow_mirror: false, request_path: request)
           end
         end
         if attempt < max_attempts
@@ -244,6 +253,17 @@ module Celerite
 
     private def basic_authorization(user : String, password : String) : String
       "Basic " + Base64.strict_encode("#{user}:#{password}")
+    end
+
+    # RFC 9110 §10.2.2: `Location` may be relative; resolve it against the
+    # request URL so a subsequent `URI.parse` still has a host (Bundler gets
+    # this for free from URI.join in the reference implementation).
+    private def resolve_redirect_location(base : String, location : String) : String
+      ref = URI.parse(location)
+      return location if ref.host
+      URI.parse(base).resolve(ref).to_s
+    rescue
+      location
     end
   end
 end
