@@ -23,6 +23,19 @@ module Celerite
       @install_root = File.join(install_path, "ruby", ruby_abi)
     end
 
+    # Extension directory layout: <install_root>/extensions/<platform>/<abi>/<full_name>
+    # (pinned observation from the reference oracle).
+    def self.extension_dir_for(install_root : String, ruby_abi : String, full_name : String) : String
+      File.join(install_root, "extensions", Gem::Platform.local.to_s, ruby_abi, full_name)
+    end
+
+    # Idempotent extension builds: a `gem.build_complete` marker means the
+    # previous build finished and the dir is reusable; anything else (fresh or
+    # stale/interrupted) needs a build.
+    def self.extension_build_needed?(extension_dir : String) : Bool
+      !File.exists?(File.join(extension_dir, "gem.build_complete"))
+    end
+
     private def config_build_args(name : String) : Array(String)?
       cfg = @config
       return nil unless cfg
@@ -137,14 +150,20 @@ module Celerite
 
         # native extensions (Ruby toolchain via the bridge, architecture §2.1)
         unless written.extensions.empty?
-          extension_dir = File.join(@install_root, "extensions", Gem::Platform.local.to_s,
-            @ruby_abi, full_name)
-          build_args = config_build_args(name)
-          build_result = @bridge.build_extension(
-            File.join(target_gems, full_name), extension_dir, name, gem_file, target_rbconfig, build_args
-          )
-          if build_result["error"]?
-            raise Error.new("extension build failed for #{full_name}: #{build_result["error"].as_s}")
+          extension_dir = Installer.extension_dir_for(@install_root, @ruby_abi, full_name)
+          # Idempotent: a completed build (gem.build_complete marker) is
+          # reusable; a stale/incomplete dir is cleared first so the bridge
+          # build starts from an empty destination instead of raising
+          # `File exists @ dir_s_mkdir` on retry.
+          if Installer.extension_build_needed?(extension_dir)
+            FileUtils.rm_rf(extension_dir)
+            build_args = config_build_args(name)
+            build_result = @bridge.build_extension(
+              File.join(target_gems, full_name), extension_dir, name, gem_file, target_rbconfig, build_args
+            )
+            if build_result["error"]?
+              raise Error.new("extension build failed for #{full_name}: #{build_result["error"].as_s}")
+            end
           end
         end
 
