@@ -951,7 +951,7 @@ module Celerite
       end
 
       gem_sections_by_remote = {} of String => Array(Lockfile::Spec)
-      @resolved_specs.select(&.source_type.==("GEM")).each do |spec|
+      @resolved_specs.select(&.source_type.==("GEM")).reject(&.name.==("bundler")).each do |spec|
         remote = spec.source_remote || primary_remote
         gem_sections_by_remote[remote] ||= [] of Lockfile::Spec
         gem_sections_by_remote[remote] << Lockfile::Spec.new(spec.name, spec.version.to_s, spec.platform, spec.dependencies)
@@ -1034,7 +1034,7 @@ module Celerite
         # lockfile entry (the reference keeps locked checksums on re-lock) >
         # index checksum.
         existing_checksums = @definition.lockfile_exists? ? @definition.lockfile!.checksums : [] of Lockfile::ChecksumEntry
-        @resolved_specs.each do |spec|
+        @resolved_specs.reject(&.name.==("bundler")).each do |spec|
           installed = @install_checksums["#{spec.name}-#{spec.version}"]?
           existing = existing_checksums.find do |c|
             c.name == spec.name && c.version == spec.version.to_s &&
@@ -1053,6 +1053,14 @@ module Celerite
             checksum_section.entries << Lockfile::ChecksumEntry.new("bundler", @bridge_bundler_version, nil, ["sha256=#{sha}"])
           end
         end
+        # Dedupe defense: collapse any duplicate (name, version, platform)
+        # entries, keeping the last (self-checksum override wins).
+        deduped = {} of String => Lockfile::ChecksumEntry
+        checksum_section.entries.each do |e|
+          deduped["#{e.name}|#{e.version}|#{e.platform}"] = e
+        end
+        checksum_section.entries.clear
+        deduped.values.each { |e| checksum_section.entries << e }
         sections << Lockfile::TypedSection.new(checksum_section)
       end
 
