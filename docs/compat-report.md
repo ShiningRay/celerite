@@ -841,7 +841,7 @@ make 新条件（lead m04964）：`make.exe` 实存于 `C:\Ruby40-x64\msys64\usr
 - 4.0.24：`differential (4.0.24): 7 passed, 0 failed, 0 skipped (documented deferrals)` EXIT 0 —— native-ext / native-ext-target / add-group / add-optimistic / add-remove / add-version / cache-all-platforms 全 PASS。日志 `C:\temp\n-a1-4024.log`。
 - 2.7.2：`differential (2.7.2): 6 passed, 0 failed, 1 skipped (documented deferrals)` EXIT 0 —— add-group 为已登记 deferred skip。日志 `C:\temp\n-a1-272.log`。
 - 修复前对照：4.0.24 `6 passed, 1 failed, 0 skipped`（`C:\temp\n-a-4024.log`）、2.7.2 `5 passed, 1 failed, 1 skipped`（`C:\temp\n-a-272.log`），失败均为 native-ext `cparse.so content differs after normalization`。
-- 全量 4.0.24 differential（PATH 归一化后）：`135 passed, 0 failed, 1 skipped (documented deferrals)` EXIT 0（基线 133:126/7/0 → 失败 7→0；总数 +3 为新夹具，其中 git-submodules 为登记 skip）。诚实注记：该次全量输出流式未 tee 到文件，计数取自作业输出尾部；如需文件证据可重跑。
+- 全量 4.0.24 differential（PATH 归一化后）：`135 passed, 0 failed, 1 skipped (documented deferrals)` EXIT 0（基线 133:126/7/0 → 失败 7→0；总数 +3 为新夹具，其中 git-submodules 为登记 skip）。证据：N1 轮后以同一 PATH 归一化脚本（追加 N9 规则后）复跑全量 4.0.24 并 tee 至 `C:\temp\n2-full-4024.log`（10,212 字节，mtime 2026-11-14T21:19:25.9375434+08:00），尾部 `differential (4.0.24): 135 passed, 0 failed, 1 skipped (documented deferrals)` （N1 流式轮与 N2 tee 轮计数一致）；后续重跑统一 tee 到固定路径 `C:\temp\diff-full-4.0.24-<sha>.log`。
 
 ### Rails e2e（cel13）尝试与归属（记录，非本轮验收项）
 - cel13（真实 HOME）：`Installing bigdecimal 4.1.3 with native extensions` → `extension build failed for bigdecimal-4.1.3: File exists @ dir_s_mkdir - C:\Users\ShiningRay\.bundle\ruby\4.0.0\extensions\x64-mingw-ucrt\4.0.0\bigdecimal-4.1.3`（EEXIST；早前 cel4 残留目录未清理）。归属：环境残留 + 安装目录创建幂等性缺陷 → 转 N3 缺陷 1 处理。
@@ -850,7 +850,7 @@ make 新条件（lead m04964）：`make.exe` 实存于 `C:\Ruby40-x64\msys64\usr
 - 结论：Rails install 端到端未验证（环境阻塞），复现命令见下。
 
 ### 未验证 / 边界
-- N9 二进制产物归一化（.so 等不比字节、比存在性+非空+可加载）在 N2 单独提交；本节只固化 PATH 归一化。
+- **构建 PATH 坑（2026-11-14 补记）**：构建 CLI（`crystal build src/cli.cr -o bin/celerite.exe --link-flags <shim.o>`）必须用**原始 PATH**（Git/msys64/Ruby 顺序），不要用被 N8 归一化过的 PATH——把 `C:\Ruby40-x64\msys64\ucrt64\bin` 前置后 `cc`（Ruby 自带 Rev5）报 `cc: fatal error: '-fuse-linker-plugin', but liblto_plugin.dll not found`（插件在 `C:\Ruby40-x64\msys64\ucrt64\lib\gcc\x86_64-w64-mingw32\16.1.0\liblto_plugin.dll`，但 cc 运行库解析失败）；换回原始 PATH 后构建 EXIT 0。该现象是工具链解析问题，不是产品代码问题，`script/differential` 头部 N8 注记已同步说明。
 - M7(9) install 端到端仍未验证（make/编译已通，bigdecimal EEXIST + TLS 抖动阻塞）。
 - 全量 135/0/1 的文件日志缺失（流式输出），计数来自作业输出尾部。
 
