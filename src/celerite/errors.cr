@@ -1,3 +1,5 @@
+require "uri"
+
 module Celerite
   # Base error for all Celerite failures surfaced to the CLI.
   #
@@ -100,6 +102,39 @@ module Celerite
   # Raised when a download fails due to too many redirects or other
   # transport-level failures (mirrors Bundler::HTTPError).
   class DownloadError < Error
+    def status_code : Int32
+      17
+    end
+
+    def wrap? : Bool
+      true
+    end
+  end
+
+  # Bundler::Fetcher::NetworkDownError (an HTTPError, exit 17): the connection
+  # could not be established at all. The reference labels the host from the
+  # request URI and keeps `:port` only when the URL spells out a non-default
+  # port (bundler/fetcher/downloader.rb:96-103).
+  class NetworkDownError < Error
+    # The original socket/DNS error, kept for diagnostics (never swallowed).
+    getter socket_error : Exception?
+
+    def initialize(message : String, @socket_error : Exception? = nil)
+      super(message)
+    end
+
+    def self.message_for(uri : URI) : String
+      host = uri.host || "unknown host"
+      port = uri.port || (uri.scheme == "https" ? 443 : 80)
+      host_port = "#{host}:#{port}"
+      host = host_port if uri.to_s.includes?(host_port)
+      "Could not reach host #{host}. Check your network connection and try again."
+    end
+
+    def self.for(uri : URI, socket_error : Exception? = nil) : NetworkDownError
+      new(message_for(uri), socket_error)
+    end
+
     def status_code : Int32
       17
     end

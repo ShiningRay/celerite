@@ -381,6 +381,10 @@ module Celerite
       if remote.starts_with?("file:")
         @progress.puts "Fetching source index from #{remote}"
       else
+        # Bundler renders this line only once the fetch is under way (a
+        # connection failure prints nothing; see network-unreachable), and it
+        # follows the caller's stream split (stdout for `lock`, stderr for
+        # `lock --print`) via #progress.
         @progress.puts "Fetching gem metadata from #{remote}."
       end
     end
@@ -483,9 +487,9 @@ module Celerite
           )
         end
         remote = remote_for(name)
-        log_fetch_for(remote)
         client = remote == primary_remote ? compact_index_client : compact_index_client_for(remote)
         entries = client.info(name)
+        log_fetch_for(remote)
         entries.each do |entry|
           version = Gem::Version.new(entry.version)
           @cooldown_skipped << {name, entry.version, entry.created_at.not_nil!} if cooldown_excluded?(name, version, entry.created_at)

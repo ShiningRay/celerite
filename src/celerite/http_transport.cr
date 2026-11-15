@@ -2,6 +2,7 @@ require "http/client"
 require "socket"
 require "openssl"
 require "./proxy"
+require "./errors"
 
 module Celerite
   # Minimal GET transport that can route through an HTTP proxy.
@@ -36,6 +37,12 @@ module Celerite
       client.read_timeout = timeout.seconds
       begin
         client.get(path, headers: headers)
+      rescue ex : Socket::Error
+        # Connect-phase socket failures (ECONNREFUSED/EHOSTUNREACH/ENETUNREACH,
+        # DNS failures) become Bundler::Fetcher::NetworkDownError. Read
+        # timeouts and IO errors keep their pre-existing semantics; they are
+        # not caught here.
+        raise network_down(uri, ex)
       ensure
         client.close rescue nil
       end
@@ -46,8 +53,13 @@ module Celerite
                                  timeout : Int32, connect_timeout : Int32?) : HTTP::Client::Response
       host = uri.host.not_nil!
       port = uri.port || (uri.scheme == "https" ? 443 : 80)
-      socket = TCPSocket.new(proxy.host, proxy.port,
-        connect_timeout: (connect_timeout || timeout).seconds)
+      socket =
+        begin
+          TCPSocket.new(proxy.host, proxy.port,
+            connect_timeout: (connect_timeout || timeout).seconds)
+        rescue ex : Socket::Error
+          raise network_down(uri, ex)
+        end
       socket.read_timeout = timeout.seconds
       channel : IO = socket
       begin
@@ -85,7 +97,17 @@ module Celerite
         break if line == "\r\n" || line.empty?
       end
       context = tls || OpenSSL::SSL::Context::Client.new
+      # TLS handshake / certificate failures are intentionally not translated
+      # here: the reference maps them to CertificateFailureError
+      # (bundler/fetcher.rb:25, also an HTTPError). That product difference is
+      # still deferred.
       OpenSSL::SSL::Socket::Client.new(socket, context: context, hostname: host, sync_close: true)
+    end
+
+    # Keep the original socket error on the raised NetworkDownError (never
+    # silently swallowed); Crystal does not auto-chain `cause` here.
+    private def self.network_down(uri : URI, cause : Exception) : NetworkDownError
+      NetworkDownError.for(uri, cause)
     end
 
     private def self.absolute_target(uri : URI, port : Int32, path : String) : String
