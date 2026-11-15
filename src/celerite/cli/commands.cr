@@ -691,19 +691,30 @@ module Celerite
       locked_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, sorted_specs, requested_groups) : sorted_specs
       paths = rest.includes?("--paths")
       if command == "show" && names.empty?
-        stdout.puts "Gems included by the bundle:"
+        # Reference `bundle show` prints the listing header for the human
+        # readable form only; `--paths` prints bare paths (see
+        # `bundle show --paths` in cli.rb / printer.rb).
         missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
         if missing.any?
+          stdout.puts "Gems included by the bundle:" unless paths
           full_names = missing.map(&.full_name).join(", ")
           stderr.puts "Could not find #{full_names} in locally installed gems"
           return 7
         end
         if paths
+          if dir = bundler_gem_dir
+            stdout.puts display_path(dir)
+          end
           locked_specs.each do |spec|
             path = installed_gem_dir(definition, spec, lockfile)
             stdout.puts(path ? display_path(path) : spec.full_name)
           end
         else
+          # Reference `bundle show` lists the running Bundler itself first
+          # (`Bundler.definition.specs` includes the bundler spec), which is the
+          # compatibility profile version here rather than the locked one.
+          stdout.puts "Gems included by the bundle:"
+          stdout.puts "  * bundler (#{profile_bundler_version})"
           locked_specs.each { |spec| stdout.puts "  * #{spec_display_name(spec, lockfile)}" }
         end
         return 0
@@ -789,6 +800,24 @@ module Celerite
 
     private def self.display_path(path : String) : String
       path.gsub('\\', '/')
+    end
+
+    # The Bundler release Celerite emulates in this run.
+    private def self.profile_bundler_version : String
+      ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+    end
+
+    # `bundle show` lists the running Bundler as a gem of the bundle, and
+    # `bundle show --paths` prints its gem directory first. Celerite ships the
+    # reference Bundler as a compatibility profile instead of an installed gem,
+    # so resolve that directory from the configured reference lib (the
+    # differential harness and the bridge both export
+    # `CELERITE_REFERENCE_BUNDLER_LIB`).
+    private def self.bundler_gem_dir : String?
+      reference_lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]?
+      return nil if reference_lib.nil? || reference_lib.empty?
+      dir = File.dirname(reference_lib)
+      (File.directory?(dir) rescue false) ? dir : nil
     end
 
     private def self.read_gemspec_info(gem_dir : String, full_name : String) : {String?, String?, Hash(String, String)}

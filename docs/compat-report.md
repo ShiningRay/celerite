@@ -1668,3 +1668,43 @@ celerite 侧两个夹具都在**克隆阶段**失败，未进入解析路径：
 - bridge 不可用时 `check` 省略通知（参考无此回退）——既有设计，属已知 best-effort 差异。
 - `show`/`info` 的其他重解通知形态未取证（roadmap L154 的剩余项）。
 - 参考会把 `RUBY VERSION` 写回 lockfile，我方 `check` 不改写锁文件（已声明差异，`check` 只读）。
+
+## 2026-11-15 M7(1)：`show` / `show --paths` 的列表形态对齐
+
+`docs/roadmap.md` L155 的 `show` 条目此前只覆盖「已安装 gem 发现」与 `show <gem>`，没有覆盖**裸 `show` 的列表首行**与 `show --paths` 的输出形态。本轮补齐取证并修复两处真实差异。
+
+### 参考语义（bundler-4.0.24，逐行锚定）
+
+- `lib/bundler/cli.rb`：`show` 分支在无 gem 名时调用 `print_ver(command, definition.specs, patch_level)`；`Bundler::Definition#specs` 是 `@specs ||= ...`，其中包含运行中的 Bundler 自身（`Bundler.rubygems.bundler_spec`），因此列表首行恒为 `  * bundler (<运行中版本>)`，与锁文件 `BUNDLED WITH` 无关。
+- `lib/bundler/cli/printer.rb`：`print_ver` 先打印 `Gems included by the bundle:`，再逐条 `  * name (version)`；`print_paths` 只打印路径、不打 header。
+
+### 参考实测（探针 `.tmp-scratch/probe-show`，依赖已满足态）
+
+| 命令 | 参考输出 | 修复前 Celerite |
+| --- | --- | --- |
+| `show` | header + `  * bundler (4.0.24)` + `  * json_pure (2.8.1)` | 缺 bundler 行 |
+| `show --paths` | 仅两行路径（首行 `.../gems/bundler-4.0.24`，次行 json_pure） | 多打印 header，且缺 bundler 路径 |
+| `show`（缺 gem） | header 进 stdout + `Could not find json_pure-2.8.1 in locally installed gems` 进 stderr，exit 7 | 一致 |
+| `show --paths`（缺 gem） | **无 header**，仅错误行，exit 7 | 多打印 header |
+| `list` / `list --paths` / `show <gem>` / `info <gem>` | — | 已一致 |
+
+`BUNDLED WITH` 分别写成 4.0.24、2.7.2、缺省时，参考 `show` 首行**始终**是运行中的版本（本机 4.0.24）。
+
+### 实现
+
+- `src/celerite/cli/commands.cr`：裸 `show` 分支改为先做缺失检查；`--paths` 时不打印 header，并在可解析时先打印运行中 Bundler 的 gem 目录；人类可读形态在 header 后插入 `  * bundler (<profile 版本>)`。
+- 新增 `private def self.profile_bundler_version`（`ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"`，与仓库其余位置一致）与 `private def self.bundler_gem_dir`（由 `CELERITE_REFERENCE_BUNDLER_LIB` 取 `File.dirname`，目录存在才返回）。Celerite 把参考 Bundler 作为兼容 profile 携带而非安装成 gem，差分装具与桥都会导出该变量。
+
+### 证据
+
+- 新增 `spec/m7_show_listing_spec.cr`（5 examples，0 failures）：人类可读首行 bundler、`--paths` 两行（首行为参考 lib 的父目录）、无 reference lib 时退化只打印 gem 路径、缺 gem 时两种形态的 header/exit 行为。
+- 新增差分 `fixtures/differential/show-listing-bundler`（`show`）与 `fixtures/differential/show-paths-bundler`（`show --paths`），复用 `bundle-preset/` 预置已安装 `json_pure`；4.0.24 与 2.7.2 各 **2 passed, 0 failed**。
+- 负对照两次（首辅亲跑）：把缺失分支的 header 改为无条件打印 → `spec/m7_show_listing_spec.cr:178` 失败（`Expected: "" / got: "Gems included by the bundle:\n"`）；删掉 bundler 行 → `:118` 失败（缺少 `  * bundler (4.0.24)`）。恢复后均 5/0/0。
+- 门禁（干净 HOME/TEMP）：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen` EXIT 0（仅既有 2 条 `File.executable?` deprecation）；全量 `crystal spec` **379 examples, 0 failures, 4 errors**（4 = 既有 `spec/git_source_spec.cr` msys `0xC0000022`；上轮 374/0/4）；`git diff --check` EXIT 0。
+- 端到端对照：同一探针下 6 条命令（`show`、`show --paths`、`show json_pure`、`info json_pure`、`list`、`list --paths`）在依赖已满足态与缺 gem 态逐条比对，退出码与输出一致。
+
+### 未验证 / 已知差异
+
+- 未设置 `CELERITE_REFERENCE_BUNDLER_LIB` 时无法定位运行中 Bundler 的 gem 目录，`--paths` 省略该行（参考恒有）；`show` 的 `  * bundler` 行仍打印 profile 版本。
+- 参考在 `--paths` 时排到最前的是**运行中** Bundler（多条 bundler 版本安装时取激活的那一份），本实现取配置的 reference lib，不做多版本解析。
+- `show` 与 `info` 的其他重解通知形态仍未取证（roadmap L154 的余项）。
