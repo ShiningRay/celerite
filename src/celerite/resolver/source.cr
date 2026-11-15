@@ -286,13 +286,9 @@ module Celerite
         true
       end
 
-      # Reference parity: Bundler matches gem metadata with Gem.ruby_version,
-      # which is RUBY_VERSION without a patchlevel suffix. Patchlevel only
-      # participates in Gemfile target validation (Celerite::RubyRuntime).
-      private def running_ruby_version_for_gem : String
-        running_ruby_version
-      end
-
+      # Gem metadata matching uses ruby_environment.ruby_version (no
+      # patchlevel); patchlevel only participates in Gemfile target validation
+      # (Celerite::RubyRuntime).
       private def running_ruby_version : String
         @bridge_ruby_version
       end
@@ -433,7 +429,29 @@ module Celerite
           raise_not_found!(package)
         end
 
-        spec = excluded.first
+        # Bundler models Ruby/RubyGems as PubGrub packages, so the explanation
+        # names the version range that requires the metadata. Verified against
+        # 4.0.24 (future_gem 0.9.0/1.0.0, pinned 1.0.0): a contiguous excluded
+        # suffix prints `<name> >= <lowest excluded version>`, while a fully
+        # excluded gem prints `every version of <name>`.
+        spec = excluded.min_by(&.version)
+        excluded_min = spec.version
+        all_installable = all_specs(package.name).select do |candidate|
+          package.platforms.all? { |platform| installable?(candidate, platform) }
+        end
+        subject =
+          if excluded.size == all_installable.size
+            "every version of #{package.name}"
+          else
+            suffix = all_installable.select { |candidate| candidate.version >= excluded_min }
+            if suffix.size == excluded.size
+              "#{package.name} >= #{excluded_min}"
+            else
+              # Conservative fallback: the metadata excludes a non-contiguous
+              # set of versions, so only the lowest excluded version is stated.
+              "#{package.name} = #{excluded_min}"
+            end
+          end
         root_requirement = requirement.none? ? ">= 0" : requirement.to_s
         if !spec.required_ruby_version.satisfied_by?(Gem::Version.new(running_ruby_version))
           label = "Ruby"
@@ -447,7 +465,7 @@ module Celerite
 
         message = String.build do |io|
           io << "Could not find compatible versions\n\n"
-          io << "Because every version of #{package.name} depends on #{label} #{required}\n"
+          io << "Because #{subject} depends on #{label} #{required}\n"
           io << "  and Gemfile depends on #{package.name} #{root_requirement},\n"
           io << "  #{label} #{required} is required.\n"
           io << "So, because current #{label} version is = #{actual},\n"

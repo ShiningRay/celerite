@@ -175,12 +175,14 @@ run_fixture() {
   index_dir="$(cygpath -m "$repo_root/fixtures/gem-index" 2>/dev/null || echo "$repo_root/fixtures/gem-index")"
   scoped_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-scoped" 2>/dev/null || echo "$repo_root/fixtures/gem-index-scoped")"
   locked_deps_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-locked-deps" 2>/dev/null || echo "$repo_root/fixtures/gem-index-locked-deps")"
+# Remote compact-index metadata constraints (ruby/rubygems fields in /info).
+ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-constraints" 2>/dev/null || echo "$repo_root/fixtures/gem-index-ruby-constraints")"
   index_url="file://$index_dir"
   for side in ref cel; do
     sandbox="$ref_sandbox"; [ "$side" = "cel" ] && sandbox="$cel_sandbox"
     for f in Gemfile Gemfile.lock; do
       [ -f "$fixture_dir/$f" ] || continue
-      sed -e "s|@INDEX_DIR@|$index_dir|" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|" -e "s|@BUNDLER_VERSION@|$bundler_version|"         "$fixture_dir/$f" > "$sandbox/project/$f"
+      sed -e "s|@INDEX_DIR@|$index_dir|" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|" -e "s|@BUNDLER_VERSION@|$bundler_version|"         "$fixture_dir/$f" > "$sandbox/project/$f"
     done
   done
   # extra files, if any (including dotfiles such as .bundle/config: `*` glob
@@ -192,7 +194,7 @@ run_fixture() {
     for side in ref cel; do
       sandbox="$ref_sandbox"; [ "$side" = "cel" ] && sandbox="$cel_sandbox"
       while IFS= read -r ef; do
-        sed -i -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g" "$ef"
+        sed -i -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g" "$ef"
       done < <(find "$sandbox/project" -type f \( -name "*.rb" -o -name "*.txt" \) 2>/dev/null)
     done
   fi
@@ -245,11 +247,18 @@ run_fixture() {
     TMP="$work_tmp_win" TEMP="$work_tmp_win" TMPDIR="$work/tmp"
   )
 
-  # HTTP-index fixtures (http-index marker): serve fixtures/gem-index as a
-  # v2 compact-index HTTP root so cooldown/ETag behavior matches rubygems.org
-  # semantics that file:// marshal indexes never exercise.
+  # HTTP-index fixtures (http-index marker): serve a v2 compact-index HTTP root
+  # so cooldown/ETag behavior matches rubygems.org semantics that file://
+  # marshal indexes never exercise. An empty marker serves fixtures/gem-index;
+  # a non-empty first line names another index directory (relative to the repo).
   http_server_pid=""
   if [ -f "$fixture_dir/http-index" ]; then
+    http_index_relative="$(head -n 1 "$fixture_dir/http-index" 2>/dev/null | tr -d '\r')"
+    if [ -n "$http_index_relative" ]; then
+      http_index_dir="$repo_root/$http_index_relative"
+    else
+      http_index_dir="$repo_root/fixtures/gem-index"
+    fi
     # Refuse to reuse a foreign listener: a stale server from an earlier run
     # would silently serve the wrong index and mask harness regressions.
     if curl -sf -o /dev/null --max-time 1 "http://127.0.0.1:8765/versions" 2>/dev/null; then
@@ -257,7 +266,7 @@ run_fixture() {
       skipped=$((skipped + 1))
       return 0
     fi
-    node "$repo_root/script/http_index_server.js" "$repo_root/fixtures/gem-index" 8765 >/dev/null 2>&1 &
+    node "$repo_root/script/http_index_server.js" "$http_index_dir" 8765 >/dev/null 2>&1 &
     http_server_pid=$!
     # Bounded readiness wait (~10s, 100ms poll). Without this the first command
     # races the server's listen() and fails with ECONNREFUSED.
@@ -291,7 +300,7 @@ run_fixture() {
   : > "$work/ref.out"; : > "$work/ref.err"; ref_code=0; ref_n=0
   while IFS= read -r cmd <&3; do
     [ -z "$cmd" ] && continue
-    cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+    cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
     ref_n=$((ref_n + 1))
     (
       cd "$ref_sandbox/project" || exit 99
@@ -314,7 +323,7 @@ run_fixture() {
   : > "$work/cel.out"; : > "$work/cel.err"; cel_code=0; cel_n=0
   while IFS= read -r cmd <&4; do
     [ -z "$cmd" ] && continue
-    cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+    cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
     cel_n=$((cel_n + 1))
     (
       cd "$cel_sandbox/project" || exit 99
@@ -400,7 +409,7 @@ run_fixture() {
   if [ -f "$fixture_dir/file-contains" ]; then
     while IFS=$'\t' read -r rel needle; do
       [ -z "$rel" ] && continue
-      needle="$(printf '%s' "$needle" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+      needle="$(printf '%s' "$needle" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
       if ! grep -Fq -- "$needle" "$ref_sandbox/project/$rel" 2>/dev/null || \
          ! grep -Fq -- "$needle" "$cel_sandbox/project/$rel" 2>/dev/null; then
         ok=0; detail+="  file-contains differs ($rel): needle=$needle"$'\n'

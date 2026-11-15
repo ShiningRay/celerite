@@ -156,4 +156,31 @@ describe Celerite::Resolver::ResolutionSource do
     error.status_code.should eq(7)
     error.message.not_nil!.should contain("Could not find gem 'a (>= 99.0)'")
   end
+
+  it "names the excluded version range when a pinned root dependency is filtered" do
+    source = constraint_source([
+      index_spec("a", "0.9.0", required_ruby: ">= 1.0"),
+      index_spec("a", "1.0.0", required_ruby: ">= 99.0"),
+    ])
+
+    error = expect_raises(Celerite::Resolver::SolveFailure) do
+      resolved_version(source, "a", Celerite::Gem::Requirement.new(["= 1.0.0"]))
+    end
+    error.status_code.should eq(6)
+    error.message.not_nil!.should contain("Because a >= 1.0.0 depends on Ruby >= 99.0")
+  end
+
+  it "falls back to the exact excluded version when the exclusion is not a suffix" do
+    source = constraint_source([
+      index_spec("a", "1.0.0", required_ruby: ">= 1.0"),
+      index_spec("a", "2.0.0", required_ruby: ">= 99.0"),
+      index_spec("a", "3.0.0", required_ruby: ">= 1.0"),
+    ])
+
+    error = expect_raises(Celerite::Resolver::SolveFailure) do
+      resolved_version(source, "a", Celerite::Gem::Requirement.new(["= 2.0.0"]))
+    end
+    error.status_code.should eq(6)
+    error.message.not_nil!.should contain("Because a = 2.0.0 depends on Ruby >= 99.0")
+  end
 end

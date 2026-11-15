@@ -1253,3 +1253,72 @@ PATH
 **证据（隔离 `HOME`/`USERPROFILE`/`TEMP`/`CRYSTAL_CACHE_DIR` 于 `.tmp-scratch`）**：修复前 `crystal spec spec/cli_spec.cr:288` = `1 examples, 1 failures`（`Expected: 0 got: 17`）；修复后 `crystal spec spec/cli_spec.cr` = `24 examples, 0 failures, 0 errors, 0 pending`；全量 `crystal spec` = `317 examples, 0 failures, 4 errors, 0 pending`（4 errors 为既有 `Celerite::GitSource` 系列 msys shm `0xC0000022` 环境限制，非本改动）；`crystal tool format --check src spec` EXIT 0；`git diff --check` EXIT 0。
 
 **未验证**：同一往返在真实 rubygems.org 可达环境下的行为（本用例已不依赖网络）；`lock --remove-platform` 对多平台/平台变体锁文件的等价性未单独差分。
+
+## 2026-11-15 M7(1) 约束矩阵审计：远程 compact index 负例 + 根级解释文案纠正
+
+本节把 M7(1)（当前 Ruby / RubyGems / Gemfile 目标 Ruby / engine / patchlevel / ABI 的约束过滤）从「有实现、无系统证据」推进到「逐机制有正反例、双 profile 实测」，并修掉审计中暴露的一处**事实错误文案**。
+
+### 1. 审计结论（六机制）
+
+| 机制 | 正例 | 负例 | 证据锚点 |
+| --- | --- | --- | --- |
+| gem 元数据 `required_ruby_version` | `ruby-metadata-match`、`ruby-metadata-exact-match`、`ruby-metadata-boundary-match`（exit 0） | `ruby-metadata-fail`、`ruby-metadata-boundary-fail`（exit 6）；本轮新增远程索引形态 `ruby-metadata-remote-fail`（exit 6） | `src/celerite/resolver/source.cr` `ruby_requirement_satisfied?`（L283-287）、`raise_metadata_or_not_found!`（L420-470）；`spec/m7_resolver_ruby_constraints_spec.cr` |
+| gem 元数据 `required_rubygems_version` | `rubygems-metadata-match`、`rubygems-metadata-boundary-match`（`>= 4.0.16` 边界相等）、`rubygems-metadata-pessimistic-match` | `rubygems-metadata-fail`、`rubygems-metadata-boundary-fail`（`>= 4.0.17`）、`rubygems-metadata-remote-fail` | 同上；比较基准为 bridge 报告的 RubyGems 版本（`resolution.cr` 传入 `env.rubygems_version`） |
+| Gemfile 目标 `ruby` 版本 | `ruby-target-match`（install + check，exit 0） | `ruby-version-mismatch`（exit 18） | `spec/m7_ruby_runtime_spec.cr` + `Celerite::RubyRuntime` |
+| Gemfile 目标 `patchlevel` | `ruby-patchlevel-match`、`ruby-engine-patchlevel-match` | `ruby-patchlevel-mismatch`（exit 18） | 同上 |
+| Gemfile 目标 `engine` / `engine_version` | `ruby-engine-match`、`ruby-engine-patchlevel-match` | `ruby-engine-mismatch`、`ruby-engine-version-mismatch`（exit 18） | 同上（gem 元数据无 engine 字段，仅 Gemfile 目标参与） |
+| 平台变体 | `multi-platform-lock`、`multi-platform-install`、`platform-variant-match` | `platform-variant-fail`（`lock --add-platform x86_64-linux` + `nokogiri`，双方 exit 7：`Could not find gems matching 'nokogiri' valid for all resolution platforms (x64-mingw-ucrt, x86_64-linux)`） | `source.cr` `installable?`/`platform` 过滤；`spec/m7_platform_spec.cr` |
+| ABI | 仅单元证据 | 无差分夹具 | `spec/m7_platform_spec.cr`（bridge 不可用时输出「未校验」而非满足） |
+
+约束矩阵夹具集合（33 例）在双 profile 下实测：`differential (4.0.24): 33 passed, 0 failed, 0 skipped`、`differential (2.7.2): 33 passed, 0 failed, 0 skipped`。
+
+### 2. 死代码清理
+
+`src/celerite/resolver/source.cr` 中 `running_ruby_version_for_gem`（原 L289-294）全仓无调用，其注释把「gem 元数据匹配」讲成另一条路径，易误读为 patchlevel 参与匹配。已删除，并把语义注释移到 `running_ruby_version` 上方：gem 元数据匹配用 `ruby_environment.ruby_version`（无 patchlevel），patchlevel 只参与 Gemfile 目标校验（`Celerite::RubyRuntime`）。`ruby_requirement_satisfied?` 未改动。
+
+### 3. 远程 compact index 负例（新增索引与 4 个夹具）
+
+此前所有元数据负例都用 **path 源**（`extra/vendor/future_gem/*.gemspec`），远程 compact index 的过滤路径没有负例。本轮新增 `fixtures/gem-index-ruby-constraints/`：
+
+- `versions`：`future_gem 0.9.0,1.0.0`（md5 `8fd738f0…`）、`rubygems_gem 0.9.0,1.0.0`（md5 `6d79be07…`），md5 与 `fixtures/gem-index` 同算法（info 文件字节 MD5）；
+- `info/future_gem`：`0.9.0 …ruby:>= 1.0` / `1.0.0 …ruby:>= 99.0`；`info/rubygems_gem`：`0.9.0 …rubygems:>= 0` / `1.0.0 …rubygems:>= 99.0`；
+- checksum 为 32 零字节占位（该索引**只服务 `lock`**：没有 `.gem`、`quick/` 与 legacy `specs.4.8*`，故 `install`/`check` 不可用）。
+
+`script/differential` 新增占位 `@RUBY_CONSTRAINTS_INDEX_DIR@`（替换 5 处）与 `ruby_constraints_index_dir`；`http-index` 标记现在支持首行指定索引目录。4 个夹具（`ruby-metadata-remote-fallback`、`ruby-metadata-remote-fail`、`rubygems-metadata-remote-fallback`、`rubygems-metadata-remote-fail`）改用 `http://127.0.0.1:8765/` + `http-index`，而不是 `file://`——**因为参考对 `file://` 源不使用 compact index，会回退到 legacy `specs.4.8.gz` 并实测 ENOENT**（这也是本机唯一可行的远程索引路径：无外网）。
+
+### 4. 修复：根级依赖被元数据排除时的解释文案
+
+修复前（`bin/celerite.exe` 对 `gem "future_gem", "1.0.0"`，远程索引）：
+
+    Because every version of future_gem depends on Ruby >= 99.0
+
+参考（4.0.24）为：
+
+    Because future_gem >= 1.0.0 depends on Ruby >= 99.0
+
+即我方文案**在事实层面是错的**：`0.9.0` 只需要 Ruby >= 1.0，并非「每个版本」都要求 Ruby >= 99.0。修复在 `raise_metadata_or_not_found!`：
+
+- `spec = excluded.min_by(&.version)`、`excluded_min = spec.version`（与打印范围一致）；
+- `all_installable` = 该 gem 全部「平台可安装」候选（**不做 requirement 过滤**，否则 pinned 场景会误判为「全部被排除」）；
+- `subject` 三分支：①全部候选被排除 → `every version of <name>`（path 夹具形态，参考同样如此，保留）；②`>= excluded_min` 的候选数恰等于 `excluded.size`（连续后缀）→ `<name> >= <min>`；③其余 → `<name> = <min>`（保守回退，注释已标明）；
+- 消息首行改为 `Because #{subject} depends on …`，其余四行逐字未动，`exit 6` 语义未动。
+
+新增 2 个单元例（`spec/m7_resolver_ruby_constraints_spec.cr`，覆盖分支 ②/③），并把 `ruby-metadata-remote-fail`/`rubygems-metadata-remote-fail` 的 `deferred-*` 标记删除——两者现在是**逐字节 PASS**（差分比较 stdout/stderr/exit），即参考文案确实为 `future_gem >= 1.0.0`。
+
+### 5. 门禁与差分
+
+- `crystal tool format --check src spec` → EXIT 0
+- `crystal build --no-codegen --link-flags <shim> src/cli.cr` → EXIT 0（仅 2 条既有 `File.executable?` deprecation，`commands_install.cr:612,676`）
+- 全量 `crystal spec --link-flags <shim>` → `319 examples, 0 failures, 4 errors, 0 pending`（4 errors 为既有 `Celerite::GitSource` msys shm `0xC0000022` 环境错误）
+- `git diff --check` → EXIT 0；`bash -n script/differential` → EXIT 0
+- 差分：14 个约束夹具双 profile `14 passed, 0 failed, 0 skipped`（首辅复跑子集 `ruby-metadata-fail`/`ruby-metadata-remote-fallback`/`ruby-metadata-remote-fail`/`rubygems-metadata-remote-fail`/`ruby-metadata-boundary-fail` → `5 passed, 0 failed`，2.7.2 两个 remote-fail → `2 passed, 0 failed`）
+
+一次观察（如实记录）：首辅的一次全量 spec 出现 `319 examples, 1 failures, 4 errors`，失败为 `spec/m7_build_args_spec.cr:97`（build.<gem> 参数未到达 extconf）。该例单跑 `5 examples, 0 failures`，紧随其后的全量复跑恢复 `319 examples, 0 failures, 4 errors`，与既有的 msys shm/进程类环境失败同源，判为环境抖动而非产品回归。
+
+### 6. 未验证 / 边界
+
+1. 分支 ③（非连续排除）的参考逐字形态未实测——现有索引里没有「只有中间版本被排除」的样本，我方采用保守回退 `<name> = <min>`。
+2. `fixtures/gem-index-ruby-constraints` 的 checksum 是占位零值；该索引不能用于 `install`/`check`（缺 `.gem`/`quick/`/legacy 索引）。
+3. 真实 rubygems.org 未触达（无外网），远程路径只经本地 `http_index_server.js` 验证。
+4. ABI 约束仍只有单元证据，无差分夹具。
+5. M7(1) 复选框保持未勾选：本节补的是「约束矩阵 + 远程负例 + 文案」，不含 `show`/`info` 重解通知等其他 M7(1) 遗留。
