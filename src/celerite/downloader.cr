@@ -211,6 +211,9 @@ module Celerite
         attempt += 1
         begin
           response = HttpTransport.get(URI.parse(@remote), remote_path, headers, tls_ctx, @proxy, @timeout)
+        rescue ex : AuthenticationRequiredError | BadAuthenticationError | AuthenticationForbiddenError
+          # Authentication failures are terminal (no retry) like the reference.
+          raise ex
         rescue ex
           if attempt < max_attempts
             sleep (0.5 * (2 ** (attempt - 1))).seconds
@@ -221,6 +224,17 @@ module Celerite
         if response.status_code == 200
           File.write(path, response.body)
           return
+        elsif response.status_code == 401
+          # fetcher/downloader.rb:70-71: 401 with `uri.userinfo` present means
+          # the credentials were rejected; without them the source simply
+          # requires authentication. The message names the host.
+          host = uri.host || uri.to_s
+          raise AuthenticationRequiredError.new(host) unless @credentials || uri.user || uri.password
+          raise BadAuthenticationError.new(host)
+        elsif response.status_code == 403
+          # Measured 4.0.24 oracle: a 403 without WWW-Authenticate surfaces as
+          # the same AuthenticationRequiredError message as a credential-less 401.
+          raise AuthenticationRequiredError.new(uri.host || uri.to_s)
         elsif response.status_code == 301 || response.status_code == 302 || response.status_code == 303 || response.status_code == 307 || response.status_code == 308
           # Follow redirect, honoring BUNDLE_REDIRECT max-redirect limit.
           if loc = response.headers["Location"]?

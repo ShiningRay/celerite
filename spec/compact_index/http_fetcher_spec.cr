@@ -72,8 +72,11 @@ module Celerite
       server = AuthTestServer.new("Basic #{Base64.strict_encode("user:s3cret")}", "---\n")
       begin
         fetcher = CompactIndex::HttpFetcher.for("http://127.0.0.1:#{server.port}/", nil, retries: 0)
-        response = fetcher.call("/info/demo", {} of String => String)
-        response.status.should eq(401)
+        # fetcher/downloader.rb:70-71: a 401 without credentials raises the
+        # reference authentication error instead of returning a raw response.
+        expect_raises(Celerite::AuthenticationRequiredError, "Authentication is required for 127.0.0.1.") do
+          fetcher.call("/info/demo", {} of String => String)
+        end
       ensure
         server.close
       end

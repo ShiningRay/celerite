@@ -1957,3 +1957,31 @@ differential (4.0.24): 0 passed, 2 failed
 - 门禁（首辅亲跑，新建 HOME `home-g38`/`g38v`/`g38f`/`g38s`）：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen --link-flags <shim> src/cli.cr` EXIT 0（仅 2 条既有 `File.executable?` deprecation）；全量 `crystal spec --link-flags <shim>` **413 examples, 0 failures, 4 errors, 0 pending**（4 = 既有 `spec/git_source_spec.cr` msys `0xC0000022`；上轮 408/0/4，+5 新例）；`git diff --check` EXIT 0。
 
 **未验证 / 限制**：GIT `glob:` 只有纯函数单测与参考 oracle，没有差分夹具——本机 celerite 子进程的 msys `sh.exe` 在 Low IL 下 `0xC0000022`，`git-glob` 仍在克隆阶段失败（环境，非产品）；`glob:` 与非默认相对化/绝对路径的组合、`cache`/`package` 对 monorepo glob 源的复制行为未覆盖。
+
+### 2026-11-16（M7(5)：私有 source 的鉴权失败映射）
+
+**参考语义**（`bundler-4.0.24/lib/bundler/fetcher/downloader.rb:70-73`、`fetcher.rb:45-72`）：401 且请求未带凭据 → `AuthenticationRequiredError`；401 且带凭据 → `BadAuthenticationError`；消息里的 `<host>` 是**主机名**（不是完整 URL），末行的环境变量名是 `BUNDLE_` + `Settings.key_for(host)`。所有 `HTTPError` 子类 status 17、`wrap: true`。
+
+**本地 oracle（首辅亲测；401 由 node 服务 `127.0.0.1:8799` 要求 Basic `alice:s3cret`，403 由 `127.0.0.1:8801` 恒返回且无 `WWW-Authenticate`；Gemfile `source "http://127.0.0.1:<port>/"` + `gem "json_pure"`，命令 `lock`）**：
+
+| 场景 | 参考 stdout | 参考 stderr | 参考 exit | celerite（修复后） |
+| --- | --- | --- | --- | --- |
+| 401 无凭据 | `Writing lockfile to <abs>` | 四行：`Authentication is required for 127.0.0.1.` / `Please supply credentials for this source. You can do this by running:` / `` `bundle config set --global 127.0.0.1 username:password` `` / `` or by storing the credentials in the `BUNDLE_127__0__0__1` environment variable `` | 17 | stdout 相同、stderr 四行逐字相同（行尾 LF vs CRLF）、exit 17 |
+| 401 凭据错误（`alice:wrong`） | 同上 | 两行：`Bad username or password for 127.0.0.1.` / `Please double-check your credentials and correct them.` | 17 | 相同 |
+| 403（无 `WWW-Authenticate`） | 同上 | 与「401 无凭据」四行逐字相同 | 17 | 相同 |
+| 正确凭据（`alice:s3cret`） | 记日志三行 | 空 | 0 | 0，锁文件逐字一致 |
+
+即：参考在失败前**已**打印 `Writing lockfile to …`（stdout），随后才因取索引失败退出——这一点由差分夹具 `lock-platform-variant`/`lock-path-absolute-relative` 的参考首行佐证。
+
+**修复前缺陷**：`compact_index` 把非 2xx 原样返回，401 被上层当作空索引 → `celerite lock` exit **7** + `Could not find gem 'json_pure' in rubygems repository http://127.0.0.1:8799/ or installed locally.`；`Downloader` 对 401 只 `raise GemNotFoundError…(HTTP 401)`。同一台机器上参考 bundler 的凭据链路本就可用（我方也不缺凭据读取：项目 `.bundle/config` 的 `BUNDLE_HTTP://…` 生效）。
+
+**实现**：`src/celerite/errors.cr` 新增 `AuthenticationRequiredError`/`BadAuthenticationError`/`AuthenticationForbiddenError`（均 `status_code 17`、`wrap? true`；前两者消息逐字照参考，host + `Config.key_for(host)`；第三个保留参考文案但本轮未接线——实测 403 走的是 AuthenticationRequired 文案）；`src/celerite/compact_index/cache.cr` 的 `HttpFetcher#perform` 在 `HttpTransport.get` 之后映射 401（有 `@user`/`@password` 或 URI userinfo → Bad，否则 Required）与 403（→Required），并把三个鉴权错误在 `call` 的重试 `rescue` 之前直通；`src/celerite/downloader.cr` 的 `download_to` 在 200 分支后、3xx 之前同样映射，重试 `rescue` 之前直通。
+
+**证据**：
+- 修复前（`git stash` 只回滚两个 mapping 文件后跑新 spec）：`4 examples, 4 failures, 0 errors, 0 pending`——三条 `Expected: 17 got: 7`，一条 `Expected Celerite::AuthenticationRequiredError`。
+- 修复后：`spec/m7_authentication_errors_spec.cr` **4 examples, 0 failures**；与 `spec/compact_index/http_fetcher_spec.cr` 联跑 **9 examples, 0 failures**（后者原先断言「401 返回原始 response」，按新契约改为 `expect_raises(AuthenticationRequiredError)`——行为变更的必要更新，非凑绿）。
+- 端到端对照（首辅亲跑，ref/cel 各自独立项目与 HOME）：401 无凭据 / 401 错误凭据 / 403 三场景的 stdout、stderr、exit 全部一致（见上表）。
+- 负对照（首辅亲做）：把 `HttpFetcher#perform` 的 `if status == 401` 与 `Downloader#download_to` 的 401 分支改成 `if false`/`elsif false` → `4 examples, 3 failures`（两条 401 用例与 Downloader 用例失败；403 分支未禁用故该例仍通过），`edit` 还原后 4/0。**过程教训**：负对照第一次误用 `Set-Content -Encoding UTF8` 写源码，给 `cache.cr`/`downloader.cr` 加了 UTF-8 BOM（`EF BB BF`），已按字节剥离并复核 `format`/`build` 通过——改源码只能用 `edit`。
+- 门禁（首辅亲跑，新建 HOME/TEMP）：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen --link-flags <shim> src/cli.cr` EXIT 0（仅 2 条既有 `File.executable?` deprecation）；全量 `crystal spec --link-flags <shim>` **417 examples, 0 failures, 4 errors, 0 pending**（4 = 既有 `spec/git_source_spec.cr` msys `0xC0000022`；上轮 413/0/4，+4 新例）；`git diff --check` EXIT 0；差分 4.0.24 `install-fresh`/`lock-path-absolute-relative`/`lock-platform-variant` → `3 passed, 0 failed`，2.7.2 `install-local`/`lock-missing-dependency-edges` → `2 passed, 0 failed`。
+
+**已声明偏差 / 未验证**：403 的参考文案实测是 `AuthenticationRequiredError`（不是 `AuthenticationForbiddenError` 的 "Access token…"），故后者保留但未接线；gem 下载路径的 403 无参考 oracle；`~/.gemrc`/`Gem.configuration` 凭据来源未覆盖；401 带 `WWW-Authenticate: Basic` 的变体、代理 CONNECT 后的 401、以及 `install`/`update`/`cache` 的鉴权失败只由 `Downloader`/`HttpFetcher` 单测覆盖，未逐命令差分；stderr 行尾 LF vs 参考 CRLF 为既有已声明差异。

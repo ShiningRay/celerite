@@ -80,6 +80,69 @@ module Celerite
     end
   end
 
+  # Bundler::Fetcher::AuthenticationRequiredError (fetcher.rb:45-52, status 17):
+  # the source answered 401/403 and no usable credentials were supplied. The
+  # message names the host (not the full URL) and the BUNDLE_* key the user
+  # would have to set, matching the reference's `Settings.key_for(host)`.
+  class AuthenticationRequiredError < Error
+    getter host : String
+
+    def initialize(@host : String)
+      super("Authentication is required for #{@host}.\n" \
+            "Please supply credentials for this source. You can do this by running:\n" \
+            "`bundle config set --global #{@host} username:password`\n" \
+            "or by storing the credentials in the `#{Config.key_for(@host)}` environment variable")
+    end
+
+    def status_code : Int32
+      17
+    end
+
+    def wrap? : Bool
+      true
+    end
+  end
+
+  # Bundler::Fetcher::BadAuthenticationError (fetcher.rb:54-58, status 17):
+  # credentials were sent but the source still answered 401.
+  class BadAuthenticationError < Error
+    getter host : String
+
+    def initialize(@host : String)
+      super("Bad username or password for #{@host}.\n" \
+            "Please double-check your credentials and correct them.")
+    end
+
+    def status_code : Int32
+      17
+    end
+
+    def wrap? : Bool
+      true
+    end
+  end
+
+  # Bundler::Fetcher::AuthenticationForbiddenError (fetcher.rb:60-64, status
+  # 17). Kept for completeness; the measured 4.0.24 oracle reports a plain 403
+  # without `WWW-Authenticate` as AuthenticationRequiredError, so call sites map
+  # 403 there and this class is not raised yet.
+  class AuthenticationForbiddenError < Error
+    getter host : String
+
+    def initialize(@host : String)
+      super("Access token could not be authenticated for #{@host}.\n" \
+            "Make sure it's valid and has the necessary scopes configured.")
+    end
+
+    def status_code : Int32
+      17
+    end
+
+    def wrap? : Bool
+      true
+    end
+  end
+
   # Raised for lockfile parse/validation failures (mirrors Bundler::LockfileError).
   class LockfileError < Error
     def status_code : Int32

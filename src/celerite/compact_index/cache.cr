@@ -123,6 +123,10 @@ module Celerite
               response_headers[name.downcase] = values.first? || ""
             end
             return FetchResponse.new(response.status_code, response.body, response_headers)
+          rescue ex : Celerite::AuthenticationRequiredError | Celerite::BadAuthenticationError | Celerite::AuthenticationForbiddenError
+            # Authentication failures are terminal in the reference; retrying
+            # would only repeat the same rejected request.
+            raise ex
           rescue ex
             if attempt < max_attempts
               sleep (0.5 * (2 ** (attempt - 1))).seconds
@@ -179,7 +183,20 @@ module Celerite
         if user
           headers["Authorization"] = "Basic " + Base64.strict_encode("#{user}:#{password || ""}")
         end
-        HttpTransport.get(uri, path, headers, tls_ctx, @proxy, @timeout)
+        response = HttpTransport.get(uri, path, headers, tls_ctx, @proxy, @timeout)
+        # fetcher/downloader.rb:70-73: 401 without credentials means the source
+        # requires authentication; 401 with credentials means they were
+        # rejected; the measured 4.0.24 oracle maps a 403 without
+        # WWW-Authenticate to the same "Authentication is required" text.
+        status = response.status_code
+        if status == 401
+          host = uri.host || uri.to_s
+          raise Celerite::AuthenticationRequiredError.new(host) unless user || password
+          raise Celerite::BadAuthenticationError.new(host)
+        elsif status == 403
+          raise Celerite::AuthenticationRequiredError.new(uri.host || uri.to_s)
+        end
+        response
       end
     end
 
