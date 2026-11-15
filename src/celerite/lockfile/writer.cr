@@ -1,4 +1,5 @@
 require "file"
+require "../errors"
 
 module Celerite
   module Lockfile
@@ -14,6 +15,11 @@ module Celerite
         text = contents.gsub(/(?<!\r)\n/, "\r\n")
       end
       File.write(path, text)
+    rescue ex : File::AccessDeniedError
+      # Reference: `filesystem_access(file) { File.open(p, "wb") { ... } }`
+      # maps Errno::EACCES/EPERM to PermissionError (status 23). NotFound is a
+      # different failure and intentionally not mapped here.
+      raise PermissionError.new(path, :write)
     end
   end
 end

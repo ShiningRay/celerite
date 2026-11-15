@@ -143,6 +143,50 @@ module Celerite
     end
   end
 
+  # Bundler::PermissionError (errors.rb:94-128, status 23): a filesystem
+  # operation was denied. The reference raises this from
+  # `SharedHelpers#filesystem_access` (shared_helpers.rb:105-127) and the lock
+  # writer wraps the write in it (definition.rb:436-442). `action` and
+  # `permission_type` follow the reference exactly; `:create` names the parent
+  # folder because creating a file needs write access to it.
+  class PermissionError < Error
+    getter path : String
+    getter permission_type : Symbol
+
+    def initialize(path : String, @permission_type : Symbol = :write)
+      @path = path.gsub('\\', "/")
+      super(message)
+    end
+
+    def message : String
+      action = case permission_type
+               when :read       then "read from"
+               when :write      then "write to"
+               when :executable then "execute"
+               when :exec       then "execute"
+               else                  permission_type.to_s
+               end
+      permission = if permission_type == :create
+                     "executable permissions for all parent directories and write permissions for `#{parent_folder}`"
+                   else
+                     "#{permission_type} permissions for that path"
+                   end
+      "There was an error while trying to #{action} `#{path}`. It is likely that you need to grant #{permission}."
+    end
+
+    def parent_folder : String
+      File.dirname(path)
+    end
+
+    def status_code : Int32
+      23
+    end
+
+    def wrap? : Bool
+      true
+    end
+  end
+
   # Raised for lockfile parse/validation failures (mirrors Bundler::LockfileError).
   class LockfileError < Error
     def status_code : Int32

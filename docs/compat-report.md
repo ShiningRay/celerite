@@ -2007,3 +2007,18 @@ profile 门控：`Commands.preserve_lockfile_crlf?`（`commands.cr:320`）= `!(E
 门禁（新建 HOME/TEMP `home-g40`/`spec-tmp-g40`/`ccache-g40`）：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen` EXIT 0；`spec/m7_lockfile_line_endings_spec.cr` `4 examples, 0 failures`；全量 `421 examples, 0 failures, 4 errors`（4 = 既有 `spec/git_source_spec.cr` Low-IL msys）；`git diff --check` EXIT 0。
 
 未验证 / 限制：装具 CRLF 保真（上）；`bundle install`/`update` 写锁路径的 CRLF 行为只做了同一 `Lockfile.write` 单元级别的推断，未逐命令差分；混行（部分 CRLF、部分 LF）按「含 CRLF 即全 CRLF」处理，参考同规则；BOM 与 UTF-8 编码未验证；`Gemfile.lock` 通过标准输入/`--lockfile` 别名路径未覆盖。
+
+## 2026-11-16（M7(5)：锁文件写入失败的权限错误映射）
+
+- 参考锚点：`bundler/shared_helpers.rb:105-127`（`filesystem_access`：`Errno::EACCES` → `PermissionError.new(path, action)`，其余 `SystemCallError` → `GenericSystemCallError`）、`bundler/definition.rb:436-442`（锁文件写入在 `filesystem_access(file)` 内）、`bundler/errors.rb:94-128`（`PermissionError`：status 23、`action`/`permission_type`/`parent_folder`、`ui.error(..., wrap: true)`）。
+- 首辅 oracle（只读 `Gemfile.lock` + `lock`）：参考 exit 23；stdout 三行 `Writing lockfile to <abs>` / `Fetching source index from …` / `Resolving dependencies...`；stderr 三行（80 列折行）：
+  `There was an error while trying to write to`
+  `` `C:/…/Gemfile.lock`. ``
+  `It is likely that you need to grant write permissions for that path.`
+- 修复前实测（`bin/celerite.exe lock`，同一只读夹具）：exit 1，stderr `celerite internal error: Error opening file with mode 'w': 'C:\\…\\Gemfile.lock': 拒绝访问。`
+- 实现：`src/celerite/errors.cr` 新增 `PermissionError`（消息逐字按参考、路径正斜杠、status 23、`wrap? true`；`:create` 时写父目录短语 `executable permissions for all parent directories and write permissions for `<parent>``）；`src/celerite/lockfile/writer.cr` 捕获 `File::AccessDeniedError` → `PermissionError.new(path, :write)`（不吞 `File::NotFoundError`；成功路径与既有 CRLF 逻辑不变）。
+- spec：`spec/m7_filesystem_errors_spec.cr` 4 例——只读锁 → `code == 23`、stdout 含 `Resolving dependencies...`、stderr 与 `word_wrap(message, 80)` 逐字一致；`:create` 父目录短语；`:read`/`:executable` 动作；status/wrap。修复后 `4 examples, 0 failures, 0 errors, 0 pending`。
+- 端到端复核（首辅亲跑，`bin/celerite.exe` 重建后，ref/cel 各一独立沙箱 + 独立 HOME）：两侧 **exit 23**；stdout 各 3 行、路径归一后逐字相同；stderr 各 3 行，路径与行尾归一后 `SAME_AFTER_PATH_AND_EOL_NORMALIZE=True`（参考 CRLF、我方 LF，属既有已声明行尾差异，文案逐字一致）。
+- 负对照（首辅亲做）：在 `writer.cr` 的 rescue 里加 `raise ex if ENV["CELERITE_NC_PERMISSION"]?` 并置该变量跑 spec → `4 examples, 1 failures, 0 errors, 0 pending`，原文 `Failure/Error: code.should eq(23)` / `Expected: 23` / `got: 1`；移除后复跑 4/0，`Select-String 'negative-control|CELERITE_NC_'` 在 `src/`、`spec/` 无残留。
+- 门禁（新建 HOME/TEMP `home-g41c`/`spec-tmp-g41c`/`ccache-g41c`）：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen` EXIT 0（2 条既有 deprecation）；全量 `425 examples, 0 failures, 4 errors`（4 = 既有 `spec/git_source_spec.cr` Low-IL msys）；`git diff --check` EXIT 0。
+- 未验证：ENOSPC(31)/EROFS(42)/EPERM(43)/ENOTSUP/`GenericSystemCallError`(32)/`TemporaryResourceError` 未映射（本机无法构造）；install 路径的 `:create` 未接线；Windows 只读**目录**不阻止创建，无对应 oracle；`--print`/`--lockfile` 别名路径未覆盖。
