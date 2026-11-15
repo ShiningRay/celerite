@@ -1,0 +1,5 @@
+source "file:///@INDEX_DIR@"
+
+path "vendor/mono", glob: "gems/*/*.gemspec" do
+  gem "mono_a"
+end

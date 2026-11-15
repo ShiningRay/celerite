@@ -1935,3 +1935,25 @@ differential (4.0.24): 0 passed, 2 failed
 **门禁（首辅亲跑，新建 HOME `home-g37b/g37c`）**：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen --link-flags <shim> src/cli.cr` EXIT 0（仅 2 条既有 `File.executable?` deprecation）；全量 `crystal spec --link-flags <shim>` **408 examples, 0 failures, 4 errors, 0 pending**（4 = 既有 `spec/git_source_spec.cr` msys `0xC0000022`；上轮 402/0/4，+4 新例 +2 TLS/桥例）；`git diff --check` EXIT 0。
 
 **未验证 / 限制**：Windows 系统证书库（SCHANNEL）不参与 OpenSSL 信任判断；CApath 需 c_rehash 哈希布局（未做目录自动 rehash）；代理 CONNECT 隧道复用同一上下文未单独差分；`Gem.configuration.ssl_ca_cert`（`~/.gemrc`）仍未读取（既有已声明偏差）；原生扩展完整编译链路仍被 Low-IL 环境阻塞。
+
+### 2026-11-16（M7(5)：`glob:` 锁文件行与 GIT 源选项顺序）
+
+**参考语义**（bundler-4.0.24）：`lib/bundler/source/path.rb:14` `DEFAULT_GLOB = "{,*,*/*}.gemspec"`；`:45-49` `to_lock` 输出 `PATH` / `  remote: <lockfile_path>` /（非默认 glob 时）`  glob: <@glob>` / `  specs:`；`lib/bundler/source/git.rb:53-61` 输出 `GIT` / `  remote:` / `  revision:` / `%w[ref branch tag submodules]` 中存在者 /（非默认 glob 时）`  glob:` / `  specs:`。
+
+**修复前缺陷**：`Resolution#generated_lockfile` 的 PATH 段只写 `remote`（`glob:` 丢失）；GIT 段选项顺序为 `branch, tag, ref`（参考是 `ref, branch, tag`），且同样不写 `glob:`。
+
+**参考 oracle（首辅实测 `bundle lock` 原文）**：
+
+- PATH monorepo（`path "vendor/mono", glob: "gems/*/*.gemspec" do gem "mono_a" end`）：`PATH` / `  remote: vendor/mono` / `  glob: gems/*/*.gemspec` / `  specs:` / `    mono_a (0.1.0)`。
+- GIT glob（`gem "alpha", git: "./mono", glob: "gems/*/*.gemspec"`）：`GIT` / `  remote: ./mono` / `  revision: 1e9fd93…` / `  glob: gems/*/*.gemspec` / `  specs:` / `    alpha (0.1.0)`。
+
+**实现**：`src/celerite/resolution.cr` 新增 `DEFAULT_GLOB`、`Resolution.git_lock_options(remote, info)`、`Resolution.path_lock_options(remote, info)`（纯函数，键顺序与默认值抑制按参考）；`generated_lockfile` 的 GIT/PATH 两段改为调用它们，`lockfile_path_for` 相对化与 PATH `group_by` 行为不变。
+
+**证据**：
+
+- `spec/m7_source_lock_options_spec.cr`（新增，5 例）：PATH 非默认 glob → `["remote","glob"]`；PATH 无 glob → `["remote"]`；PATH 默认 glob → `["remote"]`；GIT 全设 → `["remote","revision","ref","branch","tag","submodules","glob"]`（`revision` 为 `""`、`submodules` 为 `"true"`）；GIT 仅 remote → `["remote","revision"]`。`5 examples, 0 failures, 0 errors`。
+- 差分 `fixtures/differential/path-glob-monorepo`（`lock`，`file-contains` 两条）：4.0.24 `PASS (exit=0)`、2.7.2 `PASS (exit=0)`；同轮回归 `lock-path-absolute-relative`、`install-fresh`、`install-local` 全 PASS。
+- 负对照（首辅亲做）：把 `path_lock_options` 的 glob 分支改成恒不输出（`unless glob == DEFAULT_GLOB || true`）并重建 → `FAIL path-glob-monorepo (lock)`，原文 `file-contains differs (Gemfile.lock): needle=  glob: gems/*/*.gemspec`、`0 passed, 1 failed`；`edit` 还原后重建复绿。
+- 门禁（首辅亲跑，新建 HOME `home-g38`/`g38v`/`g38f`/`g38s`）：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen --link-flags <shim> src/cli.cr` EXIT 0（仅 2 条既有 `File.executable?` deprecation）；全量 `crystal spec --link-flags <shim>` **413 examples, 0 failures, 4 errors, 0 pending**（4 = 既有 `spec/git_source_spec.cr` msys `0xC0000022`；上轮 408/0/4，+5 新例）；`git diff --check` EXIT 0。
+
+**未验证 / 限制**：GIT `glob:` 只有纯函数单测与参考 oracle，没有差分夹具——本机 celerite 子进程的 msys `sh.exe` 在 Low IL 下 `0xC0000022`，`git-glob` 仍在克隆阶段失败（环境，非产品）；`glob:` 与非默认相对化/绝对路径的组合、`cache`/`package` 对 monorepo glob 源的复制行为未覆盖。

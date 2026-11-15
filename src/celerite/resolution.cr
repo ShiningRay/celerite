@@ -1147,6 +1147,37 @@ module Celerite
       path.starts_with?("/") || path.starts_with?("\\\\") || path.matches?(/\A[A-Za-z]:[\/\\]/)
     end
 
+    # Reference `Source::Path::DEFAULT_GLOB` (bundler-4.0.24 source/path.rb:14):
+    # a glob equal to this default is never written to the lockfile, and only a
+    # non-default glob earns a `glob:` line.
+    DEFAULT_GLOB = "{,*,*/*}.gemspec"
+
+    # Reference `Source::Git#to_lock` (source/git.rb:53-61) writes `remote`,
+    # `revision`, then the options present in %w[ref branch tag submodules],
+    # then a non-default glob. The order is load-bearing for byte-equal locks.
+    def self.git_lock_options(remote : String, info : SourceInfo) : Array(Lockfile::Option)
+      options = [Lockfile::Option.new("remote", remote),
+                 Lockfile::Option.new("revision", info.revision || "")]
+      options << Lockfile::Option.new("ref", info.ref.not_nil!) if info.ref
+      options << Lockfile::Option.new("branch", info.branch.not_nil!) if info.branch
+      options << Lockfile::Option.new("tag", info.tag.not_nil!) if info.tag
+      options << Lockfile::Option.new("submodules", "true") if info.submodules == true
+      if glob = info.glob
+        options << Lockfile::Option.new("glob", glob) unless glob == DEFAULT_GLOB
+      end
+      options
+    end
+
+    # Reference `Source::Path#to_lock` (source/path.rb:45-49): `remote` plus the
+    # `glob:` line only for a non-default glob.
+    def self.path_lock_options(remote : String, info : SourceInfo) : Array(Lockfile::Option)
+      options = [Lockfile::Option.new("remote", remote)]
+      if glob = info.glob
+        options << Lockfile::Option.new("glob", glob) unless glob == DEFAULT_GLOB
+      end
+      options
+    end
+
     def generated_lockfile : Lockfile::Data
       resolve! unless @resolved
 
@@ -1160,20 +1191,16 @@ module Celerite
           Lockfile::Spec.new(spec.name, spec.version.to_s, spec.platform, spec.dependencies)
         end
         info = specs.first.source_info.not_nil!
-        options = [Lockfile::Option.new("remote", remote),
-                   Lockfile::Option.new("revision", info.revision || "")]
-        options << Lockfile::Option.new("branch", info.branch.not_nil!) if info.branch
-        options << Lockfile::Option.new("tag", info.tag.not_nil!) if info.tag
-        options << Lockfile::Option.new("ref", info.ref.not_nil!) if info.ref
-        options << Lockfile::Option.new("submodules", "true") if info.submodules == true
+        options = Resolution.git_lock_options(remote, info)
         sections << Lockfile::TypedSection.new(Lockfile::SourceSection.new("GIT", options, source_specs))
       end
       non_gem.select(&.source_type.==("PATH")).group_by { |spec| lockfile_path_for(spec.source_info.not_nil!.remote) }.each do |remote, specs|
         source_specs = specs.map do |spec|
           Lockfile::Spec.new(spec.name, spec.version.to_s, spec.platform, spec.dependencies)
         end
+        info = specs.first.source_info.not_nil!
         sections << Lockfile::TypedSection.new(Lockfile::SourceSection.new("PATH",
-          [Lockfile::Option.new("remote", remote)], source_specs))
+          Resolution.path_lock_options(remote, info), source_specs))
       end
 
       gem_sections_by_remote = {} of String => Array(Lockfile::Spec)

@@ -1,0 +1,2 @@
+Gemfile.lock	  glob: gems/*/*.gemspec
+Gemfile.lock	    mono_a (0.1.0)
