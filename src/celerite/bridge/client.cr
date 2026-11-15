@@ -202,6 +202,12 @@ module Celerite
         request("gemspec_paths", {"gemfile" => gemfile})["gemspecs"].as_a.map(&.as_s)
       end
 
+      # Every gem visible to the bridge interpreter's RubyGems (system dirs
+      # plus GEM_HOME/GEM_PATH). Backs `install --local` / `--prefer-local`.
+      def installed_specs : JSON::Any
+        request("installed_specs")
+      end
+
       def read_gem_spec(path : String) : JSON::Any
         request("read_gem_spec", {"path" => path})
       end

@@ -476,16 +476,103 @@ module Celerite
     # (pinned `install --local`; the compact index is never consulted).
     property local_only : Bool = false
     property prefer_local : Bool = false
+    @installed_local_specs : Array(Resolver::IndexSpec)? = nil
+    # full_name of the installed gems that supplied `--local` candidates; the
+    # installer skips these (they are already present in this GEM_HOME).
+    getter local_installed_full_names = Set(String).new
+
+    # `install --local` candidates: gems already visible to RubyGems plus
+    # `<Gemfile dir>/vendor/cache/*.gem`. file:// sources count as local, so
+    # their index is still consulted (oracle: `--local` + file:// resolves
+    # through the index).
+    private def local_index_specs(name : String) : Array(Resolver::IndexSpec)
+      installed = @installed_local_specs ||= begin
+        list = [] of Resolver::IndexSpec
+        payload = @bridge.not_nil!.installed_specs
+        (payload.as_a? || [] of JSON::Any).each do |entry|
+          spec_name = entry["name"]?.try(&.as_s?) || next
+          version = entry["version"]?.try(&.as_s?) || next
+          # `--local` means "gems installed for this project": when GEM_HOME is
+          # set, only specs living under it count. The host's user/system gem
+          # dirs can carry newer copies (json_pure 2.8.1 in the test host) that
+          # the reference oracle never sees in an isolated GEM_HOME.
+          if home = ENV["GEM_HOME"]?
+            unless home.empty?
+              home_prefix = home.gsub('\\', "/").chomp("/") + "/"
+              gem_path = (entry["full_gem_path"]?.try(&.as_s?) || "").gsub('\\', "/")
+              next unless gem_path.starts_with?(home_prefix)
+            end
+          end
+          platform_raw = entry["platform"]?.try(&.as_s?) || "ruby"
+          platform = platform_raw == "ruby" ? Gem::Platform::RUBY : Gem::Platform.new(platform_raw)
+          deps = (entry["dependencies"]?.try(&.as_a) || [] of JSON::Any).map do |dep|
+            requirements = (dep["requirements"]?.try(&.as_a) || [] of JSON::Any).map(&.as_s)
+            Resolver::DepSpec.new(dep["name"].as_s, Gem::Requirement.new(requirements))
+          end
+          ruby_req = requirement_from(entry["required_ruby_version"]?.try(&.as_s?))
+          rubygems_req = requirement_from(entry["required_rubygems_version"]?.try(&.as_s?))
+          list << Resolver::IndexSpec.new(spec_name, Gem::Version.new(version), platform, deps, ruby_req, rubygems_req)
+          full_name = platform_raw == "ruby" ? "#{spec_name}-#{version}" : "#{spec_name}-#{version}-#{platform_raw}"
+          @local_installed_full_names << full_name
+        end
+        list
+      end
+      candidates = installed.select(&.name.==(name))
+      candidates.concat(vendor_cache_specs(name))
+      candidates
+    end
+
+    private def requirement_from(text : String?) : Gem::Requirement
+      return Gem::Requirement.new if text.nil? || text.empty?
+      # RubyGems renders multi-clause constraints as ">= 3.0, < 5.0"; the
+      # requirement constructor takes one clause per element.
+      requirements = text.split(",").map(&.strip).reject(&.empty?)
+      return Gem::Requirement.new if requirements.empty?
+      Gem::Requirement.new(requirements)
+    end
+
+    # `<Gemfile dir>/vendor/cache/*.gem` entries for one gem (the reference
+    # treats the app cache as local candidates under --local/--prefer-local).
+    private def vendor_cache_specs(name : String) : Array(Resolver::IndexSpec)
+      dir = File.join(File.dirname(@definition.gemfile_path), "vendor", "cache")
+      return [] of Resolver::IndexSpec unless Dir.exists?(dir)
+      specs = [] of Resolver::IndexSpec
+      Dir.glob(File.join(dir, "#{name}-*.gem")).sort.each do |path|
+        data = @bridge.not_nil!.read_gem_spec(path)
+        next unless data["name"]?.try(&.as_s?) == name
+        version = data["version"]?.try(&.as_s?) || next
+        platform_raw = data["platform"]?.try(&.as_s?) || "ruby"
+        platform = platform_raw == "ruby" ? Gem::Platform::RUBY : Gem::Platform.new(platform_raw)
+        deps = (data["dependencies"]?.try(&.as_a) || [] of JSON::Any).compact_map do |dep|
+          next unless dep["type"]?.try(&.as_s?) == "runtime"
+          requirements = (dep["requirements"]?.try(&.as_a) || [] of JSON::Any).map(&.as_s)
+          Resolver::DepSpec.new(dep["name"].as_s, Gem::Requirement.new(requirements))
+        end
+        ruby_req = requirement_from(data["required_ruby_version"]?.try(&.as_s?))
+        rubygems_req = requirement_from(data["required_rubygems_version"]?.try(&.as_s?))
+        specs << Resolver::IndexSpec.new(name, Gem::Version.new(version), platform, deps, ruby_req, rubygems_req)
+      end
+      specs
+    end
+
+    private def index_specs_for(name : String) : Array(Resolver::IndexSpec)
+      local = local_index_specs(name)
+      if @local_only || (@prefer_local && !local.empty?)
+        # `--local` never consults an index: the reference's local! mode only
+        # looks at installed gems and vendor/cache, even when the source is a
+        # file:// path (verified: exit 7 when the gem is not installed).
+        return local unless local.empty?
+        raise GemNotFoundError.new(
+          "Could not find gem '#{name}' in locally installed gems."
+        )
+      end
+      index_specs_from_remote(name)
+    end
 
     # Build candidate specs for one gem from the compact index.
-    private def index_specs_for(name : String) : Array(Resolver::IndexSpec)
+    private def index_specs_from_remote(name : String) : Array(Resolver::IndexSpec)
       cache = @index_specs_cache ||= {} of String => Array(Resolver::IndexSpec)
       cache[name] ||= begin
-        if @local_only
-          raise GemNotFoundError.new(
-            "Could not find gem '#{name}' in locally installed gems."
-          )
-        end
         remote = remote_for(name)
         client = remote == primary_remote ? compact_index_client : compact_index_client_for(remote)
         entries = client.info(name)

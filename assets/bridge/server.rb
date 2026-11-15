@@ -163,6 +163,27 @@ end
 
 # Unmarshal the specification of a .gem file and serialize the fields the
 # native installer needs (pinned: Gem::Package spec fields).
+# Every gem RubyGems can see for the running interpreter (system dirs plus
+# GEM_HOME/GEM_PATH). Used by `install --local` / `--prefer-local`; the
+# reference equivalent is `Bundler.rubygems.loaded_specs` /
+# `Gem::Specification.to_a`. Errors are deliberately not rescued: a broken
+# gem environment must surface, not be silently treated as empty.
+def op_installed_specs(_payload)
+  Gem::Specification.to_a.map do |spec|
+    {
+      "name" => spec.name,
+      "version" => spec.version.to_s,
+      "platform" => spec.platform.to_s,
+      "dependencies" => spec.runtime_dependencies.map { |d|
+        { "name" => d.name, "requirements" => d.requirement.as_list }
+      },
+      "required_ruby_version" => spec.required_ruby_version.to_s,
+      "required_rubygems_version" => spec.required_rubygems_version.to_s,
+      "full_gem_path" => spec.full_gem_path,
+    }
+  end
+end
+
 def op_read_gem_spec(payload)
   require "rubygems/package"
   path = payload["path"]
@@ -423,6 +444,7 @@ def bridge_dispatch(id, op, payload)
            when "load_gemspec_dir" then op_load_gemspec_dir(payload)
            when "exec_plugin_hook" then op_exec_plugin_hook(payload)
            when "plugin_gemfile_eval" then op_plugin_gemfile_eval(payload)
+  when "installed_specs" then op_installed_specs(payload)
            else
              return bridge_error(id, "UnknownOp", "unknown bridge op #{op.inspect}")
            end

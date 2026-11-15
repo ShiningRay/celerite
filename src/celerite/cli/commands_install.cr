@@ -243,6 +243,13 @@ module Celerite
             installer.installed?(spec.name, spec.version.to_s, spec.platform)
           end
         end
+        # `--local`/`--prefer-local` can pick a gem that is already installed in
+        # this project's GEM_HOME; the reference then installs nothing and
+        # prints no Fetching line for it.
+        if resolution.local_only
+          pending = pending.reject { |spec| resolution.local_installed_full_names.includes?(spec.full_name) }
+        end
+
         # Locked-path installs print the source-index line when downloads are
         # pending, but never a Resolving line (pinned reference behavior,
         # update-conservative fixture).

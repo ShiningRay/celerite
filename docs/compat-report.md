@@ -1608,3 +1608,24 @@ celerite 侧两个夹具都在**克隆阶段**失败，未进入解析路径：
 首辅复核时的负对照：把 `install_gemfile_plugins` 的状态透传由 `raise ex if {4,7,15,29}` 改为无条件 `return nil` → `spec/m7_gemfile_plugins_spec.cr` 得 `7 examples, 1 failures`，失败例 `:157`（`Expected: 29, got: 4`），证明 `status` 透传是 29/4 区分的载荷；恢复后 `7 examples, 0 failures`。
 
 未验证：真实远端插件 `--source`/`--git` 的命令记录；`plugin list` 对带 `plugins.rb` 真实插件 gem 的输出；`BUNDLE_PLUGINS=false` 与 `plugin "x"` 组合的差分夹具；上述 success-path 偏差与参考的完整对齐。
+
+## 2026-11-15 M7(5)：`--local` / `--prefer-local`
+
+参考源码锚点（bundler-4.0.24）：`cli/install.rb:15`（`if options[:local]`）、`:52-53`（local 时关闭 cache_all_platforms、`Bundler.load.cache(nil, options[:local])`）；`definition.rb:191`（`prefer_local! if options[:"prefer-local"]`）、`:200/:212`（`sources.local!`）、`:227-230`（`prefer_local!` 置位并 `sources.prefer_local!`）；`source/rubygems.rb:40-55`（`prefer_local!`/`local_only!`/`local_only?`）；`resolver.rb:152,525`（`prefer_local?` 影响候选与远程版本考虑）。`settings[:local]` 由 `BUNDLE_LOCAL` 提供，本产品尚无该设置项（本轮未实现）。
+
+三条实测 oracle（4.0.24，隔离 HOME/GEM_HOME）：
+1. `--local` + http 源 + GEM_HOME 已装 `json_pure 2.6.0`（索引另有 2.8.1）→ exit 0、锁 `json_pure (2.6.0)`，索引零请求（HTTP 计数 0）。
+2. `--local` 且 gem 任何位置都没有 → exit 7、stdout 无 `Fetching`、stderr 单行 `Could not find gem 'no_such_gem_xyz' in locally installed gems.`
+3. `--local` + `source "file:///…/fixtures/gem-index"` 且未安装 → **exit 7**（索引同样不查）。最初 oracle 误判为「file:// 仍解析」，原因已查明：那次探针的 system gem 目录恰好装着 `json_pure 2.8.1`，参考是从已安装 gems 解析、并把它写进 vendor/cache，并非读 file:// 索引。
+
+修复前缺陷：`resolution.cr` 的 `index_specs_for` 对**任何** gem 在 `--local` 下直接 `raise GemNotFoundError`（已安装的也报缺，探针实测 exit 7）；`prefer_local` 属性无任何消费者（探针 `--prefer-local` exit 0 但锁 2.8.1）。
+
+实现：桥新增 `installed_specs` op（`Gem::Specification.to_a`：name/version/platform/运行时依赖/required_*/full_gem_path）；`bridge/client.cr#installed_specs`；`resolution.cr` 新增 `requirement_from`（逗号拆分多子句）、`local_index_specs`、`vendor_cache_specs`（读 `<Gemfile dir>/vendor/cache/*.gem`，经 `read_gem_spec`）、`local_installed_full_names`；`index_specs_for` 在 `local_only` 时只返回本地候选（不查任何索引）、空则抛参考消息；`prefer_local` 本地非空即优先；`commands_install.cr` 对 `local_only` 下已在本项目 GEM_HOME 的 spec 跳过 Fetching/Installing。
+
+已声明偏差：本地候选在 `ENV["GEM_HOME"]` 存在时只认该目录下的安装（测试宿主用户目录携带 `json_pure 2.8.1`，会盖过项目 GEM_HOME 的 2.6.0）；参考按 `Gem.path` 全局可见。`--local` 的 vendor/cache 命中路径未单独造例（实现读取，但只以已安装 gems 覆盖）。
+
+负对照（首辅亲做）：把 `index_specs_for` 的本地分支改成 `if false`（强制走索引）后 `spec/m7_local_install_spec.cr` → `5 examples, 4 failures`（`:90`/`:110`/`:126`/`:145`，即 http 索引被请求、file:// 索引被读取、`--prefer-local` 选到 2.8.1）；还原后 5/0/0。
+
+门禁（干净 HOME）：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen` EXIT 0；`spec/m7_local_install_spec.cr` 5/0/0；`spec/m7_local_install_spec.cr spec/cli_spec.cr` 29/0/0；全量 `372 examples, 0 failures, 4 errors`（4 = 既有 `git_source_spec.cr` msys `0xC0000022`）；`git diff --check` EXIT 0；差分 `install-local` 4.0.24 与 2.7.2 均 PASS（exit 7）。
+
+未验证：https 真实离线、vendor/cache 多平台、`--local` + git 源、`--local` + `--frozen`、`BUNDLE_LOCAL` 设置项。
