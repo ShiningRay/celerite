@@ -656,13 +656,40 @@ module Celerite
     # ------------------------------------------------------------------
     # list
     # ------------------------------------------------------------------
+    # Group metadata is evaluated by the Ruby bridge itself (`Bridge::Client`
+    # degrades safely when Bundler is unavailable); gating on the test harness
+    # env vars (`CELERITE_BRIDGE_SERVER`/`CELERITE_REFERENCE_BUNDLER_LIB`) made
+    # `list --only-group` reject real groups in plain user environments.
+    private def self.available_groups(definition : Definition, lockfile : Lockfile::Data) : Array(String)
+      groups = begin
+        lockfile_groups(definition, lockfile)
+      rescue
+        # A missing/broken bridge must not turn `list` into an error: fall back
+        # to the default group exactly like the old gated behavior did.
+        [] of String
+      end
+      groups.empty? ? ["default"] : groups
+    end
+
     def self.list(stdout : IO, stderr : IO, rest : Array(String)) : Int32
-      if code = reject_unknown_switches(stderr, rest, ["--name-only", "--paths"], ["--only-group", "--without-group", "--format"])
+      # `--format` only exists from 4.x: 2.7.2 rejects it as an unknown switch
+      # (`Unknown switches "--format=json"`, exit 15) — same for our profile.
+      format_values = ["--only-group", "--without-group"]
+      format_values << "--format" unless profile_bundler_version.starts_with?("2.")
+      if code = reject_unknown_switches(stderr, rest, ["--name-only", "--paths"], format_values)
         return code
+      end
+      # Reference `cli/list.rb:17`: the two output selectors are exclusive and
+      # the check happens before any spec loading.
+      if rest.includes?("--name-only") && rest.includes?("--paths")
+        stderr.puts "The `--name-only` and `--paths` options cannot be used together"
+        return 15
       end
       paths = rest.includes?("--paths")
       name_only = rest.includes?("--name-only")
-      json_format = rest.includes?("--format=json") || rest.includes?("--format") && flag_value(rest, "--format") == "json"
+      # `--format=json` and `--format json` are equivalent; validation happens
+      # after the missing-gem exit (oracle: missing gems win over a bad format).
+      format = flag_value_ornext(rest, "--format")
       only_groups = flag_values(rest, "--only-group")
       without_groups = flag_values(rest, "--without-group")
       definition = Definition.build
@@ -677,7 +704,7 @@ module Celerite
         return 15
       end
 
-      all_groups = bridge_available? ? lockfile_groups(definition, lockfile) : ["default"]
+      all_groups = available_groups(definition, lockfile)
       (only_groups + without_groups).uniq.each do |group|
         unless all_groups.includes?(group)
           stderr.puts "`#{group}` group could not be found."
@@ -701,11 +728,9 @@ module Celerite
         stdout.puts "Resolving dependencies..."
       end
 
-      if lockfile.dependencies.empty?
-        stdout.puts "No gems in the Gemfile"
-        return 0
-      end
-
+      # Empty-bundle handling lives in the output branches: the JSON form
+      # prints `{"gems":[]}` (reference `cli/list.rb`), the human form prints
+      # `No gems in the Gemfile`.
       if unresolved = unresolved_dep(definition, lockfile)
         remote = first_remote(lockfile) || "https://rubygems.org/"
         stderr.puts "Could not find gem '#{unresolved}' in rubygems repository #{remote} or installed locally."
@@ -714,7 +739,11 @@ module Celerite
       end
 
       # Filter locked specs by requested groups.
-      filtered_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, locked_specs, requested_groups) : locked_specs
+      filtered_specs = begin
+        filter_locked_specs_by_groups(definition, lockfile, locked_specs, requested_groups)
+      rescue
+        locked_specs
+      end
 
       installed_missing = filtered_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
 
@@ -726,12 +755,40 @@ module Celerite
       locked_specs = filtered_specs
       missing = installed_missing
       if missing.empty?
-        if json_format
+        # Reference validation order: mutual exclusions, spec loading (missing
+        # gems exit 1 above), then `--format`. An empty bundle still validates
+        # the format (oracle: empty + --format=bogus => exit 15).
+        if format && format != "json"
+          stderr.puts "Unknown option`--format=#{format}`. Supported formats: `json`"
+          return 15
+        end
+        if format == "json"
           gems = locked_specs.map do |spec|
-            {"name" => spec.name, "version" => spec.version.to_s}
+            item = {} of String => JSON::Any
+            item["name"] = JSON::Any.new(spec.name)
+            unless name_only
+              item["version"] = JSON::Any.new(spec.version.to_s)
+              if git_version = spec_git_version(spec, lockfile)
+                item["git_version"] = JSON::Any.new(git_version)
+              else
+                item["git_version"] = JSON::Any.new(nil)
+              end
+              if paths
+                if path = installed_gem_dir(definition, spec, lockfile)
+                  item["path"] = JSON::Any.new(display_path(path))
+                end
+              end
+            end
+            item
           end
           stdout.puts({"gems" => gems}.to_json)
-        elsif paths
+          return 0
+        end
+        if locked_specs.empty?
+          stdout.puts "No gems in the Gemfile"
+          return 0
+        end
+        if paths
           locked_specs.each do |spec|
             path = installed_gem_dir(definition, spec, lockfile)
             stdout.puts(path ? display_path(path) : spec.full_name)
@@ -888,11 +945,20 @@ module Celerite
     # Bundler prints the short git revision in human-readable listings and
     # info headings, and renders paths with forward slashes on Windows.
     private def self.spec_display_name(spec : Lockfile::Spec, lockfile : Lockfile::Data) : String
+      short = spec_git_version(spec, lockfile)
+      short ? "#{spec.name} (#{spec.version} #{short})" : "#{spec.name} (#{spec.version})"
+    end
+
+    # `rubygems_ext.rb:264-267`: git sources contribute `" #{revision[0..6]}"`
+    # (seven characters) which the caller strips; non-GIT sources are null in
+    # the JSON payload.
+    private def self.spec_git_version(spec : Lockfile::Spec, lockfile : Lockfile::Data) : String?
       revision = lockfile.source_for(spec).try do |src|
         src.type == "GIT" ? src.option("revision") : nil
       end
+      return nil if revision.nil?
       short = revision.to_s[0, 7]
-      short.empty? ? "#{spec.name} (#{spec.version})" : "#{spec.name} (#{spec.version} #{short})"
+      short.empty? ? nil : short
     end
 
     private def self.display_path(path : String) : String
