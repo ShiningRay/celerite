@@ -1506,3 +1506,31 @@ celerite 侧两个夹具都在**克隆阶段**失败，未进入解析路径：
 4. `check --gemfile` 指向不存在文件时我方 exit 1（`No such file or directory @ rb_sysopen - …`），参考实测为 exit 10 `Could not locate Gemfile`，差异未修。
 5. `lock --gemfile` 本轮未修（参考支持）。
 6. `show` 无参时参考额外列 `  * bundler (4.0.24)`，我方只列锁文件 specs（未修，已登记）。
+
+## 2026-11-15 M7(6)：插件 hook 失败语义
+
+参考实测（bundler-4.0.24 `lib/bundler/plugin.rb` L228-240 `hook`、L345-381 `load_plugin`；Gemfile `source "file:///<repo>/fixtures/gem-index"` + `gem "json_pure"`，插件索引 `.bundle/plugin/index` 五键格式，由 `Bundler::Plugin::Index#register_plugin` 生成）：
+
+| 场景 | 参考 exit | 参考关键输出 |
+| --- | --- | --- |
+| 1 `BUNDLE_PLUGINS=false` + 会写标记的 after-install hook（混合工程） | 0 | hook 不执行（标记文件不生成）；stderr 无 plugin 文本 |
+| 2 加载期 raise（`plugins.rb` 内 `raise "boom at plugin load"`） | 1 | stderr 首行 `Failed loading plugin broken_plugin: boom at plugin load` + `--- ERROR REPORT TEMPLATE ---` |
+| 3 hook 调用期 raise | 1 | stdout 先打印 Fetching/Resolving，stderr `--- ERROR REPORT TEMPLATE ---` + `RuntimeError: boom from plugin hook`（`plugin.rb:239`） |
+| 4 load_path 目录不存在 | 0 | 五段提示：`The following plugin paths don't exist: <abs>.` … `Continuing without installing plugin <name>.`（9 行，含 4 个空行） |
+| 5 混合：缺路径插件 + 健康插件（hook 写标记） | 0 | 既打印场景 4 的警告，**标记文件仍然生成**——参考在 warn 后继续加载其余插件（`plugin.rb` L237-239） |
+
+修复前行为（HEAD=`37079b2` 构建的二进制，本轮开工时以 shim 重建）：场景 2/3/4 一律 **exit 0 且 stderr 0 行**（旧 `commands_install.cr` 的 `rescue Bridge::BridgeError` 与 bridge 的 `fired:false` 都被静默）；探针工程 `.tmp-scratch/plugprobe/{raising,broken,missingpaths}`。
+
+实现：`assets/bridge/server.rb` 的 `op_exec_plugin_hook` 返回结构化 `status`（`skipped`/`load_failed`/`hook_failed`/`ok`）与累积的 `missing` 数组（每项 `plugin`/`paths`），不打印、不让异常逃出；缺失路径插件只跳过自身并继续加载其余插件（对齐 `plugin.rb` L237-239、L345-381）；`src/celerite/plugin_hooks.cr` 增加 `HookResult#status/message/plugin/missing`（含 `MissingPluginPaths`）与 `enabled?(config)`（仅 `false`/`"false"` 关闭，键 `plugins` 即 `BUNDLE_PLUGINS`）；`src/celerite/cli/commands_install.cr` 仅在设置开启时调用，先逐条打印 `missing` 五段提示（内容逐字与参考一致：路径与行尾规范化后 `diff` 为空；参考 stderr 为 CRLF——Ruby 文本模式，我方 CLI 全局 LF，属平台行尾差异），再按状态返回 1（`load_failed`、`hook_failed`）或 0。
+
+已声明偏差：不复刻 `--- ERROR REPORT TEMPLATE ---` 外壳；`hook_failed` 使用自有单行 `Plugin hook after-install failed: <message>`（不含插件名——参考不区分是哪个插件注册的 hook）。
+
+复核修复（2026-11-15，首辅）：早期版本对首个缺失插件提前 `return`，会跳过健康插件的 `plugins.rb` 与 hook，与参考的场景 5 不符；已改为累积 `missing` 并继续加载。新增 spec 例「健康插件仍在缺失插件之后执行」：改动前 `6 examples, 1 failures`（`File.exists?(hook-fired.txt)` Expected true got false，`spec/m7_plugin_hook_failure_spec.cr:239`），改动后 `6 examples, 0 failures`。
+
+逐字校验（首辅亲跑，`bin/celerite.exe` 端到端）：raising → exit 1 + 单行 `Plugin hook after-install failed: boom from plugin hook`；broken → exit 1 + 单行 `Failed loading plugin broken_plugin: boom at plugin load`；missingpaths → exit 0 + 9 行 stderr，与参考 `sed 's#/missingpaths/#/PROJ/#g'` 并按行尾规范化后 `diff` 为空；mixed → exit 0 + 警告 + `mixed-marker.txt` 生成；`BUNDLE_PLUGINS=false` → exit 0 + stderr 0 行 + 标记不生成。
+
+负对照（首辅）：把 `commands_install.cr` 中 `load_failed` 分支的 `return 1` 改成 `return 0` → `6 examples, 1 failures`（`spec/m7_plugin_hook_failure_spec.cr:170`，断言 `code.should eq(1)` 得到 0），还原后 6/0。
+
+未验证：多插件同时失败、多插件同时缺失时的警告顺序、`plugin_source` 定义的自定义 source、`BUNDLE_PLUGINS` 从 `.bundle/config` 读取（spec 与环境变量探针覆盖，未覆盖配置文件路径）、参考 hook 参数形态（`(spec, context)`，我方以单参数调用）。
+
+门禁：`crystal tool format --check src spec` EXIT 0、`crystal build --no-codegen --link-flags <shim> src/cli.cr` EXIT 0（仅 2 条既存 `File.executable?` deprecation）、`crystal spec spec/m7_plugin_hook_failure_spec.cr` **6 examples, 0 failures, 0 errors**、全量 `crystal spec` **353 examples, 0 failures, 4 errors, 0 pending**（4 errors = 既有 `spec/git_source_spec.cr` 的 msys `0xC0000022` 环境问题，非回归）、`git diff --check` EXIT 0、`bash -n script/differential` EXIT 0。

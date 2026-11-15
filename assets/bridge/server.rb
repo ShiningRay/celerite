@@ -319,28 +319,37 @@ def op_exec_plugin_hook(payload)
   require "yaml"
   event = payload["event"].to_s
   index_path = payload["index_path"].to_s
-  return { "fired" => false, "reason" => "no plugin index" } unless File.exist?(index_path)
+  return { "status" => "skipped", "reason" => "no plugin index" } unless File.exist?(index_path)
 
   index = YAML.safe_load(File.read(index_path), permitted_classes: [Symbol], aliases: true) || {}
   load_paths = index["load_paths"] || {}
   hook_plugins = (index["hooks"] || {})[event] || []
-  return { "fired" => false, "reason" => "no plugins for event" } if hook_plugins.empty?
+  return { "status" => "skipped", "reason" => "no plugins for event" } if hook_plugins.empty?
 
   loaded = []
+  missing = []
   plugin_paths = index["plugin_paths"] || {}
   hook_plugins.each do |name|
     paths = load_paths[name]
     if paths.is_a?(Array)
-      paths.each { |p| $LOAD_PATH.unshift(p) unless $LOAD_PATH.include?(p) }
+      absent = paths.map(&:to_s).reject { |p| File.directory?(p) }
+      unless absent.empty?
+        # Reference load_plugin warns for THIS plugin and returns; the
+        # remaining plugins are still loaded and their hooks still run
+        # (bundler/plugin.rb L237-239 and L345-381).
+        missing << { "plugin" => name.to_s, "paths" => absent }
+        next
+      end
+      paths.each { |p| $LOAD_PATH.unshift(p.to_s) unless $LOAD_PATH.include?(p.to_s) }
     end
     begin
       # Reference entry point: each plugin ships a root plugins.rb
       entry = plugin_paths[name] ? File.join(plugin_paths[name].to_s, "plugins.rb") : name.to_s.tr("-", "/")
       require entry
     rescue LoadError, StandardError => e
-      return { "fired" => false, "reason" => "plugin #{name} failed to load: #{e.message}" }
+      return { "status" => "load_failed", "plugin" => name.to_s, "message" => e.message.to_s, "missing" => missing }
     end
-    loaded << name
+    loaded << name.to_s
   end
 
   # plugins.rb (or its lib) registered hooks through the reference
@@ -350,8 +359,12 @@ def op_exec_plugin_hook(payload)
   hooks = Bundler::Plugin.instance_variable_get(:@hooks_by_event) || {}
   blocks = hooks[event] || []
   context = payload["context"] || {}
-  blocks.each { |blk| blk.call(context) }
-  { "fired" => blocks.any?, "plugins" => loaded }
+  begin
+    blocks.each { |blk| blk.call(context) }
+  rescue StandardError => e
+    return { "status" => "hook_failed", "plugin" => (loaded.first || hook_plugins.first.to_s), "message" => e.message.to_s, "missing" => missing }
+  end
+  { "status" => "ok", "plugins" => loaded, "missing" => missing }
 end
 
 def serialize_source(source)

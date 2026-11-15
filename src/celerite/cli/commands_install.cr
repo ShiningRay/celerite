@@ -376,10 +376,27 @@ module Celerite
         end
 
         # Plugin lifecycle hook (architecture §2.2); no-op without plugins
-        begin
-          PluginHooks.call(bridge, definition, "after-install")
-        rescue Bridge::BridgeError
-          # hook failures must not fail the install (reference: friendly error)
+        if PluginHooks.enabled?(config)
+          result = PluginHooks.call(bridge, definition, "after-install")
+          result.missing.each do |entry|
+            stderr.puts "The following plugin paths don't exist: #{entry.paths.join(", ")}."
+            stderr.puts
+            stderr.puts "This can happen if the plugin was installed with a different version of Ruby that has since been uninstalled."
+            stderr.puts
+            stderr.puts "If you would like to reinstall the plugin, run:"
+            stderr.puts
+            stderr.puts "bundler plugin uninstall #{entry.plugin} && bundler plugin install #{entry.plugin}"
+            stderr.puts
+            stderr.puts "Continuing without installing plugin #{entry.plugin}."
+          end
+          case result.status
+          when "load_failed"
+            stderr.puts "Failed loading plugin #{result.plugin}: #{result.message}"
+            return 1
+          when "hook_failed"
+            stderr.puts "Plugin hook after-install failed: #{result.message}"
+            return 1
+          end
         end
         0
       ensure
