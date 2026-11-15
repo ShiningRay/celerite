@@ -1377,3 +1377,35 @@ celerite 侧两个夹具都在**克隆阶段**失败，未进入解析路径：
 ### 6. 未验证 / 下一步
 
 1. celerite 的 `tag:` 锁文件形态与 `glob:` 语义（克隆前失败，未进入解析）；2. `git-submodules` 需要一个网络 submodule URL 或 harness 级 `protocol.file.allow=always` 才能与参考可比；3. 多 gemspec/monorepo/私有 source 鉴权/离线安装/磁盘错误与中断清理仍未覆盖；4. M7(5) 复选框保持未勾。
+
+## 2026-11-15 M7(5)/M7(8) 环境失败根因：Low 完整性级别导致 msys sh 无法建共享内存
+
+**现象**：本机 celerite 触发 `git clone --mirror` 时失败，stderr 为 `git command failed: git clone --mirror ./gitgem <sandbox>/bundle/ruby/4.0.0/cache/bundler/git/gitgem-<sha> …`，紧接 `0 [main] sh (15204) C:\Program Files\Git\usr\bin\sh.exe: *** fatal error - NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0S5-1888ae32e00d56aa): 0xC0000022` 与 `fatal: Could not read from remote repository.`，exit 1。影响面：13 例 install/add/plugin/native 差分（`git-installed-discovery`/`git-path-install`/`git-pristine`/`plugin-git-local`/`plugin-git-local2` 等）与本轮 `git-tag`/`git-glob` 2 例，以及全量 spec 的 4 个 `Celerite::GitSource` error。
+
+**探针矩阵**（`.tmp-scratch/gitprobe/probe.cr`，同一本地仓库 `src`，逐组独立目标目录）：
+
+| 组 | 形态 | 结果 | stderr 首行 |
+|---|---|---|---|
+| A | `output/error: Redirect::Inherit`（不捕获） | `EXIT=128`，无目标目录 | `0 [main] sh … NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0S5-1888ae32e00d56aa): 0xC0000022` |
+| B | 现用法 `IO::Memory` ×2 | `EXIT=128`，无目标目录 | `Cloning into bare repository '…dst-b'...`（随后同上 `0xC0000022`） |
+| C | `File.open` 文件重定向 ×2 | `EXIT=128`，无目标目录 | `Cloning into bare repository '…dst-c'...`（随后同上） |
+| D | `Process.run("git clone …")` 字符串形式 | **不支持**：Crystal/Windows 抛 `File::NotFoundError`（引号未转义），跳过 | — |
+| E | B + `Process.find_executable("git")` 绝对路径 | `EXIT=128`，无目标目录 | 同 B |
+| F | `Process.run("sh", ["-c", "echo hi"])` | `STATUS=0xC0000142`，无输出 | 同一条 `sh.exe …: 0xC0000022` |
+| G | `cmd.exe /c git clone …` | `STATUS=128`，无目标目录 | `Cloning into bare repository '…dst-g'...`（git 内部仍拉起 sh，同上失败） |
+| H | 对照：bash 直跑 `git clone --mirror src dst-bash` | **`GIT_EXIT=0`** | 无 |
+
+**判定**：
+- 与 stdout/stderr 捕获形态无关：A/B/C/E 四种形态同败且都没有生成目标目录，D 不可用，排除管道/句柄因素。
+- 失败早于 git 逻辑：F 组连 `sh -c "echo hi"` 都失败（`0xC0000142` 为进程初始化失败），说明 `sh.exe` 自身起不来。
+- 唯一差异是调用者完整性级别：本 Crystal 进程的子进程 `whoami /groups` 显示 `Mandatory Label\Low Mandatory Level  S-1-16-4096`，pwsh 子进程为 `Medium  S-1-16-8192`；换启动器（pwsh / bash / `cmd.exe` 启动同一探针）矩阵不变，B 均 `EXIT=128`、IL 均 Low → 结论是**执行载体属性（工作区内 Crystal 产物的沙箱完整性级别），不是父进程**。
+- 机制：Low IL 进程无权创建/打开 `\BaseNamedObjects\msys-2.0S5-<hash>` 命名对象（`0xC0000022`），msys `sh` 初始化失败（`0xC0000142`）；`git.exe` 与 `cmd.exe` 间接路径同样要拉 `sh`，因此也不能绕过。
+- **不是产品代码问题**：四种捕获方式全败，故未改产品代码；`git status` 干净（仅本轮夹具/装具，且已被首辅提交前状态核对）。
+
+**未验证**：
+- 未直接枚举该命名对象的 DACL（本机无 WinObj / handle.exe），IL 差异是相关性证据 + 报错文本的合取，未做 DACL 级取证；
+- 未验证把 `bin/celerite.exe` 提升到 Medium IL 或加入沙箱白名单后是否即恢复；
+- 未尝试 `CYGWIN` / `MSYS` 环境变量绕行（Low IL 下打开既有 Medium 对象预计仍失败）；
+- 受影响的 13+2 例夹具与 4 个 spec error 尚未在放行环境复跑验证转绿。
+
+**可选路径（建议，未执行）**：① 沙箱侧放行 `bin/celerite.exe`（Medium IL 或白名单）；② 在不受该限制的宿主或 CI 跑差分与 spec（夹具与装具已就绪）；③ 产品侧引入 libgit2 等新依赖——违反本仓「禁止新增第三方依赖」约束，不建议。

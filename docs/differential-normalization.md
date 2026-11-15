@@ -94,7 +94,10 @@ ruby/*/bin
 - Native extension builds still fail for celerite descendants here
   (`NtCreateDirectoryObject ... 0xC0000022` from msys `make`), so fixtures that
   build gems are classified as environment failures, not harness or product
-  failures.
+  failures. Root cause (2026-11-15): workspace Crystal binaries run at Low
+  integrity (`S-1-16-4096`) and their msys `sh` cannot create the
+  `\BaseNamedObjects\msys-2.0S5-<hash>` object; see
+  `docs/compat-report.md`「2026-11-15 M7(5)/M7(8) 环境失败根因」.
 - Each command of a multi-command fixture writes its own `ref.part.$n.out` /
   `.err` (and `cel.part.$n.*`); the per-side files are combined once with
   `cat "${parts[@]}" > "$work/ref.out"`. On this host a second `>>` reopen of
