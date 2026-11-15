@@ -1786,3 +1786,82 @@ spec `spec/m7_frozen_ruby_unlock_spec.cr` 10 例：frozen check/show/show --path
 负对照（首辅亲做）：把 `run_check` 的守卫条件临时改成 `&& false` 并重建 `bin/celerite-neg.exe`，同一夹具集得到 `differential (4.0.24): 0 passed, 2 failed, 0 skipped`，原文 `exit code: reference=16 celerite=0` + `stdout differs: 0a1 > The Gemfile's dependencies are satisfied` + `stderr differs: 1,5d0 < Bundler is unlocking ruby, … < is set < (空行) < If this is a development machine, … < `bundle config set frozen false`.`；恢复源码后重新构建并复跑，两夹具 PASS。
 
 已声明偏差/未验证：非 frozen 的 lockfile 写回仍不复刻（沿用既有登记）；提示段里的锁文件名用 `File.basename(definition.lockfile_path)`（参考用相对 `Dir.current` 的 `relative_lockfile_path`，Gemfile 在子目录时会不同）；`.bundle/config` 的 `BUNDLE_FROZEN: "true"` 与 lock 中 `RUBY VERSION` 与 Gemfile 不同的变体未各自 fixture（前者实现已按非 env 来源覆盖，后者由 spec 的手工断言覆盖）；`show`/`info` 的其余重解通知形态仍待取证。
+
+## 2026-11-15 M7(2)/L157：install 家族未知开关拒绝
+
+参考 oracle（4.0.24，空目录无 Gemfile，首辅实测并复核）：
+
+| 命令 | `--bogus` | 说明 |
+| --- | --- | --- |
+| `install/update/lock/cache --bogus` | exit 15，stdout 空，stderr `Unknown switches "--bogus"` | Thor 在任何 Gemfile 访问之前拒绝 |
+| `install -v` / `--version` | exit 15 + `Unknown switches "-v"` / `"--version"`（后者另带 `Did you mean?  "--verbose"`） | `-v`/`--version` **不在**白名单 |
+| `install -h` / `--help` | exit 0，打印 manpage 首行 `bundle-install(1) -- Install the dependencies specified in your Gemfile` | 我方无 manpage（既有已声明偏差），只接受不报错 |
+| `cache --all` / `cache --no-prune` | exit 15 + 长的「flag has been removed」说明 | 我方按未知开关报 15（退出码同、文案不同） |
+
+修复前实测（`bin/celerite.exe`，空目录）：`install/update/lock/cache --bogus` 全部 **exit 10 `Could not locate Gemfile`**（`update` 另多一行 `[DEPRECATED] …`）——开关被静默忽略；`install --local`/`lock --print` 等已知开关同样只是继续到 Gemfile 查找。
+
+实现：复用既有 `unknown_switch_tokens`/`reject_unknown_switches`（`src/celerite/cli/commands.cr`），新增四组白名单常量并在各命令入口**任何 Gemfile/frozen 处理之前**调用，未知 token 保留 `=值` 原文、多枚 `", "` 连接、返回 15。白名单：
+
+- 公共：flags `-h --help --verbose --no-color --quiet`；values `--retry --jobs -j --gemfile --lockfile`
+- `install`：`--local --prefer-local --full-index --standalone --no-cache --no-lock --force --redownload --path --without --with`；values 另加 `--target-rbconfig --cooldown`
+- `update`：`--all --local --prefer-local --full-index --standalone --no-cache --no-lock --force --redownload --patch --minor --major --pre --strict --conservative --system --binstubs --clean --ruby --bundler --path --without --with`；values 另加 `--group -g --source --trust-policy -P --shebang --cooldown`
+- `lock`：`--local --full-index --print --normalize-platforms --add-checksums --patch --minor --major --pre --strict --conservative --update --bundler --ruby --path --without --with`；values 另加 `--add-platform --remove-platform --source --trust-policy -P`
+- `cache`（含 `pack`/`package` 别名）：`--no-install --all-platforms --force --redownload --no-cache --local --path --without --with`；values 另加 `--cache-path`
+
+**已接受但语义未逐一复核**（本轮只做拒绝，未实现/未验证其行为）：`--jobs/-j`（无线程并行）、`--full-index`、`--no-cache`、`--binstubs`、`--clean`、`--system`、`--strict`、`--trust-policy/-P`、`--shebang`、`--target-rbconfig`、`--patch/--minor/--major/--pre`、`--update`、`--add-checksums`。
+
+已声明偏差：`--path`/`--without`/`--with` 在 4.0.24 是「已移除」报错（exit 15）、2.7.x 仅告警（exit 10），我方实现其语义并接受（三态差异记录于此）；`cache --all`/`--no-prune` 我方报 `Unknown switches` 而非参考的 removed-message（退出码同为 15）；`Did you mean?` 建议行未实现；`--no-color`/`--retry` 触发的 `Bundler version …` 版本头我方不打印；`--help` 无 manpage（exit 10）。
+
+验证：新 spec `spec/m7_install_family_switches_spec.cr` **7 examples, 0 failures**（四条命令的 exit 15 逐字消息、`=值` 与多枚连接、`-v`/`--version` 拒绝、已知开关落 Gemfile 查找 exit 10、`--path/--without` 仍受理、`pack` 别名）；差分 `unknown-switch-install/update/lock/cache`（无 Gemfile，各 `<cmd> --bogus`）4.0.24 与 2.7.2 均 `4 passed, 0 failed, 0 skipped`，回归 `unknown-switch-check/list/show` 同轮 7/7 PASS；门禁 format EXIT 0、build --no-codegen EXIT 0、全量 `398 examples, 0 failures, 4 errors`（4 = 既有 `git_source_spec.cr` msys `0xC0000022`）、`git diff --check` EXIT 0、`bash -n` EXIT 0。
+
+未验证：上述「已接受但语义未逐一复核」清单；2.7.2 的 `--path` 告警路径；`cache --all/--no-prune` 的 removed 文案；`--help`/`-h` 的 manpage。
+
+### 2026-11-16（补漏与 `--gemfile`/`--lockfile` 真生效）
+
+**A 类补漏（白名单）**：`--trust-policy`/`-P` 加入 `install` 的带值白名单；`--cooldown` 加入 `lock`/`cache`；短开关粘连只接受 `-j<数字>`（`-j2`），`-gfoo`/`-PLowSecurity` 仍判未知（参考也是 exit 15）；`--lockfile` 只属于 `install`/`lock`，`update`/`cache` 传它参考也是 exit 15。
+
+**B/C 类（真生效）**：`--gemfile`/`--lockfile` 现在通过临时 `ENV["BUNDLE_GEMFILE"]`/`ENV["BUNDLE_LOCKFILE"]` 生效，`ensure` 精确还原（原值 nil 则删除）；实测 `lock --gemfile=Custom.gemfile` 写 `Custom.gemfile.lock` 且 exit 0、`install --lockfile=Custom.lock` 写 `Custom.lock` 且 exit 0，与参考一致；差分夹具 `gemfile-flag-install` 双 profile PASS。`lock --gemfile=<missing>` 现为 `GemfileNotFound`（exit 10）：我方 stderr 两行绝对路径 + `not found`，路径经 `.gsub('\\', "/")` 归一为正斜杠，与参考**逐字节一致**（首辅用 `od` 核对 `C:/Users/...` 前缀），修复前为 exit 1 + 桥泄漏的 `No such file or directory @ rb_sysopen`；install/update/cache 该场景仍 exit 1（参考 install 还会吐 ERROR REPORT 崩溃转储，我方单行消息）。
+
+**逐开关对拍（ref vs cel exit，空目录、隔离 HOME，`timeout 20`）**：
+```
+install -j2                        ref=10 cel=10 ok
+install --trust-policy=LowSecurity ref=10 cel=10 ok
+install -PLowSecurity              ref=15 cel=15 ok
+install --local                    ref=10 cel=10 ok
+install --prefer-local             ref=10 cel=10 ok
+install --cooldown 3               ref=10 cel=10 ok
+install --gemfile Missing.gemfile  ref=1  cel=1  ok
+install --lockfile Custom.lock     ref=10 cel=10 ok
+install -v / --version             ref=15 cel=15 ok
+install --help / -h                ref=0  cel=10 MISMATCH（无 manpage）
+update -gfoo                       ref=15 cel=15 ok
+update -g foo / --all              ref=10 cel=10 ok
+update --lockfile=Y                ref=15 cel=15 ok
+update --gemfile=Missing.gemfile   ref=1  cel=1  ok
+lock --cooldown=5 / --print        ref=10 cel=10 ok
+lock --lockfile=Y                  ref=10 cel=10 ok
+lock --gemfile=Missing.gemfile     ref=10 cel=10 ok（本轮已对齐）
+cache --cooldown=5 / --no-install  ref=10 cel=10 ok
+cache --lockfile=Y                 ref=15 cel=15 ok
+cache --gemfile=Missing.gemfile    ref=1  cel=1  ok
+```
+
+**全量 spec（测量说明）**：在复用 HOME（`home-g35c`）下曾得 `401 examples, 5 failures, 4 errors`（`spec/cli_spec.cr:57/74/195/222/234` 的 `Expected: 1 got: 0`，共享 HOME 已装 json_pure 造成的伪影）；用新建 HOME（本轮 `home-g35x`）复跑得 `402 examples, 0 failures, 4 errors`（4 = 既有 `git_source_spec.cr` 的 msys `0xC0000022`），**不是产品缺陷**。
+
+**已声明偏差**：`--help`/`-h` 接受但无 manpage；`--path/--without/--with` 三态保持现状；removed-flag 文案差异（`install --binstubs/--clean/--deployment/--frozen/--no-prune/--system/--shebang`、`cache --all/--no-prune/--frozen` 参考为「已移除」长文案，我方 `Unknown switches`，退出码同为 15）。
+
+**负对照（首辅亲做，同一负对构建同时关闭两处行为）**：把 `run_install` 的 reject 改为 `if code = (nil if true)`、把 `with_gemfile_overrides` 的 `ENV["BUNDLE_GEMFILE"] = gemfile if gemfile` 改为 `if gemfile && false`，重建 `bin/celerite-neg.exe` 后：
+```
+FAIL unknown-switch-install (install --bogus)
+      exit code: reference=15 celerite=10
+    < Unknown switches "--bogus"
+    > Could not locate Gemfile
+FAIL gemfile-flag-install (install --gemfile=Custom.gemfile)
+      exit code: reference=0 celerite=10
+      stderr differs: 0a1 > Could not locate Gemfile
+      project tree differs: Only in SANDBOX/project: Custom.gemfile.lock
+differential (4.0.24): 0 passed, 2 failed
+```
+还原两处源码（`edit`）后重建并复跑：`PASS unknown-switch-install (exit=15)`、`PASS gemfile-flag-install (exit=0)` → `3 passed, 0 failed`；`Select-String 'negative-control'` 在 `src/` 无残留。
+
+**门禁（新建 HOME/TEMP）**：format --check EXIT 0；build --no-codegen EXIT 0；`spec/m7_lock_gemfile_missing_spec.cr + spec/m7_install_family_switches_spec.cr` `11 examples, 0 failures`；全量 `402 examples, 0 failures, 4 errors`；`git diff --check` EXIT 0。未验证：20s 超时子集外的其余开关、真实 manpage、removed-flag 文案逐字。

@@ -211,7 +211,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
       sandbox="$ref_sandbox"; [ "$side" = "cel" ] && sandbox="$cel_sandbox"
       while IFS= read -r ef; do
         sed -i -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g" "$ef"
-      done < <(find "$sandbox/project" -type f \( -name "*.rb" -o -name "*.txt" \) 2>/dev/null)
+      done < <(find "$sandbox/project" -type f \( -name "*.rb" -o -name "*.txt" -o -name "*.gemfile" \) 2>/dev/null)
     done
   fi
 

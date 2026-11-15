@@ -20,6 +20,15 @@ module Celerite
     # update: resolve with the named gems (or all) unlocked
     # ------------------------------------------------------------------
     def self.update(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      with_gemfile_overrides(rest) do
+        run_update(stdout, stderr, rest)
+      end
+    end
+
+    private def self.run_update(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if code = reject_unknown_switches(stderr, rest, UPDATE_SWITCH_FLAGS, UPDATE_SWITCH_VALUES)
+        return code
+      end
       if rest.includes?("--frozen")
         # Thor rejects the flag before any Gemfile validation; the exact
         # message depends on the profile and the command (see frozen helper).

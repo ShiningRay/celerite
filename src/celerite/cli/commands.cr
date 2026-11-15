@@ -268,6 +268,9 @@ module Celerite
           name = arg.split("=", 2)[0]
           if allowed_values.includes?(name)
             index += 1 unless arg.includes?("=")
+          elsif attached_short_value?(arg)
+            # Thor accepts attached values for short options (`-j2`, `-gfoo`,
+            # `-PLowSecurity`); the whole token is the option plus its value.
           elsif !allowed_flags.includes?(name)
             unknown << arg
           end
@@ -277,12 +280,69 @@ module Celerite
       unknown
     end
 
+    private def self.attached_short_value?(arg : String) : Bool
+      # Thor only accepts attached values for `-j` (`aliases: "-j"`); `-g`
+      # (array alias) and `-P` (singular alias) reject `-gfoo`/`-PLow...`.
+      arg.starts_with?("-j") && arg.size > 2 && arg[2..].each_char.all?(&.ascii_number?)
+    end
+
     private def self.reject_unknown_switches(stderr : IO, rest : Array(String), allowed_flags : Array(String),
                                              allowed_values : Array(String)) : Int32?
       unknown = unknown_switch_tokens(rest, allowed_flags, allowed_values)
       return nil if unknown.empty?
       stderr.puts "Unknown switches " + unknown.map { |token| "\"#{token}\"" }.join(", ")
       15
+    end
+
+    # Install-family switch surface, measured against the 4.0.24 (and 2.7.2)
+    # oracles. Global Thor flags are accepted everywhere; `--path`, `--without`
+    # and `--with` are accepted because this port implements their semantics
+    # even though 4.x removed them (declared deviation, see compat-report).
+    SWITCH_FLAGS_COMMON  = ["-h", "--help", "--verbose", "--no-color", "--quiet"]
+    SWITCH_VALUES_COMMON = ["--retry", "--jobs", "-j", "--gemfile"]
+
+    INSTALL_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--local", "--prefer-local", "--full-index", "--standalone", "--no-cache", "--no-lock", "--force", "--redownload", "--path", "--without", "--with"]
+    INSTALL_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--target-rbconfig", "--cooldown", "--trust-policy", "-P", "--lockfile"]
+
+    UPDATE_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--all", "--local", "--prefer-local", "--full-index", "--standalone", "--no-cache", "--no-lock", "--force", "--redownload", "--patch", "--minor", "--major", "--pre", "--strict", "--conservative", "--system", "--binstubs", "--clean", "--ruby", "--bundler", "--path", "--without", "--with"]
+    UPDATE_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--group", "-g", "--source", "--trust-policy", "-P", "--shebang", "--cooldown"]
+
+    LOCK_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--local", "--full-index", "--print", "--normalize-platforms", "--add-checksums", "--patch", "--minor", "--major", "--pre", "--strict", "--conservative", "--update", "--bundler", "--ruby", "--path", "--without", "--with"]
+    LOCK_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--add-platform", "--remove-platform", "--source", "--trust-policy", "-P", "--cooldown", "--lockfile"]
+
+    CACHE_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--no-install", "--all-platforms", "--force", "--redownload", "--no-cache", "--local", "--path", "--without", "--with"]
+    CACHE_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--cache-path", "--cooldown"]
+
+    # `--gemfile`/`--lockfile` are command-level in the reference: the flag is
+    # not just parsed, the definition really uses that Gemfile and lockfile
+    # (`Definition.find_gemfile`/`resolve_lockfile` already prefer the ENV
+    # vars). Scope the override to the command body and restore on every exit
+    # path, including exceptions.
+    private def self.with_gemfile_overrides(rest : Array(String), &)
+      gemfile = flag_value_ornext(rest, "--gemfile")
+      lockfile = flag_value_ornext(rest, "--lockfile")
+      previous_gemfile = ENV["BUNDLE_GEMFILE"]?
+      previous_lockfile = ENV["BUNDLE_LOCKFILE"]?
+      ENV["BUNDLE_GEMFILE"] = gemfile if gemfile
+      ENV["BUNDLE_LOCKFILE"] = lockfile if lockfile
+      begin
+        yield
+      ensure
+        if gemfile
+          if previous_gemfile
+            ENV["BUNDLE_GEMFILE"] = previous_gemfile
+          else
+            ENV.delete("BUNDLE_GEMFILE")
+          end
+        end
+        if lockfile
+          if previous_lockfile
+            ENV["BUNDLE_LOCKFILE"] = previous_lockfile
+          else
+            ENV.delete("BUNDLE_LOCKFILE")
+          end
+        end
+      end
     end
 
     private def self.flag_value_ornext(rest : Array(String), flag : String) : String?
@@ -1069,7 +1129,26 @@ module Celerite
     # ------------------------------------------------------------------
     # lock (M2: native resolution + generation)
     # ------------------------------------------------------------------
+    # Reference `lock --gemfile`/`--lockfile` really use the given files
+    # (`Definition.find_gemfile`/`resolve_lockfile` already prefer the ENV
+    # vars); scope the override to this command and restore afterwards.
     def self.lock(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if code = reject_unknown_switches(stderr, rest, LOCK_SWITCH_FLAGS, LOCK_SWITCH_VALUES)
+        return code
+      end
+      # `--gemfile` is command-level: the reference validates it after Thor, so
+      # a missing file is GemfileNotFound (exit 10) with `<absolute path>` and
+      # `not found` on two lines -- not a Ruby Errno leaking out of the bridge.
+      if gemfile = flag_value_ornext(rest, "--gemfile")
+        expanded = File.expand_path(gemfile)
+        raise GemfileNotFound.new("#{expanded.gsub('\\', "/")}\nnot found") unless File.file?(expanded)
+      end
+      with_gemfile_overrides(rest) do
+        run_lock(stdout, stderr, rest)
+      end
+    end
+
+    private def self.run_lock(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       if rest.includes?("--frozen")
         bundle_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
         if code = frozen_flag_exit(rest, stderr, Definition.build.lockfile_exists?, bundle_version, "lock")

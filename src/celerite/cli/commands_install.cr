@@ -117,7 +117,18 @@ module Celerite
       nil
     end
 
+    # `--gemfile`/`--lockfile` really take effect for install in the reference;
+    # scope the ENV override to this command and restore on every exit path.
     def self.install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false) : Int32
+      with_gemfile_overrides(rest) do
+        run_install(stdout, stderr, rest, summary, show_resolving, no_reuse)
+      end
+    end
+
+    private def self.run_install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false) : Int32
+      if code = reject_unknown_switches(stderr, rest, INSTALL_SWITCH_FLAGS, INSTALL_SWITCH_VALUES)
+        return code
+      end
       if rest.includes?("--frozen")
         # Thor rejects the flag before any Gemfile validation; the exact
         # message depends on the profile and the command (see frozen helper).
@@ -529,6 +540,15 @@ module Celerite
     # cache / package / pack
     # ------------------------------------------------------------------
     def self.cache(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      with_gemfile_overrides(rest) do
+        run_cache(stdout, stderr, rest)
+      end
+    end
+
+    private def self.run_cache(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if code = reject_unknown_switches(stderr, rest, CACHE_SWITCH_FLAGS, CACHE_SWITCH_VALUES)
+        return code
+      end
       definition = Definition.build
       if unsupported = Commands.unsupported_setting_error(definition.config, stderr)
         stderr.puts unsupported
