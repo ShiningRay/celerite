@@ -125,7 +125,7 @@ describe "M7(2) reverse dependencies and path-source discovery" do
     end
   end
 
-  it "check --without-group ignores a missing path gem in the excluded group" do
+  it "check rejects the reference-unknown --without-group switch" do
     with_bridge_server do
       with_project({
         "Gemfile"                                => PATH_GROUP_GEMFILE,
@@ -134,9 +134,9 @@ describe "M7(2) reverse dependencies and path-source discovery" do
         "vendor/default_gem/lib/default_gem.rb"  => "module DefaultGem; end\n",
       }) do
         code, out, err = capture_command { |o, e| Celerite::Commands.check(o, e, ["--without-group", "test"]) }
-        err.should eq("")
-        out.should eq("The Gemfile's dependencies are satisfied\n")
-        code.should eq(0)
+        code.should eq(15)
+        out.should eq("")
+        err.should eq("Unknown switches \"--without-group\"\n")
       end
     end
   end

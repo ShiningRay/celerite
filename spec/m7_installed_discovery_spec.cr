@@ -284,40 +284,39 @@ private def with_bridge_server(&)
 end
 
 describe "M7 group/with-without filtering" do
-  it "check --without-group ignores a missing gem in the excluded group" do
+  it "check rejects the reference-unknown --without-group switch" do
     with_bridge_server do
       with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
         "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
       })) do
         code, out, err = capture_command { |o, e| Celerite::Commands.check(o, e, ["--without-group", "test"]) }
-        err.should eq("")
-        out.should eq("The Gemfile's dependencies are satisfied\n")
-        code.should eq(0)
+        code.should eq(15)
+        out.should eq("")
+        err.should eq("Unknown switches \"--without-group\"\n")
       end
     end
   end
 
-  it "check --only-group reports a missing gem in the selected group" do
+  it "check rejects the reference-unknown --only-group switch" do
     with_bridge_server do
       with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
         "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
       })) do
         code, _out, err = capture_command { |o, e| Celerite::Commands.check(o, e, ["--only-group", "test"]) }
-        code.should eq(1)
-        err.should contain("rake (13.4.2)")
+        code.should eq(15)
+        err.should eq("Unknown switches \"--only-group\"\n")
       end
     end
   end
 
-  it "check --only-group passes when the selected group is installed" do
+  it "check rejects --only-group even when the selected group is installed" do
     with_bridge_server do
       with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
         "vendor/bundle/ruby/3.4.0/gems/rake-13.4.2/lib/rake.rb" => "",
       })) do
-        code, out, err = capture_command { |o, e| Celerite::Commands.check(o, e, ["--only-group", "test"]) }
-        err.should eq("")
-        out.should eq("The Gemfile's dependencies are satisfied\n")
-        code.should eq(0)
+        code, _out, err = capture_command { |o, e| Celerite::Commands.check(o, e, ["--only-group", "test"]) }
+        code.should eq(15)
+        err.should eq("Unknown switches \"--only-group\"\n")
       end
     end
   end
@@ -364,14 +363,14 @@ describe "M7 group/with-without filtering" do
     end
   end
 
-  it "check accepts a space-separated multi-group --only-group list" do
+  it "check rejects a space-separated multi-group --only-group list" do
     with_bridge_server do
       with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
         "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
       })) do
         code, _out, err = capture_command { |o, e| Celerite::Commands.check(o, e, ["--only-group", "default", "test"]) }
-        code.should eq(1)
-        err.should contain("rake (13.4.2)")
+        code.should eq(15)
+        err.should eq("Unknown switches \"--only-group\"\n")
       end
     end
   end

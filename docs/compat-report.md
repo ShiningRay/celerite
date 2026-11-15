@@ -1484,3 +1484,25 @@ celerite 侧两个夹具都在**克隆阶段**失败，未进入解析路径：
 - `crystal tool format --check src spec` EXIT 0、`git diff --check` EXIT 0。
 
 **未验证**：1. 多组同时声明（一个依赖属于多个 group，且其中一个被 `without`）时 `dependencies_for` 的并集细节只按源码走读，未做夹具；2. `fund` 在 GEM 源（非 PATH/GIT）上的 funding 输出依赖已安装 specifications 里有 metadata，真实 rubygems.org 未触达；3. `--group` 与 `--without-group` 之类不存在的选项组合未穷举；4. 参考的崩溃偏差只在 4.0.24 复现，2.7.2 未单独验证；5. M7(3) 复选框保持未勾（`console` 仍有 exec/进程内差异、`env` 仍有多 gemspec 顺序未验证）。
+
+### 2026-11-15（check/list/show/info 选项面收敛与 `--gemfile` 生效）
+
+**参考依据**（4.0.24 实测，隔离 HOME/TEMP）：`check` 仅接受 `--dry-run` 与带值的 `--gemfile`（`=`/空格两种），`list` 仅接受 `--name-only`/`--paths`/`--only-group`/`--without-group`/`--format`，`show` 仅 `--paths`，`info` 仅 `--path`/`--version`；未知开关报 `Unknown switches "…"`（原始 token、多个以 `, ` 分隔）并 exit 15，且发生在读取 Gemfile/lockfile 之前；`info` 无参数打印 `ERROR: "bundle info" was called with no arguments` 与 `Usage: "bundle info GEM [OPTIONS]"` 后 exit 15。
+
+**实现**（`src/celerite/cli/commands.cr`）：新增 `unknown_switch_tokens`（带值开关吞下一个 token；保留 `=value` 原始形态）与 `reject_unknown_switches`（输出 `Unknown switches "…"`，返回 15）；`check` 改为薄壳，先拒绝未知开关，再以 `flag_value_ornext` 解析 `--gemfile`，`begin` 内临时设置 `ENV["BUNDLE_GEMFILE"]`、`ensure` 恢复（原无则删除），锁文件由 `Definition#resolve_lockfile` 推导；`list`/`show_info` 各自按参考白名单拒绝未知开关；`info` 无参数在 `Definition.build` 之前返回 15；`show`/`info` 保留按 `BUNDLE_WITH/WITHOUT` 的分组过滤（CLI 分组开关已按参考移除）。
+
+**证据**：
+
+- `crystal spec spec/m7_unknown_switches_spec.cr` → `7 examples, 0 failures`；`spec/m7_installed_discovery_spec.cr` → `20 examples, 0 failures`；`spec/m7_reverse_dependencies_spec.cr` → `4 examples, 0 failures`；首辅复核时把 unknown 与 discovery 两文件放在同一进程内联跑（`27 examples, 0 failures, 0 errors`），不存在顺序耦合。
+- `--gemfile` 生效：项目 PATH 源 `vendor/missing_gem` 缺失时默认 `check` → exit 1、stderr 含 `missing_gem`；`check --gemfile=Empty.gemfile` 与 `check --gemfile Empty.gemfile` → exit 0、`The Gemfile's dependencies are satisfied`，且 `ENV["BUNDLE_GEMFILE"]` 恢复。
+- 差分：`unknown-switch-check`（`check --without-group test`）、`unknown-switch-list`（`list --bogus --other`）、`unknown-switch-show`（`show --bogus-flag`）→ 4.0.24 `3 passed, 0 failed, 0 skipped`；2.7.2 `3 passed, 0 failed, 0 skipped`，三例均 exit 15。
+- 全量 `crystal spec` `347 examples, 0 failures, 4 errors`（4 errors = 既有 `spec/git_source_spec.cr` Low IL 环境）；`crystal tool format --check src spec`、`git diff --check`、`bash -n script/differential` 均 EXIT 0。
+
+**未实现/未验证**：
+
+1. `Did you mean?` 建议行未实现（参考对接近拼写的未知开关会提示）。
+2. `check --dry-run` 只接受不校验其语义，未比对参考输出。
+3. `list --format` 非 `json` 值未校验。
+4. `check --gemfile` 指向不存在文件时我方 exit 1（`No such file or directory @ rb_sysopen - …`），参考实测为 exit 10 `Could not locate Gemfile`，差异未修。
+5. `lock --gemfile` 本轮未修（参考支持）。
+6. `show` 无参时参考额外列 `  * bundler (4.0.24)`，我方只列锁文件 specs（未修，已登记）。

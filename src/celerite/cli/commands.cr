@@ -252,6 +252,36 @@ module Celerite
       end
     end
 
+    # Reference Bundler validates switches in Thor before any Gemfile or
+    # lockfile work starts. Unknown tokens are reported verbatim (a `=value`
+    # suffix stays part of the token), each quoted, comma + space separated.
+    private def self.unknown_switch_tokens(rest : Array(String), allowed_flags : Array(String),
+                                           allowed_values : Array(String)) : Array(String)
+      unknown = [] of String
+      index = 0
+      while index < rest.size
+        arg = rest[index]
+        if arg.starts_with?("-") && arg != "-" && arg != "--"
+          name = arg.split("=", 2)[0]
+          if allowed_values.includes?(name)
+            index += 1 unless arg.includes?("=")
+          elsif !allowed_flags.includes?(name)
+            unknown << arg
+          end
+        end
+        index += 1
+      end
+      unknown
+    end
+
+    private def self.reject_unknown_switches(stderr : IO, rest : Array(String), allowed_flags : Array(String),
+                                             allowed_values : Array(String)) : Int32?
+      unknown = unknown_switch_tokens(rest, allowed_flags, allowed_values)
+      return nil if unknown.empty?
+      stderr.puts "Unknown switches " + unknown.map { |token| "\"#{token}\"" }.join(", ")
+      15
+    end
+
     private def self.flag_value_ornext(rest : Array(String), flag : String) : String?
       rest.each_with_index do |arg, index|
         if arg == flag
@@ -456,6 +486,28 @@ module Celerite
     # check
     # ------------------------------------------------------------------
     def self.check(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if code = reject_unknown_switches(stderr, rest, ["--dry-run"], ["--gemfile"])
+        return code
+      end
+      # `--gemfile FILE` is command-level in the reference: check really builds
+      # its definition from that file. Definition.find_gemfile already prefers
+      # BUNDLE_GEMFILE, so scope the override to this command and restore it on
+      # every exit path (including exceptions).
+      requested_gemfile = flag_value_ornext(rest, "--gemfile")
+      previous_gemfile = ENV["BUNDLE_GEMFILE"]?
+      ENV["BUNDLE_GEMFILE"] = requested_gemfile if requested_gemfile
+      begin
+        run_check(stdout, stderr, rest)
+      ensure
+        if previous_gemfile
+          ENV["BUNDLE_GEMFILE"] = previous_gemfile
+        else
+          ENV.delete("BUNDLE_GEMFILE")
+        end
+      end
+    end
+
+    private def self.run_check(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       definition = Definition.build
       validate_ruby_runtime!(definition)
       config = definition.config
@@ -465,22 +517,11 @@ module Celerite
       end
 
       lockfile = definition.lockfile!
-      only_groups = flag_values(rest, "--only-group")
-      without_groups = flag_values(rest, "--without-group")
       all_groups = bridge_available? ? lockfile_groups(definition, lockfile) : ["default"]
 
-      if only_groups.any? && without_groups.any?
-        stderr.puts "The `--only-group` and `--without-group` options cannot be used together"
-        return 15
-      end
-      (only_groups + without_groups).uniq.each do |group|
-        unless all_groups.includes?(group)
-          stderr.puts "`#{group}` group could not be found."
-          return 15
-        end
-      end
-
-      requested_groups = requested_groups_for(config, all_groups, only_groups, without_groups)
+      # `check` has no group switches in the reference; BUNDLE_WITH/WITHOUT
+      # still filter through requested_groups_for.
+      requested_groups = requested_groups_for(config, all_groups, [] of String, [] of String)
       locked_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, lockfile.specs.sort_by(&.full_name), requested_groups) : lockfile.specs.sort_by(&.full_name)
 
       # Reference parity: Gemfile ruby declaration differs from lock RUBY VERSION
@@ -521,6 +562,9 @@ module Celerite
     # list
     # ------------------------------------------------------------------
     def self.list(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if code = reject_unknown_switches(stderr, rest, ["--name-only", "--paths"], ["--only-group", "--without-group", "--format"])
+        return code
+      end
       paths = rest.includes?("--paths")
       name_only = rest.includes?("--name-only")
       json_format = rest.includes?("--format=json") || rest.includes?("--format") && flag_value(rest, "--format") == "json"
@@ -618,34 +662,31 @@ module Celerite
     # show / info
     # ------------------------------------------------------------------
     def self.show_info(command : String, stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      # `show` and `info` expose different switches in the reference: show
+      # takes --paths only, info takes --path/--version. Unknown switches are
+      # rejected before the definition is built, like Thor.
+      allowed_flags = command == "info" ? ["--path", "--version"] : ["--paths"]
+      if code = reject_unknown_switches(stderr, rest, allowed_flags, [] of String)
+        return code
+      end
+
+      names = rest.reject { |a| a.starts_with?("-") }
+      if command == "info" && names.empty?
+        stderr.puts "ERROR: \"bundle info\" was called with no arguments"
+        stderr.puts "Usage: \"bundle info GEM [OPTIONS]\""
+        return 15
+      end
+
       definition = Definition.build
       validate_ruby_runtime!(definition)
       lockfile = definition.lockfile!
-      locked_specs = lockfile.specs.sort_by(&.full_name)
-
-      paths = rest.includes?("--paths")
-      name_only = rest.includes?("--name-only")
-      json_format = rest.includes?("--format=json") || (rest.includes?("--format") && flag_value(rest, "--format") == "json")
-      only_groups = flag_values(rest, "--only-group")
-      without_groups = flag_values(rest, "--without-group")
-
-      # Validate mutually exclusive group filters like the reference.
+      # `show`/`info` still honor BUNDLE_WITH/WITHOUT from config (the CLI
+      # group switches were removed above, the config filter was not).
       all_groups = bridge_available? ? lockfile_groups(definition, lockfile) : ["default"]
-      if only_groups.any? && without_groups.any?
-        stderr.puts "The `--only-group` and `--without-group` options cannot be used together"
-        return 15
-      end
-      (only_groups + without_groups).uniq.each do |group|
-        unless all_groups.includes?(group)
-          stderr.puts "`#{group}` group could not be found."
-          return 15
-        end
-      end
-
-      requested_groups = requested_groups_for(definition.config, all_groups, only_groups, without_groups)
-      locked_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, locked_specs, requested_groups) : locked_specs
-
-      names = rest.reject { |a| a.starts_with?("--") }
+      requested_groups = requested_groups_for(definition.config, all_groups, [] of String, [] of String)
+      sorted_specs = lockfile.specs.sort_by(&.full_name)
+      locked_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, sorted_specs, requested_groups) : sorted_specs
+      paths = rest.includes?("--paths")
       if command == "show" && names.empty?
         stdout.puts "Gems included by the bundle:"
         missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
@@ -654,29 +695,18 @@ module Celerite
           stderr.puts "Could not find #{full_names} in locally installed gems"
           return 7
         end
-        if json_format
-          gems = locked_specs.map do |spec|
-            {"name" => spec.name, "version" => spec.version.to_s}
-          end
-          stdout.puts({"gems" => gems}.to_json)
-        elsif paths
+        if paths
           locked_specs.each do |spec|
             path = installed_gem_dir(definition, spec, lockfile)
             stdout.puts(path ? display_path(path) : spec.full_name)
           end
-        elsif name_only
-          locked_specs.each { |spec| stdout.puts spec.name }
         else
           locked_specs.each { |spec| stdout.puts "  * #{spec_display_name(spec, lockfile)}" }
         end
         return 0
       end
 
-      name = names.first?
-      if name.nil?
-        stderr.puts "Could not find command \"#{command}\"."
-        return 15
-      end
+      name = names.first
 
       spec = locked_specs.find(&.name.==(name))
       if spec.nil?
@@ -697,17 +727,17 @@ module Celerite
         return 7
       end
 
-      if json_format
-        if gem_dir = installed_gem_dir(definition, spec, lockfile)
-          stdout.puts({"name" => spec.name, "version" => spec.version.to_s, "path" => display_path(gem_dir)}.to_json)
-          return 0
-        end
-      elsif paths = rest.includes?("--paths")
+      if command == "show" && rest.includes?("--paths")
         if gem_dir = installed_gem_dir(definition, spec, lockfile)
           stdout.puts display_path(gem_dir)
           return 0
         end
-      elsif rest.includes?("--version")
+      elsif command == "info" && rest.includes?("--path")
+        if gem_dir = installed_gem_dir(definition, spec, lockfile)
+          stdout.puts display_path(gem_dir)
+          return 0
+        end
+      elsif command == "info" && rest.includes?("--version")
         stdout.puts spec.version.to_s
         return 0
       else
