@@ -1,0 +1,28 @@
+PATH
+  remote: vendor/alpha
+  specs:
+    alpha (0.1.0)
+
+PATH
+  remote: vendor/beta
+  specs:
+    beta (0.2.0)
+
+GEM
+  remote: file:///@INDEX_DIR@/
+  specs:
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  alpha!
+  beta!
+
+CHECKSUMS
+  alpha (0.1.0)
+  beta (0.2.0)
+  bundler (4.0.24) sha256=16ca64e20816a0cf151a948fb141d788602996d2b4d73577b74388fe84fa98bc
+
+BUNDLED WITH
+  4.0.24

@@ -768,20 +768,36 @@ module Celerite
       lockfile = definition.lockfile!
       bridge = Bridge::Client.new
       begin
-        groups = [] of String
-        group_flag = flag_value(rest, "--group")
-        if group_flag
-          groups = group_flag.split(",").map(&.strip)
+        evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+        # `--group` is a scalar Thor option (fund.rb:14-20): the last occurrence
+        # wins, both `--group=x` and `--group x` are accepted, and a comma stays
+        # part of the group name (4.0.24 turns "development,test" into one
+        # symbol, which matches nothing).
+        explicit_groups = fund_group_flag(rest)
+        requested_groups = if explicit_groups
+                             # Bundler passes the flag straight to
+                             # dependencies_for and then crashes (NoMethodError
+                             # on a nil spec) when that group is also in
+                             # `without`; subtracting `without` keeps us from
+                             # panicking while producing the same "no funding"
+                             # answer for the excluded group.
+                             explicit_groups - setting_list(definition.config, "without")
+                           else
+                             fund_requested_groups(evaluation, definition.config)
+                           end
+        deps = evaluation.dependencies.select do |dep|
+          dep.groups.any? { |group| requested_groups.includes?(group) }
         end
 
-        # Groups are not stored in the lockfile; use bridge evaluation for group filtering.
-        deps = if groups.any?
-                 evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
-                 names = evaluation.dependencies.select { |dep| dep.groups.any? { |g| groups.includes?(g) } }.map(&.name)
-                 lockfile.dependencies.select { |d| names.includes?(d.name) }
-               else
-                 lockfile.dependencies
-               end
+        # A missing PATH source fails Bundler's definition validation with
+        # PathError (source/path.rb:198-204, status 13).  Reproduce it before
+        # touching funding metadata.  The reference emits a single line and
+        # lets the UI wrap it at the terminal width (ui/shell.rb:167-171), so
+        # the wrap is derived, not hardcoded.
+        if missing = fund_missing_path(definition, lockfile)
+          stderr.puts Commands.word_wrap("The path `#{missing}` does not exist.", CLI.terminal_width)
+          return 13
+        end
 
         fund_info = [] of String
         deps.each do |dep|
@@ -804,6 +820,54 @@ module Celerite
       ensure
         bridge.close
       end
+    end
+
+    private def self.fund_group_flag(rest : Array(String)) : Array(String)?
+      value : String? = nil
+      index = 0
+      while index < rest.size
+        arg = rest[index]
+        if arg == "--group"
+          candidate = rest[index + 1]?
+          value = candidate unless candidate.nil? || candidate.starts_with?("--")
+          index += 1
+        elsif arg.starts_with?("--group=")
+          value = arg.split("=", 2)[1]
+        end
+        index += 1
+      end
+      value ? [value] : nil
+    end
+
+    # definition.rb:286-288 calls dependencies_for(requested_groups), and
+    # :1251-1255 computes those as (declared groups - without - optional + with).
+    # dependencies_for (:328-333) keeps a dependency when any of its groups
+    # intersects the requested set.
+    private def self.fund_requested_groups(evaluation : Bridge::GemfileEvaluation, config : Config) : Array(String)
+      declared = evaluation.dependencies.flat_map(&.groups).uniq
+      (declared - setting_list(config, "without") + setting_list(config, "with")).uniq
+    end
+
+    private def self.setting_list(config : Config, name : String) : Array(String)
+      case value = config[name]
+      when Array(String) then value
+      when String        then value.split(":").reject(&.empty?)
+      else                    [] of String
+      end
+    end
+
+    # Bundler validates every source in the definition, not just the ones that
+    # back a direct dependency, so a missing PATH entry anywhere in the
+    # lockfile aborts with PathError (source/path.rb:198-204) in lockfile order.
+    private def self.fund_missing_path(definition : Definition, lockfile : Lockfile::Data) : String?
+      lockfile.sources.each do |source|
+        next unless source.type == "PATH"
+        remote = source.remote
+        next if remote.nil? || remote.empty?
+        dir = File.expand_path(remote, File.dirname(definition.gemfile_path))
+        return dir.gsub('\\', "/") unless Dir.exists?(dir)
+      end
+      nil
     end
 
     private def self.read_source_funding_uri(definition : Definition, spec : Lockfile::Spec, lockfile : Lockfile::Data) : String?
@@ -837,19 +901,9 @@ module Celerite
       return nil unless Dir.exists?(ruby_root)
 
       Dir.each_child(ruby_root) do |abi|
-        gem_file = File.join(ruby_root, abi, "cache", "#{spec.full_name}.gem")
-        if File.file?(gem_file)
-          begin
-            info = Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(gem_file).to_json)
-            if metadata = info.metadata
-              if uri = metadata["funding_uri"]?
-                return uri unless uri.empty?
-              end
-            end
-          rescue
-          end
-        end
-
+        # Reference Bundler reads funding metadata from definition.specs, i.e.
+        # the installed specifications tree. It never unpacks cache/*.gem, so
+        # neither do we (our installer writes the full metadata-bearing spec).
         gemspec_path = File.join(ruby_root, abi, "specifications", "#{spec.full_name}.gemspec")
         next unless File.file?(gemspec_path)
         begin

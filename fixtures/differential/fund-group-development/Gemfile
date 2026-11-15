@@ -1,0 +1,7 @@
+source "file:///@INDEX_DIR@"
+
+gem "alpha", path: "vendor/alpha"
+
+group :development do
+  gem "beta", path: "vendor/beta"
+end

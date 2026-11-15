@@ -1446,3 +1446,41 @@ celerite 侧两个夹具都在**克隆阶段**失败，未进入解析路径：
 - 受影响的 13+2 例夹具与 4 个 spec error 尚未在放行环境复跑验证转绿。
 
 **可选路径（建议，未执行）**：① 沙箱侧放行 `bin/celerite.exe`（Medium IL 或白名单）；② 在不受该限制的宿主或 CI 跑差分与 spec（夹具与装具已就绪）；③ 产品侧引入 libgit2 等新依赖——违反本仓「禁止新增第三方依赖」约束，不建议。
+
+## 2026-11-15 M7(3)：`fund --group` 的组选择、缺 PATH 源报错与 funding 来源对齐
+
+**参考锚点**：`bundler-4.0.24/lib/bundler/cli/fund.rb:14-32`（`--group` 为标量选项，`Array(options[:group]).map(&:to_sym)` 直接交给 `definition.dependencies_for`，命中后打印 `* <full_name>` + `  Funding: <uri>`）、`definition.rb:286-288` 与 `:328-333`（`dependencies_for(requested_groups)` 保留任一 group 落在请求集合内的依赖）、`definition.rb:1251-1255`（默认请求集合 = 声明组 − `without` + `with`）、`source/path.rb:198-204`（`The path `<expanded_path>` does not exist.`，`raise PathError`）、`errors.rb` 中 `PathError` 状态 13、`ui/shell.rb:167-171`（`word_wrap`：`line.length > line_width ? line.gsub(/(.{1,#{line_width}})(\s+|$)/, "\\1\n").strip : line`）。
+
+**修复前缺陷**：① `--group` 被按逗号切分成数组，且忽略「重复 flag 后者覆盖」；② 未套用 `without`/`with`，默认集合错；③ 缺 PATH 目录时直接崩到内部错误或静默继续，没有参考的 `PathError`（exit 13）；④ funding 只要 `cache/*.gem` 能读就取，而参考只读已安装 specifications。
+
+**实现**（`src/celerite/cli/commands_surface.cr`）：
+- `fund_group_flag(rest)`：同时接受 `--group=x` 与 `--group x`，重复出现时**后者覆盖**，`development,test` 作为一个组名（因此不命中任何组，与参考一致）。
+- `fund_requested_groups(evaluation, config)` + `setting_list`：默认集合 = 声明组 − `BUNDLE_WITHOUT` + `BUNDLE_WITH`。
+- `fund_missing_path(definition, lockfile)`：遍历锁文件里**所有** `PATH` 源（不限于直接依赖，参考在 definition 校验时覆盖全部 source），目录不存在则 `stderr.puts Commands.word_wrap("The path `<abs>` does not exist.", CLI.terminal_width)` 并 `return 13`。折行是**推导**出来的，不是硬编码三行：宽终端下同一消息只有一行。
+- `read_funding_uri`：删除 `cache/*.gem` 探测分支，只读 `specifications/*.gemspec`。Ruby 实测 `Gem::Specification#to_ruby_for_cache`（`assets/bridge/server.rb:205` 用的序列化）会保留 `s.metadata = { "funding_uri" => … } if s.respond_to? :metadata=`，故不丢信息。
+
+**参考实测（4.0.24，探针项目 `.tmp-scratch/fundprobe`：`alpha` 默认组 + `group :development` 的 `beta`，两者 gemspec 都带 `funding_uri`）**：
+
+| 调用 | 参考 exit | 参考输出 |
+|---|---|---|
+| `fund` | 0 | `* alpha (0.1.0)` / `  Funding: https://example.com/fund/alpha` / `* beta (0.2.0)` / `  Funding: https://example.com/fund/beta` |
+| `fund --group=development` | 0 | 只有 beta |
+| `fund --group development` | 0 | 只有 beta |
+| `fund --group=development,test` | 0 | `None of the installed gems you directly depend on are looking for funding.` |
+| `fund --group=development --group=test` | 0 | 同上（后者覆盖） |
+| `fund --group=missing` | 0 | 同上 |
+| `BUNDLE_WITHOUT=development` + `fund` | 0 | 只有 alpha |
+| 删掉 `vendor/beta` 后 `fund` | **13** | stdout 空；stderr `The path` / `` `C:/…/vendor/beta` `` / `does not exist.`（80 列折行） |
+
+**已声明偏差**：`BUNDLE_WITHOUT=development` 时 `fund --group=development`，参考**崩溃**（`NoMethodError: undefined method 'metadata' for nil` at `bundler/cli/fund.rb:24`，打印 ERROR REPORT 模板）。本实现不复刻崩溃：减掉 `without` 后按「无资金信息」打印 None 并 exit 0。这是有意的行为差异，不计入兼容通过。
+
+**差分夹具**：`fixtures/differential/fund-groups`（`fund`）、`fund-group-development`（`fund --group=development`）、`fund-groups-without`（`.bundle/config` 设 `BUNDLE_WITHOUT: "development"`）。装具的路径源与配置必须放在 `extra/`——`script/differential:199` 只把 `Gemfile`/`Gemfile.lock` 与标记文件写进项目，`extra/` 才整目录复制（本轮首跑三例 `PASS (exit=13)` 就是夹具根下 `vendor/` 被忽略、两侧同样报缺目录的假绿，已把 `vendor/`、`.bundle/` 移入 `extra/` 后复跑）。参考锁文件由 `bundle lock` 生成，与本仓夹具逐字节一致（含 `bundler (4.0.24) sha256=16ca64e2…`）。
+
+**门禁与证据**：
+- `crystal spec spec/m7_fund_group_spec.cr` **9 examples, 0 failures, 0 errors, 0 pending**（含「宽终端 `THOR_COLUMNS=1000` 时同一消息只有一行」，用于钉住折行是推导而非硬编码）。
+- 全量 `crystal spec` **340 examples, 0 failures, 4 errors, 0 pending**（4 个 error 为 `spec/git_source_spec.cr:46/73/93/119`，即上文 Low IL 环境问题；上轮基线 331/0/4）。
+- 差分 4.0.24 `3 passed, 0 failed, 0 skipped`；2.7.2 `3 passed, 0 failed, 0 skipped`。
+- 负对照：把 `fund_group_flag` 首行改为 `return nil` 重建二进制后 `FAIL fund-group-development (fund --group=development)`，diff 显示 celerite 多出 `* alpha (0.1.0)` / `  Funding: …`；恢复后 PASS。
+- `crystal tool format --check src spec` EXIT 0、`git diff --check` EXIT 0。
+
+**未验证**：1. 多组同时声明（一个依赖属于多个 group，且其中一个被 `without`）时 `dependencies_for` 的并集细节只按源码走读，未做夹具；2. `fund` 在 GEM 源（非 PATH/GIT）上的 funding 输出依赖已安装 specifications 里有 metadata，真实 rubygems.org 未触达；3. `--group` 与 `--without-group` 之类不存在的选项组合未穷举；4. 参考的崩溃偏差只在 4.0.24 复现，2.7.2 未单独验证；5. M7(3) 复选框保持未勾（`console` 仍有 exec/进程内差异、`env` 仍有多 gemspec 顺序未验证）。
