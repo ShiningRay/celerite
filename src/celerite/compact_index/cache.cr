@@ -156,9 +156,7 @@ module Celerite
         tls_ctx = nil
         if uri.scheme == "https"
           ctx = OpenSSL::SSL::Context::Client.new
-          if ca = @ssl_ca_cert
-            ctx.ca_certificates = ca unless ca.empty?
-          end
+          Celerite::TLS.configure_trust_store(ctx, @ssl_ca_cert)
           if cert = @ssl_client_cert
             Celerite::TLS.configure_client_certificate(ctx, cert)
           end

@@ -1884,3 +1884,54 @@ differential (4.0.24): 0 passed, 2 failed
 **门禁**：`bash -n script/upstream-specs` EXIT 0、`git diff --check` EXIT 0；本轮未改 `src/`（`git diff --stat` 仅 `script/upstream-specs` 与 docs），故不重跑 format/build/spec。
 
 **未验证 / 仍阻塞**：`install_test_deps` 完整链（装 sinatra/artifice 后才可能让 34 条 artifice 桶转入断言阶段）；真实 gem 源（`HTTP 403`）；git 源用例（Low-IL）；`:1882` 断言级证据；`UPSTREAM_REV=v2.7.2` 在该 rev 布局下无 bundler spec 族（既有记录，仍不可执行）。
+
+## 2026-11-16 M7(4)：TLS 信任库默认 CA 与 CA 目录（`ssl_ca_cert`）
+
+参考锚点（bundler-4.0.24）：`lib/bundler/fetcher.rb:349-359`——`ssl_ca_cert = Bundler.settings[:ssl_ca_cert] || Gem.configuration.ssl_ca_cert`；有值且 `File.directory?` → `store.add_path`（CApath，c_rehash 布局），否则 `store.add_file`；两者都没有 → `store.set_default_paths`（OpenSSL 默认信任库，遵守 `SSL_CERT_FILE`/`SSL_CERT_DIR`）。
+
+修复前缺陷：`src/celerite/downloader.cr` 与 `src/celerite/compact_index/cache.cr` 建 TLS 上下文时只在显式配置了 `ssl_ca_cert` 才 `ctx.ca_certificates = ca`，未配置时**完全不加载任何 CA**；且把目录当文件传入会得到 `SSL_CTX_load_verify_locations: error:80000005:system library::Input/output error`。实测证据（本机）：
+
+1. 默认上下文连自签服务：`OpenSSL::SSL::Error: SSL_connect: error:0A000086:SSL routines::certificate verify failed`（经产品路径表现为 `CertificateFailureError`，exit 17）。
+2. 仅 `set_default_verify_paths` 且未设 `SSL_CERT_FILE`：同样失败（本机 Crystal/msys OpenSSL 无内置默认 CA）。
+3. 设 `SSL_CERT_FILE=<Ruby 自带 cert.pem>` + `set_default_verify_paths`：参考语义下应成功；本机直接调用**仍失败**（该 Crystal/OpenSSL 构建的默认路径不读该环境变量），显式 `ca_certificates=<pem>` 才成功。
+4. rails-min 真机 `celerite install` 稳定 exit 17（`Could not verify the SSL certificate for https://rubygems.org/.`）即由第 1 条导致。
+
+实现（`src/celerite/tls.cr` 新增 `TLS.configure_trust_store(ctx, ca_cert : String?)`）：空值 → `ctx.set_default_verify_paths`（与参考 `set_default_paths` 一致），并在本机构建上额外把 `ENV["SSL_CERT_FILE"]` 显式装入（实测补偿，见未验证项）；目录 → `ctx.ca_certificates_path = path`；文件 → `ctx.ca_certificates = path`。加载失败不 rescue（与参考一致）。`downloader.cr:183-184` 与 `compact_index/cache.cr:157-158` 改为调用该 helper，`ssl_verify_mode`（NONE/PEER）与 `TLS.configure_client_certificate` 逻辑未变。
+
+新增 `spec/m7_tls_trust_store_spec.cr`（4 例，全离线本地 TLS 服务）：①空 `ssl_ca_cert` + `SSL_CERT_FILE=ca.pem` → 成功；②空 `ssl_ca_cert` + 无 `SSL_CERT_FILE` → 失败（负例，防恒真）；③显式 PEM → 成功；④显式 CA 目录（`spec/fixtures/tls/ca-dir/481f80ed.0`，名字由 `openssl x509 -in spec/fixtures/tls/ca.pem -hash -noout` 实算）→ 成功。每例在 `ensure` 中精确还原 `SSL_CERT_FILE`。修复前：`4 examples, 0 failures, 2 errors`（①CertificateFailureError、④`SSL_CTX_load_verify_locations` 目录当文件）；修复后：`4 examples, 0 failures`。
+
+门禁（新建 HOME/TEMP `home-g37`/`spec-tmp-g37`）：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen` EXIT 0；全量 `406 examples, 0 failures, 4 errors`（4 = 既有 `spec/git_source_spec.cr` msys `0xC0000022`）；`git diff --check` EXIT 0。
+
+未验证 / 限制：Windows 系统证书库（SCHANNEL/`certmgr`）不参与 OpenSSL 信任判断；CApath 需 c_rehash 哈希文件名，未做目录自动 rehash；代理 CONNECT 隧道复用同一上下文（未单独差分）；`SSL_CERT_FILE` 的显式补偿是本机构建特有行为，参考环境由 OpenSSL 默认路径直接生效；`Gem.configuration.ssl_ca_cert`（`~/.gemrc`）未读取（既有已声明偏差）。
+
+### 2026-11-16 续（M7(4) 收尾 / M7(9) 解锁）：默认 CA 的真实网络取证与 bridge 长操作截止时间
+
+**参考语义的落地**（`bundler/fetcher.rb:349-359`）：`ssl_ca_cert` 是目录 → `store.add_path`（CApath，c_rehash 布局），是文件 → `store.add_file`，都没有 → `store.set_default_paths`。`src/celerite/tls.cr` 的 `TLS.configure_trust_store` 已按此实现（文件 / 目录 / 默认三路），`downloader.cr` 与 `compact_index/cache.cr` 统一调用。
+
+**首辅复跑与更正**（子代理口述「`set_default_verify_paths` 不读 `SSL_CERT_FILE`」只对进程内赋值成立）：
+
+1. 继承环境（父进程设 `SSL_CERT_FILE` 后启动子进程）→ OpenSSL 默认路径**会**读取该变量：`crystal run` 探针连 `https://rubygems.org` HEAD `/versions` 得 `status=200`；未设时同探针 `SSL_connect: error:0A000086:SSL routines::certificate verify failed`。
+2. 进程内 `ENV["SSL_CERT_FILE"] = …`（spec 场景）→ 本机构建上 OpenSSL 的 `set_default_paths` 读不到（Crystal 的 `ENV[]=` 走 `SetEnvironmentVariableW`，不更新 CRT `environ`），故 helper 在默认路径之后**显式**再装一次该文件；注释与本节均已按此更正。
+3. 真实网络取证（`celerite` 二进制，非探针）：`.tmp-scratch/https37/project`（`source "https://rubygems.org"` + `gem "json_pure", "2.8.1"`，`BUNDLE_PATH` 指向项目内）——设 `SSL_CERT_FILE=C:\Ruby40-x64\lib\ruby\4.0.0\etc\ssl\cert.pem` 后 `celerite lock` **exit 0**，输出 `Writing lockfile to …` / `Fetching gem metadata from https://rubygems.org/.` / `Resolving dependencies...`，锁文件含 `json_pure (2.8.1)` 与 `PLATFORMS x64-mingw-ucrt`；**不设**该变量时同一命令 **exit 17** 并打印参考同形四行提示（`Could not verify the SSL certificate for https://rubygems.org/.` + `There is a chance you are experiencing a man-in-the-middle attack…`）。→ 此前 rails-min 的 exit 17 属「本机 OpenSSL 默认 CA 库缺失 + 未配置 CA」，现已可配置通过。
+4. 负对照（首辅亲做）：删掉 helper 里的显式 `SSL_CERT_FILE` 装载 → `spec/m7_tls_trust_store_spec.cr:70` 报 `CertificateFailureError`（`4 examples, 0 failures, 1 errors`）；恢复后 4/0。
+
+**bridge RPC 截止时间对长操作不成立**（本轮实测发现的产品缺陷）：
+
+- 证据：rails 8.0.2 真机 `celerite install`（`.tmp-scratch/rails37`）耗时 **1112.4s**，解析/下载/安装全部依赖后，在 `bigdecimal 4.1.3 with native extensions` 处失败，错误 `bridge request timed out after 30.0s`。参考在进程内编译原生扩展，**没有 RPC 截止时间**。
+- 修复（`src/celerite/bridge/client.cr`）：`request(op, payload, limit : Time::Span? = @timeout)`、`read_response(limit)`；`build_extension` 与 `exec_plugin_hook` 传 `limit: nil`（无限等待，与参考一致），其余快速元数据调用保留 30s 安全网。
+- 回归 spec：`spec/m7_bridge_long_operations_spec.cr`（2 例，配合桩服务 `spec/fixtures/bridge/slow_server.rb`：除握手外每次请求睡 1.2s；客户端截止设 0.2s）——①`build_extension` 成功（旧实现必抛 `bridge request timed out after 0.2s`）；②`write_installed_spec`（未豁免）仍按 0.2s 超时。
+- 负对照（首辅亲做）：把 `build_extension` 的 `limit: nil` 去掉 → `spec/m7_bridge_long_operations_spec.cr:37` 报 `bridge request timed out after 0.2s`；恢复后 2/0。
+
+**Rails 规模回归的分段结论（`docs/roadmap.md` L162 的输入）**：
+
+| 轮次 | 环境 | 结果 |
+| --- | --- | --- |
+| #1 | 仅 TLS 未修（未设 `SSL_CERT_FILE`） | 早期即 exit 17（证书校验失败） |
+| #2 | 设 `SSL_CERT_FILE`、PATH 无 msys `make` | 1112.4s 后卡在 `bigdecimal` 原生扩展：`bridge request timed out after 30.0s` |
+| #3 | 同上 + PATH 追加 `C:\Ruby40-x64\msys64\usr\bin` | 148.6s（复用已装 gem）后卡在 `make: *** [Makefile:275: bigdecimal-x64-mingw-ucrt.def] Error 127`，根因 `C:\Program Files\Git\usr\bin\echo.exe: *** fatal error - NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0S5-…): 0xC0000022`（msys 共享内存被 Low IL 拒，见 2026-11-15 的 Low-IL 结论） |
+
+→ Rails 规模 e2e 的**产品侧**阻塞已清除（TLS 可配置通过、长编译不再被 30s 截断）；剩余阻塞是**本机精简环境**：msys `sh.exe`/`echo.exe` 在 Low IL 下无法创建共享内存对象，任何走 msys 工具链的原生扩展都会 `0xC0000022`。该结论与 `spec/git_source_spec.cr` 的 4 个既有 error 同源，属环境而非产品。
+
+**门禁（首辅亲跑，新建 HOME `home-g37b/g37c`）**：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen --link-flags <shim> src/cli.cr` EXIT 0（仅 2 条既有 `File.executable?` deprecation）；全量 `crystal spec --link-flags <shim>` **408 examples, 0 failures, 4 errors, 0 pending**（4 = 既有 `spec/git_source_spec.cr` msys `0xC0000022`；上轮 402/0/4，+4 新例 +2 TLS/桥例）；`git diff --check` EXIT 0。
+
+**未验证 / 限制**：Windows 系统证书库（SCHANNEL）不参与 OpenSSL 信任判断；CApath 需 c_rehash 哈希布局（未做目录自动 rehash）；代理 CONNECT 隧道复用同一上下文未单独差分；`Gem.configuration.ssl_ca_cert`（`~/.gemrc`）仍未读取（既有已声明偏差）；原生扩展完整编译链路仍被 Low-IL 环境阻塞。

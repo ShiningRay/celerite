@@ -21,5 +21,30 @@ module Celerite
 
       ctx.private_key = pem_path
     end
+
+    # Bundler's trust store shape (bundler/fetcher.rb:349-359): an explicit
+    # `ssl_ca_cert` is a CA *directory* (CApath, c_rehash layout) when it points
+    # at a directory and a single PEM file otherwise; with no setting Bundler
+    # calls `set_default_paths`, so the OpenSSL default store is initialised
+    # and honours SSL_CERT_FILE / SSL_CERT_DIR. Errors from loading a bad CA
+    # path are deliberately not rescued (same as the reference).
+    def self.configure_trust_store(ctx : OpenSSL::SSL::Context::Client, ca_cert : String?) : Nil
+      path = ca_cert.to_s
+      if path.empty?
+        ctx.set_default_verify_paths
+        # Windows only: Crystal's ENV[]= goes through SetEnvironmentVariable,
+        # which does not update the CRT `environ` block that OpenSSL's
+        # set_default_paths reads, so an SSL_CERT_FILE assigned inside the
+        # process would otherwise be ignored. Loading it explicitly here keeps
+        # the variable meaningful whether it was inherited or set at runtime.
+        if cert_file = ENV["SSL_CERT_FILE"]?
+          ctx.ca_certificates = cert_file unless cert_file.empty?
+        end
+      elsif File.directory?(path)
+        ctx.ca_certificates_path = path
+      else
+        ctx.ca_certificates = path
+      end
+    end
   end
 end

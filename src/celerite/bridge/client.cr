@@ -217,7 +217,9 @@ module Celerite
       end
 
       def exec_plugin_hook(event : String, index_path : String) : JSON::Any
-        request("exec_plugin_hook", {"event" => event, "index_path" => index_path})
+        # Hooks run arbitrary plugin code, exactly like the reference, so they
+        # are not cut off by the RPC deadline used for fast metadata calls.
+        request("exec_plugin_hook", {"event" => event, "index_path" => index_path}, limit: nil)
       end
 
       # Plugin pre-install pass (`Bundler::Plugin.gemfile_install`): names the
@@ -241,7 +243,7 @@ module Celerite
         payload = {"gem_dir" => gem_dir, "destination" => destination, "name" => name, "gem_path" => gem_path} of String => String
         payload["target_rbconfig"] = target_rbconfig if target_rbconfig
         payload["build_args"] = build_args.join(" ") if build_args && !build_args.empty?
-        request("build_extension", payload)
+        request("build_extension", payload, limit: nil)
       end
 
       def bundler_cache_file(version : String) : String?
@@ -256,7 +258,11 @@ module Celerite
         @process.wait unless @process.terminated?
       end
 
-      private def request(op : String, payload : Hash(String, String) | Hash(String, String?) = {} of String => String) : JSON::Any
+      # Long-running operations (native extension builds, plugin hooks) mirror
+      # the reference, which has no RPC deadline at all: a gem that takes
+      # minutes to compile must not be cut off by the 30s default. Pass
+      # `limit: nil` for those; everything else keeps the safety net.
+      private def request(op : String, payload : Hash(String, String) | Hash(String, String?) = {} of String => String, limit : Time::Span? = @timeout) : JSON::Any
         @mutex.synchronize do
           @request_id += 1
           id = @request_id
@@ -271,11 +277,11 @@ module Celerite
           @stdin.puts(line)
           @stdin.flush
 
-          finish_response(id, read_response)
+          finish_response(id, read_response(limit))
         end
       end
 
-      private def read_response : JSON::Any
+      private def read_response(limit : Time::Span?) : JSON::Any
         done = Channel(JSON::Any).new(1)
 
         spawn(name: "bridge-reader") do
@@ -291,11 +297,15 @@ module Celerite
           end
         end
 
-        select
-        when response = done.receive
-          response
-        when timeout(@timeout)
-          raise BridgeError.new("Timeout", "bridge request timed out after #{@timeout.total_seconds}s")
+        if limit
+          select
+          when response = done.receive
+            response
+          when timeout(limit)
+            raise BridgeError.new("Timeout", "bridge request timed out after #{limit.total_seconds}s")
+          end
+        else
+          done.receive
         end
       end
 
