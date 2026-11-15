@@ -3,6 +3,7 @@ require "./downloader"
 require "./bridge/client"
 require "./gem/platform"
 require "./errors"
+require "./install_error"
 require "file_utils"
 
 module Celerite
@@ -16,6 +17,10 @@ module Celerite
     getter downloader : Downloader
     property config : Config?
     property target_rbconfig : String?
+    # Dependency path (top-level dependency → failing gem) used by the
+    # reference's `In Gemfile:` tree appended to install failures.
+    property dependency_tree : Proc(String, Array(NamedTuple(name: String, version: String?)))? = nil
+    property gemfile_name : String = "Gemfile"
 
     # `install_root` is the gem root: `<base>/ruby/<abi>`, or `Gem.dir` itself
     # for `path.system` (see InstallPaths.gem_root).
@@ -166,7 +171,7 @@ module Celerite
               File.join(target_gems, full_name), extension_dir, name, gem_file, target_rbconfig, build_args
             )
             if build_result["error"]?
-              raise Error.new("extension build failed for #{full_name}: #{build_result["error"].as_s}")
+              raise InstallError.new(extension_failure_message(name, version, full_name, build_result))
             end
           end
         end
@@ -182,6 +187,15 @@ module Celerite
         end
 
         true
+      rescue ex : InstallError
+        # Native-extension failures keep the partially installed gem for
+        # inspection (reference: "Gem files will remain installed in … for
+        # inspection."); only the installed specification must stay absent so
+        # `installed?` remains false. Other failure paths keep the existing
+        # cleanup semantics (below).
+        failed_spec = File.join(@install_root, "specifications", "#{full_name}.gemspec")
+        File.delete(failed_spec) if File.file?(failed_spec)
+        raise ex
       rescue ex
         # Failure cleanup: no partially installed artifact may satisfy
         # `installed?` after a failed extraction/extension build.
@@ -189,6 +203,49 @@ module Celerite
         raise ex
       ensure
         FileUtils.rm_rf(work)
+      end
+    end
+
+    # Reference `installer/gem_installer.rb:44-57` + `parallel_installer.rb:198`:
+    # "<exception class>: <message>\n  <backtrace frames>\n\n<failure message>\n\n<In Gemfile: tree>".
+    # Paths inside the RubyGems message are normalized to forward slashes; the
+    # backtrace is the real RubyGems build stack (not synthesized Bundler
+    # frames), which is why the frames differ from the reference.
+    private def extension_failure_message(name : String, version : String, full_name : String,
+                                          build_result : JSON::Any) : String
+      klass = build_result["error_class"]?.try(&.as_s?) || "Gem::Ext::BuildError"
+      windows_gem_dir = File.join(@install_root, "gems", full_name)
+      windows_extension_dir = Installer.extension_dir_for(@install_root, @ruby_abi, full_name)
+      detail = build_result["error"].as_s
+        .gsub(windows_gem_dir, windows_gem_dir.gsub('\\', "/"))
+        .gsub(windows_extension_dir, windows_extension_dir.gsub('\\', "/"))
+      backtrace = (build_result["backtrace"]?.try(&.as_a?) || [] of JSON::Any).map do |entry|
+        entry.as_s.gsub('\\', "/")
+      end
+      String.build do |io|
+        io << klass << ": " << detail
+        # Reference always appends "\n" after the exception message
+        # (`gem_installer.rb:45`), which yields a blank line when RubyGems'
+        # message already ends with a newline.
+        io << "\n"
+        io << "  " << backtrace.join("\n  ") << "\n\n" unless backtrace.empty?
+        io << "An error occurred while installing " << name << " (" << version << "), and Bundler cannot continue."
+        io << "\n\n" << require_tree_for(name)
+      end
+    end
+
+    # `parallel_installer.rb:256-275`: "In <Gemfile>:" then one indented line
+    # per dependency level; non-leaf entries say what they were resolved to.
+    private def require_tree_for(name : String) : String
+      entries = dependency_tree.try(&.call(name)) || [{name: name, version: nil}]
+      String.build do |io|
+        io << "In " << gemfile_name << ":"
+        entries.each_with_index do |entry, index|
+          io << "\n" << "  " * (index + 1) << entry[:name]
+          if index < entries.size - 1
+            io << " was resolved to " << (entry[:version] || "") << ", which depends on"
+          end
+        end
       end
     end
 

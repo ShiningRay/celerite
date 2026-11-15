@@ -191,6 +191,8 @@ module Celerite
         downloader = Downloader.new(resolution.primary_remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, resolution.primary_remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(resolution.primary_remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config))
         installer = Installer.new(gem_root, abi, bridge, downloader, stdout)
         installer.config = config
+        installer.dependency_tree = ->(gem_name : String) { resolution.dependency_tree_for(gem_name) }
+        installer.gemfile_name = File.basename(definition.gemfile_path)
         installers_by_remote = {resolution.primary_remote => installer}
         if target_rbconfig = flag_value(rest, "--target-rbconfig")
           installer.target_rbconfig = File.expand_path(target_rbconfig, Dir.current)
@@ -310,6 +312,8 @@ module Celerite
               remote_downloader = Downloader.new(remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config))
               next_installer = Installer.new(gem_root, abi, bridge, remote_downloader, stdout)
               next_installer.config = config
+              next_installer.dependency_tree = ->(gem_name : String) { resolution.dependency_tree_for(gem_name) }
+              next_installer.gemfile_name = File.basename(definition.gemfile_path)
               installers_by_remote[remote] = next_installer
               next_installer
             end

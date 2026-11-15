@@ -304,7 +304,9 @@ def op_build_extension(payload)
   File.write(gem_build_complete, "")
   { "built" => spec.extensions, "complete" => gem_build_complete }
 rescue StandardError => e
-  { "error" => e.message, "backtrace" => e.backtrace.first(4) }
+  # Return the full backtrace: the CLI renders the real RubyGems build stack
+  # (never a synthesized Bundler stack; see the M7(5) install-failure note).
+  { "error_class" => e.class.name, "error" => e.message, "backtrace" => (e.backtrace || []) }
 end
 
 # Load the gemspec of a directory source (path gems, git checkouts).

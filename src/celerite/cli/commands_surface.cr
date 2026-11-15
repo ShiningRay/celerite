@@ -136,6 +136,8 @@ module Celerite
         downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, resolution.primary_remote), ssl_option(config, "ssl_ca_cert"), ssl_option(config, "ssl_client_cert"), ssl_option(config, "ssl_verify_mode"), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config))
         installer = Installer.new(gem_root, abi, bridge, downloader, stdout)
         installer.config = config
+        installer.dependency_tree = ->(gem_name : String) { resolution.dependency_tree_for(gem_name) }
+        installer.gemfile_name = File.basename(definition.gemfile_path)
 
         specs = resolution.resolve!
 

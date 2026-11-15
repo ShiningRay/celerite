@@ -186,6 +186,7 @@ module Celerite
       @bridge_bundler_version = @evaluation.bundler_version
       @bundler_cache_path = query_bundler_cache_path
       @resolved_specs = [] of ResolvedSpec
+      @root_dependency_names = [] of String
       @resolved = false
       @current_base_requirements = {} of String => Gem::Requirement
       @current_index = {} of String => Array(Resolver::IndexSpec)
@@ -633,7 +634,43 @@ module Celerite
       end
 
       @resolved_specs = run_resolution(deps)
+      @root_dependency_names = deps.map(&.name)
       @resolved_specs
+    end
+
+    # Dependency path from a top-level Gemfile dependency down to `name`
+    # (reference `In Gemfile:` tree). Breadth-first over resolved dependency
+    # edges; an unreachable name yields a single-element path so the caller can
+    # still print `In Gemfile:\n  <name>`.
+    def dependency_tree_for(name : String) : Array(NamedTuple(name: String, version: String?))
+      resolve! unless @resolved
+      by_name = {} of String => ResolvedSpec
+      @resolved_specs.each { |spec| by_name[spec.name] ||= spec }
+      roots = if @root_dependency_names.empty?
+                begin
+                  @definition.lockfile!.dependencies.map(&.name)
+                rescue
+                  [] of String
+                end
+              else
+                @root_dependency_names
+              end
+      seen = {} of String => Bool
+      queue = roots.map { |root| [root] }
+      while path = queue.shift?
+        current = path.last
+        next if seen[current]?
+        seen[current] = true
+        if current == name
+          return path.map { |entry| {name: entry, version: by_name[entry]?.try(&.version.to_s)} }
+        end
+        spec = by_name[current]?
+        next unless spec
+        spec.dependencies.each do |dep|
+          queue << (path + [dep.name]) unless path.includes?(dep.name)
+        end
+      end
+      [{name: name, version: by_name[name]?.try(&.version.to_s)}]
     end
 
     # Suppressed on locked-path installs (the reference prints no
