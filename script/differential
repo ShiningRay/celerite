@@ -201,8 +201,18 @@ run_fixture() {
   # directory listed in the fixture's `git-init` manifest is materialized here
   # as a real repo. One staging init per side keeps both runs on the same
   # commit SHA (deterministic author/committer env pins the SHA).
+  #
+  # The staging dir lives inside $work and `git -C` receives a Windows path
+  # (`cygpath -w`). With the earlier form (`staging="$(mktemp -d)"`, POSIX path
+  # straight into `git -C`) the copied `project/<rel>` had no `.git` and the
+  # reference failed with `repository './gitgem' does not exist`; reverting
+  # these two lines reproduces that failure, so the conversion is load-bearing.
+  # The exact path-root mismatch was not reproduced in isolation (a standalone
+  # replay of the old commands produced a valid `.git`), so the mechanism stays
+  # a hypothesis while the fix itself is verified.
   if [ -f "$fixture_dir/git-init" ]; then
-    staging="$(mktemp -d)"
+    staging="$(mktemp -d "$work/gitstage.XXXXXX")"
+    staging_win="$(cygpath -w "$staging")"
     while IFS= read -r rel; do
       [ -d "$fixture_dir/extra/$rel" ] || continue
       rm -rf "$staging/$rel"
@@ -212,13 +222,13 @@ run_fixture() {
       GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.test \
       GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.test \
       GIT_AUTHOR_DATE="2026-01-01T00:00:00Z" GIT_COMMITTER_DATE="2026-01-01T00:00:00Z" \
-        git -C "$staging/$rel" -c core.autocrlf=false -c commit.gpgsign=false \
+        git -C "$staging_win/$rel" -c core.autocrlf=false -c commit.gpgsign=false \
         init -q -b master >/dev/null
-      git -C "$staging/$rel" -c core.autocrlf=false add -A
+      git -C "$staging_win/$rel" -c core.autocrlf=false add -A
       GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.test \
       GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.test \
       GIT_AUTHOR_DATE="2026-01-01T00:00:00Z" GIT_COMMITTER_DATE="2026-01-01T00:00:00Z" \
-        git -C "$staging/$rel" -c commit.gpgsign=false commit -q -m init
+        git -C "$staging_win/$rel" -c commit.gpgsign=false commit -q -m init
       for side in ref cel; do
         sandbox="$ref_sandbox"; [ "$side" = "cel" ] && sandbox="$cel_sandbox"
         rm -rf "$sandbox/project/$rel"

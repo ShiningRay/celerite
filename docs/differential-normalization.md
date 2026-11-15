@@ -102,8 +102,12 @@ ruby/*/bin
   previous command's output from byte 0. That artifact produced spurious
   one-character wrap shifts after whitespace normalization; it was *not* a
   product `word_wrap` defect and no product code was changed for it.
-- Fixtures that pass a relative git path (`--git=./gitgem`) differ from the
-  reference because the reference `chdir`s into its cache directory and then
-  clones the still-relative path (`fatal: repository './gitgem' does not
-  exist`), while celerite resolves it against the project directory. This is a
-  fixture/host difference, not a harness normalization rule.
+- Fixtures that pass a relative git path (`--git=./gitgem`) are set up by the
+  harness from each fixture's `git-init` manifest. Staging repos are created
+  inside `$work` and handed to `git -C` as Windows paths (`cygpath -w`). The
+  earlier form (`mktemp -d` POSIX path straight into `git -C`) left
+  `project/<rel>` without `.git`, so the reference saw a non-repository
+  (`fatal: repository './gitgem' does not exist`); reverting those two lines
+  reproduces the failure (verified 2026-11-15), while the underlying path-root
+  mechanism is still a hypothesis (a standalone replay of the old commands
+  produced a valid `.git`). No normalization rule is involved.
