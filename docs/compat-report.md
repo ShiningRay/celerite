@@ -1630,6 +1630,53 @@ celerite 侧两个夹具都在**克隆阶段**失败，未进入解析路径：
 
 未验证：https 真实离线、vendor/cache 多平台、`--local` + git 源、`--local` + `--frozen`、`BUNDLE_LOCAL` 设置项。
 
+## 2026-11-15 M7(1)：平台变体正例
+
+参考锚点（bundler-4.0.24）：`resolver.rb:56`（候选 `sort_by {|s| [s.version, s.platform.to_s] }`）、`:259`（按 `[version.hash, platform]` 去重，同版本不同平台并存）；`lockfile_generator.rb:48`（按 `spec.full_name` 写出，平台进入锁文件标签）、`:54-55`（`PLATFORMS` 段来自 `definition.platforms`）；`definition.rb:99-108`（锁定/新增/移除平台集合）。
+
+新索引 `fixtures/gem-index-platform/`（照 `gem-index-locked-deps` 形态，由一个临时 Ruby 生成器从两个 `.gem` 生成；gemspec 全文见下）：`platdemo 1.0.0`（platform ruby）与 `platdemo 1.0.0-x64-mingw-ucrt`，均无依赖，`files = ["lib/celerite_fixture/platdemo.rb"]`。构建命令：`ruby -S gem build platdemo.gemspec --output platdemo-1.0.0.gem`，第二次设 `PLATFORM=x64-mingw-ucrt`。info 两个版本行**故意混用两种写法**以同时覆盖：平台变体行保留空格（`1.0.0-x64-mingw-ucrt |checksum:…`），ruby 行紧贴（`1.0.0|checksum:…`，即 rubygems.org 对「无依赖但有 checksum」的写法）；checksum 为各自 `.gem` 的 SHA256 base64。
+
+oracle（本机 Ruby 4.0.6，`Gem::Platform.local` = `x64-mingw-ucrt`；隔离 HOME、`BUNDLE_PATH`）：
+```
+Gemfile.lock:
+GEM
+  remote: file:///…/fixtures/gem-index-platform/
+  specs:
+    platdemo (1.0.0-x64-mingw-ucrt)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  platdemo
+
+CHECKSUMS
+  bundler (4.0.24) sha256=16ca…
+  platdemo (1.0.0-x64-mingw-ucrt) sha256=f02d…
+```
+install stdout：`Fetching platdemo 1.0.0 (x64-mingw-ucrt)`、`Installing platdemo 1.0.0 (x64-mingw-ucrt)`、`Bundle complete! 1 Gemfile dependency, 1 gem now installed.`；安装树 `<BUNDLE_PATH>/ruby/4.0.0/gems/platdemo-1.0.0-x64-mingw-ucrt`。`check` → `The Gemfile's dependencies are satisfied`；`list` → `  * platdemo (1.0.0)`；`show --paths` 两行（bundler 目录 + 上述安装目录）。
+
+修复前我方缺陷（探针 `.tmp-scratch/platprobe/ours`）：解析与锁定已正确选择 mingw 变体（`Gemfile.lock` 为 `platdemo (1.0.0-x64-mingw-ucrt)`、安装目录带平台），但进度行缺平台后缀：`Fetching platdemo 1.0.0` / `Installing platdemo 1.0.0`。
+
+实现：`src/celerite/cli/commands_install.cr` 新增 `Commands.platform_suffix(platform : String?)`（`nil`/空/`"ruby"` → `""`，否则 `" (#{platform})"`），用于三处进度行（install_spec 的 Installing、pending 的 Fetching、force_install 的 Installing）。解析侧无需改动（既有 `filter_specs` 的平台匹配已选对变体）。
+
+差分夹具：`fixtures/differential/lock-platform-variant/`（`command`=`lock`，`Gemfile` 用 `file:///@PLATFORM_INDEX_DIR@` + `gem "platdemo"`，`file-contains` 断言 `    platdemo (1.0.0-x64-mingw-ucrt)` 与 `  x64-mingw-ucrt`）与 `fixtures/differential/install-platform-variant/`（`command`=`install` + `installed-tree` 三条 marker）。`script/differential` 新增 `platform_index_dir`（`cygpath -m`）与 `@PLATFORM_INDEX_DIR@` 的五处 sed。
+
+门禁：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen` EXIT 0；全量 `381 examples, 0 failures, 4 errors`（4 = 既有 `git_source_spec.cr` 的 msys `0xC0000022`）；`git diff --check` EXIT 0；`bash -n script/differential` EXIT 0。差分：4.0.24 `2 passed, 0 failed, 0 skipped`；2.7.2 `2 passed, 0 failed, 0 skipped`。
+
+负对照（首辅亲跑）：把 `Commands.platform_suffix` 首行改成恒 `return ""` 并重建 `bin/celerite-neg.exe` → `FAIL install-platform-variant (install)`，原文 `stdout differs: 3,4c3,4 < Fetching platdemo 1.0.0 (x64-mingw-ucrt) / < Installing platdemo 1.0.0 (x64-mingw-ucrt) --- > Fetching platdemo 1.0.0 / > Installing platdemo 1.0.0`，`1 passed, 1 failed`；恢复源码并删除负对照二进制后复跑 `2 passed`。
+
+### 同一轮附带修复：compact-index `info` 行的无空格 requirements
+
+- 缺陷（修复前证据）：把 `fixtures/gem-index-platform/info/platdemo` 的 ruby 行写成标准无空格形态后，参考 `bundle lock` **EXIT 0** 且锁到 `platdemo (1.0.0-x64-mingw-ucrt)`；我方 `celerite lock` **EXIT 20**，stderr `bad compact index data for platdemo: Malformed version number string`，锁文件未写出。根因：`src/celerite/compact_index/cache.cr:495-522` 的 `parse_info_line` 先 `line.split(" ", 2)` 取 `segments[0]` 当 `version[-platform]`，无空格时 `1.0.0|checksum:…` 被整个当成版本号。
+- 参考语义：info 行是 `VERSION[-PLATFORM] [DEPS]|REQUIREMENTS`，`|` 之后才是 requirements（`checksum:` 就在这一段），依赖段可以整体省略——因此 `1.0.0|checksum:…` 与 `1.0.0 |checksum:…` 等价。
+- 实现：`src/celerite/compact_index/cache.cr:498-511` 增加分支——`rest.nil?` 时若版本段含 `|`，则在 `|` 处切开，把 `|…` 交回 `rest` 走既有 `partition("|")` 流程；空格形态行为不变。
+- 回归 spec：新增 `spec/m7_compact_info_space_spec.cr`（2 examples，用 `fixtures/gem-index-platform` 走 `Resolution`）：①无空格形态解析出的版本必须是 `1.0.0` 且不含 `|`；②锁文件文本含 `platdemo (1.0.0` 且不含 `|checksum`。`2 examples, 0 failures`。
+- 负对照（首辅亲跑）：把该分支条件改成 `if false && …` → 两个 example 全部 error（`Malformed version number string`），`2 examples, 0 failures, 2 errors`；恢复后 `2/0/0/0`。
+- 覆盖：`lock-platform-variant` / `install-platform-variant` 现在同时覆盖两种写法（同一 index 内混用），双 profile 均 PASS。
+
+未验证/已知差异：ABI 段无新夹具（既有 `ruby_abi` 单元证据）；`--local` 与平台变体组合、多平台同时锁定（同 gem 两个平台同时进锁文件）未测；`CHECKSUMS` 段未做逐字差分（装具不比较锁文件内容，只比较 `file-contains` 指定的行）。
+
 ## 2026-11-15 M7(1)：`check` 重解通知的「依赖已满足」取证 + `bundle-preset` 装具能力
 
 `docs/roadmap.md` L155 曾记录：`check` 在「Gemfile 声明 `ruby`、lock 无 `RUBY VERSION`、依赖已满足」时应打印 `Resolving dependencies...`，但该场景**无法差分 fixture 化**，因为 `script/differential` 在跑命令前不会预填充 `BUNDLE_PATH`。本轮补上装具能力并固化证据。

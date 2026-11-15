@@ -496,6 +496,14 @@ module Celerite
         segments = line.split(" ", 2)
         version_and_platform = segments[0]
         rest = segments[1]?
+        # A version without dependencies may put its requirements straight after
+        # the version (`1.0.0|checksum:...`); the reference splits on `|` and
+        # accepts both forms, while only the no-space form is written by
+        # rubygems.org for gems that have checksums but no dependencies.
+        if rest.nil? && (pipe = version_and_platform.index('|'))
+          rest = version_and_platform[pipe..]
+          version_and_platform = version_and_platform[0, pipe]
+        end
         parts = version_and_platform.split("-", 2)
         version = parts[0]
         platform = parts[1]?

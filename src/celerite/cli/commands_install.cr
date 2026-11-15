@@ -68,6 +68,14 @@ module Celerite
       ""
     end
 
+    # Reference prints the platform for platform-specific variants
+    # (`Fetching platdemo 1.0.0 (x64-mingw-ucrt)`); the ruby platform is
+    # elided from progress lines.
+    def self.platform_suffix(platform : String?) : String
+      return "" if platform.nil? || platform.empty? || platform == "ruby"
+      " (#{platform})"
+    end
+
     # ------------------------------------------------------------------
     # install
     # ------------------------------------------------------------------
@@ -296,7 +304,7 @@ module Celerite
             install_events << {
               kind: "install",
               name: spec.full_name,
-              line: "Installing #{spec.name} #{spec.version}#{was_suffix.call(spec)}#{native_suffix(bridge, cached)}",
+              line: "Installing #{spec.name} #{spec.version}#{platform_suffix(spec.platform)}#{was_suffix.call(spec)}#{native_suffix(bridge, cached)}",
             }
             spec_installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum)
             # The reference records the installed package's sha256 in CHECKSUMS
@@ -311,7 +319,7 @@ module Celerite
             install_events << {
               kind: "fetch",
               name: spec.full_name,
-              line: "Fetching #{spec.name} #{spec.version}#{was_suffix.call(spec)}",
+              line: "Fetching #{spec.name} #{spec.version}#{platform_suffix(spec.platform)}#{was_suffix.call(spec)}",
             }
             remote = resolution.remote_for(spec.name)
             spec_downloader = remote == resolution.primary_remote ? downloader : (installers_by_remote[remote]?.try(&.downloader) || Downloader.new(remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config)))
@@ -334,7 +342,7 @@ module Celerite
             install_events << {
               kind: "install",
               name: spec.full_name,
-              line: "Installing #{spec.name} #{spec.version}#{native_suffix(bridge, nil)}",
+              line: "Installing #{spec.name} #{spec.version}#{platform_suffix(spec.platform)}#{native_suffix(bridge, nil)}",
             }
             installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum, true)
           end
