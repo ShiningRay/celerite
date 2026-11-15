@@ -470,27 +470,21 @@ module Celerite
         abi = ruby_abi(bridge)
         install_root = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi))
         lockfile = definition.lockfile!
-        profile = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
         # specs_to_keep (pinned `Bundler::Runtime#clean`): lockfile specs plus
         # the running bundler itself (not installed via Source::Rubygems here).
-        # Bundler 2.7.2 profile: `bundle clean` removes bundle-installed gem/git
-        # dirs (and prints `Removing <name> (<version>)`) even when locked, as
-        # observed in pinned differential fixtures clean-force/clean-unused.
-        keep_names = if profile.starts_with?("2.7.")
-                       Set(String).new
-                     else
-                       lockfile.specs.map(&.full_name).to_set
-                     end
+        # The reference keeps the locked specs for both 4.0.x and 2.7.x; the
+        # earlier 2.7.x "clean everything" special case was an artifact of
+        # differential output truncated by a harness defect and is withdrawn
+        # (2026-11-15).
+        keep_names = lockfile.specs.map(&.full_name).to_set
 
         # Stale git checkouts: any <base>-* directory not holding a locked
-        # Git source checkout (4.0.x keeps locked git sources; 2.7.x cleans all).
+        # Git source checkout (locked git sources are kept for both profiles).
         checkout_keep = Set(String).new
-        unless profile.starts_with?("2.7.")
-          lockfile.sources.each do |section|
-            next unless section.type == "GIT"
-            base = GitSource.base_name(section.remote || "")
-            checkout_keep << base
-          end
+        lockfile.sources.each do |section|
+          next unless section.type == "GIT"
+          base = GitSource.base_name(section.remote || "")
+          checkout_keep << base
         end
         git_root = File.join(install_root, "bundler", "gems")
         git_removed = [] of String

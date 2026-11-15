@@ -77,7 +77,7 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 
 - [x] 实现 gem 下载、SHA-256 校验、内容寻址缓存与并发去重。（`spec/downloader_spec`（下载/hex 校验）+ `install-fresh/install-rerun` 差分。）
 - [x] 实现 gem package 读取、原子安装、specification、executables 和 binstubs。（基础安装路径与固定夹具已做；通用安装文件树内容比较和完整故障清理由 M7/M9 补齐。）
-- [x] 实现 `install`、`cache`/`package`、`clean`、`pristine`、`binstubs` 的相关路径。（`install-fresh`、`pristine({,-named})`、`git-pristine`、`clean-unused` 差分覆盖 Rubygems/Git/path 的重装与清理语义（双 profile）；`cache` 由 `install` 后 `vendor/cache` 检查复核路径。）
+- [x] 实现 `install`、`cache`/`package`、`clean`、`pristine`、`binstubs` 的相关路径。（`install-fresh`、`pristine({,-named})`、`git-pristine`、`clean-unused` 差分覆盖 Rubygems/Git/path 的重装与清理语义（双 profile）；`cache` 由 `install` 后 `vendor/cache` 检查复核路径。）**2026-11-15 订正（clean）**：参考 2.7.2 与 4.0.24 的 `clean`/`clean --force` 一致，均按当前锁文件保留；早先「2.7.x 清空保留集」是装具缺陷期（`>>` 截断参考输出）的误判，profile 特例代码已撤销，新增 `spec/m7_clean_spec.cr` 4 例（移除未锁定 gem、`--force` 全保留、`--dry-run` 不删、二次 clean 幂等），双 profile 定向差分 `clean-force`/`clean-unused` 2/0/0。
 - [ ] 实现 `exec`、runtime setup 与 `ruby -rbundler/setup` 适配；覆盖嵌套调用、信号、退出码、Ruby shebang 的 `Kernel.load` 和 `disable_exec_load`。（已有参考 Bundler runtime、Ruby `Kernel.load` 和退出码场景；轻量独立 runtime 属 M9，Windows 信号边界未关闭。）
 - [ ] 验证中断、磁盘错误、校验失败、无网络、重复安装及多进程竞争。（校验失败、重复安装、无网络和锁互斥已有测试；磁盘错误、中断及安装失败原子清理未完整验证。）
 
