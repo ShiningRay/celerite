@@ -143,4 +143,46 @@ module Celerite
       true
     end
   end
+
+  # Bundler::Fetcher::CertificateFailureError (an HTTPError, exit 17): the TLS
+  # handshake could not verify the peer certificate. Message and layout mirror
+  # bundler/fetcher.rb:25-34 verbatim (newline after the URI). Bundler filters
+  # credentials with URICredentialsFilter; this port has no equivalent helper,
+  # so `display_uri` drops userinfo instead of printing secrets.
+  class CertificateFailureError < Error
+    # The original OpenSSL error, kept for diagnostics (never swallowed).
+    getter ssl_error : Exception?
+
+    def initialize(message : String, @ssl_error : Exception? = nil)
+      super(message)
+    end
+
+    def self.message_for(uri : URI) : String
+      "Could not verify the SSL certificate for #{display_uri(uri)}.\n" \
+      "There is a chance you are experiencing a man-in-the-middle attack, but most " \
+      "likely your system doesn't have the CA certificates needed for verification. " \
+      "For information about OpenSSL certificates, see " \
+      "https://railsapps.github.io/openssl-certificate-verify-failed.html."
+    end
+
+    def self.for(uri : URI, ssl_error : Exception? = nil) : CertificateFailureError
+      new(message_for(uri), ssl_error)
+    end
+
+    def self.display_uri(uri : URI) : String
+      return uri.to_s if uri.user.nil? && uri.password.nil?
+      host = uri.host || ""
+      port = uri.port ? ":#{uri.port}" : ""
+      query = uri.query ? "?#{uri.query}" : ""
+      "#{uri.scheme}://#{host}#{port}#{uri.path}#{query}"
+    end
+
+    def status_code : Int32
+      17
+    end
+
+    def wrap? : Bool
+      true
+    end
+  end
 end

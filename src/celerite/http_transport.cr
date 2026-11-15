@@ -43,6 +43,10 @@ module Celerite
         # timeouts and IO errors keep their pre-existing semantics; they are
         # not caught here.
         raise network_down(uri, ex)
+      rescue ex : OpenSSL::SSL::Error
+        # Certificate verification failures become Bundler::Fetcher::
+        # CertificateFailureError (exit 17); other TLS errors are re-raised.
+        translate_tls_failure(uri, ex)
       ensure
         client.close rescue nil
       end
@@ -64,7 +68,11 @@ module Celerite
       channel : IO = socket
       begin
         if uri.scheme == "https"
-          channel = open_tunnel(socket, tls, host, port, proxy)
+          begin
+            channel = open_tunnel(socket, tls, host, port, proxy)
+          rescue ex : OpenSSL::SSL::Error
+            translate_tls_failure(uri, ex)
+          end
         end
         target = uri.scheme == "https" ? path : absolute_target(uri, port, path)
         write_request(channel, target, host, port, uri.scheme == "https" ? 443 : 80, headers, proxy)
@@ -97,11 +105,23 @@ module Celerite
         break if line == "\r\n" || line.empty?
       end
       context = tls || OpenSSL::SSL::Context::Client.new
-      # TLS handshake / certificate failures are intentionally not translated
-      # here: the reference maps them to CertificateFailureError
-      # (bundler/fetcher.rb:25, also an HTTPError). That product difference is
-      # still deferred.
+      # Certificate verification failures surface as OpenSSL::SSL::Error and are
+      # translated by the caller (translate_tls_failure) into the reference's
+      # CertificateFailureError (bundler/fetcher.rb:25-34).
       OpenSSL::SSL::Socket::Client.new(socket, context: context, hostname: host, sync_close: true)
+    end
+
+    # Bundler maps TLS handshake failures to CertificateFailureError
+    # (bundler/fetcher/downloader.rb:94-95; fetcher.rb:25-34, an HTTPError with
+    # exit 17). Only certificate-verification failures are translated; other
+    # TLS errors keep their previous behaviour, and the original OpenSSL error
+    # is kept on the exception for diagnostics (never swallowed).
+    private def self.translate_tls_failure(uri : URI, ex : OpenSSL::SSL::Error) : NoReturn
+      message = ex.message
+      if message && message.includes?("certificate verify failed")
+        raise CertificateFailureError.for(uri, ex)
+      end
+      raise ex
     end
 
     # Keep the original socket error on the raised NetworkDownError (never

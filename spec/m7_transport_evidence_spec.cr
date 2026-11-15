@@ -140,9 +140,14 @@ describe "M7(4) transport evidence" do
     with_tls_gem_server(transport_gem_bytes) do |port|
       with_transport_dir do |dir|
         downloader = Celerite::Downloader.new("https://127.0.0.1:#{port}/", dir, 0, timeout: 5)
-        expect_raises(OpenSSL::SSL::Error) do
+        # Bundler maps verification failures to CertificateFailureError (exit
+        # 17); see spec/m7_certificate_failure_spec.cr.
+        error = expect_raises(Celerite::CertificateFailureError) do
           transport_fetch(downloader)
         end
+        error.message.not_nil!.should contain(
+          "Could not verify the SSL certificate for https://127.0.0.1:#{port}/."
+        )
       end
     end
   end
