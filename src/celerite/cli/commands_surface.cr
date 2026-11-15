@@ -2,6 +2,7 @@ require "../../celerite"
 require "../errors"
 require "../gem/platform"
 require "../lockfile/parser"
+require "../lockfile/writer"
 require "../definition"
 require "../resolution"
 require "../mirror"
@@ -182,7 +183,7 @@ module Celerite
 
         unless config.frozen?
           text = resolution.generated_lockfile.to_lock
-          File.write(definition.lockfile_path, text)
+          Lockfile.write(definition.lockfile_path, text, preserve_crlf: preserve_lockfile_crlf?)
         end
 
         # parity: specific-gem updates report unchanged versions on stderr

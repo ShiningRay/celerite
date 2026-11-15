@@ -194,11 +194,31 @@ run_fixture() {
 # Remote compact-index metadata constraints (ruby/rubygems fields in /info).
 ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-constraints" 2>/dev/null || echo "$repo_root/fixtures/gem-index-ruby-constraints")"
   index_url="file://$index_dir"
+  # Copy Gemfile/Gemfile.lock with placeholder substitution but keep the
+  # fixture's line-ending style: sed re-emits lines with plain LF, so when the
+  # source file contains CR we rewrite the result with a bash line loop that
+  # strips any existing CR and writes CRLF (the `file-crlf` marker checks this).
+  copy_fixture_text() {
+    local src="$1" dst="$2" tmp
+    tmp="$(dirname "$dst")/.celerite-copy.$$"
+    sed -e "s|@INDEX_DIR@|$index_dir|" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|" -e "s|@BUNDLER_VERSION@|$bundler_version|" "$src" > "$tmp"
+    # MSYS grep auto-strips CRLF before matching, so `grep -q $'\r'` cannot
+    # see it; inspect the hex dump instead (0d0a = CRLF byte pair).
+    if od -An -tx1 "$src" | tr -d ' \n' | grep -q '0d0a'; then
+      while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        printf '%s\r\n' "$line"
+      done < "$tmp" > "$dst"
+      rm -f "$tmp"
+    else
+      mv "$tmp" "$dst"
+    fi
+  }
   for side in ref cel; do
     sandbox="$ref_sandbox"; [ "$side" = "cel" ] && sandbox="$cel_sandbox"
     for f in Gemfile Gemfile.lock; do
       [ -f "$fixture_dir/$f" ] || continue
-      sed -e "s|@INDEX_DIR@|$index_dir|" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|" -e "s|@BUNDLER_VERSION@|$bundler_version|"         "$fixture_dir/$f" > "$sandbox/project/$f"
+      copy_fixture_text "$fixture_dir/$f" "$sandbox/project/$f"
     done
   done
   # extra files, if any (including dotfiles such as .bundle/config: `*` glob
@@ -467,6 +487,32 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
         ok=0; detail+="  file-contains differs ($rel): needle=$needle"$'\n'
       fi
     done < "$fixture_dir/file-contains"
+  fi
+
+  # Optional `file-crlf` marker: each line names a project file that must keep
+  # at least one CRLF and no lone LF bytes on both sides (lockfile line-ending
+  # parity; reference definition.rb:428-434 preserves the on-disk style).
+  if [ -f "$fixture_dir/file-crlf" ]; then
+    while IFS= read -r rel; do
+      rel="$(printf '%s' "$rel" | tr -d '\r')"
+      [ -z "$rel" ] && continue
+      for side in ref cel; do
+        sandbox="$ref_sandbox"
+        [ "$side" = "cel" ] && sandbox="$cel_sandbox"
+        if [ "${bundler_version%%.*}" = "2" ]; then
+          # 2.7.x reads the existing lock in text mode on Windows, so its own
+          # `match?("\r\n")` never fires and the reference normalizes to LF;
+          # the product mirrors that profile, so this side must be LF.
+          crlf_msg="$(ruby -e 'd=File.binread(ARGV[0]); abort "unexpected CRLF (2.7.x normalizes to LF)" if d.include?("\r\n")' "$sandbox/project/$rel" 2>&1)" || {
+            ok=0; detail+="  file-crlf differs ($rel, $side): $crlf_msg"$'\n'
+          }
+        else
+          crlf_msg="$(ruby -e 'd=File.binread(ARGV[0]); abort "missing CRLF" unless d.include?("\r\n"); i=d.index(/(?<!\r)\n/n); abort "lone LF at byte #{i}" if i' "$sandbox/project/$rel" 2>&1)" || {
+            ok=0; detail+="  file-crlf differs ($rel, $side): $crlf_msg"$'\n'
+          }
+        fi
+      done
+    done < "$fixture_dir/file-crlf"
   fi
 
   if [ "$ok" = 1 ]; then

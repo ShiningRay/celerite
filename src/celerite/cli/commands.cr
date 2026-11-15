@@ -3,6 +3,7 @@ require "../../celerite"
 require "../errors"
 require "../gem/platform"
 require "../lockfile/parser"
+require "../lockfile/writer"
 require "../definition"
 require "../resolution"
 require "./commands_install"
@@ -312,6 +313,13 @@ module Celerite
 
     CACHE_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--no-install", "--all-platforms", "--force", "--redownload", "--no-cache", "--local", "--path", "--without", "--with"]
     CACHE_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--cache-path", "--cooldown"]
+
+    # Reference 2.7.x reads the existing lockfile in text mode on Windows, so
+    # its `match?("\r\n")` never fires and a CRLF lockfile is rewritten as LF;
+    # 4.x preserves the style. Mirror that per profile.
+    def self.preserve_lockfile_crlf? : Bool
+      !(ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")
+    end
 
     # `--gemfile`/`--lockfile` are command-level in the reference: the flag is
     # not just parsed, the definition really uses that Gemfile and lockfile
@@ -1228,7 +1236,7 @@ module Celerite
       if print_mode
         stdout.print text
       else
-        File.write(definition.lockfile_path, text)
+        Lockfile.write(definition.lockfile_path, text, preserve_crlf: preserve_lockfile_crlf?)
       end
       # 4.0.24: report versions skipped by the cooldown setting (stderr in
       # --print mode, stdout in write mode --pinned reference stream split).

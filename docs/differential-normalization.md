@@ -133,3 +133,5 @@ doctor 类（`issue-*`）行为不变（复跑 `issue-no-gemfile`/`issue-missing
 除此之外 env 输出逐字比较。负对照：修复后 `env-report` 由 PASS 变 FAIL（真实差异：
 `Bundler` 行多 `(Celerite …, compatibility profile)`、缺 `## Bundler settings` 段、
 `<No … Gemfile.lock found>` 行），证明比较已生效。
+
+- 夹具 `Gemfile`/`Gemfile.lock` 的复制使用 `copy_fixture_text`：`sed` 只做 `@PLACEHOLDER@` 替换，若源文件含 CRLF，再用 bash 行循环以 `printf '%s\r\n'` 重写（MSYS `grep` 会剥 CR，检测走 `od -tx1 | grep 0d0a`）。`file-crlf` 标记对 4.x 断言「至少 1 个 CRLF 且无孤立 LF」，对 2.7.x 断言 LF（参考在 Windows 文本模式下会归一）。

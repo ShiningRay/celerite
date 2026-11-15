@@ -2,6 +2,7 @@ require "../../celerite"
 require "../errors"
 require "../gem/platform"
 require "../lockfile/parser"
+require "../lockfile/writer"
 require "../definition"
 require "../resolution"
 require "../mirror"
@@ -447,7 +448,7 @@ module Celerite
           # semantic content is unchanged — formatting-only deltas (BUNDLED
           # WITH indent across profiles) do not trigger a rewrite.
           if existing.nil? || semantic_content(existing) != semantic_content(text)
-            File.write(definition.lockfile_path, text)
+            Lockfile.write(definition.lockfile_path, text, preserve_crlf: preserve_lockfile_crlf?)
           end
         end
 

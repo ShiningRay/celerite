@@ -794,15 +794,15 @@ celerite 缺陷定位（K1）：求解侧正确（resolver/source.cr:217-238 候
 
 验收（本轮实测）：
 - 离线 spec `spec/m7_platform_variant_selection_spec.cr`：5 examples, 0 failures, 0 errors, 0 pending, EXIT 0（本地变体优先 / ruby 回退 / priority 语义）。
-- 树外副本 C:	empails-min-cel9 `celerite lock` EXIT 0：`nokogiri (1.19.7-x64-mingw-ucrt)`、`prism (2.1.0-x64-mingw-ucrt)`、无 mini_portile2、PLATFORMS `x64-mingw-ucrt` 与参照一致；结构化比对（C:\Temp\compare_sections.py，对照 C:	empails-min-ref4 `bundle _4.0.24_ lock` EXIT 0、265 行/64 specs）：DEPENDENCIES/PLATFORMS/BUNDLED WITH 全等；GEM 65 vs 64，cel 多出仅 `bundler (4.0.24)` 自引用（已知差异）；nokogiri/prism 变体与参照逐行一致。
-- install 验收（C:	empails-min-cel9，树外 exe）：日志 `Installing nokogiri 1.19.7` / `Installing prism 2.1.0` **无 "with native extensions"**（预编译平台变体命中）；后续 `bigdecimal 4.1.3 with native extensions` 失败 + bridge 30s 超时 = 环境（缺 make）与桥接超时，与本 gap 无关；EXIT 1。
-- 定向差分双 profile（platform-variant-fail / multi-platform-install / multi-platform-install-ruby / multi-platform-lock / install-check / no-matching-version）：4.0.24 与 2.7.2 均 `6 passed, 0 failed, 0 skipped` EXIT 0（C:	emp\h-k-diff-4024.log / h-k-diff-272.log；platform-variant-fail 金丝雀未改期望仍 PASS）。
+- 树外副本 C:\temp\rails-min-cel9 `celerite lock` EXIT 0：`nokogiri (1.19.7-x64-mingw-ucrt)`、`prism (2.1.0-x64-mingw-ucrt)`、无 mini_portile2、PLATFORMS `x64-mingw-ucrt` 与参照一致；结构化比对（C:\Temp\compare_sections.py，对照 C:\temp\rails-min-ref4 `bundle _4.0.24_ lock` EXIT 0、265 行/64 specs）：DEPENDENCIES/PLATFORMS/BUNDLED WITH 全等；GEM 65 vs 64，cel 多出仅 `bundler (4.0.24)` 自引用（已知差异）；nokogiri/prism 变体与参照逐行一致。
+- install 验收（C:\temp\rails-min-cel9，树外 exe）：日志 `Installing nokogiri 1.19.7` / `Installing prism 2.1.0` **无 "with native extensions"**（预编译平台变体命中）；后续 `bigdecimal 4.1.3 with native extensions` 失败 + bridge 30s 超时 = 环境（缺 make）与桥接超时，与本 gap 无关；EXIT 1。
+- 定向差分双 profile（platform-variant-fail / multi-platform-install / multi-platform-install-ruby / multi-platform-lock / install-check / no-matching-version）：4.0.24 与 2.7.2 均 `6 passed, 0 failed, 0 skipped` EXIT 0（C:\temp\h-k-diff-4024.log / h-k-diff-272.log；platform-variant-fail 金丝雀未改期望仍 PASS）。
 - 门禁三件套 EXIT 0（format --check / build --no-codegen / git diff --check）。
 
 新发现（本轮登记，未在本提交修）：真实远端 lockfile CHECKSUMS 段 sha256 系统性错误——src/celerite/resolution.cr:47-49 `info_checksum_value` 对 rubygems.org /info 的**原始 hex** checksum 无条件 `Base64.decode(...).hexstring`（96 hex 位）；实测 `b64decode(参照值) == celerite 值` 为真（actioncable 8.0.2 参照 7bcce2df… → cel edb71c7b…），live /info 与参照一致；downloader.cr:129-137 normalize_checksum 已正确处理 hex/base64/sha256= 三种形态但 lockfile 路径未复用。列为 K' 独立子项。
 
 未验证：修复后二进制重跑上游全量 64 例（L 步）；rails-min install 端到端（缺 make）。
-复现：`CELERITE_BIN="C:/temp/runner/celerite.exe" TMPDIR=/c/temp bash script/differential platform-variant-fail multi-platform-install multi-platform-install-ruby multi-platform-lock install-check no-matching-version`；参照 `bundle _4.0.24_ lock`（C:	empails-min-ref4）；比对 `python C:\Temp\compare_sections.py`。
+复现：`CELERITE_BIN="C:/temp/runner/celerite.exe" TMPDIR=/c/temp bash script/differential platform-variant-fail multi-platform-install multi-platform-install-ruby multi-platform-lock install-check no-matching-version`；参照 `bundle _4.0.24_ lock`（C:\temp\rails-min-ref4）；比对 `python C:\Temp\compare_sections.py`。
 
 ## 2026-11-14 K/K'/K''：平台变体 + checksum 归一化 + bundler 自列入修复——本轮实测
 
@@ -1985,3 +1985,25 @@ differential (4.0.24): 0 passed, 2 failed
 - 门禁（首辅亲跑，新建 HOME/TEMP）：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen --link-flags <shim> src/cli.cr` EXIT 0（仅 2 条既有 `File.executable?` deprecation）；全量 `crystal spec --link-flags <shim>` **417 examples, 0 failures, 4 errors, 0 pending**（4 = 既有 `spec/git_source_spec.cr` msys `0xC0000022`；上轮 413/0/4，+4 新例）；`git diff --check` EXIT 0；差分 4.0.24 `install-fresh`/`lock-path-absolute-relative`/`lock-platform-variant` → `3 passed, 0 failed`，2.7.2 `install-local`/`lock-missing-dependency-edges` → `2 passed, 0 failed`。
 
 **已声明偏差 / 未验证**：403 的参考文案实测是 `AuthenticationRequiredError`（不是 `AuthenticationForbiddenError` 的 "Access token…"），故后者保留但未接线；gem 下载路径的 403 无参考 oracle；`~/.gemrc`/`Gem.configuration` 凭据来源未覆盖；401 带 `WWW-Authenticate: Basic` 的变体、代理 CONNECT 后的 401、以及 `install`/`update`/`cache` 的鉴权失败只由 `Downloader`/`HttpFetcher` 单测覆盖，未逐命令差分；stderr 行尾 LF vs 参考 CRLF 为既有已声明差异。
+
+## 2026-11-16（M7(5)：锁文件写入保留既有 CRLF 行尾）
+
+参考锚点（bundler-4.0.24）：`definition.rb:428-434`——写锁文件前若磁盘文件已存在且内容含 `"\r\n"`，把生成内容 `gsub(/\n/, "\r\n")` 后再写；随后 `File.open(p, "wb") { |f| f.puts(contents) }`。即参考**保留既有锁文件的行尾风格**，新建文件保持 LF。
+
+修复前我方（首辅 probe `.tmp-scratch/crlf40`，Gemfile `source "file:///<repo>/fixtures/gem-index"` + `gem "json_pure"`）：预置 CRLF 锁文件（14 处 `\r\n`）跑 `celerite lock` → exit 0，但文件 **206 字节、0 个 CRLF、14 个 LF**；同一 scenario 参考为 **220 字节、14 个 CRLF、0 个孤立 LF**。全新工程（无锁文件）两侧同为 LF（321 字节、17 个 LF，逐字节一致）。
+
+实现：新增 `src/celerite/lockfile/writer.cr` 的 `Celerite::Lockfile.write(path, contents, preserve_crlf = true)`——`File.file?(path) && File.read(path).includes?("\r\n")` 时用 `gsub(/(?<!\r)\n/, "\r\n")` 只提升孤立 LF（不产生 CRCRLF），否则原样写。`File.read` 在 Crystal 是二进制读，不做 CRLF 翻译。三处调用点改为 `Lockfile.write(definition.lockfile_path, text, preserve_crlf: preserve_lockfile_crlf?)`：`src/celerite/cli/commands.cr`（`lock`）、`src/celerite/cli/commands_install.cr`（install/update 写锁）、`src/celerite/cli/commands_surface.cr`（surface 写锁）；三文件各补 `require "../lockfile/writer"`。未改动其它写入行为（无临时文件、无 fsync）。
+
+profile 门控：`Commands.preserve_lockfile_crlf?`（`commands.cr:320`）= `!(ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")`。首辅 oracle（同一 CRLF 锁文件、`ruby …/bundler-<v>/exe/bundle lock`）：**4.0.24 → 220 字节 / 14 CRLF / 0 孤立 LF；2.7.2 → 206 字节 / 0 CRLF / 14 LF**（2.7.x 在 Windows 上以文本模式读锁文件，`definition.rb:383-385` 的 `match?("\r\n")` 不触发），故 2.x 归一是参考行为而非我方偏差。我方端到端逐命令对拍（`lock`/`install`/`update`，新建 HOME、CRLF 预置）：无 profile 或 `4.0.24` → 220/14/0（`update` 212/13/0）；`2.7.2` → 206/0/14，均与参考同字节；LF 输入 → 206 字节、SHA256 前 16 位与参考一致（`BC07922249425C84`）。
+
+新增 `spec/m7_lockfile_line_endings_spec.cr`（4 例，离线，`with_project` + `run_cli(["lock"])`）：①预置 CRLF 且 `specs:` 为空的 `Gemfile.lock` → 重写后含 `json_pure (2.8.1)`、`\r\n` 数 > 0、无孤立 LF，且归一化内容与删除后重新生成的 LF 版本一致（比较时剔除 `CHECKSUMS` 段，因为是否记录校验和取决于运行路径）；②预置 LF 锁文件 → 重写后仍无 CRLF；③无锁文件 → 新文件全 LF；④CRLF 锁文件已最新再跑一次 → 内容逐字节不变且仍 CRLF。
+
+装具：`script/differential` 新增 `file-crlf` 标记（每行一个项目文件路径，读两侧沙箱原始字节，断言至少 1 个 `\r\n` 且无孤立 LF，失败打印 `file-crlf differs (<path>, <side>): missing CRLF` / `lone LF at byte <n>`）。新夹具 `fixtures/differential/lock-preserve-crlf/`：`Gemfile`（`source "file:///@INDEX_DIR@"` + `gem "json_pure"`）、`Gemfile.lock` 用 CRLF 且 `specs:` 为空（两侧都会重写）、`command` = `lock`、`file-crlf` = `Gemfile.lock`。
+
+**装具修复与实测**：原 `sed` 复制会把夹具 CRLF 统一成 LF（KEEP 沙箱 `ref` 199 字节、CR=0）。已把 `Gemfile`/`Gemfile.lock` 复制抽成 `copy_fixture_text`（先 `sed` 做占位替换，源文件含 CRLF 时再用 bash `while read` + `printf '%s\r\n'` 重写；MSYS `grep` 会自动剥掉 CR，检测改用 `od -tx1` 找 `0d0a`）。修复后 4.0.24：`PASS lock-preserve-crlf (exit=0)`，两侧 `Gemfile.lock` 均 13 个 CR；2.7.2：`PASS`，但两侧均为 LF —— 参考 2.7.x 在 Windows 上以文本模式读锁文件（`definition.rb:383-385` 的 `match?("\r\n")` 不触发），`file-crlf` 标记在 2.x 下改为断言 LF，产品用 `Commands.preserve_lockfile_crlf?` 按 profile 门控（4.x 保留、2.x 归一）。
+
+负对照建议（装具修好后）：把 `Lockfile.write` 退回 `File.write` 重建 `bin`，`lock-preserve-crlf` 应报 `file-crlf differs (Gemfile.lock, cel): missing CRLF` 而 ref 侧通过。
+
+门禁（新建 HOME/TEMP `home-g40`/`spec-tmp-g40`/`ccache-g40`）：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen` EXIT 0；`spec/m7_lockfile_line_endings_spec.cr` `4 examples, 0 failures`；全量 `421 examples, 0 failures, 4 errors`（4 = 既有 `spec/git_source_spec.cr` Low-IL msys）；`git diff --check` EXIT 0。
+
+未验证 / 限制：装具 CRLF 保真（上）；`bundle install`/`update` 写锁路径的 CRLF 行为只做了同一 `Lockfile.write` 单元级别的推断，未逐命令差分；混行（部分 CRLF、部分 LF）按「含 CRLF 即全 CRLF」处理，参考同规则；BOM 与 UTF-8 编码未验证；`Gemfile.lock` 通过标准输入/`--lockfile` 别名路径未覆盖。
