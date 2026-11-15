@@ -1755,3 +1755,34 @@ install stdout：`Fetching platdemo 1.0.0 (x64-mingw-ucrt)`、`Installing platde
 - 未设置 `CELERITE_REFERENCE_BUNDLER_LIB` 时无法定位运行中 Bundler 的 gem 目录，`--paths` 省略该行（参考恒有）；`show` 的 `  * bundler` 行仍打印 profile 版本。
 - 参考在 `--paths` 时排到最前的是**运行中** Bundler（多条 bundler 版本安装时取激活的那一份），本实现取配置的 reference lib，不做多版本解析。
 - `show` 与 `info` 的其他重解通知形态仍未取证（roadmap L154 的余项）。
+
+## 2026-11-15 M7(1)：frozen 模式下 ruby 解锁拒绝
+
+参考锚点（bundler-4.0.24）：`definition.rb:421-425`（`@unlocking_ruby` 为真且 frozen 时 `raise ProductionError, "Bundler is unlocking ruby, but the lockfile can't be updated because frozen mode is set"`，无句点）、`definition.rb:616-618`（`validate_runtime!` 中同一守卫）、`errors.rb:35`（`ProductionError` 状态码 16，`friendly_errors.rb:26-36` 按 80 列折行）。
+
+本机实测（基座 `fixtures/differential/check-satisfied-nolock-ruby`：Gemfile 声明 `ruby "4.0.6"`、lock 有 specs 无 `RUBY VERSION`、预置已安装 json_pure 2.8.1；`BUNDLE_FROZEN=true`）：
+
+| 命令 | 参考 4.0.24 | 我方（修复后） |
+| --- | --- | --- |
+| `check` | exit 16，stdout 空，stderr 两行 `Bundler is unlocking ruby, but the lockfile can't be updated because frozen mode` / `is set` | 一致 |
+| `show` / `show --paths` / `show json_pure` / `info json_pure` | exit 0，正常列表/路径/信息（**不**触发生产检查） | 一致（本轮实测推翻首辅 oracle 中「show/info 也 exit 16」一条，以实测为准） |
+| `list` | exit 0，不打印 `Resolving dependencies...` | 一致 |
+| 2.7.2 的 frozen `check` | exit 0，只打印 `The Gemfile's dependencies are satisfied`（无通知；2.7.2 无该重解通知） | 一致 |
+| `BUNDLE_DEPLOYMENT=true` 的 `check` | exit 16，stderr 4 段共 6 行：两行消息 + 空行 + `If this is a development machine, remove the Gemfile.lock freeze by running` / `` `bundle config set frozen false`. `` | 一致（`deploy` 标记夹具） |
+| `.bundle/config` 的 `BUNDLE_FROZEN: "true"` | 与 deployment 相同的 4 段 | 实现按非 env 来源追加提示，未单独 fixture |
+
+修复前证据：`spec/m7_frozen_ruby_unlock_spec.cr` 首跑 `6 examples, 5 failures`（4 × `Expected: 16 got: 0`、`list` 多打 `Resolving dependencies...`）；差分 `check-frozen-ruby-nolock` 在旧二进制下 `FAIL`（reference=16 / celerite=0）。
+
+实现：`src/celerite/cli/commands.cr` 的 `run_check` 在算出 `lock_ruby_unlock_kind` 后、任何 stdout 之前：**非 frozen 且 kind != :none 一律打印 `Resolving dependencies...`（与 profile 无关，2.7.2 也打印）**；frozen 且 kind != :none 且 4.x profile 时 `raise ProductionError.new(消息)`（2.7.2 无此守卫）。消息构造：`ENV["BUNDLE_FROZEN"]` 非真值（nil/空/`false`）时追加 `\n\nIf this is a development machine, remove the <相对锁文件名> freeze by running \`bundle config set frozen false\`.`，即 deployment/config-file frozen 保留 4 段、env frozen 仅 2 行（`frozen_from_environment?` helper，对应 `definition.rb:475-492`）。`list` 非 frozen 且 kind != :none 打印通知、frozen 不打印；`show_info` **不加**守卫（实测参考不检查）。`ProductionError` 沿用既有类（status 16、`wrap? true`），折行与空行由统一 friendly error 渲染。
+
+差分夹具：`fixtures/differential/check-frozen-ruby-nolock/`（`command`=`check` + `frozen` 标记 + 基座 Gemfile/lock/bundle-preset）、`fixtures/differential/show-frozen-ruby-nolock/`（`command`=`show`，同标记）与 `check-deploy-ruby-nolock/`（`command`=`check` + `deploy` 标记）。`script/differential` 新增 `frozen`/`deploy` 标记：存在时参考侧 `isolated_env+=(BUNDLE_FROZEN=true)` / `(BUNDLE_DEPLOYMENT=true)`，celerite 侧 env 相应追加。
+
+差分结果（4 个夹具 × 双 profile，全部 PASS）：4.0.24 `PASS check-satisfied-nolock-ruby (exit=0)`、`PASS check-frozen-ruby-nolock (exit=16)`、`PASS show-frozen-ruby-nolock (exit=0)`、`PASS check-deploy-ruby-nolock (exit=16)` → `4 passed, 0 failed, 0 skipped`；2.7.2 `PASS check-satisfied-nolock-ruby (exit=0)`、`PASS check-frozen-ruby-nolock (exit=0)`、`PASS show-frozen-ruby-nolock (exit=0)`、`PASS check-deploy-ruby-nolock (exit=0)` → `4 passed, 0 failed, 0 skipped`。
+
+spec `spec/m7_frozen_ruby_unlock_spec.cr` 10 例：frozen check/show/show --paths/info/list、非 frozen check、**2.7.2 profile 下非 frozen check/list 的通知**、2.7.2 frozen check、deployment 4 段提示。
+
+门禁（干净 HOME/TEMP）：format --check EXIT 0；build --no-codegen EXIT 0；全量 `391 examples, 0 failures, 4 errors`（4 = 既有 `git_source_spec.cr` msys `0xC0000022`）；`git diff --check` EXIT 0；`bash -n script/differential` EXIT 0。
+
+负对照（首辅亲做）：把 `run_check` 的守卫条件临时改成 `&& false` 并重建 `bin/celerite-neg.exe`，同一夹具集得到 `differential (4.0.24): 0 passed, 2 failed, 0 skipped`，原文 `exit code: reference=16 celerite=0` + `stdout differs: 0a1 > The Gemfile's dependencies are satisfied` + `stderr differs: 1,5d0 < Bundler is unlocking ruby, … < is set < (空行) < If this is a development machine, … < `bundle config set frozen false`.`；恢复源码后重新构建并复跑，两夹具 PASS。
+
+已声明偏差/未验证：非 frozen 的 lockfile 写回仍不复刻（沿用既有登记）；提示段里的锁文件名用 `File.basename(definition.lockfile_path)`（参考用相对 `Dir.current` 的 `relative_lockfile_path`，Gemfile 在子目录时会不同）；`.bundle/config` 的 `BUNDLE_FROZEN: "true"` 与 lock 中 `RUBY VERSION` 与 Gemfile 不同的变体未各自 fixture（前者实现已按非 env 来源覆盖，后者由 spec 的手工断言覆盖）；`show`/`info` 的其余重解通知形态仍待取证。

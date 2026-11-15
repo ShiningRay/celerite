@@ -485,6 +485,16 @@ module Celerite
       end
     end
 
+    # `BUNDLE_FROZEN` supplied through the environment suppresses the
+    # "remove the freeze" hint; deployment mode and config-file frozen keep it.
+    # definition.rb:475-492 clears `suggested_command` when the frozen setting
+    # lives only in the :env location and appends the hint only when it exists.
+    private def self.frozen_from_environment? : Bool
+      value = ENV["BUNDLE_FROZEN"]?
+      return false if value.nil? || value.empty?
+      value.downcase != "false"
+    end
+
     # ------------------------------------------------------------------
     # check
     # ------------------------------------------------------------------
@@ -531,7 +541,21 @@ module Celerite
       # or is absent from the lock; check prints the re-resolve notice in both
       # satisfied and missing-dependency cases.
       ruby_unlock_kind = lock_ruby_unlock_kind(definition, lockfile)
-      stdout.puts "Resolving dependencies..." if ruby_unlock_kind == :diff || ruby_unlock_kind == :missing_from_lock
+      # Reference parity (definition.rb:421-425, 475-492): the re-resolve
+      # notice is profile-independent and suppressed only by frozen mode.
+      # Frozen refuses the unlock on the 4.x line only (2.7.2 has no such
+      # guard), and the "remove the freeze" hint is dropped when frozen comes
+      # from the environment (BUNDLE_FROZEN=true) rather than deployment/config.
+      if ruby_unlock_kind != :none && !config.frozen?
+        stdout.puts "Resolving dependencies..."
+      end
+      if ruby_unlock_kind != :none && config.frozen? && profile_bundler_version.starts_with?("4.")
+        message = "Bundler is unlocking ruby, but the lockfile can't be updated because frozen mode is set"
+        unless frozen_from_environment?
+          message += "\n\nIf this is a development machine, remove the #{File.basename(definition.lockfile_path)} freeze by running `bundle config set frozen false`."
+        end
+        raise ProductionError.new(message)
+      end
 
       if unresolved_dep(definition, lockfile)
         stderr.puts "Bundler can't satisfy your Gemfile's dependencies."
@@ -603,7 +627,9 @@ module Celerite
       # when satisfied, but list prints the notice for a missing lock RUBY VERSION
       # even when dependencies are satisfied.
       ruby_unlock_kind = lock_ruby_unlock_kind(definition, lockfile)
-      if ruby_unlock_kind == :diff || ruby_unlock_kind == :missing_from_lock
+      # Frozen mode refuses the unlock for check/show/info; `list` keeps listing
+      # but stays silent about the re-resolve (oracle: exit 0, no notice).
+      if !config.frozen? && ruby_unlock_kind != :none
         stdout.puts "Resolving dependencies..."
       end
 
@@ -683,6 +709,9 @@ module Celerite
       definition = Definition.build
       validate_ruby_runtime!(definition)
       lockfile = definition.lockfile!
+      # Measured against 4.0.24: `show`/`show --paths`/`show GEM`/`info GEM` do
+      # NOT run the frozen ruby-unlock production check (they exit 0 and print
+      # the listing/paths); only `check` raises ProductionError here.
       # `show`/`info` still honor BUNDLE_WITH/WITHOUT from config (the CLI
       # group switches were removed above, the config filter was not).
       all_groups = bridge_available? ? lockfile_groups(definition, lockfile) : ["default"]

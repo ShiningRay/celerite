@@ -282,6 +282,21 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
     TMP="$work_tmp_win" TEMP="$work_tmp_win" TMPDIR="$work/tmp"
   )
 
+  # Fixtures with a `frozen` marker run both sides under BUNDLE_FROZEN=true so
+  # the frozen-mode guards (e.g. ruby unlocking) are exercised by the oracle.
+  frozen_env=""
+  if [ -f "$fixture_dir/frozen" ]; then
+    frozen_env="BUNDLE_FROZEN=true"
+    isolated_env+=(BUNDLE_FROZEN=true)
+  fi
+  # `deploy` exercises deployment mode: same guard, but the "remove the freeze"
+  # hint is kept (definition.rb:475-492 only drops it for the :env source).
+  deploy_env=""
+  if [ -f "$fixture_dir/deploy" ]; then
+    deploy_env="BUNDLE_DEPLOYMENT=true"
+    isolated_env+=(BUNDLE_DEPLOYMENT=true)
+  fi
+
   # HTTP-index fixtures (http-index marker): serve a v2 compact-index HTTP root
   # so cooldown/ETag behavior matches rubygems.org semantics that file://
   # marshal indexes never exercise. An empty marker serves fixtures/gem-index;
@@ -366,6 +381,8 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
         GEM_HOME="$cel_sandbox/gems" GEM_PATH="$cel_sandbox/gems" \
         BUNDLE_PATH="$cel_sandbox/bundle" RUBYOPT="" \
         TMP="$work_tmp_win" TEMP="$work_tmp_win" TMPDIR="$work/tmp" \
+        ${frozen_env:+BUNDLE_FROZEN=true} \
+        ${deploy_env:+BUNDLE_DEPLOYMENT=true} \
         CELERITE_REFERENCE_BUNDLER_LIB="$bundler_lib" \
         CELERITE_PROFILE_BUNDLER_VERSION="$bundler_version" \
         "$celerite_bin" $cmd
