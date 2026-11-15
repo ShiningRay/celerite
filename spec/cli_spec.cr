@@ -277,21 +277,29 @@ describe Celerite::CLI do
   describe "lock" do
     it "manages platforms natively (remove then re-add is a no-op change)" do
       local_platform = Celerite::Gem::Platform.local.to_s
+      index_url = file_source_url(File.expand_path(File.join(__DIR__, "..", "fixtures", "gem-index")))
       with_project({
-        "Gemfile"      => "source \"https://rubygems.org\"\n\ngem \"json_pure\", \">= 2.0\"\n",
-        "Gemfile.lock" => FIXTURE_LOCKFILE,
+        "Gemfile" => "source \"#{index_url}\"\n\ngem \"json_pure\", \">= 2.0\"\n",
       }) do |dir|
         ENV["CELERITE_BRIDGE_SERVER"] = File.expand_path("../assets/bridge/server.rb", __DIR__)
         begin
+          # Resolve once against the offline fixture index: the platform
+          # round-trip below must not depend on a warm compact-index cache in
+          # the user's HOME (it used to fetch https://rubygems.org).
+          code, out, err = run_cli(["lock"])
+          code.should eq(0)
+          baseline = File.read(File.join(dir, "Gemfile.lock"))
+
           # remove the local platform then re-add it: the lockfile round-trips
           code, out, err = run_cli(["lock", "--remove-platform", local_platform])
           code.should eq(0)
           lock_after_remove = File.read(File.join(dir, "Gemfile.lock"))
           lock_after_remove.should_not contain(local_platform)
+          lock_after_remove.should contain(index_url)
 
           code, out, err = run_cli(["lock", "--add-platform", local_platform])
           code.should eq(0)
-          File.read(File.join(dir, "Gemfile.lock")).should eq(FIXTURE_LOCKFILE + "\n")
+          File.read(File.join(dir, "Gemfile.lock")).should eq(baseline)
         ensure
           ENV.delete("CELERITE_BRIDGE_SERVER")
         end

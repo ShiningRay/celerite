@@ -1243,3 +1243,13 @@ PATH
 - **本机门禁的新环境前提（重要）**：当前进程沙箱拒绝把 `~/.bundle/cache` 与 `%TEMP%` 写入（默认环境下全量 spec 出现 `Unable to create directory: '…AppData\Local\Temp\celerite-spec-…': 拒绝访问` 与 `Error opening file with mode 'wb': 'C:\Users\ShiningRay\.bundle\cache\compact_index\…'`，共 149 errors）。把 `HOME`/`USERPROFILE`/`TEMP`/`TMP`/`TMPDIR` 指向工作区内目录后可得 **`317 examples, 1 failures, 4 errors`**：失败项为 `spec/cli_spec.cr:288`（`Expected: 0 got: 17`，隔离 HOME 下确定性复现），4 errors 为 GitSource 系列的 `0xC0000022`；`spec/config_spec.cr` 的既存失败在隔离 HOME 下**消失**（证实其为机器级 `~/.bundle/config` 污染）。这些变化均由环境解释，本轮未改产品代码。
 
 **未验证**：git-init 路径机制的精确成因（仅证实「旧形式失败、新形式 PASS」）；干净非沙箱环境（celerite 子进程限制解除）下这 5 例是否 PASS；2.7.2 全量未重跑（仅 7 例定向）；Git tag/submodule/glob 仍未覆盖；`spec/cli_spec.cr:288` 在隔离 HOME 下失败的原因未定位（与本轮改动无关，本轮到目前只改装具与文档）。
+
+## 2026-11-15 M7(8) spec 自包含化：lock platform 往返用例改用离线索引
+
+`spec/cli_spec.cr` 的「lock manages platforms natively (remove then re-add is a no-op change)」原先用 `source "https://rubygems.org"` 并预置 `Gemfile.lock`；`lock --remove-platform` 会触发真实解析，只有默认 HOME 下 `~/.bundle/cache/compact_index` 热缓存存在时才通过。隔离 HOME/TEMP 实测 `crystal spec spec/cli_spec.cr:288` 得 `Expected: 0 got: 17`（NetworkDownError），`spec/cli_spec.cr` 整体 `24 examples, 1 failures`——该例依赖机器状态，不是自包含用例。
+
+**修复（仅 spec，未改产品代码）**：source 改为 `file_source_url(File.expand_path(File.join(__DIR__, "..", "fixtures", "gem-index")))`，Gemfile 为 `gem "json_pure", ">= 2.0"`，不预置锁文件；流程改为三步断言：①`lock` exit 0 并存 baseline；②`lock --remove-platform <local>` exit 0，锁文件不含该平台且 GEM 段 `remote:` 仍为本地 URL；③`lock --add-platform <local>` exit 0，锁文件逐字节等于 baseline。
+
+**证据（隔离 `HOME`/`USERPROFILE`/`TEMP`/`CRYSTAL_CACHE_DIR` 于 `.tmp-scratch`）**：修复前 `crystal spec spec/cli_spec.cr:288` = `1 examples, 1 failures`（`Expected: 0 got: 17`）；修复后 `crystal spec spec/cli_spec.cr` = `24 examples, 0 failures, 0 errors, 0 pending`；全量 `crystal spec` = `317 examples, 0 failures, 4 errors, 0 pending`（4 errors 为既有 `Celerite::GitSource` 系列 msys shm `0xC0000022` 环境限制，非本改动）；`crystal tool format --check src spec` EXIT 0；`git diff --check` EXIT 0。
+
+**未验证**：同一往返在真实 rubygems.org 可达环境下的行为（本用例已不依赖网络）；`lock --remove-platform` 对多平台/平台变体锁文件的等价性未单独差分。
