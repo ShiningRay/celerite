@@ -8,6 +8,7 @@ require "./definition"
 require "./mirror"
 require "./proxy"
 require "./git_source"
+require "./glob"
 
 module Celerite
   # Install path helpers shared by Resolution and the CLI commands.
@@ -481,6 +482,15 @@ module Celerite
     # installer skips these (they are already present in this GEM_HOME).
     getter local_installed_full_names = Set(String).new
 
+    # `vendor/cache` gems are installed straight from the cached file; the
+    # reference never downloads them again (`install --local` with an app cache
+    # prints no `Fetching` line). Keyed by full name.
+    getter vendor_cache_paths = {} of String => String
+
+    def vendor_cache_path(full_name : String) : String?
+      @vendor_cache_paths[full_name]?
+    end
+
     # `install --local` candidates: gems already visible to RubyGems plus
     # `<Gemfile dir>/vendor/cache/*.gem`. file:// sources count as local, so
     # their index is still consulted (oracle: `--local` + file:// resolves
@@ -537,7 +547,7 @@ module Celerite
       dir = File.join(File.dirname(@definition.gemfile_path), "vendor", "cache")
       return [] of Resolver::IndexSpec unless Dir.exists?(dir)
       specs = [] of Resolver::IndexSpec
-      Dir.glob(File.join(dir, "#{name}-*.gem")).sort.each do |path|
+      Glob.paths(dir, "#{name}-*.gem").sort.each do |path|
         data = @bridge.not_nil!.read_gem_spec(path)
         next unless data["name"]?.try(&.as_s?) == name
         version = data["version"]?.try(&.as_s?) || next
@@ -551,6 +561,8 @@ module Celerite
         ruby_req = requirement_from(data["required_ruby_version"]?.try(&.as_s?))
         rubygems_req = requirement_from(data["required_rubygems_version"]?.try(&.as_s?))
         specs << Resolver::IndexSpec.new(name, Gem::Version.new(version), platform, deps, ruby_req, rubygems_req)
+        full_name = platform_raw == "ruby" ? "#{name}-#{version}" : "#{name}-#{version}-#{platform_raw}"
+        @vendor_cache_paths[full_name] = path
       end
       specs
     end

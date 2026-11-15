@@ -318,7 +318,7 @@ module Celerite
               name: spec.full_name,
               line: "Installing #{spec.name} #{spec.version}#{platform_suffix(spec.platform)}#{was_suffix.call(spec)}#{native_suffix(bridge, cached)}",
             }
-            spec_installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum)
+            spec_installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum, gem_file: cached)
             # The reference records the installed package's sha256 in CHECKSUMS
             # even for file:// sources.
             if cached && File.file?(cached)
@@ -328,6 +328,12 @@ module Celerite
           end
 
           pending.each do |spec|
+            # App-cache gems install from `<project>/vendor/cache`; the
+            # reference prints no `Fetching` line and never hits the index.
+            if vendor_path = resolution.vendor_cache_path(spec.full_name)
+              cached_paths[spec.full_name] = vendor_path
+              next
+            end
             install_events << {
               kind: "fetch",
               name: spec.full_name,
@@ -435,6 +441,12 @@ module Celerite
             gems_count += 1
           elsif resolution.bridge_bundler_version.starts_with?("2.")
             gems_count += 1
+          end
+          # The reference updates the app cache during install whenever
+          # `vendor/cache` exists (and caching wasn't disabled/frozen).
+          app_cache = File.join(File.dirname(definition.gemfile_path), "vendor", "cache")
+          if Dir.exists?(app_cache) && !config.frozen? && !rest.includes?("--no-cache")
+            stdout.puts "Updating files in vendor/cache"
           end
           stdout.puts "Bundle complete! #{deps_count} Gemfile dependenc#{deps_count == 1 ? "y" : "ies"}, #{gems_count} gem#{gems_count == 1 ? "" : "s"} now installed."
           stdout.puts "Bundled gems are installed into `#{install_path.gsub(/\\\\/, "/").gsub(/\\/, "/")}`"

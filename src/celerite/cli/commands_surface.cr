@@ -10,6 +10,7 @@ require "../proxy"
 require "./commands_install"
 require "../plugin_commands"
 require "../git_source"
+require "../glob"
 require "../gem_template"
 require "yaml"
 
@@ -891,7 +892,7 @@ module Celerite
 
       gemspec_path = File.join(dir, "#{spec.name}.gemspec")
       unless File.file?(gemspec_path)
-        gemspec_path = Dir.glob(File.join(dir, "*.gemspec")).sort.first?
+        gemspec_path = Glob.paths(dir, "*.gemspec").sort.first?
       end
       return nil unless gemspec_path
       return nil unless File.file?(gemspec_path)
@@ -1202,7 +1203,7 @@ module Celerite
           # is cloned/checked out by `ensure_source_dir`); gems stay in the
           # bundler/gems checkout directory, like regular git gems.
           plugin_dir = if git_remote
-                         Dir.glob(File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "bundler", "gems", "#{GitSource.base_name(git_remote)}-*")).first?
+                         Dir.glob(File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi).gsub('\\', "/"), "bundler", "gems", "#{GitSource.base_name(git_remote)}-*")).first?
                        else
                          stdout.puts "Fetching #{spec.name} #{spec.version}"
                          stdout.puts "Installing #{spec.name} #{spec.version}"
@@ -1223,7 +1224,7 @@ module Celerite
               copy_tree(plugin_dir.to_s, dst)
             end
             cache_root = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "cache", "bundler", "git")
-            Dir.glob(File.join(cache_root, "*")).each do |dir|
+            Glob.paths(cache_root, "*").each do |dir|
               next unless Dir.exists?(dir) && Dir.exists?(File.join(dir, "HEAD"))
               dst = File.join(plugin_root, "cache", "bundler", "git", File.basename(dir))
               next if Dir.exists?(dst)
@@ -1452,7 +1453,7 @@ module Celerite
             if source = resolution.non_gem_sources[spec.name]?
               bundle_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi)
               checkout_root = File.join(bundle_root, "bundler", "gems")
-              FileUtils.rm_rf(Dir.glob(File.join(checkout_root, "#{GitSource.base_name(source.remote)}-*")).first? || "")
+              FileUtils.rm_rf(Glob.paths(checkout_root, "#{GitSource.base_name(source.remote)}-*").first? || "")
               ext_dir = File.join(install_root, "extensions", Gem::Platform.local.to_s, abi, spec.full_name)
               FileUtils.rm_rf(ext_dir)
               resolution.ensure_source_dir(spec.name, source)

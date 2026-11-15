@@ -54,13 +54,16 @@ module Celerite
 
     # Installs one gem; skips when already installed (idempotent parity).
     # Returns true when work was done.
-    def install(name : String, version : String, platform : String?, checksum : String?, force : Bool = false) : Bool
+    def install(name : String, version : String, platform : String?, checksum : String?, force : Bool = false, gem_file : String? = nil) : Bool
       return false if installed?(name, version, platform) && !force
 
       full_name = (platform.nil? || platform == "ruby") ? "#{name}-#{version}" : "#{name}-#{version}-#{platform}"
 
-      gem_file = @downloader.fetch(name, version, platform, checksum)
-      install_file(gem_file, name, version, platform, full_name)
+      # Callers that already materialized the package (downloaded or from
+      # `vendor/cache`) pass it directly; the reference installs app-cache gems
+      # without a second fetch.
+      file = gem_file || @downloader.fetch(name, version, platform, checksum)
+      install_file(file, name, version, platform, full_name)
     end
 
     # Reinstalls an installed gem from its cached package (pristine). The
