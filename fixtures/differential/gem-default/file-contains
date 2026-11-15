@@ -1,0 +1,3 @@
+foogem/foogem.gemspec	  spec.name = "foogem"
+foogem/sig/foogem.rbs	module Foogem
+foogem/README.md	## Contributing

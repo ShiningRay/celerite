@@ -8,6 +8,7 @@ require "../mirror"
 require "../proxy"
 require "./commands_install"
 require "../git_source"
+require "../gem_template"
 require "yaml"
 
 module Celerite
@@ -1900,88 +1901,85 @@ module Celerite
     # gem: project skeleton (bundle gem NAME)
     # ------------------------------------------------------------------
     def self.gem(stdout : IO, stderr : IO, rest : Array(String)) : Int32
-      unsupported = rest.select { |a| a.starts_with?("--test") || a.starts_with?("--ci") || a.starts_with?("--coc") || a.starts_with?("--mit") || a.starts_with?("--changelog") || a.starts_with?("--edit") || a == "-t" || a == "--exe" || a == "--bin" || a == "--ext" || a.starts_with?("--linter") }
+      # Thor rejects a missing/multiple positionals before any work; the
+      # reference (4.0.24) prints these exact lines and exits 15.
+      positionals = rest.reject(&.starts_with?("-"))
+      if positionals.empty?
+        stderr.puts %(ERROR: "bundle gem" was called with no arguments)
+        stderr.puts %(Usage: "bundle gem NAME [OPTIONS]")
+        return 15
+      end
+      if positionals.size > 1
+        stderr.puts %(ERROR: "bundle gem" was called with arguments #{positionals.inspect})
+        stderr.puts %(Usage: "bundle gem NAME [OPTIONS]")
+        return 15
+      end
+
+      # DECLARED DEVIATION: non-default options are rejected instead of
+      # rendered. The reference accepts them (--mit adds the MIT license block,
+      # --test adds a test framework, --exe adds exe/, ...). See
+      # docs/compat-report.md "gem 模板对齐" for the measured reference output.
+      supported = ["--git", "--no-git"]
+      unsupported = rest.select { |arg| arg.starts_with?("-") && !supported.includes?(arg) }
       unless unsupported.empty?
-        stderr.puts "bundle gem options not fully supported by Celerite: #{unsupported.join(", ")}"
-        stderr.puts "Generating a minimal scaffold only (no option-specific files/config)."
-      end
-      name = rest.reject(&.starts_with?("--")).first?
-      if name.nil?
-        stderr.puts "Please provide a gem name"
+        stderr.puts "bundle gem option #{unsupported.first} is not supported by Celerite"
+        stderr.puts "Supported options: --git (default), --no-git"
         return 1
       end
-      dir = File.join(Dir.current, name)
-      if Dir.exists?(dir)
-        stderr.puts "Directory #{name} already exists"
-        return 1
+
+      name = File.basename(positionals.first)
+      use_git = !rest.includes?("--no-git") && !Process.find_executable("git").nil?
+      target = File.expand_path(name)
+
+      if File.exists?(target) && !Dir.exists?(target)
+        stderr.puts "Couldn't create a new gem named `#{name}` because there's an existing file named `#{name}`."
+        return 32
       end
-      Dir.mkdir_p(File.join(dir, "lib"))
-      module_name = name.split(/[-_]/).map(&.capitalize).join
-      underscored = name.gsub('-', '_')
-      # Reasonable scaffold aligned with `bundle gem`: README + MIT license +
-      # gemspec + lib; option flags are accepted but scaffold content is the
-      # documented minimum.
-      File.write(File.join(dir, "#{name}.gemspec"), <<-SPEC)
-# frozen_string_literal: true
 
-require_relative "lib/#{underscored}"
+      # gem.rb:47-49: author/email/github come from `git config`, with the TODO
+      # fallbacks at gem.rb:69-70 and "[USERNAME]" at gem.rb:16/77.
+      author = git_config("user.name")
+      author = "TODO: Write your name" if author.empty?
+      email = git_config("user.email")
+      email = "TODO: Write your email address" if email.empty?
+      github_username = git_config("github.user")
 
-Gem::Specification.new do |spec|
-  spec.name = #{name.inspect}
-  spec.version = #{module_name}::VERSION
-  spec.summary = "Ruby gem #{name}"
-  spec.required_ruby_version = ">= 3.0.0"
-
-  spec.files = Dir["lib/**/*.rb"] + Dir["exe/*"] + Dir["README*"] + Dir["LICENSE*"] + Dir["CHANGELOG*"]
-  spec.bindir = "exe"
-  spec.executables = []
-  spec.require_paths = ["lib"]
-end
-SPEC
-      File.write(File.join(dir, "lib", "#{underscored}.rb"), <<-LIB)
-# frozen_string_literal: true
-
-module #{module_name}
-  VERSION = "0.1.0"
-end
-LIB
-      File.write(File.join(dir, "Gemfile"), <<-GEMFILE)
-# frozen_string_literal: true
-
-source "https://rubygems.org"
-
-gemspec
-GEMFILE
-      File.write(File.join(dir, "README.md"), <<-README)
-# #{name}
-
-TODO: Write a gem description.
-README
-      File.write(File.join(dir, "LICENSE.txt"), <<-LICENSE)
-The MIT License (MIT)
-
-Copyright (c) #{Time.utc.year}
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-LICENSE
       stdout.puts "Creating gem '#{name}'..."
+      stdout.puts
+
+      if use_git
+        # gem.rb:257-262: `git init` output is captured, hints stay on stderr.
+        stdout.puts "Initializing git repo in #{target.gsub('\\', "/")}"
+        Process.run("git", ["init", target], output: IO::Memory.new, error: :inherit)
+      end
+
+      GemTemplate.render(name, author, email, github_username, use_git).each do |entry|
+        path = File.join(target, entry.path)
+        Dir.mkdir_p(File.dirname(path))
+        File.write(path, entry.content)
+        stdout.puts "      create  #{name}/#{entry.path}"
+      end
+
+      if use_git
+        # gem.rb:275-277: `git add .` in the target; there is no commit. The
+        # CRLF warnings git prints for LF files are inherited on purpose.
+        Dir.cd(target) do
+          Process.run("git", ["add", "."], output: IO::Memory.new, error: :inherit)
+        end
+      end
+
+      stdout.puts
+      stdout.puts "Gem '#{name}' was successfully created. " \
+                  "For more information on making a RubyGem visit https://guides.rubygems.org/make-your-own-gem/"
       0
+    end
+
+    private def self.git_config(key : String) : String
+      output = IO::Memory.new
+      status = Process.run("git", ["config", key], output: output, error: IO::Memory.new)
+      status.success? ? output.to_s.chomp : ""
+    rescue
+      ""
     end
   end
 end

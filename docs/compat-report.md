@@ -356,6 +356,17 @@ No "full upstream suite" claim is made.
   与 Bundler reference 的 differential 尚未 fixture 化，`console` IRB 可用/交互
   路径与 `gem` 完整模板/选项矩阵差分未覆盖（详见“M7(3) 部分修复”证据）。
 
+### 2026-11-15（gem 模板对齐）
+
+- 参考依据（`bundler-4.0.24/lib/bundler/cli/gem.rb`）：`:39-41` 名规则（`-`→`::`、`_` 切词）；`:45-50` `git config user.name`/`user.email`/`github.user`；`:52-60` github 为空时 homepage/source 用 TODO；`:62-85` author/email TODO 回退、`required_ruby_version = ">= 3.2.0"`（`:470-471`）；`:88-98` 模板映射；`:100-110` `ignore_paths = [bin/, Gemfile, .gitignore]`；`:252-255` 目标是文件时报 ``Couldn't create a new gem named `x` because there's an existing file named `x`.`` 并 exit 32；`:257-262` `git init`（stdout 捕获）；`:264-267` 写模板；`:269-273` bin/* chmod +x（Windows 无效）；`:275-277` `git add .`（无 commit）；`:289-290` 成功行前空行。
+- 实测基准（4.0.24，隔离 git 身份）：15 行 stdout（`Creating gem 'foogem'...`、空行、`Initializing git repo in <abs>/foogem`、10 行 `      create  `（6 空格 + `create` + 2 空格）、空行、成功行）；10 文件全 LF 且无尾空行、git 索引 `100644`。
+- 实现：新增 `src/celerite/gem_template.cr`（`Celerite::GemTemplate.render` 逐字节模板；`terminate` 补 Crystal heredoc 缺少的末尾换行；`constant_name` 按 `-`/`_` 规则）；`src/celerite/cli/commands_surface.cr` 的 `self.gem` 重写（参数 exit 15、目标文件 exit 32、`git config` 取 author/email/github、`git init`+`git add .`、`      create  ` 行）；新增 `spec/m7_gem_template_spec.cr`（3 例，与 `spec/fixtures/gem-template/foogem/` 逐字节比较）、改写 `spec/m7_gem_spec.cr`（4 例，参数/选项/覆盖语义）。
+- 负对照：把 Gemfile 的 `gem "irb"` 改成 `gem "irb-NEGATIVE-CONTROL"` → `3 examples, 1 failures`，`Expected: "gem \"irb\""` / `got: "gem \"irb-NEGATIVE-CONTROL\""`（`spec/m7_gem_template_spec.cr:64`）；还原后 3/0/0。
+- 差分：`fixtures/differential/gem-default`（`command` = `gem foogem`；`file-contains` 断言 gemspec `spec.name`、rbs `module Foogem`、README `## Contributing`）→ 4.0.24 `PASS (exit=0)`；2.7.2 `SKIP`（`deferred-2.7.2`：2.7.2 成功行用 `https://bundler.io/guides/creating_gem.html`，且模板内容与 4.0.24 不同——README 与 git 对象集差异；本产品对准 4.0.24）。
+- 已声明偏差：非默认选项（`--test/--ci/--coc/--mit/--changelog/--linter/--exe/--ext/--bin/-t/--edit/--bundle/--github-username`）fast-fail（`bundle gem option <x> is not supported by Celerite` + `Supported options: --git (default), --no-git`，exit 1），仅支持 `--git`/`--no-git`；参考在非 tty 下取默认（`--test` 不生成测试文件、`--mit` 增 license 行）。
+- 门禁：`spec/m7_gem_spec.cr spec/m7_gem_template_spec.cr` **7 examples, 0 failures**；全量 `crystal spec` **331 examples, 0 failures, 4 errors**（4 = 既有 GitSource Low-IL 环境错误）；`crystal tool format --check src spec` EXIT 0；`git diff --check` EXIT 0；`bash -n script/differential` EXIT 0。
+- 未验证：可执行位（Windows 无）、交互分支（tty 提问）、非默认选项的渲染、生成 gem 的真实 `gem build`、2.7.2 模板、author/email 的 TODO 回退（spec 用当前 `git config` 归一化两侧，故 `TODO: Write your name` / `TODO: Write your email address` 分支仅经代码走读确认，未在「无 git 身份」环境实测）。
+
 ## Known divergences from reference (documented, not hidden)
 
 1. Installed `.gemspec` files use the RubyGems stub format (same as the

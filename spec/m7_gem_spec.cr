@@ -1,64 +1,80 @@
 require "./spec_helper"
 
-# M7(3): `gem` scaffold must be usable (real module/version wiring, README/LICENSE,
-# no TODO placeholders) and must be explicit about unsupported Bundler options.
+# M7(3): `bundle gem` now follows the 4.0.24 scaffold (byte-level comparison
+# lives in m7_gem_template_spec); these assertions pin the argument handling,
+# unsupported-option policy and overwrite semantics that used to be
+# Celerite-specific.
 describe "M7 gem scaffold" do
-  it "generates a minimal but usable scaffold" do
+  it "generates the reference scaffold for a hyphenated name" do
     with_project({} of String => String) do
       output = IO::Memory.new
       errors = IO::Memory.new
-      code = Celerite::Commands.gem(output, errors, ["foo-bar"])
-      code.should eq(0)
-      output.to_s.should eq("Creating gem 'foo-bar'...\n")
-      errors.to_s.should eq("")
+      Celerite::Commands.gem(output, errors, ["foo-bar"]).should eq(0)
 
-      File.file?("foo-bar/foo-bar.gemspec").should be_true
-      File.file?("foo-bar/lib/foo_bar.rb").should be_true
-      File.file?("foo-bar/README.md").should be_true
-      File.file?("foo-bar/LICENSE.txt").should be_true
-      File.file?("foo-bar/Gemfile").should be_true
+      lines = output.to_s.lines
+      lines[0].should eq("Creating gem 'foo-bar'...")
+      lines[1].should eq("")
+      lines[2].should eq("Initializing git repo in #{File.join(Dir.current, "foo-bar").gsub('\\', "/")}")
+      lines.size.should eq(15)
+
+      [
+        "Gemfile",
+        "lib/foo/bar.rb",
+        "lib/foo/bar/version.rb",
+        "sig/foo/bar.rbs",
+        "foo-bar.gemspec",
+        "Rakefile",
+        "README.md",
+        "bin/console",
+        "bin/setup",
+        ".gitignore",
+      ].each_with_index do |relative, index|
+        lines[3 + index].should eq("      create  foo-bar/#{relative}")
+        File.file?(File.join("foo-bar", relative)).should be_true
+      end
 
       gemspec = File.read("foo-bar/foo-bar.gemspec")
-      gemspec.should contain("spec.name = \"foo-bar\"")
-      gemspec.should contain("require_relative \"lib/foo_bar\"")
-      gemspec.should contain("spec.version = FooBar::VERSION")
-      gemspec.should contain("spec.summary = \"Ruby gem foo-bar\"")
-      gemspec.should contain("spec.required_ruby_version = \">= 3.0.0\"")
-      gemspec.should_not contain("TODO")
-
-      lib_file = File.read("foo-bar/lib/foo_bar.rb")
-      lib_file.should contain("module FooBar")
-      lib_file.should contain("VERSION = \"0.1.0\"")
+      gemspec.should contain(%(spec.name = "foo-bar"))
+      gemspec.should contain(%(spec.version = Foo::Bar::VERSION))
+      gemspec.should contain(%(require_relative "lib/foo/bar/version"))
+      gemspec.should contain(%(spec.required_ruby_version = ">= 3.2.0"))
+      library = File.read("foo-bar/lib/foo/bar.rb")
+      library.should contain("module Foo")
+      library.should contain("module Bar")
+      library.should contain("class Error < StandardError; end")
     end
   end
 
-  it "warns that option-specific scaffolding is unsupported" do
+  it "rejects options it does not render yet (declared deviation)" do
     with_project({} of String => String) do
       output = IO::Memory.new
       errors = IO::Memory.new
-      code = Celerite::Commands.gem(output, errors, ["widget", "--test"])
-      code.should eq(0)
-      errors.to_s.should contain("bundle gem options not fully supported by Celerite: --test")
-      errors.to_s.should contain("Generating a minimal scaffold only")
-      File.file?("widget/widget.gemspec").should be_true
+      Celerite::Commands.gem(output, errors, ["widget", "--test"]).should eq(1)
+      errors.to_s.should contain("bundle gem option --test is not supported by Celerite")
+      errors.to_s.should contain("Supported options: --git (default), --no-git")
+      File.exists?("widget").should be_false
     end
   end
 
-  it "rejects a missing gem name" do
+  it "rejects a missing gem name with Thor's usage error" do
     with_project({} of String => String) do
       output = IO::Memory.new
       errors = IO::Memory.new
-      Celerite::Commands.gem(output, errors, [] of String).should eq(1)
-      errors.to_s.should eq("Please provide a gem name\n")
+      Celerite::Commands.gem(output, errors, [] of String).should eq(15)
+      errors.to_s.should eq(
+        %(ERROR: "bundle gem" was called with no arguments\n) +
+        %(Usage: "bundle gem NAME [OPTIONS]"\n)
+      )
     end
   end
 
-  it "rejects an existing directory" do
+  it "writes into an existing directory like the reference" do
     with_project({"taken/.keep" => ""}) do
       output = IO::Memory.new
       errors = IO::Memory.new
-      Celerite::Commands.gem(output, errors, ["taken"]).should eq(1)
-      errors.to_s.should eq("Directory taken already exists\n")
+      Celerite::Commands.gem(output, errors, ["taken"]).should eq(0)
+      File.file?("taken/taken.gemspec").should be_true
+      File.file?("taken/.keep").should be_true
     end
   end
 end
