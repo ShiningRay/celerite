@@ -231,6 +231,16 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
       GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.test \
       GIT_AUTHOR_DATE="2026-01-01T00:00:00Z" GIT_COMMITTER_DATE="2026-01-01T00:00:00Z" \
         git -C "$staging_win/$rel" -c commit.gpgsign=false commit -q -m init
+      # Tags cannot be committed into the tree, so fixtures list them in an
+      # optional `git-tag` TSV manifest (`<rel>\t<tag>`); tag the staged repo
+      # here, before it is copied into both sandboxes.
+      if [ -f "$fixture_dir/git-tag" ]; then
+        while IFS=$'\t' read -r tag_rel tag_name; do
+          [ "$tag_rel" = "$rel" ] || continue
+          [ -n "$tag_name" ] || continue
+          git -C "$staging_win/$rel" -c commit.gpgsign=false tag "$tag_name"
+        done < "$fixture_dir/git-tag"
+      fi
       for side in ref cel; do
         sandbox="$ref_sandbox"; [ "$side" = "cel" ] && sandbox="$cel_sandbox"
         rm -rf "$sandbox/project/$rel"

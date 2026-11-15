@@ -1333,3 +1333,47 @@ PATH
 3. 真实 rubygems.org 未触达（无外网），远程路径只经本地 `http_index_server.js` 验证。
 4. ABI 约束仍只有单元证据，无差分夹具。
 5. M7(1) 复选框保持未勾选：本节补的是「约束矩阵 + 远程负例 + 文案」，不含 `show`/`info` 重解通知等其他 M7(1) 遗留。
+## 2026-11-15 M7(5)：git tag / glob 的差分载体（诚实记录：本机环境阻塞）
+
+M7(5)（Git tag/submodules/glob、多 gemspec、monorepo、私有 source 鉴权、离线安装、磁盘错误与中断清理）此前只有单元证据。本轮为 `tag:` 与 `glob:` 建了**差分载体**并取到参考侧 oracle；但**celerite 侧在本机被已知环境缺陷挡住**，故两项均未验证，不计为通过。
+
+### 1. 装具新增 `git-tag`
+
+`script/differential` 的 `git-init` 段（L215-251）新增可选 `git-tag` 清单（TSV `<rel>\t<tag>`）：在暂存仓库 init/add/commit 之后、`cp -r` 进两侧沙箱之前执行 `git -C "$staging_win/$rel" -c commit.gpgsign=false tag "$tag"`（L234-243）。原因：tag 无法提交进工作树，必须在暂存仓库上打；两侧复制同一份暂存树，因此锁文件里的 `revision` SHA 可比较。
+
+### 2. 新夹具
+
+- `fixtures/differential/git-tag/`：`Gemfile` `source "file:///@INDEX_DIR@"` + `gem "gitgem", git: "./gitgem", tag: "v0.1.0"`，`git-init`=`gitgem`，`git-tag`=`gitgem<TAB>v0.1.0`，`command`=`install`，`file-contains` 断言 `Gemfile.lock` 含 `  tag: v0.1.0`、`    gitgem (`、`  revision: `。
+- `fixtures/differential/git-glob/`：`extra/mono/gems/{alpha,beta}/…`，`git-init`=`mono`，`Gemfile` `gem "alpha", git: "./mono", glob: "gems/*/*.gemspec"`，`command`=`install`。
+
+### 3. 参考侧 oracle（实测，可直接用于后续对齐）
+
+`git-tag`（4.0.24）：exit 0，stdout `Fetching ./gitgem` / `Resolving dependencies...` / `Bundle complete! 1 Gemfile dependency, 1 gem now installed.`，锁文件 GIT 段为：
+
+    GIT
+      remote: ./gitgem
+      revision: <staged sha>
+      tag: v0.1.0
+      specs:
+        gitgem (0.2.0)
+
+`git-glob`（4.0.24，`KEEP_DIFFERENTIAL=1` 留存的 `ref/project/Gemfile.lock`）：exit 0，GIT 段写 `remote: ./mono`、`revision: 04dac1f3c7e266126e0c78dac0c7e106546fab8f`、**`glob: gems/*/*.gemspec`**，`specs:` 只含被请求的 `alpha (0.1.0)`（同仓的 `beta` 未进锁），`DEPENDENCIES` 为 `alpha!`，`CHECKSUMS` 为 `alpha (0.1.0)`（无 sha256，git 源）。
+
+### 4. 阻塞（环境，不是产品差异）
+
+celerite 侧两个夹具都在**克隆阶段**失败，未进入解析路径：
+
+    git command failed: git clone --mirror ./gitgem <sandbox>/bundle/ruby/4.0.0/cache/bundler/git/gitgem-<sha> —
+    0 [main] sh (15204) C:\Program Files\Git\usr\bin\sh.exe: *** fatal error
+    - NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0S5-1888ae32e00d56aa): 0xC0000022
+    fatal: Could not read from remote repository.
+
+同一批次里 `add-git`/`add-ref`（走 `add` 路径）是 PASS，而所有 `install` 路径上的 git 克隆（`git-tag`/`git-glob`/`git-installed-discovery`/`git-path-install`/`git-pristine`/`plugin-git-local`/`plugin-git-local2`）都失败——与本机既有 13 例环境失败同类。装具之外的独立探针（`.tmp-scratch/tagprobe*`，直接跑 `bin/celerite.exe install`，HOME/TEMP 均在仓库内，去掉 harness）复现同一 `0xC0000022`；把 stdout/stderr 改为文件重定向同样复现（排除管道因素）。结论：**与本轮夹具/装具改动无关的环境限制**（msys 共享内存对象被拒），需在无该限制的宿主上复跑才能验证 `tag:`/`glob:` 语义。
+
+### 5. 全量差分（4.0.24，如实计数）
+
+`differential (4.0.24): 129 passed, 15 failed, 1 skipped` —— 13 例为既有环境失败，**新增 2 例为本轮 `git-tag`/`git-glob`（同为环境阻塞）**，`git-submodules` 仍是 documented SKIP（参考侧被 git ≥2.38 的 submodule file-transport 策略挡住：`fatal: transport 'file' not allowed`，bundler 不传 `protocol.file.allow=always`）。
+
+### 6. 未验证 / 下一步
+
+1. celerite 的 `tag:` 锁文件形态与 `glob:` 语义（克隆前失败，未进入解析）；2. `git-submodules` 需要一个网络 submodule URL 或 harness 级 `protocol.file.allow=always` 才能与参考可比；3. 多 gemspec/monorepo/私有 source 鉴权/离线安装/磁盘错误与中断清理仍未覆盖；4. M7(5) 复选框保持未勾。
