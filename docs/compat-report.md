@@ -1865,3 +1865,22 @@ differential (4.0.24): 0 passed, 2 failed
 还原两处源码（`edit`）后重建并复跑：`PASS unknown-switch-install (exit=15)`、`PASS gemfile-flag-install (exit=0)` → `3 passed, 0 failed`；`Select-String 'negative-control'` 在 `src/` 无残留。
 
 **门禁（新建 HOME/TEMP）**：format --check EXIT 0；build --no-codegen EXIT 0；`spec/m7_lock_gemfile_missing_spec.cr + spec/m7_install_family_switches_spec.cr` `11 examples, 0 failures`；全量 `402 examples, 0 failures, 4 errors`；`git diff --check` EXIT 0。未验证：20s 超时子集外的其余开关、真实 manpage、removed-flag 文案逐字。
+
+## 2026-11-16 M7(8)/L161：`script/upstream-specs` 默认真实驱动 + 自动失败分桶
+
+**改动**（`script/upstream-specs`，+77/-4）：①`script/upstream-specs-celerite-override.rb` 改为**默认加载**，`CELERITE_BUNDLE_HELPER_OVERRIDE=0` 才退回「上游 binstub、不驱动 celerite」的基线；②rspec 追加 JSON formatter 到 `.upstream-specs/rspec-output.json`，脚本用 `ruby -rjson` 逐失败例分桶写入报告；③报告新增 `real-drive: <n> celerite invocations`（0 时打印 `WARNING: NOT driving celerite`）；④桶条目分隔符与标题改用 ASCII，保证报告全 ASCII。
+
+**首辅实测**（`bin/celerite.exe` 按 HEAD `ce91721` 重建，`CELERITE_SKIP_TEST_DEPS=1`，每轮全新 HOME/TEMP）：
+
+| 运行 | summary | real-drive | 桶 |
+| --- | --- | --- | --- |
+| 默认 | `64 examples, 55 failures`（9 通过） | **48** | artifice 34 / network-policy 1 / low-il-shm 8 / missing-gem-files 11 / fetch-failed 1 / product 0 |
+| `CELERITE_BUNDLE_HELPER_OVERRIDE=0` | `64 examples, 62 failures` | 0 + WARNING | test-deps-skipped 50 / missing-gem-files 12 / product 0 |
+
+**产品差异在真实上游用例中的状态**（失败清单不含即通过）：`:1154`（absolute→relative `remote: foo`）通过；`:2410`/`:2436`（conflict markers）通过；`:2088` 区段（incorrect deps 保留锁定版本）通过；`:1882`（no specs 重解）仍失败，原因是 `Could not reach host gem.repo4`（上游进程内 artifice 端点，外部二进制不可达），**非断言差异**，该语义由差分夹具 `lock-missing-dependency-edges` 覆盖。
+
+**环境/夹具桶判定**：`Could not reach host`（进程内 artifice）34；`HTTP 403`（出口策略）1；`0xC0000022`/`NtCreateDirectoryObject`（Low-IL，见「M7(5)/M7(8) 环境失败根因」节）8；`Errno::ENOENT`/`does not exist!`/`No such file or directory @ rb_sysopen`（`tmp/2.1/gems/remote2` 夹具缺 gem）11；`Fetching …` 后失败 1。基线跑的 50 条 `env:test-deps-skipped` 是 `install_test_deps` 被跳过导致的 `sinatra/base (LoadError)` 链。
+
+**门禁**：`bash -n script/upstream-specs` EXIT 0、`git diff --check` EXIT 0；本轮未改 `src/`（`git diff --stat` 仅 `script/upstream-specs` 与 docs），故不重跑 format/build/spec。
+
+**未验证 / 仍阻塞**：`install_test_deps` 完整链（装 sinatra/artifice 后才可能让 34 条 artifice 桶转入断言阶段）；真实 gem 源（`HTTP 403`）；git 源用例（Low-IL）；`:1882` 断言级证据；`UPSTREAM_REV=v2.7.2` 在该 rev 布局下无 bundler spec 族（既有记录，仍不可执行）。

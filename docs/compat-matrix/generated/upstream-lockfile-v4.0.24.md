@@ -288,3 +288,26 @@ ruby -S rspec -r "$repo\script\upstream-specs-celerite-override.rb" spec/lock/lo
 - **结论**：2.7.2 profile 在本 harness（`UPSTREAM_REV` 指向 rubygems/rubygems 标签）下**不可执行 → 未验证**（非网络阻塞：clone 已成功，是 rev 布局不含 bundler spec 族）。`BUNDLER_REF_VERSION=2.7.2` 的 differential 证据链不受影响（M7 differential 走 `script/differential`，与 `script/upstream-specs` 的 rev 机制不同）。
 - **复现**：同上命令；本地产物 `.upstream-specs/v2.7.2/`、`.upstream-specs/upstream-lockfile-v2.7.2-*.md`、日志 `C:\temp\E-run.log` 均未入库；D 的 v4.0.24 原始输出已从 `C:\temp\rspec-output-4024-final.txt` 恢复（`64 examples, 55 failures` / seed 51053 复核一致）。
 - **未验证**：2.7.2 真实 per-example 结果（如需，需另行构造 bundler@2.7.2 时代 spec 布局或改用其他 rev，超出本轮 ≤1 次尝试范围）。
+
+## 2026-11-16 rerun：默认真实驱动（M7(8)/L161 第一步）
+
+本轮改动：`script/upstream-specs` 默认加载 `script/upstream-specs-celerite-override.rb`（`CELERITE_BUNDLE_HELPER_OVERRIDE=0` 可退回基线）；报告新增 `real-drive` 调用计数与自动失败分桶，rspec 额外落盘 JSON formatter 供分类。
+
+实测（首辅亲跑，`bin/celerite.exe` 按当前 HEAD 重建，`CELERITE_SKIP_TEST_DEPS=1`，每轮全新 HOME/TEMP）：
+
+| 运行 | summary | real-drive | 分桶 |
+| --- | --- | --- | --- |
+| 默认（真实驱动） | `64 examples, 55 failures`（9 通过） | **48** 次 celerite 调用 | artifice-unreachable 34 / network-policy 1 / low-il-shm 8 / missing-gem-files 11 / fetch-failed 1 / **product 0** |
+| 基线（`CELERITE_BUNDLE_HELPER_OVERRIDE=0`） | `64 examples, 62 failures` | 0（脚本显式打印 `WARNING: NOT driving celerite`） | test-deps-skipped 50 / missing-gem-files 12 / product 0 |
+
+关键正向证据（同一轮 rspec 输出，失败清单不含即通过）：
+- `spec/lock/lockfile_spec.rb:1154`（absolute path → relative `remote: foo`）**通过**。
+- `:2410`、`:2436`（conflict markers 文案）**通过**。
+- `:2088` 附近 `automatically fixes the lockfile when it has incorrect deps, keeping the locked version` **通过**。
+- `:1882`（regenerates a lockfile with no specs）仍失败，但失败文本为 `Could not reach host gem.repo4`（上游 spec 的进程内 artifice 端点，外部二进制无法访问），属 harness 限制；该语义已由差分夹具 `lock-missing-dependency-edges` 双 profile PASS 覆盖。
+
+分桶判据（脚本内 ruby 读取 rspec JSON）：`Could not reach host` → artifice；`HTTP 403` → network-policy；`0xC0000022` / `NtCreateDirectoryObject` → low-il-shm（既有环境根因，见 compat-report「M7(5)/M7(8) 环境失败根因」节）；`sinatra/base (LoadError)` → test-deps-skipped；`Errno::ENOENT` / `does not exist!` / `No such file or directory @ rb_sysopen` → missing-gem-files；其余含 `Fetching ` → fetch-failed；再其余 → product:candidates（本轮 0 条）。
+
+复现：`CELERITE_SKIP_TEST_DEPS=1 bash script/upstream-specs`；基线 `CELERITE_SKIP_TEST_DEPS=1 CELERITE_BUNDLE_HELPER_OVERRIDE=0 bash script/upstream-specs`。产物：`.upstream-specs/rspec-output.txt`、`.upstream-specs/rspec-output.json`、`.upstream-specs/upstream-lockfile-v4.0.24-<ts>.md`（均 gitignored）。
+
+未验证：`install_test_deps` 完整链（sinatra/artifice 夹具）；真实 gem 源（`HTTP 403` 为出口策略）；git 源用例（Low-IL 环境）；`:1882` 的断言级证据（仅差分夹具覆盖）。

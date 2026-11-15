@@ -16,6 +16,10 @@
 #   CELERITE_SKIP_TEST_DEPS=1 script/upstream-specs  # skip upstream install_test_deps
 #
 # Notes:
+# - Real-drive is the DEFAULT: the helper override
+#   (script/upstream-specs-celerite-override.rb) routes Bundler's in-example
+#   `bundle` calls to Celerite. Set CELERITE_BUNDLE_HELPER_OVERRIDE=0 to fall
+#   back to the baseline run (upstream binstubs, which do NOT drive celerite).
 # - The upstream lockfile specs are written for Bundler's own test harness
 #   (spec_helper/builders/helpers, tmp gem repos, installed bundle bin in test
 #   gem path). A byte-green run is NOT the gate. This script records per-example
@@ -110,6 +114,8 @@ echo "not a byte-green gate (see docs/upstream-spec-spike.md)."
 echo
 
 rspec_out="$repo_root/.upstream-specs/rspec-output.txt"
+json_out="$repo_root/.upstream-specs/rspec-output.json"
+bucket_md="$repo_root/.upstream-specs/failure-buckets.md"
 mkdir -p "$(dirname "$rspec_out")"
 
 # Run from bundler dir so .rspec (--require spec_helper) and relative paths
@@ -126,14 +132,15 @@ mkdir -p "$(dirname "$rspec_out")"
     export RSPEC_FORMATTER_OUTPUT_ID="celerite-harness"
   fi
   # Prefer `ruby -S rspec` for Windows/Git Bash portability.
+  # Real-drive is the default (see header Notes). =0 restores the baseline.
   rspec_pre_args=()
-  if [ "${CELERITE_BUNDLE_HELPER_OVERRIDE:-0}" = "1" ]; then
+  if [ "${CELERITE_BUNDLE_HELPER_OVERRIDE:-1}" != "0" ]; then
     rspec_pre_args=(-r "$repo_root/script/upstream-specs-celerite-override.rb")
   fi
   if command -v ruby >/dev/null 2>&1; then
-    ruby -S rspec "${rspec_pre_args[@]}" spec/lock/lockfile_spec.rb --format documentation --out "$rspec_out" 2>&1
+    ruby -S rspec "${rspec_pre_args[@]}" spec/lock/lockfile_spec.rb --format documentation --out "$rspec_out" --format json --out "$json_out" 2>&1
   else
-    rspec "${rspec_pre_args[@]}" spec/lock/lockfile_spec.rb --format documentation --out "$rspec_out" 2>&1
+    rspec "${rspec_pre_args[@]}" spec/lock/lockfile_spec.rb --format documentation --out "$rspec_out" --format json --out "$json_out" 2>&1
   fi
 )
 rspec_status=$?
@@ -144,8 +151,67 @@ if [ -z "$summary" ] && [ $rspec_status -ne 0 ]; then
   summary="rspec exited $rspec_status (no example summary captured)"
 fi
 
+# Evidence that the helpers really drove Celerite (not the upstream binstubs).
+celerite_invocations="$(grep -c -E 'celerite(\.exe)? ' "$rspec_out" 2>/dev/null || true)"
+celerite_invocations="${celerite_invocations:-0}"
+
+# Classify failures from the rspec JSON formatter into environment, fixture and
+# product buckets (bash 3.2 compatible; parsing is done by ruby, which the
+# harness already requires).
+ruby -rjson -e '
+  json_path, out_path = ARGV
+  data = JSON.parse(File.read(json_path)) rescue { "examples" => [] }
+  failures = (data["examples"] || []).select { |example| example["status"] == "failed" }
+  buckets = Hash.new { |hash, key| hash[key] = [] }
+  failures.each do |example|
+    exception = example["exception"] || {}
+    klass = exception["class"].to_s
+    message = exception["message"].to_s
+    backtrace = (exception["backtrace"] || []).join("\n")
+    text = klass + "\n" + message + "\n" + backtrace
+    bucket =
+      if text.include?("Could not reach host")
+        "env:artifice-unreachable"
+      elsif text.include?("HTTP 403") || text.include?("403 Forbidden")
+        "env:network-policy"
+      elsif text.include?("0xC0000022") || text.include?("NtCreateDirectoryObject")
+        "env:low-il-shm"
+      elsif text.include?("sinatra/base (LoadError)") || text.include?("sinatra/base]")
+        "env:test-deps-skipped"
+      elsif text.include?("Errno::ENOENT") || text.include?("does not exist!") || text.include?("No such file or directory @ rb_sysopen")
+        "fixture:missing-gem-files"
+      elsif text.match?(/Fetching .*[^\n]*\n/) || text.include?("Fetching ")
+        "fixture:fetch-failed"
+      else
+        "product:candidates"
+      end
+    first_line = message.lines.first.to_s.strip
+    first_line = klass if first_line.empty?
+    buckets[bucket] << [example["full_description"].to_s, first_line]
+  end
+  order = ["env:artifice-unreachable", "env:network-policy", "env:low-il-shm",
+           "env:test-deps-skipped", "fixture:missing-gem-files",
+           "fixture:fetch-failed", "product:candidates"]
+  lines = ["## Failure buckets", ""]
+  order.each do |bucket|
+    items = buckets[bucket]
+    next if items.empty?
+    lines << "### #{bucket} (#{items.size})"
+    lines << ""
+    items.each { |description, first_line| lines << "- `#{description}` :: #{first_line}" }
+    lines << ""
+  end
+  (buckets.keys - order).each do |bucket|
+    lines << "### #{bucket} (#{buckets[bucket].size})"
+    lines << ""
+    buckets[bucket].each { |description, first_line| lines << "- `#{description}` :: #{first_line}" }
+    lines << ""
+  end
+  File.write(out_path, lines.join("\n")) unless out_path.nil?
+' "$json_out" "$bucket_md"
+
 {
-  echo "# Upstream lockfile spec results — $rev"
+  echo "# Upstream lockfile spec results - $rev"
   echo
   echo "Generated by \`script/upstream-specs\` on $(date -u +%Y-%m-%d)."
   echo
@@ -162,6 +228,13 @@ fi
   echo "## Result summary"
   echo
   echo "${summary:-(no summary line found)}"
+  echo
+  echo "- real-drive: $celerite_invocations celerite invocations"
+  if [ "$celerite_invocations" -eq 0 ]; then
+    echo "- WARNING: NOT driving celerite (helper override disabled or not applied)"
+  fi
+  echo
+  cat "$bucket_md" 2>/dev/null || { echo "## Failure buckets"; echo; echo "(no failure data)"; }
   echo
   echo "## Output tail"
   echo
