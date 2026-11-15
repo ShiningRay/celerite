@@ -27,9 +27,10 @@ def bridge_emit(response)
   $stdout.flush
 end
 
-def bridge_error(id, klass, message)
-  bridge_emit("proto" => BRIDGE_PROTO, "id" => id, "ok" => false,
-              "error" => { "class" => klass, "message" => message })
+def bridge_error(id, klass, message, status = nil)
+  error = { "class" => klass, "message" => message }
+  error["status"] = status if status
+  bridge_emit("proto" => BRIDGE_PROTO, "id" => id, "ok" => false, "error" => error)
 end
 
 def bridge_platform_string
@@ -393,6 +394,21 @@ def serialize_source(source)
   result
 end
 
+# Evaluate a Gemfile through Bundler::Plugin::DSL (the reference pre-install
+# pass, `Bundler::Plugin.gemfile_install`): collects `plugin "x"` declarations
+# plus the inferred `bundler-source-<type>` dependencies and returns their
+# names in declaration order. Errors are NOT rescued here: the bridge envelope
+# carries the class/message/status the reference would exit with
+# (PluginGemfileError 29, InvalidOption 15, GemfileError 4).
+def op_plugin_gemfile_eval(payload)
+  require "bundler"
+  require "bundler/plugin"
+  dsl = Bundler::Plugin::DSL.new
+  dsl.eval_gemfile(payload["gemfile_path"].to_s)
+  dependencies = dsl.instance_variable_get(:@dependencies) || []
+  { "plugin_names" => dependencies.map(&:name) }
+end
+
 def bridge_dispatch(id, op, payload)
   result = case op
            when "ping"          then { "proto" => BRIDGE_PROTO, "ruby" => RUBY_VERSION }
@@ -406,12 +422,13 @@ def bridge_dispatch(id, op, payload)
            when "build_extension" then op_build_extension(payload)
            when "load_gemspec_dir" then op_load_gemspec_dir(payload)
            when "exec_plugin_hook" then op_exec_plugin_hook(payload)
+           when "plugin_gemfile_eval" then op_plugin_gemfile_eval(payload)
            else
              return bridge_error(id, "UnknownOp", "unknown bridge op #{op.inspect}")
            end
   bridge_emit("proto" => BRIDGE_PROTO, "id" => id, "ok" => true, "result" => result)
 rescue Exception => e # rubocop:disable Lint/RescueException — bridge boundary: everything is reported, nothing escapes
-  bridge_error(id, e.class.name.to_s, e.message.to_s)
+  bridge_error(id, e.class.name.to_s, e.message.to_s, (e.status_code if e.respond_to?(:status_code)))
 end
 
 loop do

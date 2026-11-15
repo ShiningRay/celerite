@@ -9,6 +9,8 @@ require "../proxy"
 require "../installer"
 require "../downloader"
 require "../plugin_hooks"
+require "../plugin_commands"
+require "../plugin_gemfile"
 require "digest/sha256"
 
 module Celerite
@@ -69,6 +71,44 @@ module Celerite
     # ------------------------------------------------------------------
     # install
     # ------------------------------------------------------------------
+    # Reference `Plugin.gemfile_install` (`bundler/plugin.rb:104-127`): the
+    # plugins a Gemfile declares are installed before the normal install runs.
+    # Each plugin resolves exactly like `celerite plugin install --source`; a
+    # missing gem therefore fails with the reference GemNotFoundError (exit 7)
+    # before the main install starts.
+    private def self.install_gemfile_plugins(gemfile_path : String, stdout : IO, stderr : IO) : Int32?
+      begin
+        names = PluginGemfile.plugin_names(gemfile_path)
+      rescue ex : Bridge::BridgeError
+        # Only the reference's own Gemfile/plugin statuses may abort the
+        # install: DSLError inherits 4/15, GemNotFoundError is 7,
+        # PluginGemfileError is 29. Anything else falls through so the normal
+        # path reports its own (reference) error.
+        raise ex if {4, 7, 15, 29}.includes?(ex.status_code)
+        return nil
+      rescue ex : Error
+        # No usable bridge (e.g. "bridge server script not found" in
+        # in-process specs): the normal install path reports its own errors.
+        return nil
+      end
+      return nil if names.empty?
+
+      remote = PluginGemfile.primary_source(gemfile_path) || "https://rubygems.org/"
+      index_path = PluginCommands.index_path(gemfile_path)
+      names.each do |name|
+        next if PluginCommands.installed_plugin?(index_path, name)
+        code = plugin_install_remote([name], ["--source", remote], stdout, stderr)
+        return code unless code == 0
+        # Declared deviation: the success path for custom plugin sources needs
+        # the plugin loaded in the bridge process, which is out of scope here.
+        if name.starts_with?("bundler-source-")
+          stderr.puts "Installing plugin sources declared in the Gemfile is not supported by Celerite: #{name.sub("bundler-source-", "")}"
+          return 1
+        end
+      end
+      nil
+    end
+
     def self.install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false) : Int32
       if rest.includes?("--frozen")
         # Thor rejects the flag before any Gemfile validation; the exact
@@ -88,6 +128,16 @@ module Celerite
       if unsupported = Commands.unsupported_setting_error(config, stderr)
         stderr.puts unsupported
         return 1
+      end
+
+      # M7(6): the reference runs `Plugin.gemfile_install` before the main
+      # definition is built. Celerite's own client-side policy checks above do
+      # not need the bridge, so they run first; only then evaluate the Gemfile
+      # for declared plugins (this is the first bridge work in `install`).
+      if PluginGemfile.enabled?(Config.new(File.dirname(Definition.find_gemfile)))
+        if plugin_code = install_gemfile_plugins(Definition.find_gemfile, stdout, stderr)
+          return plugin_code
+        end
       end
 
       bridge = Bridge::Client.new

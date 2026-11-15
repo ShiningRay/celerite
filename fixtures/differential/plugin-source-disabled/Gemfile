@@ -1,0 +1,5 @@
+source "file:///@INDEX_DIR@"
+
+source "file:///@INDEX_DIR@", type: :psource do
+  gem "json_pure"
+end

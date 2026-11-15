@@ -1,0 +1,1 @@
+Requires BUNDLE_PLUGINS=false, which the harness cannot set per-fixture; covered by spec/m7_gemfile_plugins_spec.cr (exit 15).

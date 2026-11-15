@@ -1112,6 +1112,21 @@ module Celerite
     # Remote plugin install (`--source`/`--git`): synthesize a temporary
     # Gemfile at log level and resolve the plugin the same way Phase N built
     # it. The temporary GEMFILE is cleaned up after resolution.
+    # Pure-Crystal recursive copy. Spawning msys `cp -r` under this sandbox's
+    # Low integrity level dies with 0xC0000022 (same root cause as the git
+    # fixtures), so plugin materialization copies the tree itself.
+    private def self.copy_tree(source : String, destination : String) : Nil
+      if File.file?(source)
+        Dir.mkdir_p(File.dirname(destination))
+        File.copy(source, destination)
+        return
+      end
+      Dir.mkdir_p(destination)
+      Dir.children(source).each do |child|
+        copy_tree(File.join(source, child), File.join(destination, child))
+      end
+    end
+
     def self.plugin_install_remote(names : Array(String), rest : Array(String), stdout : IO, stderr : IO) : Int32
       version = flag_value(rest, "--version") || ">= 0"
       git_remote = flag_value(rest, "--git")
@@ -1191,14 +1206,18 @@ module Celerite
             # materialization tree the reference uses.
             if plugin_dir && Dir.exists?(plugin_dir)
               dst = File.join(plugin_root, "bundler", "gems", File.basename(plugin_dir.to_s))
-              Process.run("cp", ["-r", plugin_dir.to_s, dst], output: :inherit, error: :inherit)
+              # FileUtils (not `cp -r`): spawning msys cp under this sandbox's
+              # Low integrity level dies with 0xC0000022 (same root cause as
+              # the git fixtures); a pure-Crystal copy keeps the plugin
+              # materialization working here.
+              copy_tree(plugin_dir.to_s, dst)
             end
             cache_root = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "cache", "bundler", "git")
             Dir.glob(File.join(cache_root, "*")).each do |dir|
               next unless Dir.exists?(dir) && Dir.exists?(File.join(dir, "HEAD"))
               dst = File.join(plugin_root, "cache", "bundler", "git", File.basename(dir))
               next if Dir.exists?(dst)
-              Process.run("cp", ["-r", dir, dst], output: :inherit, error: :inherit)
+              copy_tree(dir, dst)
             end
           end
           unless git_remote
@@ -1209,7 +1228,7 @@ module Celerite
             if Dir.exists?(installed_gem_dir)
               dst = File.join(plugin_root, "gems", spec.full_name)
               Dir.mkdir_p(File.dirname(dst))
-              Process.run("cp", ["-r", installed_gem_dir, dst], output: :inherit, error: :inherit)
+              copy_tree(installed_gem_dir, dst)
             end
             cached_gem = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "cache", "#{spec.full_name}.gem")
             if File.file?(cached_gem)

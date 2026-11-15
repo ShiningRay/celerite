@@ -12,7 +12,11 @@ describe "install/update early-failure unmasking" do
     begin
       with_project({"Gemfile" => "gem \"rake\", "}) do
         status, _out, err = run_cli(["install"])
-        status.should eq(1)
+        # Reference: Bundler::Dsl::DSLError#initialize (bundler/dsl.rb:560)
+        # inherits the cause's status_code when it responds to one; an
+        # ordinary GemfileError falls back to 4. The oracle exits 4 for this
+        # `undefined_method_here` Gemfile with plugins disabled.
+        status.should eq(4)
         err.should contain("There was an error parsing `Gemfile`")
         err.should_not contain("Nil assertion failed")
         err.should_not contain("internal error")

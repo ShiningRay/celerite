@@ -41,6 +41,18 @@ module Celerite
       source_relative
     end
 
+    # True when the project plugin index already registers `name` under
+    # `plugin_paths` (i.e. the plugin is installed).
+    def self.installed_plugin?(index_path : String, name : String) : Bool
+      return false unless File.file?(index_path)
+
+      index = YAML.parse(File.read(index_path))
+      paths = index["plugin_paths"]?
+      !!(paths && paths.as_h?.try(&.has_key?(name)))
+    rescue
+      false
+    end
+
     def self.index_path(gemfile_path : String) : String
       File.join(File.dirname(gemfile_path), ".bundle", "plugin", "index")
     end

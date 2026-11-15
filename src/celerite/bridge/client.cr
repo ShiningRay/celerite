@@ -9,9 +9,17 @@ module Celerite
 
     class BridgeError < Error
       getter error_class : String
+      # Optional `status_code` carried by the Ruby side (Bundler errors know
+      # their exit status: PluginGemfileError 29, InvalidOption 15,
+      # GemfileError 4). Falls back to the pre-existing default of 1.
+      getter status : Int32?
 
-      def initialize(@error_class : String, message : String)
+      def initialize(@error_class : String, message : String, @status : Int32? = nil)
         super(message)
+      end
+
+      def status_code : Int32
+        @status || 1
       end
     end
 
@@ -206,6 +214,12 @@ module Celerite
         request("exec_plugin_hook", {"event" => event, "index_path" => index_path})
       end
 
+      # Plugin pre-install pass (`Bundler::Plugin.gemfile_install`): names the
+      # Gemfile declares through `plugin "x"` or `source ..., type:`.
+      def plugin_gemfile_eval(gemfile_path : String) : JSON::Any
+        request("plugin_gemfile_eval", {"gemfile_path" => gemfile_path})
+      end
+
       # Generates RubyGems-compatible executable wrappers for one installed gem.
       def generate_bin_stubs(gem_path : String, destination : String, gem_dir : String) : JSON::Any
         request("generate_bin_stubs", {"gem_path" => gem_path, "destination" => destination, "gem_dir" => gem_dir})
@@ -308,7 +322,7 @@ module Celerite
           response["result"]
         else
           error = response["error"]
-          raise BridgeError.new(error["class"].as_s, error["message"].as_s)
+          raise BridgeError.new(error["class"].as_s, error["message"].as_s, error["status"]?.try(&.as_i?))
         end
       end
     end

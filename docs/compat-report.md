@@ -1565,3 +1565,46 @@ celerite 侧两个夹具都在**克隆阶段**失败，未进入解析路径：
 - 冲突安装失败时参考会删除 `--path` 源目录（破坏性副作用），我方保留源目录——有意不复刻。
 - 远程插件安装记录命令仅按既有远程安装流程实现，未做真实远端差分。
 - 第三方插件（非 fixture）的命令 `--help` 内容、`Did you mean?` 建议均未实现/未验证。
+
+## 2026-11-15 M7(6)：Gemfile 声明的插件预装
+
+参考语义（`bundler-4.0.24`）：
+- `cli/install.rb:41` 在构建 definition 之前调用 `Plugin.gemfile_install(Gemfile)`；
+- `plugin.rb:104-127` `gemfile_install`：解析 `Bundler::Plugin::DSL`，对每个声明插件 `installed_plugin?` 否则 `install_plugin`；对 `bundler-source-<type>` 做 source 预装；
+- `plugin/dsl.rb:31-50`：`source "…", type: :t` 推断插件名 `bundler-source-t`；`gem`/`source` 行在 plugin DSL 中静默忽略，未知方法抛 `PluginGemfileError`；
+- `dsl.rb:128-139/240-242`：主 DSL 的 `plugin "x"` 为空实现；`source` 的 `type:` 在 plugins 关闭时抛 `InvalidOption`；
+- `dsl.rb:542-570`：`DSLError#status_code` 继承成因错误的 `status_code`，`GemfileError` 兜底 4；
+- `friendly_errors.rb:26-36`：错误按 wrap 处理。
+
+首辅实测矩阵（参考 4.0.24，`BUNDLE_PLUGINS` 默认/显式）：
+
+| 场景 | plugins | 退出码 |
+|---|---|---|
+| `source …, type: :psource do gem "json_pure" end`（缺 `bundler-source-psource`） | on | 7 |
+| 同上但无 block | on | 7 |
+| `plugin "psource-plugin"`（缺该 gem） | on | 7 |
+| 同上 `type:` 场景 | off | 15（`No plugin sources available for psource` + `>  source …` 摘录） |
+| `plugin "psource-plugin"` + `gem "json_pure"` | off | 0（plugin 行被忽略） |
+| `undefined_method_here "x"` | off | 4 |
+| 同上 | on | 29 |
+
+修复前（`bin/celerite.exe`，本机实测）：`source …, type:` 与 `plugin "…"` 一律 exit 1（直接进主 DSL）；`plugin "x"` 被静默忽略；`type:` 在 plugins 关闭时也 exit 1（未走 `InvalidOption` 文案）。
+
+实现：
+- `assets/bridge/server.rb`：`bridge_error` 仅在错误响应 `respond_to?(:status_code)` 时附带 `"status"`；新增 `op_plugin_gemfile_eval`（`Bundler::Plugin::DSL#eval_gemfile` 后返回 `plugin_names`，不 rescue，让 4/15/29 原样上报）。
+- `src/celerite/bridge/client.cr`：`BridgeError` 增 `status : Int32?` 与 `status_code = @status || 1`；`plugin_gemfile_eval`。
+- 新增 `src/celerite/plugin_gemfile.cr`：`enabled?`（`BUNDLE_PLUGINS` 非 false）、`plugin_names`、`primary_source`、`strip_comment`。
+- `src/celerite/cli/commands_install.cr`：`install` 在本地策略校验（不支持 settings fast-fail）之后、第一次 `bridge.evaluate_gemfile`（真正的 DSL 求值）之前执行插件预装（`PluginGemfile.enabled?` 才建 bridge）。注：`Definition.build` 只定位 Gemfile/锁文件、不做 DSL 求值，故预装严格早于任何 Gemfile 求值，与参考 `Plugin.gemfile_install` 在 `Definition` 构建前调用的效果一致；每个声明插件 `installed_plugin?` 否则 `plugin_install_remote([name], ["--source", primary_source])`；`bundler-source-*` 缺 gem 由正常解析得出 7。预装异常面：`Bridge::BridgeError` 仅 `{4,7,15,29}` 上抛，其余回落正常流程；`Celerite::Error`（如无 bridge）直接回落。
+- `src/celerite/cli/commands_surface.cr`：插件物化用纯 Crystal `copy_tree`（替代 `cp -r`，避免本机 Low-IL 下 `cp.exe 0xC0000022`）。
+- `src/celerite/plugin_commands.cr`：`installed_plugin?(index_path, name)`。
+
+已声明偏差 / 未实现：
+- 自定义 `source type:` 的成功路径（需要把插件加载进 bridge 的解析进程）未实现，命中时打印 `Installing plugin sources declared in the Gemfile is not supported by Celerite: <type>` 并 exit 1；
+- `plugin "x"` 指向存在但缺 `plugins.rb` 的 gem 时，`MalformattedPlugin`（29）由参考的插件校验语义给出；本产品同样 exit 29，但未做差分夹具；
+- 预装只对「Gemfile 声明了插件」生效；普通 install 不额外起 bridge。
+
+门禁（干净 HOME，`home-gate29c`）：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen` EXIT 0；`spec/m7_gemfile_plugins_spec.cr` **7 examples, 0 failures**；`spec/m7_build_args_spec.cr` + `spec/m7_install_ensure_unmask_spec.cr` **6 examples, 0 failures**；全量 `crystal spec` **367 examples, 0 failures, 4 errors**（4 errors = 既有 `spec/git_source_spec.cr` 的 msys `0xC0000022`）；`git diff --check` EXIT 0。差分：`plugin-gemfile-missing` 4.0.24/2.7.2 均 `PASS (exit=7)`、`1 passed, 0 failed`；`plugin-source-disabled` 以 `deferred-4.0.24`/`deferred-2.7.2` 登记（harness 无法逐夹具设 `BUNDLE_PLUGINS=false`）。
+
+首辅复核时的负对照：把 `install_gemfile_plugins` 的状态透传由 `raise ex if {4,7,15,29}` 改为无条件 `return nil` → `spec/m7_gemfile_plugins_spec.cr` 得 `7 examples, 1 failures`，失败例 `:157`（`Expected: 29, got: 4`），证明 `status` 透传是 29/4 区分的载荷；恢复后 `7 examples, 0 failures`。
+
+未验证：真实远端插件 `--source`/`--git` 的命令记录；`plugin list` 对带 `plugins.rb` 真实插件 gem 的输出；`BUNDLE_PLUGINS=false` 与 `plugin "x"` 组合的差分夹具；上述 success-path 偏差与参考的完整对齐。
