@@ -288,7 +288,14 @@ No "full upstream suite" claim is made.
   `issue-satisfied` 仍 `3 passed, 0 failed, 0 skipped`。新 spec `spec/m7_env_output_spec.cr` 3/0/0；
   全量 spec `322 examples, 0 failures, 4 errors`（4 个仍为已知 Low-IL GitSource 环境错误）。
   **仍未对齐**：`bundle #!` 行（参考是 Ruby shebang 脚本，本产品为原生可执行文件，已由 harness 行级
-  归一化为 `{BUNDLE_SHEBANG}`）；`## Gemspecs` 段未实现；`OpenSSL` 块未打印。
+  归一化为 `{BUNDLE_SHEBANG}`）；`## Gemspecs` 与 `OpenSSL` 块已实现（见下「段 C」）。
+
+### 2026-11-15（env 对齐，段 C）：OpenSSL 块与 `## Gemspecs`
+
+- **参考依据**：`bundler-4.0.24/lib/bundler/env.rb:106-112`——OpenSSL 五行（`OpenSSL` 表头、`Compiled`、`Loaded`、`Cert File`、`Cert Dir`），每行由 `defined?` 独立门控；环境表列宽由最长键 `ljust` 决定，当前为 14。`:51-58`——`## Gemspecs` 段：先空行，`## Gemspecs`，每条 `\n### <basename>` + 空行 + ```` ```ruby ```` + 文件内容 `.chomp` + 闭合 fence；`dsl.gemspecs` 为空则整段不打印。
+- **实现**：`assets/bridge/server.rb` 的 `op_ruby_environment` 增 `openssl_compiled`/`openssl_loaded`/`openssl_cert_file`/`openssl_cert_dir` 四个字段（不 `require "openssl"`，桥进程未加载则无值，与参考 `defined?` 门控等价）；新增 `op_gemspec_paths`（`Bundler::Dsl#eval_gemfile` → `dsl.gemspecs.map(&:loaded_from)`）；`src/celerite/bridge/client.cr` 的 `RubyEnvironment` 增四个 `String?` 字段与 `gemspec_paths(gemfile)`；`src/celerite/cli/commands_surface.cr` 的 `self.env` 在 `  Bin Dir` 后打印 OpenSSL 五行（任一值存在才打表头），在 `### Gemfile.lock` 后打印 `## Gemspecs`（CRLF→LF 后 `chomp`）。
+- **证据**：新增夹具 `env-gemspec`（`Gemfile` 为 `gemspec name: "foo"`，`extra/foo.gemspec` 最小合法）双列 PASS；`env-report`、`issue-satisfied` 仍 PASS；负对照：去掉 `## Gemspecs` 打印后报 `stdout differs: 51,64d50 < ## Gemspecs …`，还原即 PASS；`spec/m7_env_output_spec.cr` 5/0/0；全量 spec `324 examples, 0 failures, 4 errors`；`crystal tool format --check`、`git diff --check`、`bash -n` 均 EXIT 0。
+- **仍未对齐/未验证**：`bundle #!` 行仍由 harness 归一化为 `{BUNDLE_SHEBANG}`（本产品是原生可执行文件，无 shebang）；`## Gemspecs` 内容在打印期读取文件（参考在 DSL 求值期经 `loaded_from` 读取），时差极端情形未验证；多个 `gemspec` 指令的顺序/去重与 DSL 同源，未做多 gemspec 差分夹具；OpenSSL 行跟随桥进程是否加载（本机默认未加载，默认无该块，与参考一致）。
 
   **B2 取证与修复进展（5949cc2 + b4fe095，2026-11-12，`src/celerite/cli/commands_install.cr`，已推送 `origin/main`）**：
 

@@ -444,6 +444,20 @@ module Celerite
           stdout.puts "  User Path   "
         end
         stdout.puts "  Bin Dir     #{File.join(re.default_gem_dir, "bin").gsub(/\\/, "/")}"
+        # OpenSSL rows mirror Bundler::Env (env.rb:106-112): every row is gated
+        # on OpenSSL being loaded, so a plain `bundle env` prints none of them.
+        openssl_values = {
+          "  Compiled"  => re.openssl_compiled,
+          "  Loaded"    => re.openssl_loaded,
+          "  Cert File" => re.openssl_cert_file,
+          "  Cert Dir"  => re.openssl_cert_dir,
+        }
+        if openssl_values.any? { |_, value| value }
+          stdout.puts "OpenSSL       "
+          openssl_values.each do |label, value|
+            stdout.puts "#{label.ljust(14)}#{value}" if value
+          end
+        end
         stdout.puts "Tools         "
         stdout.puts "  Git         #{git_version}"
         stdout.puts "  RVM         not installed"
@@ -490,6 +504,24 @@ module Celerite
           stdout.puts "<No #{definition.lockfile_path.gsub(/\\/, "/")} found>"
         end
         stdout.puts "```"
+        # Bundler::Env appends `## Gemspecs` after the Gemfile section, one
+        # `### <basename>` ruby fence per gemspec loaded by `gemspec` directives
+        # (env.rb:51-58); the whole section is omitted when there are none.
+        gemspec_paths = bridge.gemspec_paths(definition.gemfile_path)
+        unless gemspec_paths.empty?
+          stdout.puts
+          stdout.puts "## Gemspecs"
+          gemspec_paths.each do |path|
+            stdout.puts
+            stdout.puts "### #{File.basename(path)}"
+            stdout.puts
+            stdout.puts "```ruby"
+            # Ruby writes the file with LF; normalize CRLF like the reference
+            # `.chomp` rendering so the differential comparison is byte-stable.
+            stdout.puts File.read(path).gsub(/\r\n?/, "\n").chomp
+            stdout.puts "```"
+          end
+        end
         0
       ensure
         bridge.close

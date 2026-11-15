@@ -39,7 +39,7 @@ end
 
 def op_ruby_environment(_payload)
   require "rubygems"
-  {
+  env = {
     "ruby_version" => RUBY_VERSION,
     "ruby_description" => RUBY_DESCRIPTION,
     "ruby_env_line" => "#{RUBY_VERSION}p#{RUBY_PATCHLEVEL} (#{RUBY_RELEASE_DATE} revision #{RUBY_REVISION}) [#{Gem::Platform.local}]",
@@ -55,6 +55,16 @@ def op_ruby_environment(_payload)
     "user_gem_dir" => (Gem.user_dir rescue nil),
     "loaded_bundler_version" => (defined?(Bundler) ? Bundler::VERSION : (Gem.loaded_specs["bundler"]&.version.to_s)),
   }
+  # `Bundler::Env` prints the OpenSSL rows only when OpenSSL is already loaded
+  # in the reporting process (env.rb:106-112 guards each row with `defined?`).
+  # Deliberately do not `require "openssl"` here: `bundle env` without an
+  # externally loaded OpenSSL prints no rows, and the differential harness
+  # compares that exact output.
+  env["openssl_compiled"] = (defined?(OpenSSL) ? OpenSSL::OPENSSL_VERSION : nil)
+  env["openssl_loaded"] = (defined?(OpenSSL) ? OpenSSL::OPENSSL_LIBRARY_VERSION : nil)
+  env["openssl_cert_file"] = (defined?(OpenSSL::X509) ? OpenSSL::X509::DEFAULT_CERT_FILE : nil)
+  env["openssl_cert_dir"] = (defined?(OpenSSL::X509) ? OpenSSL::X509::DEFAULT_CERT_DIR : nil)
+  env
 end
 
 # Loads Bundler from the requested load path (or whatever `ruby` resolves),
@@ -109,6 +119,25 @@ def op_evaluate_gemfile(payload)
     "bundler_version" => Bundler::VERSION,
     "gemfile_sha256" => Digest::SHA256.hexdigest(contents),
   }
+end
+
+# Absolute paths of the `.gemspec` files loaded by `gemspec` directives in the
+# Gemfile, in DSL order (reference: `Bundler::Dsl#gemspecs.map(&:loaded_from)`).
+def op_gemspec_paths(payload)
+  gemfile = payload["gemfile"]
+  raise ArgumentError, "missing gemfile path" unless gemfile
+
+  if lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]
+    $LOAD_PATH.unshift(lib) unless lib.empty?
+  elsif version = ENV["CELERITE_REFERENCE_BUNDLER_VERSION"]
+    gem "bundler", version unless version.empty?
+  end
+  require "bundler"
+  require "bundler/dsl"
+
+  dsl = Bundler::Dsl.new
+  dsl.eval_gemfile(gemfile, File.read(gemfile))
+  { "gemspecs" => dsl.gemspecs.map(&:loaded_from) }
 end
 
 def op_bundler_cache_file(payload)
@@ -356,6 +385,7 @@ def bridge_dispatch(id, op, payload)
            when "ping"          then { "proto" => BRIDGE_PROTO, "ruby" => RUBY_VERSION }
            when "ruby_environment" then op_ruby_environment(payload)
            when "evaluate_gemfile" then op_evaluate_gemfile(payload)
+           when "gemspec_paths"   then op_gemspec_paths(payload)
            when "bundler_cache_file" then op_bundler_cache_file(payload)
            when "read_gem_spec" then op_read_gem_spec(payload)
            when "write_installed_spec" then op_write_installed_spec(payload)

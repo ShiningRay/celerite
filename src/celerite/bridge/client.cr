@@ -31,6 +31,12 @@ module Celerite
       getter default_gem_dir : String
       getter user_gem_dir : String?
       getter loaded_bundler_version : String
+      # Present only when the bridge process had OpenSSL loaded, mirroring
+      # `Bundler::Env`'s `defined?(OpenSSL)` guards (env.rb:106-112).
+      getter openssl_compiled : String? = nil
+      getter openssl_loaded : String? = nil
+      getter openssl_cert_file : String? = nil
+      getter openssl_cert_dir : String? = nil
     end
 
     struct EvaluatedDependency
@@ -180,6 +186,12 @@ module Celerite
 
       def evaluate_gemfile(path : String) : GemfileEvaluation
         GemfileEvaluation.from_json(request("evaluate_gemfile", {"gemfile" => path}).to_json)
+      end
+
+      # Absolute paths of the gemspecs loaded by Gemfile `gemspec` directives,
+      # in DSL order (reference: `Bundler::Dsl#gemspecs.map(&:loaded_from)`).
+      def gemspec_paths(gemfile : String) : Array(String)
+        request("gemspec_paths", {"gemfile" => gemfile})["gemspecs"].as_a.map(&.as_s)
       end
 
       def read_gem_spec(path : String) : JSON::Any

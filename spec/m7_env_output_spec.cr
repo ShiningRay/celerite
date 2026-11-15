@@ -76,4 +76,50 @@ describe "Celerite::CLI env output" do
       end
     end
   end
+
+  it "prints the OpenSSL block when the bridge process has OpenSSL loaded" do
+    with_env_bridge do
+      with_env_var("RUBYOPT", "-ropenssl") do
+        with_project({"Gemfile" => env_gemfile}) do
+          code, out, _err = run_cli(["env"])
+          code.should eq(0)
+          out.should contain("OpenSSL       ")
+          compiled_line = out.lines.find { |line| line.starts_with?("  Compiled    ") }.not_nil!
+          compiled_line[14..].strip.should_not be_empty
+          cert_line = out.lines.find { |line| line.starts_with?("  Cert File   ") }.not_nil!
+          environment = Celerite::Bridge::Client.new.ruby_environment
+          environment.openssl_cert_file.not_nil!.should eq(cert_line[14..])
+        end
+      end
+    end
+  end
+
+  it "prints the Gemspecs section only when the Gemfile loads a gemspec" do
+    gemspec = <<-GEMSPEC
+      Gem::Specification.new do |spec|
+        spec.name = "foo"
+        spec.version = "0.1.0"
+        spec.summary = "fixture"
+        spec.authors = ["fixture"]
+        spec.files = []
+      end
+      GEMSPEC
+    with_env_bridge do
+      with_project({
+        "Gemfile"     => "source \"https://rubygems.org\"\n\ngemspec name: \"foo\"\n",
+        "foo.gemspec" => gemspec,
+      }) do
+        code, out, _err = run_cli(["env"])
+        code.should eq(0)
+        out.should contain("## Gemspecs\n\n### foo.gemspec\n\n```ruby\n")
+        out.should contain("Gem::Specification.new do |spec|")
+        out.should end_with("```\n")
+      end
+      with_project({"Gemfile" => env_gemfile}) do
+        code, out, _err = run_cli(["env"])
+        code.should eq(0)
+        out.should_not contain("## Gemspecs")
+      end
+    end
+  end
 end
