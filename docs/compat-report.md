@@ -1534,3 +1534,34 @@ celerite 侧两个夹具都在**克隆阶段**失败，未进入解析路径：
 未验证：多插件同时失败、多插件同时缺失时的警告顺序、`plugin_source` 定义的自定义 source、`BUNDLE_PLUGINS` 从 `.bundle/config` 读取（spec 与环境变量探针覆盖，未覆盖配置文件路径）、参考 hook 参数形态（`(spec, context)`，我方以单参数调用）。
 
 门禁：`crystal tool format --check src spec` EXIT 0、`crystal build --no-codegen --link-flags <shim> src/cli.cr` EXIT 0（仅 2 条既存 `File.executable?` deprecation）、`crystal spec spec/m7_plugin_hook_failure_spec.cr` **6 examples, 0 failures, 0 errors**、全量 `crystal spec` **353 examples, 0 failures, 4 errors, 0 pending**（4 errors = 既有 `spec/git_source_spec.cr` 的 msys `0xC0000022` 环境问题，非回归）、`git diff --check` EXIT 0、`bash -n script/differential` EXIT 0。
+
+## 2026-11-15 M7(6)：插件命令注册
+
+参考锚点（`bundler-4.0.24`）：
+- `lib/bundler/cli.rb:187-195` `handle_no_command_error`：`Bundler.settings[:plugins] && Plugin.command?(command)` 命中 → `Plugin.exec_command(command, ARGV[1..-1])`，先于 `bundler-<name>` PATH 回退。
+- `lib/bundler/cli.rb:155-160`：`help <cmd>` 对插件命令执行 `Plugin.exec_command(cli, ["--help"])`。
+- `lib/bundler/plugin/index.rb:128-130`：`plugin list` 每个插件输出 `<name>`、`-----`、每条命令 `  <cmd>`，插件之间一个空行。
+- `lib/bundler/plugin/index.rb:54-74` + `errors.rb:49`：命令冲突 → `PluginError` status 29，stderr `Failed to install plugin \`<plugin>\`, due to Bundler::Plugin::Index::CommandConflict (Command(s) \`<cmd>\` declared by <plugin> are already registered.)`，索引不写。
+
+实现：
+- 新增 `assets/bridge/plugin_command.rb`（独立 Ruby 进程，避免污染桥的 JSON-RPC stdout）：`--commands` 列出 `plugins.rb` 声明的命令并输出 JSON；执行模式读索引 → `plugin_paths` → `load plugins.rb` → `command.new.exec(command, args)`。
+- 新增 `src/celerite/plugin_commands.cr`（`index_path`/`commands`/`declared_commands`/`exec`/`enabled?`）。
+- `src/celerite/cli/commands.cr`：else 分支在 `bundler-` 回退前分发插件命令；`help <cmd>` 对非内建插件命令以 `--help` 执行。
+- `src/celerite/cli/commands_surface.cr`：`plugin list` 按索引顺序输出命令；`install --path`/远程安装合并 `commands:` 段并检测冲突（exit 29、索引不变）；重复安装同名插件只打印一次 `Installed plugin`；`uninstall` 删除该插件命令。
+
+修复前对照（旧 `bin/celerite.exe`，探针 `.tmp-scratch/plugcmd`）：
+- `celerite mahcommand` → exit 15，stderr `Could not find command "mahcommand".`
+- `celerite plugin list` → `mah-plug`、`-----`、空行（缺命令行）
+
+证据：
+- `spec/m7_plugin_commands_spec.cr`：7 examples, 0 failures, 0 errors。
+- 差分 `plugin-command-list`、`plugin-command-reinstall`：4.0.24 `2 passed, 0 failed, 0 skipped`；2.7.2 `2 passed, 0 failed, 0 skipped`（`plugin-command-list` 覆盖命令写入索引后 `plugin list` 输出 `  mahcommand`；`plugin-command-reinstall` 覆盖重复安装同名插件只打印一次 `Installed plugin`）。
+- 命令冲突路径**不设**差分夹具：参考在 `plugin install --path` 因 `CommandConflict` 失败时会删除 `--path` 源目录（实测 `after-ref: exists=no`，我方保留 `after-cel: exists=yes`），装具的 project-tree 比较必然出现 `Only in project: <源目录>`，无法对齐。该路径改由 spec（`spec/m7_plugin_commands_spec.cr:182` 断言 exit 29）+ 首辅端到端逐字比对取证：参考与 `bin/celerite.exe` 同场景均 exit 29，stdout `Resolving dependencies...`、stderr 三行（80 列折行）在 CRLF 归一化后逐字相同，索引均不变。
+- 门禁：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen` EXIT 0；全量 `360 examples, 0 failures, 4 errors`（4 = 既有 `spec/git_source_spec.cr` 的 msys `0xC0000022`）；`git diff --check` EXIT 0；`bash -n script/differential` EXIT 0。
+
+已声明偏差 / 未验证：
+- 插件命令执行失败时我方输出单行 `celerite plugin command \`<cmd>\` failed: <class>: <msg>`（参考为完整 ERROR REPORT 模板）。
+- 插件索引行尾：参考（`Bundler::YAMLSerializer` + `File.open(..., "w")` 文本模式）写 CRLF，我方写 LF；内容逐字一致，双方可互读（实测：我方读参考索引 `plugin list`/命令分发正常，参考读我方 LF 索引同样正常）。
+- 冲突安装失败时参考会删除 `--path` 源目录（破坏性副作用），我方保留源目录——有意不复刻。
+- 远程插件安装记录命令仅按既有远程安装流程实现，未做真实远端差分。
+- 第三方插件（非 fixture）的命令 `--help` 内容、`Did you mean?` 建议均未实现/未验证。

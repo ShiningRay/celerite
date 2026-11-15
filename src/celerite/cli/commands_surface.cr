@@ -7,6 +7,7 @@ require "../resolution"
 require "../mirror"
 require "../proxy"
 require "./commands_install"
+require "../plugin_commands"
 require "../git_source"
 require "../gem_template"
 require "yaml"
@@ -959,15 +960,24 @@ module Celerite
       sub = rest.first? || "list"
       case sub
       when "list"
-        plugins = installed_plugins
-        if plugins.empty?
+        definition = Definition.build
+        index_path = PluginCommands.index_path(definition.gemfile_path)
+        index = File.file?(index_path) ? YAML.parse(File.read(index_path)) : YAML.parse("{}")
+        # Reference order: `installed_plugins` = @plugin_paths.keys (insertion
+        # order, plugin/index.rb:128-130); never sorted.
+        plugin_order = (index["plugin_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any).keys.map(&.to_s)
+        registered = PluginCommands.commands(index_path)
+        if plugin_order.empty?
           stdout.puts "No plugins installed"
         else
-          plugins.each do |p|
-            stdout.puts p
+          plugin_order.each do |name|
+            stdout.puts name
             stdout.puts "-----"
+            registered.each do |command, owner|
+              stdout.puts "  #{command}" if owner == name
+            end
+            stdout.puts
           end
-          stdout.puts
         end
         0
       when "install"
@@ -1006,30 +1016,64 @@ module Celerite
         index_path = File.join(index_dir, "index")
         index = File.file?(index_path) ? (YAML.parse(File.read(index_path)) || YAML.parse("{}")) : YAML.parse("{}")
 
-        load_paths = index["load_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any
-        plugin_paths = index["plugin_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any
         lib_dir = File.join(File.expand_path(path), "lib").gsub(/\\/, "/")
         root_dir = File.expand_path(path).gsub(/\\/, "/")
+        load_path_map = {} of String => Array(String)
+        (index["load_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any).each do |key, value|
+          load_path_map[key.as_s] = value.as_a?.try(&.map(&.as_s)) || [] of String
+        end
+        plugin_path_map = {} of String => String
+        (index["plugin_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any).each do |key, value|
+          plugin_path_map[key.as_s] = value.as_s
+        end
+        hooks_map = {} of String => Array(String)
+        (index["hooks"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any).each do |key, value|
+          hooks_map[key.as_s] = value.as_a?.try(&.map(&.as_s)) || [] of String
+        end
+
+        registered = PluginCommands.commands(index_path)
+        declared = PluginCommands.declared_commands(File.join(root_dir, "plugins.rb"))
+        conflict_command = declared.find do |command|
+          owner = registered[command]?
+          !owner.nil? && owner != info.name
+        end
+        if conflict = conflict_command
+          message = "Failed to install plugin `#{info.name}`, due to Bundler::Plugin::Index::CommandConflict " \
+                    "(Command(s) `#{conflict}` declared by #{info.name} are already registered.)"
+          stderr.puts Commands.word_wrap(message, CLI.terminal_width)
+          return 29
+        end
+        merged_commands = registered.dup
+        declared.each { |command| merged_commands[command] = info.name }
+        first_install = !plugin_path_map.has_key?(info.name)
+        load_path_map[info.name] = [lib_dir]
+        plugin_path_map[info.name] = root_dir
+
         # Reference index layout: bare keys for empty collections, quoted
-        # string values, "---" document start.
+        # string values, "---" document start. Commands keep their existing
+        # owners; a plugin's keys are never duplicated.
         yaml = String.build do |y|
           y.puts "---"
           y.puts "commands:"
+          merged_commands.each { |command, owner| y.puts "  #{command}: #{owner.inspect}" }
           y.puts "hooks:"
-          y.puts "load_paths:"
-          load_paths.each do |k, v|
-            y.puts "  #{k}:"
-            v.as_a.each { |p2| y.puts "  - #{p2.to_s.inspect}" }
+          hooks_map.each do |key, value|
+            y.puts "  #{key}:"
+            value.each { |item| y.puts "  - #{item.inspect}" }
           end
-          y.puts "  #{info.name}:"
-          y.puts "  - #{lib_dir.inspect}"
+          y.puts "load_paths:"
+          load_path_map.each do |key, value|
+            y.puts "  #{key}:"
+            value.each { |item| y.puts "  - #{item.inspect}" }
+          end
           y.puts "plugin_paths:"
-          plugin_paths.each { |k, v| y.puts "  #{k}: #{v.to_s.inspect}" }
-          y.puts "  #{info.name}: #{root_dir.inspect}"
+          plugin_path_map.each { |key, value| y.puts "  #{key}: #{value.inspect}" }
           y.puts "sources:"
         end
         File.write(index_path, yaml)
-        stdout.puts "Installed plugin #{info.name}"
+        # Reference re-install of an installed plugin prints nothing beyond
+        # "Resolving dependencies..." (no second "Installed plugin" line).
+        stdout.puts "Installed plugin #{info.name}" if first_install
         0
       when "uninstall"
         all = rest.includes?("--all")
@@ -1191,32 +1235,61 @@ module Celerite
             File.write(index_path, "---\ncommands:\nhooks:\nload_paths:\nplugin_paths:\nsources:\n")
           end
           index = YAML.parse(File.read(index_path))
-          load_paths = index["load_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any
-          plugin_paths = index["plugin_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any
+          load_path_map = {} of String => Array(String)
+          (index["load_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any).each do |key, value|
+            load_path_map[key.as_s] = value.as_a?.try(&.map(&.as_s)) || [] of String
+          end
+          plugin_path_map = {} of String => String
+          (index["plugin_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any).each do |key, value|
+            plugin_path_map[key.as_s] = value.as_s
+          end
+          hooks_map = {} of String => Array(String)
+          (index["hooks"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any).each do |key, value|
+            hooks_map[key.as_s] = value.as_a?.try(&.map(&.as_s)) || [] of String
+          end
           gem_dir = if git_remote
                       File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "bundler", "gems", "#{GitSource.base_name(git_remote)}-#{spec.version}").gsub(/\\/, "/")
                     else
                       File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "gems", spec.full_name).gsub(/\\/, "/")
                     end
           lib_dir = File.join(gem_dir, "lib").gsub(/\\/, "/")
+          registered = PluginCommands.commands(index_path)
+          declared = PluginCommands.declared_commands(File.join(gem_dir, "plugins.rb"))
+          conflict_command = declared.find do |command|
+            owner = registered[command]?
+            !owner.nil? && owner != spec.name
+          end
+          if conflict = conflict_command
+            message = "Failed to install plugin `#{spec.name}`, due to Bundler::Plugin::Index::CommandConflict " \
+                      "(Command(s) `#{conflict}` declared by #{spec.name} are already registered.)"
+            stderr.puts Commands.word_wrap(message, CLI.terminal_width)
+            return 29
+          end
+          merged_commands = registered.dup
+          declared.each { |command| merged_commands[command] = spec.name }
+          first_install = !plugin_path_map.has_key?(spec.name)
+          load_path_map[spec.name] = [lib_dir]
+          plugin_path_map[spec.name] = gem_dir
           yaml = String.build do |y|
             y.puts "---"
             y.puts "commands:"
+            merged_commands.each { |command, owner| y.puts "  #{command}: #{owner.inspect}" }
             y.puts "hooks:"
-            y.puts "load_paths:"
-            load_paths.each do |k, v|
-              y.puts "  #{k}:"
-              v.as_a.each { |p2| y.puts "  - #{p2.to_s.inspect}" }
+            hooks_map.each do |key, value|
+              y.puts "  #{key}:"
+              value.each { |item| y.puts "  - #{item.inspect}" }
             end
-            y.puts "  #{spec.name}:"
-            y.puts "  - #{lib_dir.inspect}"
+            y.puts "load_paths:"
+            load_path_map.each do |key, value|
+              y.puts "  #{key}:"
+              value.each { |item| y.puts "  - #{item.inspect}" }
+            end
             y.puts "plugin_paths:"
-            plugin_paths.each { |k, v| y.puts "  #{k}: #{v.to_s.inspect}" }
-            y.puts "  #{spec.name}: #{gem_dir.inspect}"
+            plugin_path_map.each { |key, value| y.puts "  #{key}: #{value.inspect}" }
             y.puts "sources:"
           end
           File.write(index_path, yaml)
-          stdout.puts "Installed plugin #{spec.name}"
+          stdout.puts "Installed plugin #{spec.name}" if first_install
         end
       rescue ex : Error
         stderr.puts ex.message
@@ -1269,7 +1342,12 @@ module Celerite
       yaml = String.build do |y|
         y.puts "---"
         y.puts "commands:"
-        render.call(index["commands"]? || YAML.parse("{}"), y)
+        commands_map = index["commands"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any
+        commands_map.each do |key, value|
+          owner = value.as_s
+          next if removed.includes?(owner)
+          y.puts "  #{key.to_s}: #{owner.inspect}"
+        end
         y.puts "hooks:"
         render.call(index["hooks"]? || YAML.parse("{}"), y)
         y.puts "load_paths:"

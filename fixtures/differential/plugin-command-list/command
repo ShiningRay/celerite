@@ -1,0 +1,2 @@
+plugin install my_plugin --path ./my_plugin
+plugin list

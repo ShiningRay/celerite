@@ -92,6 +92,9 @@ module Celerite
       when "help", "--help", "-h"
         help(stdout, rest)
       else
+        if (plugin_exit = dispatch_plugin_command(command, rest))
+          return plugin_exit
+        end
         if command.starts_with?("bundler-") && !find_executable(command, ENV["PATH"]? || "").nil?
           # Reference PATH fallback: hand the invocation to `bundler-<name>`
           # found on PATH (or report the bare command when missing).
@@ -1238,8 +1241,45 @@ module Celerite
     # help
     # ------------------------------------------------------------------
     def self.help(stdout : IO, rest : Array(String)) : Int32
+      # Reference `help <cmd>`: a plugin command that is not a builtin runs
+      # with ["--help"] (cli.rb:155-160); everything else prints usage.
+      target = rest.reject(&.starts_with?("-")).first?
+      if target && !BUILTIN_COMMANDS.includes?(target)
+        if (plugin_exit = dispatch_plugin_command(target, ["--help"]))
+          return plugin_exit
+        end
+      end
       stdout.puts CLI::USAGE
       0
+    end
+
+    # Commands handled by the CLI itself; a plugin command never shadows them.
+    BUILTIN_COMMANDS = %w[
+      version platform check list show info lock install cache package pack
+      clean exec binstubs update add remove env doctor licenses fund open
+      plugin pristine init outdated console gem issue config help get set
+      unset search push key
+    ]
+
+    # Dispatches a project-local plugin command before the `bundler-<name>`
+    # PATH fallback (cli.rb:187-195). Best effort: any missing definition or
+    # index silently falls through so existing exit codes do not change.
+    private def self.dispatch_plugin_command(command : String, rest : Array(String)) : Int32?
+      return nil if command.empty? || command.starts_with?("-")
+      return nil if BUILTIN_COMMANDS.includes?(command)
+
+      definition = begin
+        Definition.build
+      rescue
+        return nil
+      end
+      return nil unless PluginCommands.enabled?(definition.config)
+
+      index = PluginCommands.index_path(definition.gemfile_path)
+      return nil unless File.file?(index)
+      return nil unless PluginCommands.commands(index).has_key?(command)
+
+      PluginCommands.exec(index, command, rest)
     end
 
     # A dependency declared in the lockfile without any locked spec. The
