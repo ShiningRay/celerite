@@ -1827,19 +1827,73 @@ module Celerite
     end
 
     # ------------------------------------------------------------------
-    # console: exec an IRB session inside the bundle environment
+    # console: exec an interactive console inside the bundle environment
     # ------------------------------------------------------------------
     def self.console(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       definition = Definition.build
       Commands.validate_ruby_runtime!(definition)
-      # Best-effort: reference Bundler loads bundler/setup in IRB with bundle
-      # context. Full interactive console parity is not implemented in Celerite;
-      # exec irb with bundle environment when available, else fail clearly.
-      unless Process.find_executable("irb") || Process.find_executable("irb.bat") || Process.find_executable("irb.cmd")
-        stderr.puts "bundle console requires IRB (`irb`) in PATH; IRB not found. (Celerite: full interactive bundle console not implemented; install IRB to exec irb in bundle context)"
-        return 127
+
+      # bundler/cli.rb declares `console [GROUP]`; Thor rejects extra
+      # positional arguments before the console starts (measured on 4.0.24:
+      # `bundle console a b` prints the two lines below and exits 15).
+      positional = rest.reject(&.starts_with?("-"))
+      if positional.size > 1
+        quoted = positional.map { |arg| "\"#{arg}\"" }.join(", ")
+        stderr.puts %(ERROR: "bundle console" was called with arguments [#{quoted}])
+        stderr.puts %(Usage: "bundle console [GROUP]")
+        return 15
       end
-      exec(stdout, stderr, ["irb"] + rest)
+
+      # cli/console.rb:16: the console name comes from `console`
+      # (BUNDLE_CONSOLE) and defaults to irb.
+      name = definition.config["console"].to_s
+      name = "irb" if name.empty?
+
+      executable = find_console_executable(name)
+      if executable.nil?
+        if name == "irb"
+          stderr.puts "irb is not available"
+          return 1
+        end
+        # cli/console.rb:24-33: any other missing console falls back to irb.
+        stderr.puts "Couldn't load console #{name}, falling back to irb"
+        executable = find_console_executable("irb")
+        if executable.nil?
+          stderr.puts "irb is not available"
+          return 1
+        end
+      end
+
+      # DECLARED DEVIATION: the reference runs Bundler.require and
+      # `console.start` in-process, so gem `require`/group semantics apply
+      # inside the session. Celerite execs the console executable with
+      # RUBYOPT=-rbundler/setup: only the load path is prepared, and the GROUP
+      # argument is accepted but not required (the reference clears ARGV, so no
+      # arguments are forwarded either).
+      process_env = ENV.to_h
+      setup = "-rbundler/setup"
+      rubyopt = (process_env["RUBYOPT"]? || "").split(" ").reject(&.empty?)
+      rubyopt.unshift(setup) unless rubyopt.includes?(setup)
+      process_env["RUBYOPT"] = rubyopt.join(" ")
+      process_env["BUNDLE_GEMFILE"] = File.expand_path(definition.gemfile_path).gsub(/\\/, "/")
+
+      # Windows .bat/.cmd wrappers need the command processor; direct spawn
+      # would fail with "not a valid application".
+      if executable.ends_with?(".bat") || executable.ends_with?(".cmd")
+        Process.run("cmd", ["/c", executable], env: process_env,
+          output: :inherit, error: :inherit, input: :inherit).exit_code
+      else
+        Process.run(executable, [] of String, env: process_env,
+          output: :inherit, error: :inherit, input: :inherit).exit_code
+      end
+    end
+
+    # PATHEXT wrappers are not expanded by find_executable, so the Windows
+    # variants are probed explicitly.
+    private def self.find_console_executable(name : String) : String?
+      Process.find_executable(name) ||
+        Process.find_executable("#{name}.bat") ||
+        Process.find_executable("#{name}.cmd")
     end
 
     # ------------------------------------------------------------------

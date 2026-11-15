@@ -271,10 +271,7 @@ No "full upstream suite" claim is made.
   **4.0.24：3 passed, 0 failed, 0 skipped，DIFF_EXIT=0**；**2.7.2：3 passed, 0 failed, 0
   skipped，DIFF_EXIT=0**（命令
   `CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp [BUNDLER_REF_VERSION=2.7.2] bash script/differential env-report issue-no-gemfile issue-missing-gems`；
-  harness N5 归一化剥离 `## Environment` 机体至 `## Bundle Doctor` 后比对）。**限定（2026-11-15）**：该夹具在 2026-11-15 之前是空比较——旧 N5 规则对没有 `## Bundle Doctor` 的 `env` 输出会整段删到 EOF，两侧均为 0 字节；修复后转为真比较并实测 FAIL。因此上面的 3/0/0 只表示当时未报错，**不构成 `env` 输出兼容证据**。`console`/`gem`
-  边界证据（shim 本地、非 differential）：IRB 缺失 PATH 下 `console` stderr 含
-  `bundle console requires IRB (`irb`) in PATH... (Celerite: full interactive bundle console not implemented; install IRB to exec irb in bundle context)`
-  且 EXIT 127（同受限 PATH 下 reference 为 `bundle: command not found`，不可差分比对）。
+  harness N5 归一化剥离 `## Environment` 机体至 `## Bundle Doctor` 后比对）。**限定（2026-11-15）**：该夹具在 2026-11-15 之前是空比较——旧 N5 规则对没有 `## Bundle Doctor` 的 `env` 输出会整段删到 EOF，两侧均为 0 字节；修复后转为真比较并实测 FAIL。因此上面的 3/0/0 只表示当时未报错，**不构成 `env` 输出兼容证据**。`console` 的旧边界证据（IRB 缺失 PATH 下自定义话术 + EXIT 127）已于 2026-11-15 按参考替换，见下「console 对齐」子节。
   **2026-11-15（env 输出对齐，段 B）**：修复 N5 空比较后 `env-report` 转真比较，据参考原文对齐 4 处——
   ① `Bundler` 行只留版本号（去掉 `(Celerite … compatibility profile)` 后缀，版本仍取
   `CELERITE_PROFILE_BUNDLER_VERSION` 或默认 `4.0.24`）；② 新增 `## Bundler settings` 段
@@ -296,6 +293,14 @@ No "full upstream suite" claim is made.
 - **实现**：`assets/bridge/server.rb` 的 `op_ruby_environment` 增 `openssl_compiled`/`openssl_loaded`/`openssl_cert_file`/`openssl_cert_dir` 四个字段（不 `require "openssl"`，桥进程未加载则无值，与参考 `defined?` 门控等价）；新增 `op_gemspec_paths`（`Bundler::Dsl#eval_gemfile` → `dsl.gemspecs.map(&:loaded_from)`）；`src/celerite/bridge/client.cr` 的 `RubyEnvironment` 增四个 `String?` 字段与 `gemspec_paths(gemfile)`；`src/celerite/cli/commands_surface.cr` 的 `self.env` 在 `  Bin Dir` 后打印 OpenSSL 五行（任一值存在才打表头），在 `### Gemfile.lock` 后打印 `## Gemspecs`（CRLF→LF 后 `chomp`）。
 - **证据**：新增夹具 `env-gemspec`（`Gemfile` 为 `gemspec name: "foo"`，`extra/foo.gemspec` 最小合法）双列 PASS；`env-report`、`issue-satisfied` 仍 PASS；负对照：去掉 `## Gemspecs` 打印后报 `stdout differs: 51,64d50 < ## Gemspecs …`，还原即 PASS；`spec/m7_env_output_spec.cr` 5/0/0；全量 spec `324 examples, 0 failures, 4 errors`；`crystal tool format --check`、`git diff --check`、`bash -n` 均 EXIT 0。
 - **仍未对齐/未验证**：`bundle #!` 行仍由 harness 归一化为 `{BUNDLE_SHEBANG}`（本产品是原生可执行文件，无 shebang）；`## Gemspecs` 内容在打印期读取文件（参考在 DSL 求值期经 `loaded_from` 读取），时差极端情形未验证；多个 `gemspec` 指令的顺序/去重与 DSL 同源，未做多 gemspec 差分夹具；OpenSSL 行跟随桥进程是否加载（本机默认未加载，默认无该块，与参考一致）。
+
+### 2026-11-15（console 对齐）
+
+- **参考语义**：`bundler-4.0.24/lib/bundler/cli/console.rb:11-17`——`group ? Bundler.require(:default, *group.split(" ").map!(&:to_sym)) : Bundler.require`；`ARGV.clear`；`console = get_console(Bundler.settings[:console] || "irb")`；`console.start`。`:19-36`——`require name` 失败时，`irb` 打印 `irb is not available` 并 `exit 1`，其他名打印 `Couldn't load console <name>, falling back to irb` 后按 irb 重试。`cli.rb` 声明 `console [GROUP]`，实测 4.0.24 多位置参数即被 Thor 拒绝：`ERROR: "bundle console" was called with arguments ["a", "b"]` + `Usage: "bundle console [GROUP]"`，退出码 15。
+- **实现**：`src/celerite/cli/commands_surface.cr` 的 `self.console` 重写——位置参数多于 1 个时按上面两行原文报错并返回 15；控制台名取 `definition.config["console"]`（`BUNDLE_CONSOLE`），缺省 `"irb"`；查找 `name`/`name.bat`/`name.cmd`；自定义名缺失时先打印回退消息，再按 irb 查找，仍缺则 `irb is not available` 返回 1；启动前合并环境：`RUBYOPT` 追加 `-rbundler/setup`（保留用户已有值），`BUNDLE_GEMFILE` 设为 Gemfile 绝对路径（正斜杠），`.bat`/`.cmd` 经 `cmd /c` 执行。
+- **已声明偏差**：参考在进程内 `Bundler.require` + `console.start`，本产品是 exec 控制台 + `-rbundler/setup`，只准备加载路径，gem 的 `require`/分组语义不等价；`GROUP` 参数被接受但不执行 require；参考 `ARGV.clear` 后不向控制台传参，本产品同样不传；自定义 console 参考走 `require name`（如 `pry` 库入口），本产品按同名可执行文件启动，二者入口不同。
+- **证据**：`spec/m7_console_spec.cr` 5/0/0——假 `irb.bat` 经 marker 文件证明被启动；`BUNDLE_CONSOLE=fakecons` 时启动 fakecons 而非 irb；`BUNDLE_CONSOLE=pry` 且无 irb 时 stderr 含回退消息与 `irb is not available`、退出 1；无 console 时 stderr 恰为 `irb is not available`、退出 1；`console a b` 退出 15 且复现参考两行。负对照：把回退消息改回旧话术，spec 报 `Failure/Error: err.should contain("Couldn't load console pry, falling back to irb")`（`spec/m7_console_spec.cr:94`），还原即 5/0/0。门禁：`crystal spec spec/cli_spec.cr` 29/0/0（含 console 5 例）；全量 `328 examples, 0 failures, 4 errors`（4 个为已知 Low-IL GitSource 环境错误）；`crystal tool format --check src spec`、`git diff --check`、`bash -n script/differential` 均 EXIT 0。
+- **未验证**：真实交互式 irb 会话；`GROUP` 的 `Bundler.require` 行为；用户 `RUBYOPT` 已含 `-rbundler/setup` 的路径差异；`pry` 等自定义 console 的实际入口差异。
 
   **B2 取证与修复进展（5949cc2 + b4fe095，2026-11-12，`src/celerite/cli/commands_install.cr`，已推送 `origin/main`）**：
 
