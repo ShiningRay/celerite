@@ -425,7 +425,7 @@ module Celerite
         stdout.puts "## Environment"
         stdout.puts
         stdout.puts "```"
-        stdout.puts "Bundler       #{bundler_version} (Celerite #{Celerite::VERSION}, compatibility profile)"
+        stdout.puts "Bundler       #{bundler_version}"
         platforms = [Gem::Platform::RUBY.to_s, Gem::Platform.local.to_s]
         stdout.puts "  Platforms   #{platforms.join(", ")}"
         stdout.puts "Ruby          #{re.ruby_env_line}"
@@ -461,14 +461,15 @@ module Celerite
         # settings section: one block per local-config key (reference shape)
         settings_lines = config_dump(config)
         unless settings_lines.empty?
-          settings_lines.each do |section|
-            stdout.puts "```"
-            section.each { |l| stdout.puts l }
-            stdout.puts "```"
-            stdout.puts
-          end
+          stdout.puts
+          stdout.puts "## Bundler settings"
+          stdout.puts
+          stdout.puts "```"
+          settings_lines.each { |section| section.each { |l| stdout.puts l } }
+          stdout.puts "```"
         end
 
+        stdout.puts
         # Gemfile section
         stdout.puts "## Gemfile"
         stdout.puts
@@ -483,9 +484,12 @@ module Celerite
         stdout.puts "```"
         if definition.lockfile_exists?
           File.each_line(definition.lockfile_path) { |l| stdout.puts l.chomp }
+        else
+          # Bundler::Env.read_file returns this placeholder instead of an
+          # empty fence when the lockfile is absent.
+          stdout.puts "<No #{definition.lockfile_path.gsub(/\\/, "/")} found>"
         end
         stdout.puts "```"
-        stdout.puts
         0
       ensure
         bridge.close

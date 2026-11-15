@@ -114,3 +114,18 @@ ruby/*/bin
   reproduces the failure (verified 2026-11-15), while the underlying path-root
   mechanism is still a hypothesis (a standalone replay of the old commands
   produced a valid `.git`). No normalization rule is involved.
+
+### 2026-11-15: `## Environment` 只在 doctor 报告中被剥离（N5 修正）
+
+旧规则（sed 区间 `/^## Environment$/,/^## Bundle Doctor$/{…d}`）对 `bundle env` 输出会从
+`## Environment` 一直删到 EOF（env 输出没有 `## Bundle Doctor` 终止符），两侧都变成
+0 字节，`env-report` 因此长期是空比较（假 PASS）。修正：改在 awk 中条件缓冲——
+只有遇到 `## Bundle Doctor` 才丢弃已缓冲的 Environment 行，否则 EOF 时原样输出；
+doctor 类（`issue-*`）行为不变（复跑 `issue-no-gemfile`/`issue-missing-gems`/`issue-satisfied` 仍 3/3 PASS）。
+同时新增两条行级归一化（只替换值、保留字段名）：`Git SHA    <sha>` → `{GIT_SHA}`
+（参考是它自己的构建 SHA，我们是 HEAD）；`bundle #!  <shebang>` → `{BUNDLE_SHEBANG}`
+（本产品是原生可执行文件、无 shebang，属已声明偏差）。日期行继续按 N4 替换值
+（`Timestamp` 不再泄漏构建日期；计数改为显式 `[0-9]` 以避开不同 sed 的区间语法差异）。
+除此之外 env 输出逐字比较。负对照：修复后 `env-report` 由 PASS 变 FAIL（真实差异：
+`Bundler` 行多 `(Celerite …, compatibility profile)`、缺 `## Bundler settings` 段、
+`<No … Gemfile.lock found>` 行），证明比较已生效。

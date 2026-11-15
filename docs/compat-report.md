@@ -271,10 +271,24 @@ No "full upstream suite" claim is made.
   **4.0.24：3 passed, 0 failed, 0 skipped，DIFF_EXIT=0**；**2.7.2：3 passed, 0 failed, 0
   skipped，DIFF_EXIT=0**（命令
   `CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp [BUNDLER_REF_VERSION=2.7.2] bash script/differential env-report issue-no-gemfile issue-missing-gems`；
-  harness N5 归一化剥离 `## Environment` 机体至 `## Bundle Doctor` 后比对）。`console`/`gem`
+  harness N5 归一化剥离 `## Environment` 机体至 `## Bundle Doctor` 后比对）。**限定（2026-11-15）**：该夹具在 2026-11-15 之前是空比较——旧 N5 规则对没有 `## Bundle Doctor` 的 `env` 输出会整段删到 EOF，两侧均为 0 字节；修复后转为真比较并实测 FAIL。因此上面的 3/0/0 只表示当时未报错，**不构成 `env` 输出兼容证据**。`console`/`gem`
   边界证据（shim 本地、非 differential）：IRB 缺失 PATH 下 `console` stderr 含
   `bundle console requires IRB (`irb`) in PATH... (Celerite: full interactive bundle console not implemented; install IRB to exec irb in bundle context)`
   且 EXIT 127（同受限 PATH 下 reference 为 `bundle: command not found`，不可差分比对）。
+  **2026-11-15（env 输出对齐，段 B）**：修复 N5 空比较后 `env-report` 转真比较，据参考原文对齐 4 处——
+  ① `Bundler` 行只留版本号（去掉 `(Celerite … compatibility profile)` 后缀，版本仍取
+  `CELERITE_PROFILE_BUNDLER_VERSION` 或默认 `4.0.24`）；② 新增 `## Bundler settings` 段
+  （依据 `bundler-4.0.24/lib/bundler/env.rb:20-29` 的 `unless Bundler.settings.all.empty?` +
+  `out << "\n## Bundler settings\n\n```\n"`，内容取本项目 config 观测面：本地 `.bundle/config`
+  或 env 中的 `BUNDLE_*`，按 `settings.pretty_values_for` 的 `key\n  Set via <ENV>: "<value>"` 形态）；
+  ③ 缺锁文件时打印 `Bundler::Env.read_file` 的占位 `<No <lockfile 绝对路径> found>`（路径统一 `/`，
+  交由 harness N1 归一化）；④ 去掉文件末尾多余空行（输出以结束 fence 的换行收尾）。
+  `bash script/differential env-report` → `PASS env-report (exit=0)`、
+  `differential (4.0.24): 1 passed, 0 failed, 0 skipped`；`issue-no-gemfile`/`issue-missing-gems`/
+  `issue-satisfied` 仍 `3 passed, 0 failed, 0 skipped`。新 spec `spec/m7_env_output_spec.cr` 3/0/0；
+  全量 spec `322 examples, 0 failures, 4 errors`（4 个仍为已知 Low-IL GitSource 环境错误）。
+  **仍未对齐**：`bundle #!` 行（参考是 Ruby shebang 脚本，本产品为原生可执行文件，已由 harness 行级
+  归一化为 `{BUNDLE_SHEBANG}`）；`## Gemspecs` 段未实现；`OpenSSL` 块未打印。
 
   **B2 取证与修复进展（5949cc2 + b4fe095，2026-11-12，`src/celerite/cli/commands_install.cr`，已推送 `origin/main`）**：
 
