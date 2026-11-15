@@ -702,17 +702,21 @@ module Celerite
     # fresh resolve already carries the index metadata (including platform
     # variants) and must not be rewritten, while PATH/GIT specs keep the edges
     # recorded in the lockfile.
-    def refresh_locked_dependencies(packages : Hash(String, String), & : String -> Array(Lockfile::SpecDependency)) : Nil
-      return if packages.empty?
+    # Returns true when at least one spec's dependency edges were rewritten.
+    def refresh_locked_dependencies(packages : Hash(String, String), & : String -> Array(Lockfile::SpecDependency)) : Bool
+      return false if packages.empty?
+      changed = false
       @resolved_specs = @resolved_specs.map do |spec|
         next spec unless spec.source_type == "GEM"
         package = packages[spec.full_name]?
         next spec if package.nil?
         dependencies = yield package
         next spec if dependencies == spec.dependencies
+        changed = true
         ResolvedSpec.new(spec.name, spec.version, spec.platform, dependencies, spec.checksum,
           spec.source_index, spec.source_type, spec.source_info, spec.source_remote)
       end
+      changed
     end
 
     private def run_resolution(deps : Array(Resolver::DepSpec)) : Array(ResolvedSpec)

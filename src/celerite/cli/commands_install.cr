@@ -212,66 +212,121 @@ module Celerite
             ""
           end
         end
-        cached_paths = {} of String => String
-        pending.each do |spec|
-          stdout.puts "Fetching #{spec.name} #{spec.version}#{was_suffix.call(spec)}"
-          remote = resolution.remote_for(spec.name)
-          spec_downloader = remote == resolution.primary_remote ? downloader : (installers_by_remote[remote]?.try(&.downloader) || Downloader.new(remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config)))
-          cached_paths[spec.full_name] = spec_downloader.fetch(
-            spec.name, spec.version.to_s, spec.platform, spec.checksum
-          )
-        end
-        # Reference installs pure-Ruby gems first, native-extension gems
-        # last (pinned cache --all-platforms install order probe).
-        pure, ext = pending.partition do |spec|
-          cached = cached_paths[spec.full_name]?
-          begin
-            cached.nil? || Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(cached).to_json).extensions.empty?
-          rescue
-            true
-          end
-        end
-        (pure + ext).each do |spec|
-          cached = cached_paths[spec.full_name]?
-          stdout.puts "Installing #{spec.name} #{spec.version}#{was_suffix.call(spec)}#{native_suffix(bridge, cached)}"
-          remote = resolution.remote_for(spec.name)
-          spec_installer = installers_by_remote[remote]? || begin
-            remote_downloader = Downloader.new(remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config))
-            next_installer = Installer.new(gem_root, abi, bridge, remote_downloader, stdout)
-            next_installer.config = config
-            installers_by_remote[remote] = next_installer
-            next_installer
-          end
-          spec_installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum)
-          # The reference records the installed package's sha256 in CHECKSUMS
-          # even for file:// sources.
-          if cached && File.file?(cached)
-            sha = Digest::SHA256.hexdigest(File.read(cached))
-            resolution.install_checksums["#{spec.name}-#{spec.version}"] = "sha256=#{sha}"
-          end
-        end
-        force_install.each do |spec|
-          stdout.puts "Installing #{spec.name} #{spec.version}#{native_suffix(bridge, nil)}"
-          installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum, true)
-        end
-
-        # Locked-path repair (reference `spec_set.rb#materialize`): the lockfile
-        # records each locked spec's dependency edges, and a lockfile written
-        # without them (Bundler's locked specs never carry edges,
-        # `lazy_specification.rb:26-39`) would otherwise be reused unchanged
-        # forever — `check_lockfile` (`definition.rb:973-1014`) cannot see the
-        # gap. Refresh the edges of the locked specs fetched in this run from
-        # their real gemspecs, keeping every locked version. Runs before the
-        # lockfile is written and does not touch the pending/install flow.
-        if reuse && cached_paths.any?
-          resolution.refresh_locked_dependencies(cached_paths) do |package|
-            info = Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(package).to_json)
-            (info.dependencies || [] of JSON::Any).compact_map do |dep|
-              next unless dep["type"]?.try(&.as_s?) == "runtime"
-              name = dep["name"].as_s
-              requirements = dep["requirements"]?.try(&.as_a?).try { |values| values.map(&.as_s) }
-              Lockfile::SpecDependency.new(name, requirements)
+        # The lockfile repair below can only be decided once the .gem packages
+        # are available (it compares their real gemspec edges). When it does
+        # repair, the reference resolves twice and prints
+        # "Resolving dependencies..." twice between the source-index line and
+        # the first Fetching line, so buffer the fetch/install lines as events
+        # and flush them after the decision. On the 2.7 profile the reference
+        # repairs one spec at a time and prints its Fetching/Installing pair
+        # together, so the flush reorders the buffered events in that case.
+        install_events = [] of NamedTuple(kind: String, name: String, line: String)
+        repaired_edges = false
+        begin
+          cached_paths = {} of String => String
+          # Download every pending gem first, then install them (pure-Ruby
+          # before native). The 2.7 profile is reordered at flush time below
+          # when the lockfile was actually repaired.
+          install_spec = ->(spec : Resolution::ResolvedSpec, cached : String?) do
+            remote = resolution.remote_for(spec.name)
+            spec_installer = installers_by_remote[remote]? || begin
+              remote_downloader = Downloader.new(remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config))
+              next_installer = Installer.new(gem_root, abi, bridge, remote_downloader, stdout)
+              next_installer.config = config
+              installers_by_remote[remote] = next_installer
+              next_installer
             end
+            install_events << {
+              kind: "install",
+              name: spec.full_name,
+              line: "Installing #{spec.name} #{spec.version}#{was_suffix.call(spec)}#{native_suffix(bridge, cached)}",
+            }
+            spec_installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum)
+            # The reference records the installed package's sha256 in CHECKSUMS
+            # even for file:// sources.
+            if cached && File.file?(cached)
+              sha = Digest::SHA256.hexdigest(File.read(cached))
+              resolution.install_checksums["#{spec.name}-#{spec.version}"] = "sha256=#{sha}"
+            end
+          end
+
+          pending.each do |spec|
+            install_events << {
+              kind: "fetch",
+              name: spec.full_name,
+              line: "Fetching #{spec.name} #{spec.version}#{was_suffix.call(spec)}",
+            }
+            remote = resolution.remote_for(spec.name)
+            spec_downloader = remote == resolution.primary_remote ? downloader : (installers_by_remote[remote]?.try(&.downloader) || Downloader.new(remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config)))
+            cached_paths[spec.full_name] = spec_downloader.fetch(
+              spec.name, spec.version.to_s, spec.platform, spec.checksum
+            )
+          end
+          pure, ext = pending.partition do |spec|
+            cached = cached_paths[spec.full_name]?
+            begin
+              cached.nil? || Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(cached).to_json).extensions.empty?
+            rescue
+              true
+            end
+          end
+          (pure + ext).each do |spec|
+            install_spec.call(spec, cached_paths[spec.full_name]?)
+          end
+          force_install.each do |spec|
+            install_events << {
+              kind: "install",
+              name: spec.full_name,
+              line: "Installing #{spec.name} #{spec.version}#{native_suffix(bridge, nil)}",
+            }
+            installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum, true)
+          end
+
+          # Locked-path repair (reference `spec_set.rb#materialize`): the lockfile
+          # records each locked spec's dependency edges, and a lockfile written
+          # without them (Bundler's locked specs never carry edges,
+          # `lazy_specification.rb:26-39`) would otherwise be reused unchanged
+          # forever — `check_lockfile` (`definition.rb:973-1014`) cannot see the
+          # gap. Refresh the edges of the locked specs fetched in this run from
+          # their real gemspecs, keeping every locked version. Runs before the
+          # lockfile is written and does not touch the pending/install flow.
+          if reuse && cached_paths.any?
+            repaired_edges = resolution.refresh_locked_dependencies(cached_paths) do |package|
+              info = Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(package).to_json)
+              (info.dependencies || [] of JSON::Any).compact_map do |dep|
+                next unless dep["type"]?.try(&.as_s?) == "runtime"
+                name = dep["name"].as_s
+                requirements = dep["requirements"]?.try(&.as_a?).try { |values| values.map(&.as_s) }
+                Lockfile::SpecDependency.new(name, requirements)
+              end
+            end
+          end
+        ensure
+          # The reference does two resolves on this path and prints one line per
+          # resolve (`resolver.rb:34`); only a real edge rewrite triggers it.
+          if repaired_edges
+            stdout.puts "Resolving dependencies..."
+            stdout.puts "Resolving dependencies..."
+          end
+          if repaired_edges && resolution.bridge_bundler_version.starts_with?("2.")
+            # 2.7 repairs the lockfile one spec at a time, so each gem's
+            # Fetching line is immediately followed by its Installing line;
+            # 4.0 keeps the batched order (pinned stdout of
+            # lock-missing-dependency-edges on both profiles).
+            pending.each do |spec|
+              install_events.each do |event|
+                stdout.puts event[:line] if event[:kind] == "fetch" && event[:name] == spec.full_name
+              end
+              install_events.each do |event|
+                stdout.puts event[:line] if event[:kind] == "install" && event[:name] == spec.full_name
+              end
+            end
+            flushed_names = pending.map(&.full_name).to_set
+            install_events.each do |event|
+              stdout.puts event[:line] unless flushed_names.includes?(event[:name])
+            end
+          else
+            install_events.each { |event| stdout.puts event[:line] }
           end
         end
 
