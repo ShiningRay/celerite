@@ -214,6 +214,15 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
     done
   fi
 
+  # Bundle-path preset, if any: some fixtures need gems that are already
+  # "installed" (e.g. `check` with satisfied dependencies). Each side gets its
+  # own BUNDLE_PATH (see the run block below), so seed both from the same
+  # fixture directory; the tree is sandbox-internal and never compared.
+  if [ -d "$fixture_dir/bundle-preset" ]; then
+    cp -r "$fixture_dir/bundle-preset/." "$ref_sandbox/bundle/"
+    cp -r "$fixture_dir/bundle-preset/." "$cel_sandbox/bundle/"
+  fi
+
   # Git-source fixtures: nested .git directories cannot be committed, so each
   # directory listed in the fixture's `git-init` manifest is materialized here
   # as a real repo. One staging init per side keeps both runs on the same

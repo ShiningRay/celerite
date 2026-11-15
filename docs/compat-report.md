@@ -1629,3 +1629,42 @@ celerite 侧两个夹具都在**克隆阶段**失败，未进入解析路径：
 门禁（干净 HOME）：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen` EXIT 0；`spec/m7_local_install_spec.cr` 5/0/0；`spec/m7_local_install_spec.cr spec/cli_spec.cr` 29/0/0；全量 `372 examples, 0 failures, 4 errors`（4 = 既有 `git_source_spec.cr` msys `0xC0000022`）；`git diff --check` EXIT 0；差分 `install-local` 4.0.24 与 2.7.2 均 PASS（exit 7）。
 
 未验证：https 真实离线、vendor/cache 多平台、`--local` + git 源、`--local` + `--frozen`、`BUNDLE_LOCAL` 设置项。
+
+## 2026-11-15 M7(1)：`check` 重解通知的「依赖已满足」取证 + `bundle-preset` 装具能力
+
+`docs/roadmap.md` L155 曾记录：`check` 在「Gemfile 声明 `ruby`、lock 无 `RUBY VERSION`、依赖已满足」时应打印 `Resolving dependencies...`，但该场景**无法差分 fixture 化**，因为 `script/differential` 在跑命令前不会预填充 `BUNDLE_PATH`。本轮补上装具能力并固化证据。
+
+### 参考语义（逐行锚定）
+
+- `bundler-4.0.24/lib/bundler/cli/check.rb`：`check` 一进来即 `Bundler.load`，definition 构建触发解析。
+- `bundler-4.0.24/lib/bundler/definition.rb`：`@unlocking_ruby = (!@locked_ruby_version ^ !@ruby_version)`；`Resolving dependencies...` 由 resolver 在 `@unlocking_ruby` 为真时输出。
+- 我方镜像点：`src/celerite/cli/commands.cr:467-486` `Commands.lock_ruby_unlock_kind`（`:diff`/`:missing_from_lock`/`:none`）与 `:534` 的打印条件；`bridge_available?` 为假时 `:none`（best-effort，不阻塞历史可用命令）。
+
+### 参考实测（本轮重做，避免上轮误判）
+
+探针 `.tmp-scratch/probe-ck`（`BUNDLE_PATH` 预置 `ruby/4.0.0/specifications/json_pure-2.8.1.gemspec` + `gems/json_pure-2.8.1/lib`，Gemfile `source file:///@INDEX_DIR@` + `ruby "4.0.6"` + `gem "json_pure"`，lock 有 specs、无 `RUBY VERSION`）：
+
+- 参考 `bundle check` → `Resolving dependencies...` + `The Gemfile's dependencies are satisfied`，EXIT 0，**并把 `RUBY VERSION` 写回 lockfile**（后续再跑就不再打印；上一轮「我方缺通知」的结论正是被这次写回污染所致，属测量伪影）。
+- 我方（bridge 可用）→ 同样两行、EXIT 0；bridge 不可用 → 仅第二行（已声明的 best-effort 回退）。
+
+### 新增装具能力：`bundle-preset/`
+
+`script/differential` 在建立沙箱后，如夹具目录存在 `bundle-preset/`，则把其内容复制到两侧各自的 `$sandbox/bundle`（即 `BUNDLE_PATH`）。用于「依赖已安装」类场景；该目录在沙箱内、不参与 project-tree 比较。
+
+### 新夹具 `fixtures/differential/check-satisfied-nolock-ruby/`
+
+`Gemfile`（`source file:///@INDEX_DIR@` + `ruby "4.0.6"` + `gem "json_pure"`）、`Gemfile.lock`（有 specs、无 `RUBY VERSION`）、`bundle-preset/ruby/4.0.0/{specifications,gems}/json_pure-2.8.1`、`command` = `check`。
+
+### 门禁与负对照（首辅亲跑）
+
+- 差分 `check-satisfied-nolock-ruby`：4.0.24 **PASS (exit=0)**、2.7.2 **PASS (exit=0)**。
+- 回归：4.0.24 `check-missing-ruby-nolock check-satisfied-nolock-ruby install-fresh lock-path-absolute-relative` → **4 passed, 0 failed**；2.7.2 `check-missing-ruby-nolock check-satisfied-nolock-ruby install-local` → **3 passed, 0 failed**。
+- 负对照：把 `:534` 的打印条件改成 `if false` 并重建 `bin/celerite-neg.exe` → `FAIL check-satisfied-nolock-ruby (check)`，原文 `stdout differs: 1d0 < Resolving dependencies...`，`0 passed, 1 failed`；恢复源码、删除负对照二进制后 PASS。
+- `spec/m7_check_ruby_notice_spec.cr` 2 例（有/无 bridge 两态断言完整 stdout），2/0/0。
+- `crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen` EXIT 0（仅既有 2 条 `File.executable?` deprecation）；全量 `374 examples, 0 failures, 4 errors`（4 = 既有 `git_source_spec.cr` msys `0xC0000022`，上轮 372/0/4）。
+
+### 未验证 / 仍存差异
+
+- bridge 不可用时 `check` 省略通知（参考无此回退）——既有设计，属已知 best-effort 差异。
+- `show`/`info` 的其他重解通知形态未取证（roadmap L154 的剩余项）。
+- 参考会把 `RUBY VERSION` 写回 lockfile，我方 `check` 不改写锁文件（已声明差异，`check` 只读）。

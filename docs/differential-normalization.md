@@ -67,6 +67,10 @@ ruby/*/bin
 
 ## 2026-11-15 harness fixes
 
+- `bundle-preset/` fixture directory: copied into both sides' `$BUNDLE_PATH`
+  before the commands run, so fixtures can start from "already installed"
+  state (for example `check` with satisfied dependencies). The directory lives
+  inside the sandbox and is not part of the project-tree comparison.
 - `installed tree` content comparison normalizes through temp files inside each
   sandbox and then runs `cmp`. The Ruby-bundled msys `diff` on this host does
   not support bash process substitution (`/dev/fd/63: No such file or
