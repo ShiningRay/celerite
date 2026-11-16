@@ -2800,3 +2800,52 @@ exec --bogus true                     ref 127   cel 127（参考同样把未知�
 - 依赖声明带 `platforms:`/`require:`/`group:` 时的 added/deleted 渲染未与参考逐字对照。
 - `check` 在桥不可用时降级为「只看 CHECKSUMS 理由」的路径未做端到端测试。
 - 2.7.2 的同一场景只验证了差分夹具，未逐条比对 3 个 A/B 场景。
+## 2026-11-17（M7(4)：`validate_platforms!` 与冻结模式下的平台错误）
+
+参考锚点（`bundler-4.0.24`）：
+
+- `bundler/definition.rb:494-497`：`validate_runtime!` = `validate_ruby!` + `validate_platforms!`。
+- `bundler/definition.rb:524-530`：`validate_platforms!` 在锁文件 `platforms` 不含本机平台、也不含 `ruby` 时抛 `Bundler::ProductionError`（status 16）：
+
+  ```
+  Your bundle only supports platforms ["x86_64-linux"] but your local platform is
+  x64-mingw-ucrt. Add the current platform to the lockfile with
+  `bundle lock --add-platform x64-mingw-ucrt` and try again.
+  ```
+
+- `bundler/definition.rb:150`：`@current_platform_missing = add_current_platform unless Bundler.frozen_bundle?` —— 冻结模式不会静默补平台，所以缺平台时先报平台错误，而不是锁文件变更摘要。
+- 调用 `validate_runtime!` 的命令：`binstubs.rb:12`、`check.rb:16`、`fund.rb:12`、`info.rb:13`、`install.rb:46`、`outdated.rb:32`、`platform.rb:35`、`pristine.rb:12`、`show.rb:15`、`update.rb:72`；`check.rb` 的顺序是先 `ensure_equivalent_gemfile_and_lockfile` 再 `validate_runtime!`。
+
+修复前的我方行为（`.tmp-scratch/plat66`，锁文件 `PLATFORMS` 只有 `x86_64-linux`，`BUNDLE_FROZEN=true`）：
+
+- `install`/`check`/`show`/`binstubs`/`fund`/`pristine`/`update`/`cache`：报的是冻结锁文件摘要（CHECKSUMS），参考报平台错误；
+- `platform`：冻结模式下仍把本机平台列进输出（参考不列）；
+- `list`：在平台缺失场景多打印一行 `Resolving dependencies...`（参考 stdout 为空）。
+
+实现：
+
+- `src/celerite/definition.cr` 新增 `validate_platforms!(local_platform : String)`：无锁文件直接返回；锁文件 platforms 为空、含本机平台或含 `ruby` 时返回；否则 `raise ProductionError`（消息与参考逐字一致，含 `--add-platform` 提示）。
+- `src/celerite/cli/commands.cr` 新增 `validate_runtime!(definition, bridge)`：先 `validate_ruby_runtime!`，再用桥报告的 `ruby_environment.platform` 调 `validate_platforms!`；`RubyVersionMismatch`/`ProductionError` 继续上抛，桥不可用则跳过（与既有 ruby 校验同一降级策略）。`platform`/`show`/`info`/`binstubs`/`update`/`fund`/`pristine` 改调 `validate_runtime!`；`cache`/`doctor`/`licenses`/`console`/`list` 仍只校验 ruby。
+- `src/celerite/cli/commands.cr` 的 `run_check` 把校验挪到 `validate_frozen_lockfile!` 之后（对齐 `check.rb:16` 的顺序）。
+- `src/celerite/cli/commands_install.cr` 的内联校验追加 `definition.validate_platforms!(bridge.ruby_environment.platform)`（对齐 `install.rb:46`）。
+- `platform` 命令只在非冻结时追加本机平台；`list` 删除平台缺失时的 `Resolving dependencies...` 行。
+
+证据：
+
+- A/B（10 条命令，冻结且锁文件缺本机平台）：修前 8 条报错文本不同，修后 `install`/`check`/`show`/`binstubs`/`fund`/`pristine`/`update`/`cache` 全部 exit 16 且 stderr 逐字相同；`platform`、`list` 两处小缺口修复后 5/5 场景 `SAME=True`。
+- 非冻结回归（`lock`/`platform`/`platform --ruby`/`check`/`list`）：内容一致（`lock` 仅沙箱路径不同）。
+- 负对照：把 `validate_platforms!` 的 `raise` 短路为 `return` 后 `spec/m7_platform_validation_spec.cr` 出现 1 failure（`Expected Celerite::ProductionError but nothing was raised`），恢复后 5/0。
+- 差分夹具 `install-frozen-platform-missing`（`Gemfile` + `Gemfile.lock`（`PLATFORMS` 只有 `x86_64-linux`、CHECKSUMS 完整）+ `extra/.bundle/config` 写 `BUNDLE_FROZEN: "true"`）：4.0.24 与 2.7.2 均 `PASS (exit=16)`；4.0.24 同批 6 个夹具全 PASS。
+- `crystal tool format --check src spec` 0；`crystal build --no-codegen` 0；全量 `crystal spec` 561 examples / 0 failures / 4 errors（4 = 既有 `spec/git_source_spec.cr` 的 msys Low-IL）；`git diff --check` 0。
+
+已声明差异：
+
+- 只把 `validate_platforms!` 接到已实现的命令上；`list`/`cache`/`doctor`/`licenses`/`console` 与参考一样不做平台校验（`list` 参考本身不调用 `validate_runtime!`）。
+- `--add-platform` 提示串按 4.0.24 写死；2.x 的对应文本未单独建模。
+- 平台错误优先于 CHECKSUMS 摘要只在「平台缺失 + 冻结」组合下验证过；其他理由组合（源变更、bundler 版本等）仍未建模。
+
+未验证：
+
+- 非 Windows 平台上的平台名归一（本机只测 `x64-mingw-ucrt` 与 `x86_64-linux` 两种字符串）。
+- 锁文件 `PLATFORMS` 为空数组时的参考行为（我方按「空则通过」处理，未取 oracle）。
+- `bundle lock --add-platform` 之后的重新校验路径（该命令的写入尚未实现）。

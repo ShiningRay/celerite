@@ -92,6 +92,24 @@ module Celerite
       File.file?(@lockfile_path)
     end
 
+    # Port of `Bundler::Definition#validate_platforms!` (definition.rb:524-530),
+    # part of `validate_runtime!`: refuse to continue when the lockfile does
+    # not list the local platform (and does not fall back to the `ruby`
+    # platform). Reference freezes the platform list, so this is what a frozen
+    # install reports instead of the lockfile-changes summary.
+    def validate_platforms!(local_platform : String) : Nil
+      return unless lockfile_exists?
+      platforms = lockfile!.platforms
+      return if platforms.empty? || platforms.includes?(local_platform) || platforms.includes?("ruby")
+
+      listed = platforms.map { |platform| platform.inspect }.join(", ")
+      raise ProductionError.new(
+        "Your bundle only supports platforms [#{listed}] but your local platform is " \
+        "#{local_platform}. Add the current platform to the lockfile with\n" \
+        "`bundle lock --add-platform #{local_platform}` and try again."
+      )
+    end
+
     # `Bundler::Definition#ensure_equivalent_gemfile_and_lockfile`
     # (definition.rb:475-492): frozen mode refuses to update the lockfile.
     # Implements the dependency-diff reasons plus the CHECKSUMS ones

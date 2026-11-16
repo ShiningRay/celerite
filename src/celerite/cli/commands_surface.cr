@@ -60,7 +60,7 @@ module Celerite
       end
 
       definition = Definition.build
-      Commands.validate_ruby_runtime!(definition)
+      Commands.validate_runtime!(definition)
       config = definition.config
       if config.frozen? && !definition.lockfile_exists?
         raise ProductionError.new("Frozen mode is set, but there's no lockfile")
@@ -886,7 +886,7 @@ module Celerite
         return code
       end
       definition = Definition.build
-      Commands.validate_ruby_runtime!(definition)
+      Commands.validate_runtime!(definition)
       bridge = Bridge::Client.new
       begin
         evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
@@ -1744,7 +1744,7 @@ module Celerite
         return code
       end
       definition = Definition.build
-      Commands.validate_ruby_runtime!(definition)
+      Commands.validate_runtime!(definition)
       gems = rest.reject(&.starts_with?("--"))
       lockfile = definition.lockfile!
       unless gems.empty?

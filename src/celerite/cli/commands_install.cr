@@ -189,6 +189,10 @@ module Celerite
           evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
           gemfile_dependencies = evaluation.dependencies
           RubyRuntime.validate!(evaluation.ruby, bridge.ruby_environment) if evaluation.ruby
+          # `validate_runtime!` also runs `validate_platforms!`
+          # (definition.rb:494-530); a frozen lockfile that does not list the
+          # local platform fails here, before the lockfile-changes summary.
+          definition.validate_platforms!(bridge.ruby_environment.platform)
         rescue ex : Error
           raise ex
         rescue
@@ -1205,7 +1209,7 @@ module Celerite
       # Reference `cli/binstubs.rb:12`: the runtime is validated before the
       # argument checks, so a mismatched Gemfile ruby wins over "pass a gem name".
       definition = Definition.build
-      Commands.validate_ruby_runtime!(definition)
+      Commands.validate_runtime!(definition)
       if rest.includes?("--all") && !names.empty?
         stderr.puts "Cannot specify --all with specific gems"
         return 15

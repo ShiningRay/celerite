@@ -754,10 +754,13 @@ module Celerite
         output << (ruby_version || "No ruby version specified")
       else
         platforms = lockfile.try(&.platforms).dup || [] of String
-        # Reference parity: the local platform always appears in the list
-        # (add_current_platform appends it when the lockfile omits it).
+        # `Definition#add_current_platform` appends the local platform unless
+        # the bundle is frozen (definition.rb:150), so a frozen lockfile that
+        # omits it lists only its own platforms.
         local_platform = Gem::Platform.local.to_s
-        platforms << local_platform unless platforms.includes?(local_platform)
+        unless definition.config.frozen?
+          platforms << local_platform unless platforms.includes?(local_platform)
+        end
         platform_lines = platforms.map { |p| "* #{p}" }
 
         output << "Your platform is: #{Gem::Platform.local}"
@@ -771,7 +774,7 @@ module Celerite
           # Reference `platform.rb:35-40`: a mismatch is printed but does not
           # fail the command.
           begin
-            validate_ruby_runtime!(definition)
+            validate_runtime!(definition)
             output << "Your current platform satisfies the Ruby version requirement."
           rescue ex : RubyVersionMismatch
             output << (ex.message || "")
@@ -814,6 +817,33 @@ module Celerite
     rescue
       # Best-effort: if evaluation/env is unavailable, do not block commands
       # that historically worked without runtime validation.
+      nil
+    end
+
+    # Port of `Bundler::Definition#validate_runtime!` (definition.rb:494-497):
+    # the Ruby version and the platform list are validated together, as
+    # `bundler/cli/{binstubs,fund,info,install,outdated,platform,pristine,show,update}.rb`
+    # do at the start of the command.
+    def self.validate_runtime!(definition : Definition, bridge : Bridge::Client? = nil) : Nil
+      client = bridge
+      unless client
+        begin
+          client = Bridge::Client.new
+        rescue
+          return
+        end
+      end
+      begin
+        validate_ruby_runtime!(definition, client)
+        definition.validate_platforms!(client.ruby_environment.platform)
+      ensure
+        client.close if bridge.nil?
+      end
+    rescue ex : RubyVersionMismatch
+      raise ex
+    rescue ex : ProductionError
+      raise ex
+    rescue
       nil
     end
 
@@ -931,7 +961,6 @@ module Celerite
 
     private def self.run_check(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       definition = Definition.build
-      validate_ruby_runtime!(definition)
       config = definition.config
 
       if config.frozen? && !definition.lockfile_exists?
@@ -949,6 +978,10 @@ module Celerite
         end
       end
       definition.validate_frozen_lockfile!(gemfile_dependencies: gemfile_dependencies)
+      # `bundler/cli/check.rb:16` runs `validate_runtime!` only after the
+      # frozen lockfile check, so the lockfile summary wins over a platform
+      # mismatch.
+      validate_runtime!(definition)
 
       # Reference `Bundler.definition.check!` resolves the Gemfile when no
       # lockfile exists yet, so `bundle check` works before the first install:
@@ -1132,11 +1165,6 @@ module Celerite
 
       installed_missing = filtered_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
 
-      # Reference parity: see the platform-missing note in `check`.
-      if platform_missing?(definition)
-        stdout.puts "Resolving dependencies..."
-      end
-
       locked_specs = filtered_specs
       missing = installed_missing
       if missing.empty?
@@ -1217,7 +1245,7 @@ module Celerite
       end
 
       definition = Definition.build
-      validate_ruby_runtime!(definition)
+      validate_runtime!(definition)
       # Reference `Bundler.load` resolves the Gemfile when no lockfile exists yet,
       # so `show`/`info` work before the first `bundle install`; asking for the
       # lockfile here raised LockfileError (exit 20) instead of resolving.

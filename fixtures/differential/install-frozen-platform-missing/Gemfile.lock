@@ -1,0 +1,16 @@
+GEM
+  remote: file:///@INDEX_DIR@/
+  specs:
+    json_pure (2.8.1)
+
+PLATFORMS
+  x86_64-linux
+
+DEPENDENCIES
+  json_pure (= 2.8.1)
+
+CHECKSUMS
+  json_pure (2.8.1) sha256=6a877929ba9d4fa0808ccc38656d1b15d138b2aa0aa32037ee05abea13427ace
+
+BUNDLED WITH
+  @BUNDLER_VERSION@
