@@ -90,6 +90,25 @@ describe "M7(5) install failure semantics" do
           gem_root = failure_gem_root(bundle)
           File.file?(File.join(gem_root, "gems", "fail-ext-0.1.0", "ext", "extconf.rb")).should be_true
           File.file?(File.join(gem_root, "specifications", "fail-ext-0.1.0.gemspec")).should be_false
+          # Reference drops the cached .gem when the extension build fails
+          # (oracle: FAIL_REF cache= empty, FAIL_CEL cache=fail-ext-0.1.0.gem).
+          File.file?(File.join(gem_root, "cache", "fail-ext-0.1.0.gem")).should be_false
+        end
+      end
+    end
+  end
+
+  it "keeps the cached .gem for a successful install" do
+    failure_bridge do
+      with_project({} of String => String) do |dir|
+        File.write(File.join(dir, "Gemfile"),
+          "source \"#{failing_extension_remote}\"\n\ngem \"json_pure\"\n")
+        with_failure_env(dir) do |bundle|
+          code, _output, errors = run_cli(["install"])
+          code.should eq(0)
+          errors.should_not contain("Gem::Ext::BuildError")
+          cached = File.join(failure_gem_root(bundle), "cache", "json_pure-2.8.1.gem")
+          File.file?(cached).should be_true
         end
       end
     end

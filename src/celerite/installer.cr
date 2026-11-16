@@ -195,6 +195,11 @@ module Celerite
         # cleanup semantics (below).
         failed_spec = File.join(@install_root, "specifications", "#{full_name}.gemspec")
         File.delete(failed_spec) if File.file?(failed_spec)
+        # The reference does not keep the cached package after an extension
+        # failure either (oracle: FAIL_REF cache= empty, FAIL_CEL kept the .gem):
+        # the cached gem had already been published before the build started.
+        failed_cache = File.join(@install_root, "cache", "#{full_name}.gem")
+        File.delete(failed_cache) if File.file?(failed_cache)
         raise ex
       rescue ex
         # Failure cleanup: no partially installed artifact may satisfy
