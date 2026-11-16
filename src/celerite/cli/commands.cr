@@ -24,6 +24,11 @@ module Celerite
     GLOBAL_FLAGS = ["--no-color", "--verbose", "-V", "--retry", "-r"]
 
     def self.dispatch(args : Array(String), stdout : IO, stderr : IO) : Int32
+      # `strip_global_flags` removes the global switches before dispatch, so the
+      # `--verbose` echo (reference `CLI#print_command`) must be reconstructed
+      # from the raw invocation.
+      verbose_requested = args.includes?("--verbose")
+      cli_retry = extract_retry_switch(args)
       args = strip_global_flags(args)
 
       if args.empty?
@@ -33,6 +38,7 @@ module Celerite
 
       command = args[0]
       rest = args[1..]
+      print_command_echo(command, rest, verbose_requested, cli_retry, stdout)
 
       case command
       when "version", "--version", "-v"
@@ -138,6 +144,125 @@ module Celerite
         result << arg
       end
       result
+    end
+
+    # Commands whose `--verbose` echo is suppressed (reference
+    # `Bundler::CLI::PARSEABLE_COMMANDS`).
+    PARSEABLE_COMMANDS = ["check", "config", "help", "exec", "platform", "show", "version"]
+
+    # Commands this CLI implements that the reference echoes before running.
+    ECHO_COMMANDS = [
+      "install", "update", "lock", "cache", "package", "pack", "clean",
+      "add", "remove", "binstubs", "env", "doctor", "licenses", "fund",
+      "open", "plugin", "pristine", "init", "outdated", "console", "gem", "issue",
+    ]
+
+    # Boolean options: Thor renders them as a bare `--name`.
+    ECHO_FLAG_SWITCHES = [
+      "-h", "--help", "--verbose", "-V", "--no-color", "--quiet", "--dry-run",
+      "--local", "--prefer-local", "--full-index", "--standalone", "--no-cache",
+      "--no-lock", "--force", "--redownload", "--all", "--patch", "--minor",
+      "--major", "--pre", "--strict", "--conservative", "--system", "--clean",
+      "--ruby", "--bundler", "--print", "--normalize-platforms",
+      "--add-checksums", "--name-only", "--paths", "--no-install",
+      "--all-platforms", "--skip-install", "--optimistic", "--parseable",
+      "--only-explicit", "--frozen", "--deployment", "--no-deployment",
+      "--no-prune", "--shebang", "--binstubs", "--ext", "--no-git", "--no-ci",
+      "--no-mit", "--no-exe", "--no-coc", "--no-changelog", "--edit",
+    ]
+
+    # Numeric options print unquoted (`--retry 5`); strings are inspected.
+    ECHO_NUMERIC_SWITCHES = ["-r", "--retry", "-j", "--jobs"]
+
+    # Array options render as `--name ["a", "b"]`, or `--name true` when bare.
+    ECHO_ARRAY_SWITCHES = ["--update", "--add-platform", "--remove-platform"]
+
+    def self.extract_retry_switch(args : Array(String)) : String?
+      args.each_with_index do |arg, index|
+        if arg == "--retry" || arg == "-r"
+          value = args[index + 1]?
+          return value if value && !value.starts_with?("--")
+        elsif arg.starts_with?("--retry=")
+          return arg.split("=", 2)[1]?
+        end
+      end
+      nil
+    end
+
+    # Reference `CLI#print_command` (bundler/cli.rb:777-791): with `--verbose`
+    # the invocation is echoed with Thor-rendered switches (booleans bare,
+    # strings inspected, array options bracketed, sorted by option name).
+    def self.print_command_echo(command : String, rest : Array(String), verbose : Bool, retry_value : String?, stdout : IO) : Nil
+      return unless verbose
+      return if PARSEABLE_COMMANDS.includes?(command)
+      return unless ECHO_COMMANDS.includes?(command)
+
+      positionals = [] of String
+      switches = [] of Tuple(String, String)
+      index = 0
+      while index < rest.size
+        token = rest[index]
+        unless token.starts_with?("-") && token.size > 1
+          positionals << token
+          index += 1
+          next
+        end
+
+        name = token
+        inline_value : String? = nil
+        if (equal_index = token.index('=')) && equal_index > 0
+          name = token[0, equal_index]
+          inline_value = token[(equal_index + 1)..]
+        end
+
+        if inline_value.nil? && ECHO_FLAG_SWITCHES.includes?(name)
+          switches << {echo_sort_key(name), name}
+          index += 1
+          next
+        end
+
+        if ECHO_ARRAY_SWITCHES.includes?(name)
+          values = [] of String
+          if value = inline_value
+            values << value
+          else
+            while (candidate = rest[index + 1]?) && !candidate.starts_with?("-")
+              values << candidate
+              index += 1
+            end
+          end
+          rendered = values.empty? ? "#{name} true" : "#{name} [#{values.map(&.inspect).join(", ")}]"
+          switches << {echo_sort_key(name), rendered}
+          index += 1
+          next
+        end
+
+        value = inline_value || rest[index + 1]?
+        if value.nil? || value.starts_with?("-")
+          switches << {echo_sort_key(name), name}
+        else
+          index += 1 if inline_value.nil?
+          rendered = ECHO_NUMERIC_SWITCHES.includes?(name) ? "#{name} #{value}" : "#{name} #{value.inspect}"
+          switches << {echo_sort_key(name), rendered}
+        end
+        index += 1
+      end
+
+      if value = retry_value
+        switches << {"retry", "--retry #{value}"}
+      end
+      switches << {"verbose", "--verbose"}
+
+      parts = ["bundle", command]
+      positionals.each { |positional| parts << positional }
+      switches.sort_by! { |entry| entry[0] }
+      switches.each { |entry| parts << entry[1] }
+      profile = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+      stdout.puts "Running `#{parts.join(" ")}` with bundler #{profile}"
+    end
+
+    private def self.echo_sort_key(name : String) : String
+      name.lchop("--").lchop("-")
     end
 
     # Effective retry count for network operations: CLI --retry overrides config.

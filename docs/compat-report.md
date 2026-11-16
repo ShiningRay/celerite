@@ -2449,3 +2449,17 @@ oracle（4.0.24，两侧独立 HOME，`file:///` 夹具索引）：
 - 解析在无锁 `check` 下会走一次完整网络/索引解析；参考同样如此，但耗时未量化。
 - `CHECKSUMS` 回退只覆盖「bundler 缓存在 `Gem.default_dir/cache`」的本机布局；Ruby 安装未保留 `.gem` 缓存时两侧都不写 bundler 行，未加夹具。
 - 差分只跑新夹具与相邻回归集，未重跑全量；全量 4.0.24/2.7.2 分类沿用前一节的 168/15/2 与 170/13/4（均为环境类）。
+
+## 2026-11-16（M7(4)：`--verbose` 的 `Running ...` 回显）
+
+参考语义只在 debug 模式回显命令行：`bundler-4.0.24/lib/bundler/cli.rb:777-791` 的 `print_command` 先判 `Bundler.ui.debug?`，再跳过 `PARSEABLE_COMMANDS`（`cli.rb:13`：check/config/help/exec/platform/show/version），把请求参数与 `Thor::Options.to_switches` 渲染的开关拼成 `Running `bundle ...` with bundler <verbose_version>`。`to_switches`（`vendor/thor/lib/thor/parser/options.rb:11-26`）的规则是：布尔输出裸 `--name`；数组输出 `--name ` + `value.map(&:inspect).join(" ")`；`nil`/`false` 丢弃；其余输出 `--name <inspect>`。
+
+发现：本实现把 `--verbose` 列在 `SWITCH_FLAGS_COMMON` 里接受，`strip_global_flags` 只写 `CELERITE_VERBOSE` 环境变量，之后没有任何消费点，属「解析 flag 后静默忽略」。
+
+实现（`src/celerite/cli/commands.cr`）：`dispatch` 在调用 `strip_global_flags` 前记录 `--verbose` 与 `--retry` 的值（二者会被移除），新增 `print_command_echo` 在命令分发前输出；开关表分三档（`ECHO_FLAG_SWITCHES` 布尔、`ECHO_NUMERIC_SWITCHES` 数字不加引号、`ECHO_ARRAY_SWITCHES` 输出 `[...]` 或裸值时的 `true`），按去掉前导 `--` 的名字排序，位置参数保持在命令名之后；`PARSEABLE_COMMANDS` 不输出；removed-flag 的报错发生在回显之后（与参考一致）。
+
+证据：15 条 oracle 命令（install/lock/add/binstubs/outdated/cache/check/show 及 `--retry`/`--jobs`/`--no-color`/`--without`/`--frozen`/`--update` 组合）的 `Running ...` 行与参考逐字相同；`spec/m7_verbose_echo_spec.cr` 8 例（渲染、排序、profile、PARSEABLE、无 `--verbose`、removed-flag 前回显）；差分夹具 `init-verbose` 在 4.0.24 与 2.7.2 均 PASS；负对照去掉排序后 `--version "2.8.1"` 用例失败（1 failure），恢复后 8/0。
+
+已声明差异（未复刻）：参考在 `--verbose` 下还会输出调试层（`Resolving dependencies because there's no lockfile`、`Using a local server, bundler won't use the CompactIndex API`、`Using bundler 4.0.24`、`N:  <name> (<version>) from <path>`、`Writing lockfile to <path>`、`Found no changes, using resolution from the lockfile`），异常时打印完整 Ruby 回溯；这些都不在本实现范围内，因此 verbose 形态除 `init-verbose` 外不设差分夹具。
+
+附带修复：`bundle remove` 的 requirement 渲染改按参考 `pretty_dependency`（即 `Gem::Dependency#to_s` / `Gem::Requirement#to_s`），裸版本 `"2.8.1"` 现输出 `(= 2.8.1)` 而不是 `(2.8.1)`；新增 `Commands.pretty_requirement`，差分夹具 `remove-bare-requirement` 双 profile PASS，`spec/m7_add_remove_spec.cr` 增 1 例。

@@ -434,7 +434,7 @@ module Celerite
         # use bare symbols and are not quoted, so they are ignored here.
         quoted = line.scan(/"([^"]*)"|'([^']*)'/).map { |m| m[1]? || m[2]? }.compact
         label = quoted.first? || line
-        requirements = quoted.skip(1)
+        requirements = quoted.skip(1).map { |requirement| pretty_requirement(requirement) }
         display = requirements.empty? ? label : "#{label} (#{requirements.join(", ")})"
         stdout.puts "#{display} was removed."
       end
@@ -454,6 +454,20 @@ module Celerite
       null = IO::Memory.new
       install(null, stderr, rest, summary: false)
       0
+    end
+
+    # Reference `pretty_dependency` renders `Gem::Dependency#to_s`, whose
+    # requirement goes through `Gem::Requirement#to_s`: a bare version gains the
+    # `=` operator (`"2.8.1"` -> `= 2.8.1`) while explicit operators stay as
+    # written (`~> 2.8`, `>= 1`, `!= 2.0`).
+    private def self.pretty_requirement(value : String) : String
+      tokens = value.split(/\s+/).reject(&.empty?)
+      return value if tokens.empty?
+      if {"=", "!=", ">", "<", ">=", "<=", "~>"}.includes?(tokens[0])
+        tokens.join(" ")
+      else
+        "= #{tokens.join(" ")}"
+      end
     end
 
     private def self.build_timestamp : String
