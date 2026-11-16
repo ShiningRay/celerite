@@ -462,12 +462,12 @@ script/profile                    # refresh profile numbers
 # Stage acceptance summary (docs aligned to HEAD=35fa404 evidence baseline + M7(4)/(6) audit/fix + config_spec docs-only + M7(1)/(2) regression evidence, 2026-11-13)
 
 - Current HEAD (evidence baseline): 35fa404 (chain 044aacb->bba7949->6eee96a->37b4287->1882f53->517f69a->4c2404a->497e293->206d749->e77c6cb->a59d50f->94ec377->10e0a52->1eeaefb->35fa404 on main; source implementation evidence includes 37b4287 system-gem fallback + 8d20c17 clean semantics + 497e293 combo fixtures + 94ec377 redirect config-key typing + 10e0a52 plugin hook after-install alignment + 35fa404 stage summary refresh). Post-497e293 evidence: e77c6cb normalization/installed-tree docs alignment (M7(7)), 94ec377 M7(4) read-code audit + redirect typing fix, a59d50f M7(6) plugin command/hook audit (docs-only), 10e0a52 M7(6) plugin hook event-name alignment fix (post-install->after-install), 1eeaefb config_spec round-trip docs-only record, 35fa404 stage summary refresh. This stage summary is a docs-only refresh (SHA 以 git log 为准). task-2/task-3 remain in_progress; M7 checkboxes not checked.
-- Baselines (measured, unchanged): 4.0.24 133:126/7/0 (log C:\temp\celerite-diff-full-4.0.24-1882f53.log, 2026-11-12, HEAD=1882f53, FAIL 7 = class A racc/make, zero-regression by name vs 130:123/7/0); 2.7.2 133:126/6/1 (log C:\temp\celerite-diff-full-2.7.2-517f69a-rerun.log, 2026-11-13 00:24:35 CST, HEAD=517f69a, wrapper exit 1; FAIL 6 = class A racc/make + SKIP 1 dd-group deferral; zero-regression by name vs 130:123/6/1, 37b4287 confirmed); M7 spec subset 70/0/0/0 (ae8eafc 前次记录；本轮 2026-11-13 @4c2404a+worktree 重跑 70/0/0/0 EXIT 0, 17.91s，证据随 497e293 提交).
+- Baselines (measured, unchanged): 4.0.24 133:126/7/0 (log C:\temp\celerite-diff-full-4.0.24-1882f53.log, 2026-11-12, HEAD=1882f53, FAIL 7 = class A racc/make, zero-regression by name vs 130:123/7/0); 2.7.2 133:126/6/1 (log C:\temp\celerite-diff-full-2.7.2-517f69a-rerun.log, 2026-11-13 00:24:35 CST, HEAD=517f69a, wrapper exit 1; FAIL 6 = class A racc/make + SKIP 1 add-group deferral; zero-regression by name vs 130:123/6/1, 37b4287 confirmed); M7 spec subset 70/0/0/0 (ae8eafc 前次记录；本轮 2026-11-13 @4c2404a+worktree 重跑 70/0/0/0 EXIT 0, 17.91s，证据随 497e293 提交).
 - Recent fixture evidence (updated): issue-satisfied 1/0/0 (582b099); B3 nolock satisfied+missing 4/0/0 (0fabf9e); env/issue stable set 3/0/0 (34a8cad/a482329 证据); M7(3) spec 8/0/0/0 (既有); post-37b4287 新 fixture issue-satisfied/check-satisfied-ruby-nolock/list-satisfied-ruby-nolock 2.7.2 全量中均 PASS (exit=0)；list-path-only-group/multi-platform-install-ruby 双 profile 定向 2/0/0 EXIT 0 + 43 例 M7 回归集双 profile 43/0/0 EXIT 0（logs C:\temp\celerite-diff-m7combos-4024.log/-272.log/-reg-4024.log/-reg-272.log；fixtures 与证据随 497e293 提交）；show-info-installed 双 profile 1/0/0 EXIT 0（logs C:\temp\celerite-diff-show-info-installed.log/-272.log，本轮新增）；M7(1)/(2) 回归集 6 fixture 双 profile 6/0/0 EXIT 0（logs C:\temp\celerite-diff-m712-regression-4024.log/-272.log，本轮新增）。
 - M7(4): 94ec377/e77c6cb 审计与 redirect typing 修复为历史证据；本子项（e6f0086 WIP 收尾）将 timeout/ssl_client_cert 接线至 Downloader+HttpFetcher+调用点，redirect 超限抛 `DownloadError`（含限额/URL），proxy 环境变量改为 warn+continue、显式 config proxy/`ssl_client_key`/`legacy_index`/`full_index` 通过 `Commands.unsupported_setting_error` 在 install/update/lock/cache 快速失败。仍 GAP：proxy 路由、`mirror.<url>.fallback_timeout` 无 consumer、legacy/full index 未实现、`ssl_client_key` 未接线（仅 fast-fail）。详见本子项证据节与 `spec/m7_download_settings_spec.cr`。
-- M7(6) plugin evidence (a59d50f + 10e0a52): audit found installer event post-install != reference index layout fter-install -> reference-compatible plugin index hooks silently never fire. Fix 10e0a52 aligns EVENTS + call site; spec/plugin_hooks_spec.cr before 5 examples 1 failure (pin example) -> after 5/0/0/0 EXIT 0; canary+install 8 fixtures dual profile 8/0/0 EXIT 0; plugin fixtures post-fix 6/0/0 dual profile. 6 existing plugin fixtures cover install/uninstall/source/git/malformatted; third-party plugin/custom-source/hook-exception differential vs vendored partial reference infeasible (system reference gem feasible, not constructed this round).
+- M7(6) plugin evidence (a59d50f + 10e0a52): audit found installer event post-install != reference index layout after-install -> reference-compatible plugin index hooks silently never fire. Fix 10e0a52 aligns EVENTS + call site; spec/plugin_hooks_spec.cr before 5 examples 1 failure (pin example) -> after 5/0/0/0 EXIT 0; canary+install 8 fixtures dual profile 8/0/0 EXIT 0; plugin fixtures post-fix 6/0/0 dual profile. 6 existing plugin fixtures cover install/uninstall/source/git/malformatted; third-party plugin/custom-source/hook-exception differential vs vendored partial reference infeasible (system reference gem feasible, not constructed this round).
 - config_spec round-trip (1eeaefb, docs-only): crystal spec spec/config_spec.cr -> 9 examples, 1 failures, 0 errors, 0 pending, SPEC_EXIT=1; failing example L97/L113
-eloaded.all.should eq([] of String) got 6 gem.* keys. Root cause: global ~/.bundle/config 6 non-nil BUNDLE_GEM__* keys survive Config#all (@local.keys); environment-coupled, not logic error. nil-filter attempt ineffective (global keys non-nil); reverted per lead docs-only decision; ll semantics unchanged (include global keys); spec expectation unchanged.
+eloaded.all.should eq([] of String) got 6 gem.* keys. Root cause: global ~/.bundle/config 6 non-nil BUNDLE_GEM__* keys survive Config#all (@local.keys); environment-coupled, not logic error. nil-filter attempt ineffective (global keys non-nil); reverted per lead docs-only decision; all semantics unchanged (include global keys); spec expectation unchanged.
 - Unverified/blocked (未实跑/未闭环, 复现见正文对应条目): B1 Default Gem install/materialization (SSL_CTX_load_verify_locations EXIT 1) 与 diff/spec 全覆盖; B2 IRB-in-bundle/交互/console UX (Case A exec-irb 对齐、console UX 未对齐; reline/fiddle LoadError; Case C bundler gem 不可见且无 CELERITE_REFERENCE_BUNDLER_LIB); B3 nolock 其他 show/info 重解通知场景; gem 完整模板/选项/--help 显式 unsupported; env/issue 归一化外字段与稳定集外完整输出; ABI/平台/gnu-musl 矩阵; config_spec round-trip 本环境红（global config 污染，HOME 隔离/清理前不变）; M7 spec 子集本轮已重跑 70/0/0/0 EXIT 0；4.0.24/2.7.2 全量本轮未重跑（引用 1882f53/517f69a 实测）。bridge 不可用不得视为通过。
 - docs aligned to HEAD 35fa404 evidence baseline + 本 docs-only 刷新; no bin/shim/shard.lock committed. M7 checkboxes not checked.
 - Recommendation: stage acceptance summary/evidence boundaries synced at 35fa404 evidence baseline + M7(4)/(6) 审计/修复 + config_spec 环境耦合记录 + M7(1)/(2) 回归证据（全量计数引用 1882f53/517f69a 实测）; await lead adjudication for task-2/task-3 closure and task-4 start.
@@ -600,7 +600,7 @@ edirect (NUMBER_KEY, default 5): Downloader follows 301/302/303/307/308 uncondit
   - commands_install.cr L111/209/229/791; commands_surface.cr L113/994/1173/1522 (Downloader.new call sites passing ssl params).
 - **Gates**: crystal tool format --check src spec EXIT 0; crystal build --no-codegen src/cli.cr EXIT 0 (2 deprecation warnings); git diff --check EXIT 0; CR=0.
 - **Unverified/blocked**: runtime proof per-setting (no live network to exercise proxy/timeout/redirect/ssl_client_cert); fast-fail implementation not landed (docs-only disposition this round); full 135-fixture dual profile unrun (explicit + repro); bridge unavailable != pass; stock EVP_MD_size + shim local-only recorded; M7 checkboxes not checked; task-2/task-3 in_progress; no task-4/M8.
-- **Repro for follow-up implementation**: set BUNDLE_PROXY/BUNDLE_TIMEOUT/BUNDLE_SSL_CLIENT_CERT/BUNDLE_SSL_CLIENT_KEY/BUNDLE_MIRROR_..._FALLBACK_TIMEOUT/BUNDLE_REDIRECT and run undle install against a remote source; observe current behavior (ignored). Follow-up subitem should land real-effect or fast-fail + spec + differential affected-set regression.
+- **Repro for follow-up implementation**: set BUNDLE_PROXY/BUNDLE_TIMEOUT/BUNDLE_SSL_CLIENT_CERT/BUNDLE_SSL_CLIENT_KEY/BUNDLE_MIRROR_..._FALLBACK_TIMEOUT/BUNDLE_REDIRECT and run bundle install against a remote source; observe current behavior (ignored). Follow-up subitem should land real-effect or fast-fail + spec + differential affected-set regression.
 
 ## Subitem evidence: M7(6) plugin command/hook audit (2026-11-13, HEAD=94ec377, docs-only)
 
@@ -2259,3 +2259,42 @@ profile 门控：`Commands.preserve_lockfile_crlf?`（`commands.cr:320`）= `!(E
 - `--help`/`help <cmd>` 仍不渲染 manpage；`install --frozen --verbose` 参考会先打印 `Running `bundle install --frozen --verbose` with bundler 4.0.24` 再抛完整回溯报告，本实现只给折行后的 removed 文案。
 - `--redownload` 作为 `--force` 的 alias 仍被接受（与参考一致），只是不进入建议字典。
 - 未验证：`update`/`lock` 的完整 removed 面（它们没有 removed 文案，只验证了 `--frozen` 的建议）、`--all-platforms` 在 cache 上的行为（本机 `racc` 原生扩展撞 msys `0xC0000022`）、`Did you mean?` 对命令名（非开关）的建议、2.7.2 的 typo 建议是否与 4.0.24 完全一致（本轮只在 4.0.24 上逐条对拍 22 个 typo，2.7.2 只跑了 8 个差分夹具）。
+
+## 2026-11-16（M7(2)：`show`/`info` 的组过滤语义与 `Bundler.load` 先决顺序）
+
+### 参考语义
+- `bundler/cli/common.rb:68-96` `select_spec`：`Bundler.definition.specs` 里找不到请求的 gem 时，若它仍作为依赖存在（`current_dependencies.find { |dep| dep.name == name }`），参考抛 `GemNotFound`（status 7）并给出组信息：`Could not find gem '<name>', because it's in the <group(s)>, configured to be ignored.`；否则退回通用缺失消息。
+- `bundler/cli/common.rb:60-66` `verbalize_groups`：单组输出 `group 'development'`，多组输出 `groups 'development' and 'test'`（每组加单引号，末位前用 ` and `、其余用 `, `）。
+- `bundler/cli/show.rb:10-26` / `info.rb:10-30`：两条命令都先 `Bundler.load.lock`（把锁定 gems 全部物化）再调用 `select_spec`，因此「有锁定 gem 未安装」的错误先于组消息出现。
+
+### 修复前的两处缺陷
+1. 组过滤被 `bridge_available?` 门控（与 2026-11-16 早些时候的 `list` 修复同根因）：`BUNDLE_WITHOUT=development` 下 `celerite show thor` 退出 0 并打印路径，参考退出 7 且只打印两行组消息；`info thor` 同理。
+2. 缺失顺序不一致：锁定 gem 里有未安装项时，参考先报 `Could not find json_pure-2.8.1 in locally installed gems`，我方先报请求 gem 的组消息（同一工程的探针原文：REF `Could not find json_pure-2.8.1 in locally installed gems` / CEL `Could not find gem 'thor', because it's in the group 'development', configured to be ignored.`）。
+
+### 实现
+- `src/celerite/cli/commands.cr` 的 `show_info`：组解析改为无条件（`available_groups` + `requested_groups_for` + `filter_locked_specs_by_groups`，`rescue` 后退化为全量 spec 列表），不再依赖 `CELERITE_BRIDGE_SERVER`/`CELERITE_REFERENCE_BUNDLER_LIB`。
+- 新增 `Commands.verbalize_groups(groups : Array(String)) : String`（单组 `group 'x'`；多组 `groups 'a' and 'b'`），组消息经 `word_wrap(..., CLI.terminal_width)` 输出后返回 7。
+- 把「锁定 gems 均已安装」的检查提前到解析请求 gem 之前（对齐 `Bundler.load`）；`show` 无参且非 `--paths` 时仍先打印 `Gems included by the bundle:` 表头，与参考流式输出顺序一致。
+
+### oracle（首辅实测，4.0.24 与 2.7.2 同形）
+| 命令 | 环境 | exit | stderr |
+| --- | --- | --- | --- |
+| `show thor` | `BUNDLE_WITHOUT=development` | 7 | `Could not find gem 'thor', because it's in the group 'development', configured` / `to be ignored.` |
+| `info thor` | 同上 | 7 | 同上 |
+| `show thor --paths` | 同上 | 7 | 同上（无 stdout） |
+| `info thor --path` | 同上 | 7 | 同上 |
+| `show thor` | `BUNDLE_WITHOUT=development:test`，gem 在两组 | 7 | `... in the groups 'development' and 'test', configured` / `to be ignored.` |
+| `show json_pure` | `BUNDLE_WITHOUT=development` | 0 | 空（打印未过滤 gem 的路径） |
+| `show json_pure` | 无 `BUNDLE_WITHOUT`、gem 未安装 | 7 | `Could not find json_pure-2.8.1 in locally installed gems` |
+
+### 证据
+- `spec/m7_show_group_filter_spec.cr`（4 例）：单组 `show`、单组 `info`、多组 `groups ... and ...`、未过滤 gem 正例；`4 examples, 0 failures`。
+- 差分夹具 `fixtures/differential/show-group-ignored/`（`Gemfile` + `Gemfile.lock` + `bundle-preset/` 预装 json_pure + `extra/.bundle/config` 设 `BUNDLE_WITHOUT: "development"`，`command`=`show thor`）与 `show-missing-installed/`（未安装工程，`command`=`show json_pure`）：4.0.24 `2 passed, 0 failed`、2.7.2 `2 passed, 0 failed`。
+- 负对照：把组消息分支条件改成 `unless true` 并重建 `bin/celerite-nc.exe`，`script/differential show-group-ignored` 得 `FAIL show-group-ignored (show thor)`，原文 `> Could not find 'thor' in locally installed gems. Run \`bundle install\` to install missing gems.`；`edit` 还原后复跑 `PASS`，并删除负对照二进制。
+- 门禁：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen --link-flags <shim> src/cli.cr` EXIT 0（仅 2 条既有 `File.executable?` deprecation）；全量 `crystal spec --link-flags <shim>` **478 examples, 0 failures, 4 errors, 0 pending**（4 = 既有 `spec/git_source_spec.cr` 的 msys Low-IL）；`git diff --check` EXIT 0。
+
+### 已声明差异与未验证
+- 参考把宿主已安装 gems 纳入解析候选（同一工程 `show thor` 在无分组过滤时返回 `thor 1.5.0`，我方 1.3.2），此项仍未实现。
+- `BUNDLE_WITH` 与 `--only-group/--without-group` 之外的组合（例如同时 `BUNDLE_WITH` 与 `BUNDLE_WITHOUT`）未逐一对照。
+- `show --paths <被过滤 gem>` 已手工实测与参考逐字一致，但未单独加进差分夹具。
+- 全量 spec 在「复用旧 HOME」时曾出现一次 `spec/m7_build_args_spec.cr` 的假失败（`ARGV` 非空），换成新建 HOME 后 `478 examples, 0 failures`；该现象与历史记录一致，属测试环境状态残留，不是产品回归。

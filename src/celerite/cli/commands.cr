@@ -913,22 +913,28 @@ module Celerite
       # the listing/paths); only `check` raises ProductionError here.
       # `show`/`info` still honor BUNDLE_WITH/WITHOUT from config (the CLI
       # group switches were removed above, the config filter was not).
-      all_groups = bridge_available? ? lockfile_groups(definition, lockfile) : ["default"]
+      all_groups = available_groups(definition, lockfile)
       requested_groups = requested_groups_for(definition.config, all_groups, [] of String, [] of String)
       sorted_specs = lockfile.specs.sort_by(&.full_name)
-      locked_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, sorted_specs, requested_groups) : sorted_specs
+      locked_specs = begin
+        filter_locked_specs_by_groups(definition, lockfile, sorted_specs, requested_groups)
+      rescue
+        sorted_specs
+      end
       paths = rest.includes?("--paths")
+      # Reference `Bundler.load` materializes every locked gem (honoring the
+      # group filter) before `select_spec` runs, so a missing installed gem is
+      # reported before the requested gem is resolved. `bundle show` prints the
+      # listing header for the human-readable form only; `--paths` stays bare
+      # (see `bundle show --paths` in cli.rb / printer.rb).
+      missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
+      if missing.any?
+        stdout.puts "Gems included by the bundle:" if command == "show" && names.empty? && !paths
+        full_names = missing.map(&.full_name).join(", ")
+        stderr.puts "Could not find #{full_names} in locally installed gems"
+        return 7
+      end
       if command == "show" && names.empty?
-        # Reference `bundle show` prints the listing header for the human
-        # readable form only; `--paths` prints bare paths (see
-        # `bundle show --paths` in cli.rb / printer.rb).
-        missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
-        if missing.any?
-          stdout.puts "Gems included by the bundle:" unless paths
-          full_names = missing.map(&.full_name).join(", ")
-          stderr.puts "Could not find #{full_names} in locally installed gems"
-          return 7
-        end
         if paths
           if dir = bundler_gem_dir
             stdout.puts display_path(dir)
@@ -952,16 +958,16 @@ module Celerite
 
       spec = locked_specs.find(&.name.==(name))
       if spec.nil?
-        # Check if gem exists in lockfile but filtered out by group.
+        # Reference `Bundler::CLI::Common.select_spec`: when the gem is a
+        # dependency whose every group was filtered out it raises `GemNotFound`
+        # (exit 7) naming those groups instead of the generic missing message.
         full_spec = lockfile.specs.find(&.name.==(name))
         if full_spec
-          # Determine gem's groups
           groups = gem_groups_for(definition, name)
-          configured_without = definition.config["without"]
-          without_list = configured_without.is_a?(Array(String)) ? configured_without : configured_without.to_s.split(":").reject(&.empty?)
-          if groups.any? { |g| without_list.includes?(g) }
-            stderr.puts "Could not find gem '#{name}', because it's in the group '#{groups.first}', configured to be"
-            stderr.puts "ignored."
+          ignored = groups - requested_groups
+          unless groups.empty? || ignored.size != groups.size
+            message = "Could not find gem '#{name}', because it's in the #{verbalize_groups(groups)}, configured to be ignored."
+            stderr.puts word_wrap(message, CLI.terminal_width)
             return 7
           end
         end
@@ -1141,6 +1147,18 @@ module Celerite
     # ------------------------------------------------------------------
     # Group helpers for read-only commands
     # ------------------------------------------------------------------
+    # Reference `Bundler::CLI::Common.verbalize_groups`: quote every group,
+    # join all but the last with ", " and the last with " and ", and pluralize.
+    private def self.verbalize_groups(groups : Array(String)) : String
+      quoted = groups.map { |group| "'#{group}'" }
+      list = if quoted.size <= 1
+               quoted.join
+             else
+               quoted[0...-1].join(", ") + " and " + quoted[-1]
+             end
+      "#{quoted.size == 1 ? "group" : "groups"} #{list}"
+    end
+
     def self.lockfile_groups(definition : Definition, lockfile : Lockfile::Data) : Array(String)
       bridge = Bridge::Client.new
       begin
