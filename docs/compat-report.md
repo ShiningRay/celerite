@@ -2391,3 +2391,35 @@ profile 门控：`Commands.preserve_lockfile_crlf?`（`commands.cr:320`）= `!(E
 - `file://C:/...`（两斜杠）这种非规范源写法，参考可正常解析，我方 URI 归一化成 `file://C/...` 后在索引里找不到 gem，报 `... in rubygems repository file://C/... or installed locally`。规范写法 `file:///C:/...` 两侧一致；本轮未改 URI 归一化，登记为已声明差异。
 - 无 lockfile 时 `info` 的 metadata 依赖已安装 gemspec；只在临时 GEM_HOME 里造了占位 gemspec，未验证真实宿主 gem 的完整字段（宿主已装 `json_pure` 的手工探针输出与参考逐字一致）。
 - `show`/`info` 无 lockfile 会触发一次解析（与参考一致），未测大 Gemfile 的耗时差异。
+## 2026-11-16（M7(1)：Ruby 运行时校验无条件化、RUBY VERSION 写运行版本、platform 的版本操作数）
+
+参考锚点：`bundler/definition.rb:494-523`（`validate_runtime!` 拆 `validate_ruby!` + `validate_platforms!`，消息按 `:engine`/`:version`/`:engine_version`/`:patchlevel` 分支）；`bundler/cli/check.rb:16`、`bundler/cli/show.rb:15`、`bundler/cli/binstubs.rb:12` 均在校验后再做各自逻辑；`bundler/cli/platform.rb:11-15`（无锁文件时用 Gemfile 声明）与 `:35-40`（`rescue RubyVersionMismatch` 打印消息、exit 0）；`bundler/definition.rb:445-452` `locked_ruby_version`（新锁或 ruby 被更新时取 `Bundler::RubyVersion.system`，声明仍兼容则保留锁内旧值）；`bundler/ruby_version.rb:36`（`to_s`）、`:44-50`（4.x 只写 `ruby <ver>`，2.x 追加 `p<patchlevel>`）、`:67-69`（`single_version_string` = `to_s(gem_version)`）。
+
+oracle（4.0.24，两侧独立 HOME，`file:///` 夹具索引）：
+| 场景 | 参考 | 修复前本实现 |
+| --- | --- | --- |
+| `ruby "9.9.9"` + 已锁，`check` | exit 18，`Your Ruby version is 4.0.6, but your Gemfile specified 9.9.9` | exit 0，`The Gemfile's dependencies are satisfied` |
+| 同上，`show` | exit 18，同消息 | exit 0，打印 gems 列表 |
+| 同上，`binstubs --all thor` | exit 18，同消息 | exit 1，`Please pass a gem name` |
+| 无锁 + `ruby ">= 3.1"`，`platform` | exit 0，`* ruby 3.1` + 满足行 | exit 0，`* ruby >= 3.1` + 「未校验」行 |
+| 同上，`platform --ruby` | `ruby 3.1` | `ruby >= 3.1` |
+| 无锁 + `ruby ">= 3.1"`，`lock` 后的 `RUBY VERSION` | 4.0.24 `ruby 4.0.6`；2.7.2 `ruby 4.0.6p0` | `ruby >= 3.1`（两侧一致错） |
+
+修复前属装具门控：`Commands.validate_ruby_runtime!` 首行 `return unless bridge_available?`，而 `bridge_available?` 只认 `CELERITE_BRIDGE_SERVER`/`CELERITE_REFERENCE_BUNDLER_LIB` 两个环境变量，故普通 CLI 下所有命令都不校验运行时；`platform` 另有自己的 `bridge_available?` 分支打印「Ruby version requirement not validated (bridge unavailable); cannot confirm runtime match.」（参考无此行）；`binstubs` 的用法检查在校验之前；`Resolution#generated_lockfile` 直接把 Gemfile 的 ruby requirement 原文写进 `RUBY VERSION`，且 `RubyVersion#single_version_string` 返回 `@versions.first?`，导致出现 `ruby ruby 3.1` 形态。
+
+实现：
+- `Commands.validate_ruby_runtime!`：去掉 `bridge_available?` 门控；未显式传入 bridge 时尝试 `Bridge::Client.new`，构造失败即 `return`（降级构建跳过校验，不阻断历史可用命令），成功则求值 Gemfile + 取 `ruby_environment` 并 `RubyRuntime.validate_version!`；`RubyVersionMismatch` 原样上抛，其余异常 best-effort 吞掉。调用面覆盖 `check`/`show`/`fund`/`update`/`outdated`/`pristine`/`install`/`platform`/`binstubs`。
+- `Commands.platform`：删除「未校验」分支，按参考 rescue 语义输出 `Your current platform satisfies the Ruby version requirement.` 或 mismatch 消息（`ex.message || ""`，`String?` 需显式兜底），始终 exit 0；无锁文件时 `ruby_version` 由桥求值 Gemfile 声明并取 `requested.single_version_string`。
+- `Commands.binstubs`（`commands_install.cr`）：`Definition.build` + `validate_ruby_runtime!` 提到 `--all` 互斥与缺参判断之前，bad-ruby 下由 exit 1 usage 变 exit 18。
+- `Resolution#generated_lockfile`：`RUBY VERSION` 走 `ruby_section_value`（旧锁存在、非 `--ruby` 更新且 `ruby_declaration_matches_lock?` 时保留锁内值，否则 `system_ruby_string`；桥不可用时回退 Gemfile 声明）；`system_ruby_string` 输出 `ruby <运行版本>`，2.x 且 patchlevel 非空非 `-1` 追加 `p<patchlevel>`，非 CRuby 追加 ` (<engine> <version>)`。
+- `RubyVersion#single_version_string`：改为 `ruby #{gem_version}`，`gem_version` 用 `requirement_version` 取 requirement 的版本操作数（按空白切分取末段），`engine_gem_version` 同步复用；调用点去掉外层多余的 `ruby ` 前缀。
+
+证据：
+- spec：新增 `spec/m7_ruby_runtime_enforcement_spec.cr`（4 例：check/show/binstubs 抛 `RubyVersionMismatch` 且 `status_code == 18`、binstubs 无参时 stderr 为空、生成锁含 `RUBY VERSION\n  ruby <系统版本>\n` 且不含 Gemfile 原文）；`spec/m7_platform_spec.cr` 重写为断言参考行为（mismatch 消息、无满足行；无锁时 `* ruby 3.1` 与 `platform --ruby` = `ruby 3.1`）。两文件联跑 6 examples / 0 failures / 0 errors；全量 **496 examples, 0 failures, 4 errors**（4 = 既有 msys Low-IL 的 `git_source_spec.cr`）。
+- 差分：新增 `fixtures/differential/ruby-requirement-mismatch`（`check`，exit 18）与 `platform-gemfile-ruby`（`platform`，exit 0）；4.0.24 两条 PASS，2.7.2 两条同样 PASS；回归集 `ruby-requirement-mismatch platform-gemfile-ruby show-group-ignored show-no-lockfile-missing show-no-lockfile-installed install-fresh env-report` = 7 passed / 0 failed。
+- 负对照：在 `validate_ruby_runtime!` 首行插 `return # negative-control` 重建 `bin/celerite-nc.exe` → `FAIL ruby-requirement-mismatch (check)`，`exit code: reference=18 celerite=20`，stderr 变为 `Could not find <sandbox>/Gemfile.lock for resolution`（校验被跳过、流程落到无锁解析错误）；随后还原、重建真二进制并复跑 7/7 PASS。
+
+已声明差异与未验证：
+- 无 lockfile 时 `check` 仍 exit 20（`Could not find <abs>/Gemfile.lock for resolution`），参考会先解析并写锁后打印满足信息；这是本轮新发现的独立缺口，未修，记入 roadmap。
+- 桥不可用（降级构建）时运行时校验被跳过，不算通过；本机 Crystal 产物在沙箱内为 Low IL，与参考 Medium IL 的差异不影响本项结论。
+- Gemfile 带 `engine`/`engine_version`/`patchlevel` 的正例仍由既有 `ruby-engine-*`/`ruby-patchlevel-*` 夹具覆盖，本轮未重跑全量差分；`--ruby` 更新路径只做了手工探针（有锁保留、`--ruby` 改写），未加夹具。

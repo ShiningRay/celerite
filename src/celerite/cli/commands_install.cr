@@ -1098,6 +1098,10 @@ module Celerite
     def self.binstubs(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       names = rest.reject(&.starts_with?("--"))
       binstubs_remember_shebang(rest, stderr)
+      # Reference `cli/binstubs.rb:12`: the runtime is validated before the
+      # argument checks, so a mismatched Gemfile ruby wins over "pass a gem name".
+      definition = Definition.build
+      Commands.validate_ruby_runtime!(definition)
       if rest.includes?("--all") && !names.empty?
         stderr.puts "Cannot specify --all with specific gems"
         return 15
@@ -1107,7 +1111,6 @@ module Celerite
         return 1
       end
 
-      definition = Definition.build
       bridge = Bridge::Client.new
       begin
         abi = ruby_abi(bridge)

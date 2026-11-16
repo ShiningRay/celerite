@@ -72,16 +72,27 @@ module Celerite
       String.build { |io| to_s(io) }
     end
 
+    # Reference `bundler/ruby_version.rb:67-69`: `single_version_string` is
+    # `to_s(gem_version)`, i.e. the requirement's version operand (not its
+    # operator) prefixed with "ruby ". `ruby ">= 3.1"` therefore reports
+    # "ruby 3.1" in `bundle platform`, never "ruby >= 3.1".
     def single_version_string : String
-      @versions.first? || "0"
+      "ruby #{gem_version}"
     end
 
+    # Reference `bundler/ruby_version.rb:36`: `Gem::Requirement.create(versions.first)
+    # .requirements.first.last`.
     def gem_version : Gem::Version
-      Gem::Version.new(single_version_string)
+      Gem::Version.new(requirement_version(@versions.first? || "0"))
     end
 
     def engine_gem_version : Gem::Version
-      Gem::Version.new(@engine_versions.first? || single_version_string)
+      Gem::Version.new(requirement_version(@engine_versions.first? || "0"))
+    end
+
+    private def requirement_version(value : String) : String
+      parts = value.split(' ').reject(&.empty?)
+      parts.last? || value
     end
 
     # Returns [problem, expected, actual] comparing self (requested) vs other

@@ -1,0 +1,5 @@
+source "file:///@INDEX_DIR@"
+
+ruby "9.9.9"
+
+gem "json_pure", "2.8.1"

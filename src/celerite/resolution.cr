@@ -1367,23 +1367,54 @@ module Celerite
       end
 
       indent = profile_is_2_x? ? "   " : "  "
-      ruby_req = @evaluation.ruby
-      if @ruby_update
-        env = @bridge.not_nil!.ruby_environment
-        patch = env.patchlevel
-        ruby_req = if patch && !patch.empty?
-                     "#{env.ruby_version}p#{patch}"
-                   else
-                     env.ruby_version
-                   end
-      end
-      if ruby_req
-        sections << Lockfile::TypedSection.new(Lockfile::RubySection.new(ruby_req, indent))
+      if ruby_line = ruby_section_value
+        sections << Lockfile::TypedSection.new(Lockfile::RubySection.new(ruby_line, indent))
       end
 
       sections << Lockfile::TypedSection.new(Lockfile::BundledWithSection.new(@bridge_bundler_version, indent))
 
       Lockfile::Data.new(sections, @definition.lockfile_path, true)
+    end
+
+    # Reference `Definition#locked_ruby_version`: a fresh lockfile — or one whose
+    # Gemfile ruby declaration differs from the locked one, or that is being
+    # refreshed by `--ruby` — serializes the *running* Ruby
+    # (`Bundler::RubyVersion.system`), never the Gemfile requirement; an unchanged
+    # declaration keeps the value already in the lockfile.
+    private def ruby_section_value : String?
+      declared = @evaluation.ruby
+      return nil unless declared
+      existing = @definition.lockfile_exists? ? @definition.lockfile!.ruby_version : nil
+      if existing && !@ruby_update && ruby_declaration_matches_lock?(declared, existing)
+        return existing
+      end
+      system_ruby_string || declared
+    end
+
+    private def ruby_declaration_matches_lock?(declared : String, locked : String) : Bool
+      requested = Celerite::RubyVersion.parse_requirement(declared)
+      locked_version = Celerite::RubyVersion.from_string(locked)
+      return false unless requested && locked_version
+      requested.diff(locked_version).nil?
+    end
+
+    # `Bundler::RubyVersion.system#to_s`: 4.x prints `ruby <version>` (plus the
+    # engine tuple for non-CRuby engines), 2.x appends `p<patchlevel>`.
+    private def system_ruby_string : String?
+      env = @bridge.try(&.ruby_environment)
+      return nil unless env
+      String.build do |io|
+        io << "ruby " << env.ruby_version
+        if profile_is_2_x?
+          patch = env.patchlevel
+          if patch && !patch.empty? && patch != "-1"
+            io << 'p' << patch
+          end
+        end
+        unless env.engine == "ruby"
+          io << " (" << env.engine << ' ' << (env.engine_version.empty? ? env.ruby_version : env.engine_version) << ')'
+        end
+      end
     end
 
     # Pinned behavior: a NEW lockfile gets CHECKSUMS when the profile defaults

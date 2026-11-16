@@ -534,6 +534,24 @@ module Celerite
 
       lockfile = definition.lockfile_exists? ? definition.lockfile! : nil
       ruby_version = lockfile.try(&.ruby_version).try(&.gsub(/p\d+\Z/, ""))
+      # Reference `platform.rb:11-15`: without a lockfile the value comes from
+      # `Bundler.definition.ruby_version#single_version_string` (the Gemfile
+      # declaration), so a project that was never locked still reports it.
+      if ruby_version.nil?
+        begin
+          bridge = Bridge::Client.new
+          begin
+            evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+            if requested = requested_ruby_version(evaluation)
+              ruby_version = requested.single_version_string
+            end
+          ensure
+            bridge.close
+          end
+        rescue
+          nil
+        end
+      end
 
       output = [] of String
       if parseable
@@ -553,39 +571,14 @@ module Celerite
         ruby_validation_attempted = false
         ruby_validation_skipped = false
         if ruby_version
-          # Runtime validation: Bundler prints a mismatch message but exits 0
-          # for platform when the Gemfile ruby requirement does not match.
-          if bridge_available?
-            ruby_validation_attempted = true
-            begin
-              bridge = Bridge::Client.new
-              begin
-                evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
-                if requested = requested_ruby_version(evaluation)
-                  env = bridge.ruby_environment
-                  if diff = RubyRuntime.diff_version!(requested, env)
-                    system = Celerite::RubyVersion.system_from_env(env)
-                    mismatch_message = Celerite::RubyVersion.mismatch_message(diff[0], diff[1], diff[2], requested, system)
-                  end
-                end
-              rescue
-                ruby_validation_skipped = true
-              ensure
-                bridge.close
-              end
-            rescue
-              ruby_validation_skipped = true
-            end
-          else
-            ruby_validation_skipped = true
-          end
           output << "Your Gemfile specifies a Ruby version requirement:\n* #{ruby_version}"
-          if mismatch_message
-            output << mismatch_message
-          elsif ruby_validation_skipped
-            output << "Ruby version requirement not validated (bridge unavailable); cannot confirm runtime match."
-          else
+          # Reference `platform.rb:35-40`: a mismatch is printed but does not
+          # fail the command.
+          begin
+            validate_ruby_runtime!(definition)
             output << "Your current platform satisfies the Ruby version requirement."
+          rescue ex : RubyVersionMismatch
+            output << (ex.message || "")
           end
         else
           output << "Your Gemfile does not specify a Ruby version requirement."
@@ -598,9 +591,19 @@ module Celerite
 
     # Validates Gemfile ruby requirement against the running Ruby when
     # evaluation is available (Bundler validate_runtime!/validate_ruby!).
+    # The reference *is* Ruby, so it always validates. Celerite needs a Ruby
+    # bridge to learn the running interpreter: when no bridge can be located or
+    # started, the check is skipped (degraded build), and a genuine version
+    # mismatch always propagates as RubyVersionMismatch.
     def self.validate_ruby_runtime!(definition : Definition, bridge : Bridge::Client? = nil) : Nil
-      return unless bridge_available?
-      client = bridge || Bridge::Client.new
+      client = bridge
+      unless client
+        begin
+          client = Bridge::Client.new
+        rescue
+          return
+        end
+      end
       begin
         evaluation = client.evaluate_gemfile(definition.gemfile_path)
         requested = requested_ruby_version(evaluation)
@@ -610,7 +613,7 @@ module Celerite
       ensure
         client.close if bridge.nil?
       end
-    rescue ex : Error
+    rescue ex : RubyVersionMismatch
       raise ex
     rescue
       # Best-effort: if evaluation/env is unavailable, do not block commands
