@@ -203,8 +203,27 @@ end
 # reference equivalent is `Bundler.rubygems.loaded_specs` /
 # `Gem::Specification.to_a`. Errors are deliberately not rescued: a broken
 # gem environment must surface, not be silently treated as empty.
-def op_installed_specs(_payload)
-  Gem::Specification.to_a.map do |spec|
+def op_installed_specs(payload)
+  # `dir` lets the caller add the gems installed into this project's bundle path
+  # (`<install root>/specifications`). Bundler's `sources.local_only!` sees them
+  # because `bundle` rewires Gem.path to the bundle path; a bare bridge process
+  # does not, so we read that directory explicitly.
+  extra_dir = payload && payload["dir"]
+  # Ruby's Dir.glob on Windows treats a backslash as an escape, so a native
+  # path never matches: normalize the separators first.
+  extra_dir = extra_dir.tr("\\", "/") if extra_dir
+  entries = Gem::Specification.to_a.map { |spec| [spec, nil] }
+  if extra_dir && File.directory?(extra_dir)
+    Dir[File.join(extra_dir, "*.gemspec")].sort.each do |path|
+      spec = begin
+        Gem::Specification.load(path)
+      rescue StandardError, ScriptError
+        nil
+      end
+      entries << [spec, extra_dir] if spec
+    end
+  end
+  entries.uniq { |(spec, _root)| spec.full_name }.map do |(spec, root)|
     {
       "name" => spec.name,
       "version" => spec.version.to_s,
@@ -214,7 +233,8 @@ def op_installed_specs(_payload)
       },
       "required_ruby_version" => spec.required_ruby_version.to_s,
       "required_rubygems_version" => spec.required_rubygems_version.to_s,
-      "full_gem_path" => spec.full_gem_path,
+      "full_gem_path" => root ? File.join(File.dirname(root), "gems", spec.full_name) : spec.full_gem_path,
+      "from_dir" => root ? true : false,
     }
   end
 end

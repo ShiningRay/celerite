@@ -496,18 +496,30 @@ module Celerite
     # `<Gemfile dir>/vendor/cache/*.gem`. file:// sources count as local, so
     # their index is still consulted (oracle: `--local` + file:// resolves
     # through the index).
+    # `<install root>/specifications` of this project's bundle path, when it
+    # exists: gems installed there are invisible to the bare bridge's RubyGems,
+    # while Bundler's local-only sources see them because `bundle` rewires
+    # Gem.path to the bundle path.
+    private def project_spec_dir : String?
+      env = @bridge.not_nil!.ruby_environment
+      root = InstallPaths.gem_root(@definition.config, env.default_gem_dir, ruby_abi_for_git)
+      dir = File.join(root, "specifications")
+      Dir.exists?(dir) ? dir : nil
+    end
+
     private def local_index_specs(name : String) : Array(Resolver::IndexSpec)
       installed = @installed_local_specs ||= begin
         list = [] of Resolver::IndexSpec
-        payload = @bridge.not_nil!.installed_specs
+        payload = @bridge.not_nil!.installed_specs(project_spec_dir)
         (payload.as_a? || [] of JSON::Any).each do |entry|
           spec_name = entry["name"]?.try(&.as_s?) || next
           version = entry["version"]?.try(&.as_s?) || next
           # `--local` means "gems installed for this project": when GEM_HOME is
           # set, only specs living under it count. The host's user/system gem
           # dirs can carry newer copies (json_pure 2.8.1 in the test host) that
-          # the reference oracle never sees in an isolated GEM_HOME.
-          if home = ENV["GEM_HOME"]?
+          # the reference oracle never sees in an isolated GEM_HOME.  Specs read
+          # from the project's own bundle path are always project gems.
+          if !entry["from_dir"]?.try(&.as_bool?) && (home = ENV["GEM_HOME"]?)
             unless home.empty?
               home_prefix = home.gsub('\\', "/").chomp("/") + "/"
               gem_path = (entry["full_gem_path"]?.try(&.as_s?) || "").gsub('\\', "/")
@@ -570,14 +582,14 @@ module Celerite
 
     private def index_specs_for(name : String) : Array(Resolver::IndexSpec)
       local = local_index_specs(name)
-      if @local_only || (@prefer_local && !local.empty?)
-        # `--local` never consults an index: the reference's local! mode only
-        # looks at installed gems and vendor/cache, even when the source is a
-        # file:// path (verified: exit 7 when the gem is not installed).
-        return local unless local.empty?
-        raise GemNotFoundError.new(
-          "Could not find gem '#{name}' in locally installed gems."
-        )
+      if @local_only
+        # `local_only!` sources know nothing beyond the gems installed for this
+        # bundle: an unknown name is left for the resolver, which reports
+        # "Could not find gem '<name> (<req>)' in locally installed gems."
+        return local
+      end
+      if @prefer_local && !local.empty?
+        return local
       end
       index_specs_from_remote(name)
     end
@@ -894,9 +906,17 @@ module Celerite
                             unlock : Bool | Array(String) = false,
                             spec_fetcher : (String -> Array(Resolver::IndexSpec))? = nil) : Resolver::ResolutionSource
       env = @bridge.not_nil!.ruby_environment
+      # `Source::Rubygems#to_s` (4.0.24 lib/bundler/source/rubygems.rb:122-136):
+      # with `@allow_remote` off the source only describes installed gems, which
+      # is what `fund`/`clean`/`binstubs` report for a missing gem.
+      description = if @local_only
+                      "locally installed gems"
+                    else
+                      "rubygems repository #{primary_remote} or installed locally"
+                    end
       source = Resolver::ResolutionSource.new(
         File.basename(@definition.gemfile_path),
-        "rubygems repository #{primary_remote} or installed locally",
+        description,
         index,
         locked_index,
         base_requirements,

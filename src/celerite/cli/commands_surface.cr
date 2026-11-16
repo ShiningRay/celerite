@@ -850,7 +850,10 @@ module Celerite
     def self.fund(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       definition = Definition.build
       Commands.validate_ruby_runtime!(definition)
-      lockfile = definition.lockfile!
+      # `fund.rb:14-27` walks `Bundler.definition` (dependencies_for + specs),
+      # which resolves from the Gemfile when the lockfile is missing.  The
+      # sources stay local-only: fund never fetches the index.
+      lockfile = materialize_lockfile(definition, stdout, local_only: true)
       bridge = Bridge::Client.new
       begin
         evaluation = bridge.evaluate_gemfile(definition.gemfile_path)

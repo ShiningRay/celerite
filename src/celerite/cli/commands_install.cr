@@ -693,7 +693,10 @@ module Celerite
         end
         abi = ruby_abi(bridge)
         install_root = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi))
-        lockfile = definition.lockfile!
+        # `Bundler.load.clean` goes through `Bundler.definition`, which resolves
+        # the Gemfile when there is no lockfile yet (cli/clean.rb:14).  The
+        # sources stay local-only: clean never fetches the index.
+        lockfile = materialize_lockfile(definition, stdout, local_only: true)
         # specs_to_keep (pinned `Bundler::Runtime#clean`): lockfile specs plus
         # the running bundler itself (not installed via Source::Rubygems here).
         # The reference keeps the locked specs for both 4.0.x and 2.7.x; the
@@ -1095,6 +1098,17 @@ module Celerite
     # ------------------------------------------------------------------
     # binstubs
     # ------------------------------------------------------------------
+    # Runtime dependencies of a cached gemspec in declaration order; the
+    # binstubs "no executables" hint walks them (installer.rb:106-108 iterates
+    # `spec.runtime_dependencies`).  `read_gem_spec` already serializes only
+    # runtime dependencies (assets/bridge/server.rb:212).
+    private def self.each_runtime_dependency(info : Bridge::GemSpecInfo, & : String ->)
+      (info.dependencies || [] of JSON::Any).each do |raw|
+        next unless name = raw["name"]?.try(&.as_s?)
+        yield name
+      end
+    end
+
     def self.binstubs(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       names = rest.reject(&.starts_with?("--"))
       binstubs_remember_shebang(rest, stderr)
@@ -1107,7 +1121,9 @@ module Celerite
         return 15
       end
       if names.empty? && !rest.includes?("--all")
-        stderr.puts "Please pass a gem name on the command line, e.g. bundle binstubs rails"
+        # cli/binstubs.rb:28-30: `Bundler.ui.error "`bundle binstubs` needs at
+        # least one gem to run."` and exit 1.
+        stderr.puts "`bundle binstubs` needs at least one gem to run."
         return 1
       end
 
@@ -1122,29 +1138,62 @@ module Celerite
 
         all = rest.includes?("--all")
         force = rest.includes?("--force")
-        storm_specs = definition.lockfile!.specs
-        if all
-          stderr.puts "Bundler itself does not use binstubs because its version is selected by RubyGems"
-        end
-        names_list = all ? storm_specs.map(&.name) : names
-        skipped = false
+        custom_shebang = flag_value(rest, "--shebang")
+        # `Bundler.definition.specs` resolves the Gemfile when the lockfile is
+        # missing (cli/binstubs.rb:12-26), so binstubs work before the first
+        # install.  Nothing is written back to the lockfile, and the sources are
+        # local-only (binstubs never fetches the index).
+        specs = materialize_lockfile(definition, stdout, local_only: true).specs
+        # `--all` walks `definition.specs`, which always carries the running
+        # bundler even when the lockfile has no `bundler` line.
+        names_list = all ? (["bundler"] + specs.map(&.name)) : names
         names_list.each do |name|
-          spec = storm_specs.find(&.name.==(name))
+          # installer.rb:98-102: RubyGems owns the bundler stub.
+          if name == "bundler"
+            stderr.puts "Bundler itself does not use binstubs because its version is selected by RubyGems"
+            next
+          end
+          spec = specs.find(&.name.==(name))
           if spec.nil?
-            stderr.puts "Could not find gem '#{name}' in the bundle."
+            # cli/common.rb:113-123: `gem_not_found_message(name, specs)`.
+            stderr.puts gem_not_found_message_for(name, specs.map(&.name))
             return 7
           end
           gem_file = File.join(install_root, "cache", "#{spec.full_name}.gem")
           next unless File.file?(gem_file)
           info = Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(gem_file).to_json)
+          # installer.rb:104-118: an explicit `binstubs GEM` without executables
+          # points at a dependency that has some, else it reports the gem.
+          if !all && info.executables.empty?
+            suggestions = [] of Tuple(String, Array(String))
+            each_runtime_dependency(info) do |dep_name|
+              dep_spec = specs.find(&.name.==(dep_name))
+              next if dep_spec.nil?
+              dep_file = File.join(install_root, "cache", "#{dep_spec.full_name}.gem")
+              next unless File.file?(dep_file)
+              dep_info = Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(dep_file).to_json)
+              next if dep_info.executables.empty?
+              suggestions << {dep_name, dep_info.executables}
+            end
+            if suggestions.empty?
+              stderr.puts "There are no executables for the gem #{spec.name}."
+            else
+              stderr.puts "#{spec.name} has no executables, but you may want one from a gem it depends on."
+              suggestions.each { |dep_name, bins| stderr.puts "  #{dep_name} has: #{bins.join(", ")}" }
+            end
+            next
+          end
           gem_dir = File.join(install_root, "gems", spec.full_name)
           bindir = info.bindir.empty? ? "bin" : info.bindir
-          custom_shebang = flag_value(rest, "--shebang")
+          exists = [] of String
           info.executables.each do |executable|
             source = File.join(gem_dir, bindir, executable)
             next unless File.file?(source)
             stub = File.join(target, executable)
-            next if File.file?(stub) && !force
+            if File.file?(stub) && !force
+              exists << executable
+              next
+            end
             content = File.read(source)
             shebang = if custom_shebang
                         "#!/usr/bin/env #{custom_shebang}\n"
@@ -1157,8 +1206,17 @@ module Celerite
               File.write(stub + ".cmd", "@ruby -x \"%~f0\" %*\n@exit /b %ERRORLEVEL%\n\n" + shebang + content)
             end
           end
+          # installer.rb:151-163: only the explicit form reports skipped stubs.
+          unless all || exists.empty?
+            stderr.puts case exists.size
+            when 1 then "Skipped #{exists[0]} since it already exists."
+            when 2 then "Skipped #{exists.join(" and ")} since they already exist."
+            else
+              "Skipped #{exists[0...-1].join(", ")} and #{exists.last} since they already exist."
+            end
+            stderr.puts "If you want to overwrite skipped stubs, use --force."
+          end
         end
-        stdout.puts "If you want to overwrite skipped stubs, use --force." if skipped
         0
       ensure
         bridge.close

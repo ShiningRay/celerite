@@ -208,8 +208,15 @@ module Celerite
 
       # Every gem visible to the bridge interpreter's RubyGems (system dirs
       # plus GEM_HOME/GEM_PATH). Backs `install --local` / `--prefer-local`.
-      def installed_specs : JSON::Any
-        request("installed_specs")
+      # `spec_dir` adds the project's `<install root>/specifications` directory:
+      # gems installed into the bundle path are invisible to a bare RubyGems
+      # process, while Bundler's local-only sources do see them.
+      def installed_specs(spec_dir : String? = nil) : JSON::Any
+        if dir = spec_dir
+          request("installed_specs", {"dir" => dir})
+        else
+          request("installed_specs")
+        end
       end
 
       def read_gem_spec(path : String) : JSON::Any

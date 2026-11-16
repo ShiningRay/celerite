@@ -809,6 +809,55 @@ module Celerite
       end
     end
 
+    # `Bundler.definition.specs` materializes the definition from the Gemfile and
+    # resolves on demand, so the commands built on `Bundler.definition` /
+    # `Bundler.load` work before the first install (`bundle binstubs`,
+    # `bundle clean`, `bundle fund`).  The lockfile is deliberately not written
+    # here: only `check` and `install` persist it (cli/check.rb:33
+    # `definition.lock(true)`); the rest read the freshly resolved specs.
+    #
+    # `local_only` mirrors the state of Bundler's sources for these commands:
+    # only `check` (`definition.check!` → `resolve_remotely!`) and `install`
+    # (`setup_domain!` → `sources.remote!`) ever enable remote lookups.  Every
+    # other command resolves against `sources.local_only!`, so a missing gem is
+    # reported as "in locally installed gems" and no index is fetched.
+    private def self.materialize_lockfile(definition : Definition, progress : IO? = nil, local_only : Bool = false) : Lockfile::Data
+      return definition.lockfile! if definition.lockfile_exists?
+      resolution = Resolution.new(definition, false)
+      begin
+        resolution.progress = progress if progress
+        resolution.local_only = local_only
+        resolution.resolve!
+        resolution.generated_lockfile
+      ensure
+        resolution.close
+      end
+    end
+
+    # Reference `cli/common.rb:113-123 gem_not_found_message`: the plain name
+    # plus a DidYouMean suggestion over the names that were available.  Exact
+    # (lower-cased) alternatives are suggested verbatim; otherwise the spell
+    # checker proposes up to three names joined the way `word_list` does.
+    private def self.gem_not_found_message_for(name : String, alternatives : Array(String)) : String
+      message = "Could not find gem '#{name}'."
+      lowered = name.downcase
+      if alternatives.includes?(lowered)
+        message += "\nDid you mean '#{lowered}'?"
+      else
+        suggestions = Suggestions.for(name, alternatives)
+        unless suggestions.empty?
+          quoted = suggestions.map { |suggestion| "'#{suggestion}'" }
+          list = if quoted.size == 1
+                   quoted[0]
+                 else
+                   "#{quoted[0...-1].join(", ")} or #{quoted.last}"
+                 end
+          message += "\nDid you mean #{list}?"
+        end
+      end
+      message
+    end
+
     private def self.run_check(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       definition = Definition.build
       validate_ruby_runtime!(definition)

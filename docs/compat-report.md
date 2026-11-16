@@ -2463,3 +2463,19 @@ oracle（4.0.24，两侧独立 HOME，`file:///` 夹具索引）：
 已声明差异（未复刻）：参考在 `--verbose` 下还会输出调试层（`Resolving dependencies because there's no lockfile`、`Using a local server, bundler won't use the CompactIndex API`、`Using bundler 4.0.24`、`N:  <name> (<version>) from <path>`、`Writing lockfile to <path>`、`Found no changes, using resolution from the lockfile`），异常时打印完整 Ruby 回溯；这些都不在本实现范围内，因此 verbose 形态除 `init-verbose` 外不设差分夹具。
 
 附带修复：`bundle remove` 的 requirement 渲染改按参考 `pretty_dependency`（即 `Gem::Dependency#to_s` / `Gem::Requirement#to_s`），裸版本 `"2.8.1"` 现输出 `(= 2.8.1)` 而不是 `(2.8.1)`；新增 `Commands.pretty_requirement`，差分夹具 `remove-bare-requirement` 双 profile PASS，`spec/m7_add_remove_spec.cr` 增 1 例。
+
+## 2026-11-16（M7(2)/M7(3)：无 lockfile 的 `fund`/`clean`/`binstubs` 走 local-only 解析）
+
+参考里只有 `check`（`bundler-4.0.24/lib/bundler/definition.rb:170-180`：`resolve_remotely! if @dependency_changes` 之后 `sources.local_only!`）与 `install` 会访问索引；`binstubs`（`cli/binstubs.rb:12-26`）、`clean`（`cli/clean.rb:11-14`）、`fund`（`cli/fund.rb:14-27`）都只走 `Definition#materialize → resolve`，从不 fetch。因此无 lockfile 时它们对缺失 gem 报 `Could not find gem '<name> (<req>)' in locally installed gems.`（`resolver.rb` 的 `raise_not_found!` 拼 `pretty_dependency`，`source/rubygems.rb:122-136` 在 `@allow_remote = false` 时把 source 呈现为 `locally installed gems`），stdout 只有 `Resolving dependencies...` 一行。
+
+修复前本实现在这三条命令上无锁即 `Could not find <path>/Gemfile.lock for resolution`（exit 20）。
+
+实现：
+- `src/celerite/cli/commands.cr`：新增 `materialize_lockfile(definition, progress = nil, local_only = false)`，无锁时用 `Resolution` 现场解析、返回内存锁、不落盘；`clean`/`binstubs`/`fund` 均传 `local_only: true`。
+- `src/celerite/resolution.cr`：`index_specs_for` 在 `@local_only` 下直接返回本地候选（空也返回，交给 resolver 出参考消息，而不是提前抛 `GemNotFoundError`）；`make_source` 按 `@local_only` 输出 `locally installed gems`；`local_index_specs` 额外把项目 bundle path 的 `specifications` 目录交给桥（`project_spec_dir`），并对 `from_dir` 条目跳过 `GEM_HOME` 前缀过滤。
+- `assets/bridge/server.rb`：`op_installed_specs` 接受 `dir`，逐 gemspec `Gem::Specification.load` 追加（标 `from_dir`、按该树推出 `full_gem_path`），`uniq { full_name }`；目录先 `tr("\\", "/")` 再 `Dir.glob`（Ruby 在 Windows 把反斜杠当转义）。
+- `src/celerite/cli/commands_install.cr`：`binstubs` 文案按参考补齐（无参 `` `bundle binstubs` needs at least one gem to run. ``；`bundler` 走 `Bundler itself does not use binstubs because its version is selected by RubyGems` 且 `--all` 时也覆盖；`There are no executables for the gem <name>.` 与依赖提示；`Skipped <a> since it already exists.` 等合并文案 + `If you want to overwrite skipped stubs, use --force.`）；`remove` 之外不再有第二套 requirement 渲染。
+
+证据：无锁 6 场景（`fund`/`clean --dry-run`/`binstubs` × 已安装/未安装）stdout、stderr、退出码与参考逐字相同；binstubs 文案矩阵 5 例与重复写桩 4 例全 same；`spec/m7_no_lockfile_commands_spec.cr` 4 例 0 失败；差分夹具 `fund-no-lockfile`/`clean-no-lockfile` 在 4.0.24（2 passed）与 2.7.2（含回归 4 passed）均 PASS；负对照把 `fund` 的 `local_only` 改回 `false` 时该 spec 失败（`Fetching source index from file:///…/gem-index/` 出现），恢复后 4/0。
+
+已声明差异：`check` 在 install 之后仍会打印 `Fetching source index …`（与参考一致，不属本节范围）；参考在 `--verbose` 下附带的调试层不复刻。
