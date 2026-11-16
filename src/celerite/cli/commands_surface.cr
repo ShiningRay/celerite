@@ -40,22 +40,26 @@ module Celerite
         end
       end
       conservative = rest.includes?("--conservative")
-      # --group: only deps of these groups are unlocked (parity with
-      # `update --group dev`).
-      only_group = flag_value(rest, "--group") || flag_value(rest, "-g")
-      gems = rest.reject(&.starts_with?("--"))
-      all = gems.present? == false
-      # --conservative: the named gems only move as far as other requirements
-      # allow; the reference implementation still prints the full progress.
-      gems = gems.reject(&.==("conservative"))
+      # `Bundler::CLI::Update#run` derives the update scope from Thor's parsed
+      # inputs: positional gem names, `--source` values, `--group` values,
+      # `--ruby` and `--bundler`. Only when all of them are empty is it a full
+      # update; `--all` alongside any of them is rejected.
+      gems = subcommand_arguments(rest, UPDATE_SWITCH_FLAGS, UPDATE_SWITCH_VALUES)
+      sources = flag_values(rest, "--source")
+      group_values = flag_values(rest, "--group") + flag_values(rest, "-g")
+      ruby_flag = rest.includes?("--ruby")
+      update_bundler = flag_value(rest, "--bundler")
+      all_flag = rest.includes?("--all")
+      full_update = gems.empty? && sources.empty? && group_values.empty? && !ruby_flag && !update_bundler
+      if !full_update && all_flag
+        stderr.puts "Cannot specify --all along with specific options."
+        return 15
+      end
 
       # parity: bare `bundle update` works but deprecates on stderr on 4.x
       # (2.7.x never deprecates the bare form -observed oracle diff).
-      # `--ruby` and explicit selections/`--all` suppress the deprecation.
-      has_gems = gems.present?
       bridge_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
-      if all && !rest.includes?("--all") && !bridge_version.starts_with?("2.") &&
-         !rest.includes?("--ruby") && !rest.includes?("--group") && !rest.includes?("-g")
+      if full_update && !all_flag && !bridge_version.starts_with?("2.")
         stderr.puts "[DEPRECATED] Pass --all to `bundle update` to update everything"
       end
 
@@ -72,36 +76,46 @@ module Celerite
         return 1
       end
 
-      unless definition.lockfile_exists?
-        stderr.puts "This Gemfile does not contain a lockfile. Run `bundle install` first."
-        return 1
+      # `cli/update.rb` L26-38: a scoped update needs an installed bundle
+      # (status 22) and every named gem must already be in the lockfile
+      # (status 7, `CLI::Common.ensure_all_gems_in_lockfile!`). A full update
+      # may run without a lockfile at all.
+      if !full_update
+        unless definition.lockfile_exists?
+          raise GemfileLockNotFound.new("This Bundle hasn't been installed yet. Run `bundle install` to update and install the bundled gems.")
+        end
+        locked_names = definition.lockfile!.specs.map(&.name)
+        gems.each do |gem_name|
+          unless locked_names.includes?(gem_name)
+            raise GemNotFoundError.new("Could not find gem '#{gem_name}'.")
+          end
+        end
       end
 
       # --source=NAME: only gems from the named Gemfile source unlock; an
       # unknown name matches nothing (reference probe: resolve, then
       # "Bundle updated!" with no installs and no stayed-same report).
-      source_restricted = !flag_value(rest, "--source").nil?
+      source_restricted = !sources.empty?
       bridge = Bridge::Client.new
       lock : ProcessLock? = nil
       begin
-        unlock : Bool | Array(String) = all ? true : gems
-        if source_name = flag_value(rest, "--source")
+        # `cli/update.rb` L33-35: `--group` widens the explicit gem list with
+        # every dependency of the requested groups.
+        if !group_values.empty?
+          evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+          group_gems = evaluation.dependencies.select do |dep|
+            dep.groups.any? { |g| group_values.includes?(g) }
+          end.map(&.name)
+          gems = (gems + group_gems).uniq
+        end
+        unlock : Bool | Array(String) = full_update ? true : gems
+        if source_name = sources.first?
           evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
           matched = evaluation.sources.any? do |s|
             s.name == source_name || s.remote == source_name ||
               (s.remotes || [] of String).includes?(source_name)
           end
           unlock = matched ? unlock : ([] of String)
-        end
-        if only_group
-          # Restrict the update set to the requested groups (parity with
-          # `update --group dev`); ungrouped top-level deps are kept.
-          evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
-          wanted = only_group.gsub(/\s/, ",").split(",").map(&.strip)
-          group_deps = evaluation.dependencies.select do |dep|
-            dep.groups.any? { |g| wanted.includes?(g) } || dep.groups.empty?
-          end
-          unlock = (all || only_group) ? group_deps.map(&.name) : gems
         end
         resolution = Resolution.new(definition, unlock, bridge)
         resolution.progress = stdout
@@ -141,10 +155,11 @@ module Celerite
 
         specs = resolution.resolve!
 
-        # Reference prints "Resolving dependencies..." twice for named gems
-        # (a conservative pre-resolve, then the real resolve)
-        if !all && !gems.empty? && !source_restricted
-          stdout.puts "Resolving dependencies..." if conservative || !conservative
+        # Reference prints "Resolving dependencies..." twice whenever a scoped
+        # selection is unlocked (a conservative pre-resolve, then the real
+        # resolve); `--group` widens into the same selection.
+        if !gems.empty? && !source_restricted
+          stdout.puts "Resolving dependencies..."
         end
 
         pending = specs.sort_by(&.full_name).select(&.source_type.==("GEM")).reject do |spec|
@@ -189,13 +204,24 @@ module Celerite
           Lockfile.write(definition.lockfile_path, text, preserve_crlf: preserve_lockfile_crlf?)
         end
 
-        # parity: specific-gem updates report unchanged versions on stderr
-        unless all || source_restricted
-          resolved_names = specs.map(&.name).to_set
-          gems.each do |gem|
-            next if resolved_names.includes?(gem) && pending.any? { |s| s.name == gem }
-            next unless resolved_names.includes?(gem)
-            stderr.puts "Bundler attempted to update #{gem} but its version stayed the same"
+        # `cli/update.rb` L54-72: for every updated gem compare the freshly
+        # resolved version with the locked one - regressions are noted and an
+        # unchanged version is reported on stderr. A `--source` restriction
+        # narrows the definition to that source, so gems outside it have no
+        # resolved spec and stay silent (oracle: `update --source nope
+        # json_pure` prints nothing).
+        unless gems.empty? || source_restricted
+          gems.each do |gem_name|
+            locked_version = previous_versions[gem_name]?
+            next unless locked_version
+            new_spec = specs.find { |s| s.name == gem_name }
+            next unless new_spec
+            new_version = new_spec.version.to_s
+            if Gem::Version.new(new_version) < Gem::Version.new(locked_version)
+              stderr.puts "Note: #{gem_name} version regressed from #{locked_version} to #{new_version}"
+            elsif new_version == locked_version
+              stderr.puts "Bundler attempted to update #{gem_name} but its version stayed the same"
+            end
           end
         end
 

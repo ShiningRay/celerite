@@ -3008,3 +3008,52 @@ exec --bogus true                     ref 127   cel 127（参考同样把未知�
   - 门禁：`crystal tool format --check src spec` 0、`git diff --check` 0、全量 `crystal spec` 见下节。
 - 已声明差异：名字集合取自锁文件而非再做一次完整静默解析；锁文件过期（Gemfile 有、锁里无）时参考可能给出 `Could not find gem '<name>'.` 而我方仍按锁文件名字集判断，反之亦然。
 - 未验证：命名 gem 与 `--source` 组合时的输出顺序；`--groups` 作为「过滤全部组」与位置参数混用的其余组合；2.7.2 profile 的 `--parseable` 命名缺失场景（仅验了 4.0.24）。
+
+## 2026-11-17（M7(2)：`bundle update` 的更新范围、锁文件前置条件与 stayed-same 报告）
+
+参考实现：`bundler-4.0.24/lib/bundler/cli/update.rb:26-72`（2.7.2 `cli/update.rb:25-52` 同序）。
+
+### 修复前实测
+
+| 命令 | 参考 | 修复前 |
+| --- | --- | --- |
+| `update nosuchgem`（有锁） | exit 7，stderr `Could not find gem 'nosuchgem'.` | exit 0，打印 `Bundle updated!` |
+| `update nosuchgem`（无锁） | exit 22，`This Bundle hasn't been installed yet. …`（80 列折两行） | exit 1，`This Gemfile does not contain a lockfile. …` |
+| `update --all json_pure` | exit 15，`Cannot specify --all along with specific options.` | exit 0，照常更新 |
+| `update --all --group development` | exit 15，同上 | exit 0 |
+| `update --group development` | exit 0，stderr `Bundler attempted to update thor but its version stayed the same`；stdout 两条 `Resolving dependencies...` | exit 0，无该告警，且只有一条 `Resolving dependencies...` |
+| `update json_pure --group development` | exit 0，两条 stayed-same 告警（json_pure 与 thor） | 只有 json_pure 一条 |
+| `update --source nope json_pure` | exit 0，无告警 | 会打印 json_pure 的 stayed-same |
+
+### 实现
+
+1. `src/celerite/errors.cr`：新增 `GemfileLockNotFound < Error`（`status_code` 22、`wrap?` true，注释指向 `Bundler::GemfileLockNotFound`）。
+2. `src/celerite/cli/commands_surface.cr` 的 `run_update` 首段按参考口径重算范围：`gems = subcommand_arguments(rest, UPDATE_SWITCH_FLAGS, UPDATE_SWITCH_VALUES)`（只取位置参数，不再把 `--group development` 的值当 gem 名）、`sources = flag_values(rest, "--source")`、`group_values = flag_values(rest, "--group") + flag_values(rest, "-g")`、`ruby_flag`、`update_bundler = flag_value(rest, "--bundler")`、`all_flag`，`full_update = gems.empty? && sources.empty? && group_values.empty? && !ruby_flag && !update_bundler`；`!full_update && all_flag` → `Cannot specify --all along with specific options.` + exit 15；弃用行只在 `full_update && !all_flag && 4.x` 时打印。
+3. 锁文件前置条件：`!full_update` 时无锁文件 → `raise GemfileLockNotFound`（22），再按 `definition.lockfile!.specs.map(&.name)` 校验每个命名 gem，缺失 → `raise GemNotFoundError.new("Could not find gem '<name>'.")`（7）；全量更新仍允许无锁。
+4. `--group` 展开：在 `Resolution` 创建之前用 `bridge.evaluate_gemfile(...)` 的 `dependencies`，把 `dep.groups` 与请求组有交集的依赖名并入 `gems`（`uniq`），替换原先的 `only_group` 分支；`unlock = full_update ? true : gems`。
+5. `unknown-gem` 场景下第二条 `Resolving dependencies...` 的条件改为「存在被解锁的 gem 且无 `--source` 限制」（`!gems.empty? && !source_restricted`），与参考「按名解锁 → 预解析 + 真解析」一致，也覆盖 `--group` 展开后的选择。
+6. stayed-same/regression 报告改为遍历 `gems`，与安装前锁定的版本比较：新版本更低 → `Note: <name> version regressed from <old> to <new>`，相等 → `Bundler attempted to update <name> but its version stayed the same`；`--source` 限制时跳过（参考的限制型 definition 里那些 gem 没有 resolved spec）。
+
+### 证据
+
+- A/B（`.tmp-scratch/probe-up71.ps1` 9 例 + `.tmp-scratch/probe-up71b.ps1` 6 例，两侧独立 `HOME`/`GEM_HOME`/`GEM_PATH`/`BUNDLE_PATH`/`BUNDLE_USER_*`/`TEMP`，参考用 `ruby …bundler-4.0.24\exe\bundle`）：**15/15 逐字相同**（修复前 9 例中 2 例、6 例中 4 例不同）。
+- 新 spec `spec/m7_update_scope_spec.cr` 5 例（无锁命名更新 22 且消息按 80 列折行、`--all` + 选择器两条 15、未知 gem 7 且 stdout 为空、`--group` 展开的 stayed-same + 两条 `Resolving dependencies...`、命名更新的 stayed-same）；与 `m7_outdated_naming_spec.cr`、`m7_cache_switches_spec.cr` 联跑 12/0。
+- 差分新夹具：`update-missing-gem`（`install` + `update nosuchgem`）、`update-all-with-selector`、`update-no-lockfile`（22）、`update-group-unchanged`（stayed-same）→ 4.0.24 4/4 与回归批（`update-conservative`/`update-list`/`update-patch`/`update-ruby`/`update-source`/`update-strict`/`install-fresh`）合计 **11 passed, 0 failed**；2.7.2 6/6。
+- 负对照：把 `--all` 冲突检查短路成 `if false && …` 重建 `bin/celerite-nc.exe` → `FAIL update-all-with-selector`（参考 `Cannot specify --all along with specific options.`，我方落到 22 的锁文件消息），还原后复绿、`negative-control` 计数 0。
+- 全量差分（4.0.24，`.tmp-scratch/differential-full-71.log`）：**210 passed, 14 failed, 2 skipped**；14 条仍是既有环境族（7 条 git 源 msys `0xC0000022`、6 条 racc/原生扩展 `Gem::Ext::BuildError`、1 条 `cache-all-platforms` 同因）。
+
+### 门禁
+
+`crystal tool format --check src spec` 0、`crystal build --no-codegen` 0（仅 2 条既有 `File.executable?` deprecation）、全量 `crystal spec` **588 examples, 0 failures, 4 errors**（4 = 既有 `spec/git_source_spec.cr` 的 msys Low-IL）、`git diff --check` 0。
+
+### 已声明差异
+
+- `--source` 命中真实源、且同时给出命名 gem 时，参考可能仍打印 stayed-same（本轮只按「限制型 definition 无 resolved spec」推断，未实测）。
+- 「不同平台故不更新」的告警（`… not considered because it is for a different platform …`）未实现。
+- `GemfileLockNotFound` 只接到 `update`，其余需要锁文件的命令仍用各自的错误形态。
+
+### 未验证
+
+- 2.7.2 下 `--all` 与选择器组合的文案（本轮 2.7.2 只跑了 6 个夹具，未覆盖该组合的负例）。
+- `update --bundler <ver>` 与选择器组合的等价性。
+- 版本回退（`Note: … version regressed …`）分支缺少端到端用例（需要可解析出更低版本的索引）。

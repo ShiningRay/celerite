@@ -309,6 +309,18 @@ module Celerite
     end
   end
 
+  # Raised when a command needs the lockfile but the bundle has never been
+  # installed (mirrors Bundler::GemfileLockNotFound, status 22).
+  class GemfileLockNotFound < Error
+    def status_code : Int32
+      22
+    end
+
+    def wrap? : Bool
+      true
+    end
+  end
+
   # Raised for lockfile parse/validation failures (mirrors Bundler::LockfileError).
   class LockfileError < Error
     def status_code : Int32
