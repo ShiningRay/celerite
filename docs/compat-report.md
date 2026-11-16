@@ -2298,3 +2298,52 @@ profile 门控：`Commands.preserve_lockfile_crlf?`（`commands.cr:320`）= `!(E
 - `BUNDLE_WITH` 与 `--only-group/--without-group` 之外的组合（例如同时 `BUNDLE_WITH` 与 `BUNDLE_WITHOUT`）未逐一对照。
 - `show --paths <被过滤 gem>` 已手工实测与参考逐字一致，但未单独加进差分夹具。
 - 全量 spec 在「复用旧 HOME」时曾出现一次 `spec/m7_build_args_spec.cr` 的假失败（`ARGV` 非空），换成新建 HOME 后 `478 examples, 0 failures`；该现象与历史记录一致，属测试环境状态残留，不是产品回归。
+
+## 2026-11-16（M7(3)：`bundle env` 的 Gem 目录行与 `bundle version` 的构建元数据）
+
+参考锚点：
+- `bundler/env.rb:60-90`：`## Environment` 打印 `Gem.dir`、`Gem.path.join(File::PATH_SEPARATOR)`、`Pathname.new(Gem::ConfigFile::SYSTEM_WIDE_CONFIG_FILE).dirname`、`Gem.bindir`。
+- `bundler/build_metadata.rb`：`@built_at="2026-11-05"` 与 `@git_commit_sha="3b396e4"` 是发布时烘焙的常量，`## Bundler Build Metadata` 原样打印。
+- `bundler/cli.rb:555-567`：`bundle version` 打印 `Bundler.verbose_version` 加构建元数据；`-v`/`--version` 只打版本；多余位置参数走 Thor `UnknownArgumentError`（`Usage: "bundle version"`，exit 15）。
+
+参考输出（本机实测，隔离 HOME，`source "https://rubygems.org"` 的 Gemfile）：
+
+| 命令 | 4.0.24 | 2.7.2 |
+| --- | --- | --- |
+| `version` | `4.0.24 (2026-11-05 commit 3b396e4)` | `Bundler version 2.7.2 (2025-09-09 commit b463ced1459)` |
+| `-v` / `--version` | `4.0.24` | `Bundler version 2.7.2` |
+| `version extra` | stderr 两行 `ERROR: "bundle version" was called with arguments ["extra"]` / `Usage: "bundle version"`，exit 15 | 同形，exit 15 |
+| `env` 的 `Gem Path` | 多条用 `;` 连接，且用户设置 `GEM_PATH` 时追加默认目录 | 同 |
+| `env` 的 `Config Dir` | `C:/ProgramData`（正斜杠） | 同 |
+| `env` 的 `Bin Dir` | `Gem.bindir` = `C:/Ruby40-x64/bin` | 同 |
+
+修复前缺陷（我方）：
+
+1. `Gem Path` 用 `", "` 连接多条路径。
+2. `Config Dir` 由 `ENV["PROGRAMDATA"]` 推导，输出反斜杠。
+3. `Bin Dir` 取 `<gem home>/bin`，未区分默认 gem 目录（`Gem.bindir` 则回落到 RbConfig 的 bindir）。
+4. `## Bundler Build Metadata` 打印本仓 `git log -1 --format=%cs` 与 `git rev-parse --short=7 HEAD`，不是发布版常量；`bundle version` 打印 `Celerite::VERSION`（`0.1.0`）。
+5. 用户自定义 `GEM_PATH`（不含默认 gem 目录）时 `celerite env` 直接 exit 1：桥进程用 RubyGems 激活 bundler 失败（`Could not find 'bundler' (= 4.0.24) - did find: [bundler-4.0.16]`），而参考的 `exe/bundle` 是从自身 lib 目录加载 bundler，不受 `GEM_PATH` 影响。
+
+实现：
+
+- `src/celerite/release_metadata.cr`（新）：`RELEASES = {"2.7.2" => {"2025-09-09", "b463ced1459"}, "4.0.24" => {"2026-11-05", "3b396e4"}}`，`ReleaseMetadata.for(version)`；`env` 与 `issue` 的 Build Metadata 块共用，未知 profile 回退本仓值。
+- `src/celerite/cli/commands.cr`：`dispatch` 将 `version`/`--version`/`-v` 交给新的 `Commands.version(command, stdout, stderr, rest)`；`version` 带元数据，2.x 前缀 `Bundler version `，`rest` 非空时打印 Thor 的 `ERROR:`/`Usage:` 并 exit 15。
+- `src/celerite/cli/commands_surface.cr`：`env`/`issue` 的 `Gem Path` 改用 `Process::PATH_DELIMITER` 连接（Crystal 无 `File::PATH_SEPARATOR`），`Config Dir`/`Bin Dir` 改读桥新增的 `system_config_dir`/`gem_bindir`；`issue` 删除「配置 BUNDLE_PATH 时把 bundle 路径当 Gem Home/Path/Bin」的旧特例。
+- `assets/bridge/server.rb`：`op_ruby_environment` 新增 `gem_bindir`（`Gem.bindir`）与 `system_config_dir`（`File.dirname(Gem::ConfigFile::SYSTEM_WIDE_CONFIG_FILE)`）；`gem_paths` 改回 `Gem.path`（用户设 `GEM_PATH` 时 RubyGems 会自动追加默认目录）；新增 `bridge_activate_bundler`：`CELERITE_REFERENCE_BUNDLER_LIB` 优先，仅给版本时先 `gem "bundler", version`，激活失败回退 `<Gem.default_dir>/gems/bundler-<version>/lib`（与参考 `exe/bundle` 的加载方式一致）。
+- `src/celerite/bridge/client.cr`：`RubyEnvironment` 增加 `gem_bindir`/`system_config_dir`。
+
+证据：
+
+- `spec/m7_env_output_spec.cr` 新增 4 例（4.0.24 与 2.7.2 的构建元数据、`GEM_PATH` 用 `;` 且不吞默认目录、`Config Dir` 不含反斜杠）；`spec/m7_version_spec.cr`（新）4 例（`version`、`-v`/`--version`、2.7.2 形态、`version extra` exit 15）；两文件 `13 examples, 0 failures`。
+- 差分：新增 `fixtures/differential/version-plain`（`version`）与 `version-extra`（`version extra`）。4.0.24：`version-plain version-extra env-report show-missing-installed` -> `4 passed, 0 failed`；2.7.2：`version-plain version-extra env-report` -> `3 passed, 0 failed`。
+- 负对照：注释掉 `Commands.version` 的元数据后缀后重建二进制 -> `FAIL version-plain`（`< 4.0.24 (DATE commit 3b396e4)` / `> 4.0.24`），`version-extra` 仍 PASS；还原后复绿。
+- 自定义 `GEM_PATH=C:/gems-a;C:/gems-b`：修复前 `celerite env` exit 1；修复后 exit 0，`Gem Path` 为 `C:/gems-a;C:/gems-b;<默认目录>`，与参考逐字一致。
+- 全量：`crystal spec` **486 examples, 0 failures, 4 errors**（4 = 既有 `spec/git_source_spec.cr` 的 msys Low-IL 项）；`crystal tool format --check` 与 `crystal build --no-codegen` 均 EXIT 0。
+
+已声明差异与未验证：
+
+- 未显式设置 `GEM_HOME` 时，本机 `Gem Home`/`Bin Dir` 仍与参考不同：RubyGems 在默认 gem 目录不可写时回退 `Gem.user_dir`（`rubygems/defaults.rb:242` 与 RubyInstaller `rubygems/defaults/operating_system.rb:24`），本机 crystal 产物以 Low IL 运行触发回退，参考 `ruby` 为 Medium IL 故不回退。两侧显式 `GEM_HOME` 后 `env` 输出逐字一致，属环境差异，不是产品语义差异。
+- 全局 `--verbose` 回显（`Running `bundle env --verbose` with bundler 4.0.24`）未实现；实测参考该行参数按选项定义顺序重排（`env --verbose --no-color` 打印 `env --no-color --verbose`），且 `check --verbose` 不打印，暂不复制。
+- `version extra` 的 stderr 参考用 CRLF（Ruby 文本模式），我方 LF。
+- `issue` 的 Build Metadata 未加单独差分夹具（与 `env` 共用同一常量与打印路径）。

@@ -35,8 +35,8 @@ module Celerite
       rest = args[1..]
 
       case command
-      when "version", "--version"
-        version(stdout, rest)
+      when "version", "--version", "-v"
+        version(command, stdout, stderr, rest)
       when "platform"
         platform(stdout, rest)
       when "check"
@@ -491,8 +491,27 @@ module Celerite
     # ------------------------------------------------------------------
     # version
     # ------------------------------------------------------------------
-    def self.version(stdout : IO, rest : Array(String)) : Int32
-      stdout.puts Celerite::VERSION
+    def self.version(command : String, stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      unless rest.empty?
+        # Thor's `UnknownArgumentError` rendering (error.rb:65-89): the command
+        # rejects positional arguments, and the reference exits 15.
+        stderr.puts %(ERROR: "bundle version" was called with arguments #{rest.inspect})
+        stderr.puts %(Usage: "bundle version")
+        return 15
+      end
+
+      profile = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+      # Bundler 2.x prefixes the human-readable command with "Bundler version";
+      # 4.x prints the bare version (cli.rb#version).
+      text = profile.starts_with?("2.") ? "Bundler version #{profile}" : profile
+      # Only `bundle version` appends build metadata; `-v`/`--version` print the
+      # version alone (cli.rb#version vs. `Bundler.verbose_version`).
+      if command == "version"
+        if meta = Celerite::ReleaseMetadata.for(profile)
+          text += " (#{meta[0]} commit #{meta[1]})"
+        end
+      end
+      stdout.puts text
       0
     end
 

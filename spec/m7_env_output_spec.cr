@@ -52,6 +52,61 @@ describe "Celerite::CLI env output" do
     end
   end
 
+  it "prints the reference release's baked build metadata" do
+    with_env_bridge do
+      with_env_var("CELERITE_PROFILE_BUNDLER_VERSION", "4.0.24") do
+        with_project({"Gemfile" => env_gemfile}) do
+          code, out, _err = run_cli(["env"])
+          code.should eq(0)
+          # `Bundler::BuildMetadata` is a constant of the release, not this
+          # checkout's `git log`/`rev-parse`.
+          out.should contain("## Bundler Build Metadata\n\n```\nTimestamp  2026-11-05\nGit SHA    3b396e4\n```")
+        end
+      end
+    end
+  end
+
+  it "reports the 2.7.x build metadata for that profile" do
+    with_env_bridge do
+      with_env_var("CELERITE_PROFILE_BUNDLER_VERSION", "2.7.2") do
+        with_project({"Gemfile" => env_gemfile}) do
+          code, out, _err = run_cli(["env"])
+          code.should eq(0)
+          out.should contain("Timestamp  2025-09-09")
+          out.should contain("Git SHA    b463ced1459")
+        end
+      end
+    end
+  end
+
+  it "joins Gem Path with the platform path separator" do
+    with_env_bridge do
+      with_env_var("GEM_PATH", "C:/gems-a;C:/gems-b") do
+        with_project({"Gemfile" => env_gemfile}) do
+          code, out, _err = run_cli(["env"])
+          code.should eq(0)
+          # `Bundler::Env` uses `Gem.path.join(File::PATH_SEPARATOR)`, and
+          # `Gem.path` appends the default dir to a user-set GEM_PATH.
+          gem_path_line = out.lines.find { |line| line.starts_with?("  Gem Path    ") }.not_nil!
+          gem_path_line.should_not contain(", ")
+          gem_path_line.should contain(";")
+          gem_path_line.split(";").first(2).should eq(["  Gem Path    C:/gems-a", "C:/gems-b"])
+        end
+      end
+    end
+  end
+
+  it "renders the system config directory with forward slashes" do
+    with_env_bridge do
+      with_project({"Gemfile" => env_gemfile}) do
+        code, out, _err = run_cli(["env"])
+        code.should eq(0)
+        config_line = out.lines.find { |line| line.starts_with?("  Config Dir  ") }.not_nil!
+        config_line.should_not contain('\\')
+      end
+    end
+  end
+
   it "prints the reference placeholder when the lockfile is missing" do
     with_env_bridge do
       with_project({"Gemfile" => env_gemfile}) do

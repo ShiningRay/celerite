@@ -38,6 +38,32 @@ def bridge_platform_string
   Gem::Platform.local.to_s
 end
 
+# Chooses which Bundler this process loads. The caller normally passes
+# CELERITE_REFERENCE_BUNDLER_LIB (the reference release's lib dir), which wins
+# because `gem` activation cannot see gems inside an isolated GEM_PATH. When
+# only a version is requested, activate it through RubyGems; if the ambient
+# GEM_PATH hides the default gem dir (a user-set GEM_PATH does exactly that),
+# fall back to the release's own lib dir layout, which is what the reference
+# `bundle` executable loads from (bundler/exe/bundle requires "bundler").
+def bridge_activate_bundler
+  if lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]
+    $LOAD_PATH.unshift(lib) unless lib.empty?
+    return
+  end
+
+  version = ENV["CELERITE_REFERENCE_BUNDLER_VERSION"]
+  return if version.nil? || version.empty?
+
+  begin
+    gem "bundler", version
+  rescue Gem::LoadError
+    candidate = File.join(Gem.default_dir, "gems", "bundler-#{version}", "lib")
+    raise unless File.directory?(candidate)
+
+    $LOAD_PATH.unshift(candidate)
+  end
+end
+
 def op_ruby_environment(_payload)
   require "rubygems"
   env = {
@@ -51,9 +77,19 @@ def op_ruby_environment(_payload)
     "patchlevel" => RUBY_PATCHLEVEL.to_s,
     "platform" => bridge_platform_string,
     "ruby_exe" => RbConfig.ruby,
-    "gem_paths" => (ENV["GEM_PATH"] ? ENV["GEM_PATH"].split(Gem.path_separator) : Gem.path),
+    # `Bundler::Env#report` prints `Gem.path` (env.rb:73), which appends the
+    # default gem dir when a user-set GEM_PATH omits it — splitting GEM_PATH
+    # verbatim would drop that entry.
+    "gem_paths" => Gem.path,
     "default_gem_dir" => (ENV["GEM_HOME"] || Gem.default_dir),
     "user_gem_dir" => (Gem.user_dir rescue nil),
+    # `Bundler::Env#report` prints `Gem.bindir` (env.rb:78) and the directory
+    # of `Gem::ConfigFile::SYSTEM_WIDE_CONFIG_FILE` (env.rb:74). Neither is
+    # derivable portably from Crystal: `Gem.bindir` reports RbConfig's bindir
+    # when the install dir is the default gem dir, and the system-wide config
+    # path is RubyGems' own build-time constant (forward slashes on Windows).
+    "gem_bindir" => (Gem.bindir rescue nil),
+    "system_config_dir" => (File.dirname(Gem::ConfigFile::SYSTEM_WIDE_CONFIG_FILE) rescue nil),
     "loaded_bundler_version" => (defined?(Bundler) ? Bundler::VERSION : (Gem.loaded_specs["bundler"]&.version.to_s)),
   }
   # `Bundler::Env` prints the OpenSSL rows only when OpenSSL is already loaded
@@ -75,14 +111,7 @@ def op_evaluate_gemfile(payload)
   gemfile = payload["gemfile"]
   raise ArgumentError, "missing gemfile path" unless gemfile
 
-  # Pin the reference Bundler when requested (isolated environments would
-  # otherwise fall back to the default gem). The load path wins because gem
-  # activation cannot see installed gems outside an isolated GEM_PATH.
-  if lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]
-    $LOAD_PATH.unshift(lib) unless lib.empty?
-  elsif version = ENV["CELERITE_REFERENCE_BUNDLER_VERSION"]
-    gem "bundler", version unless version.empty?
-  end
+  bridge_activate_bundler
   require "bundler"
   require "bundler/dsl"
 
@@ -128,11 +157,7 @@ def op_gemspec_paths(payload)
   gemfile = payload["gemfile"]
   raise ArgumentError, "missing gemfile path" unless gemfile
 
-  if lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]
-    $LOAD_PATH.unshift(lib) unless lib.empty?
-  elsif version = ENV["CELERITE_REFERENCE_BUNDLER_VERSION"]
-    gem "bundler", version unless version.empty?
-  end
+  bridge_activate_bundler
   require "bundler"
   require "bundler/dsl"
 

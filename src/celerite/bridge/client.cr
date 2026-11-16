@@ -38,6 +38,10 @@ module Celerite
       getter gem_paths : Array(String)
       getter default_gem_dir : String
       getter user_gem_dir : String?
+      # `Gem.bindir` / the system-wide RubyGems config directory; reported by
+      # RubyGems itself because Crystal cannot reproduce them portably.
+      getter gem_bindir : String? = nil
+      getter system_config_dir : String? = nil
       getter loaded_bundler_version : String
       # Present only when the bridge process had OpenSSL loaded, mirroring
       # `Bundler::Env`'s `defined?(OpenSSL)` guards (env.rb:106-112).

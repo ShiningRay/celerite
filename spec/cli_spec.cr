@@ -5,7 +5,9 @@ describe Celerite::CLI do
   it "prints its version" do
     code, out, err = run_cli(["version"])
     code.should eq(0)
-    out.should eq("#{Celerite::VERSION}\n")
+    # `bundle version` reports the Bundler compatibility profile and that
+    # release's baked build metadata, not this project's own version constant.
+    out.should eq("4.0.24 (2026-11-05 commit 3b396e4)\n")
     err.should be_empty
   end
 

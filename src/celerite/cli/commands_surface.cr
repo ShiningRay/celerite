@@ -493,10 +493,11 @@ module Celerite
         stdout.puts "  Platforms   #{platforms.join(", ")}"
         stdout.puts "Ruby          #{re.ruby_env_line}"
         stdout.puts "  Full Path   #{re.ruby_exe.gsub(/\\/, "/")}"
-        stdout.puts "  Config Dir  #{config_dir}"
+        stdout.puts "  Config Dir  #{(re.system_config_dir || config_dir).gsub(/\\/, "/")}"
         stdout.puts "RubyGems      #{re.rubygems_version}"
         stdout.puts "  Gem Home    #{re.default_gem_dir.gsub(/\\/, "/")}"
-        stdout.puts "  Gem Path    #{re.gem_paths.map(&.gsub(/\\/, "/")).join(", ")}"
+        # Bundler::Env joins Gem.path with File::PATH_SEPARATOR (env.rb:77).
+        stdout.puts "  Gem Path    #{re.gem_paths.map(&.gsub(/\\/, "/")).join(Process::PATH_DELIMITER)}"
         user_dir = re.user_gem_dir
         if user_dir
           forward = user_dir.gsub(/\\/, "/")
@@ -506,7 +507,10 @@ module Celerite
           stdout.puts "  User Home   "
           stdout.puts "  User Path   "
         end
-        stdout.puts "  Bin Dir     #{File.join(re.default_gem_dir, "bin").gsub(/\\/, "/")}"
+        # `Gem.bindir`: RbConfig's bindir for the default gem home, otherwise
+        # `<gem home>/bin` (rubygems.rb#bindir).
+        bin_dir = re.gem_bindir || File.join(re.default_gem_dir, "bin")
+        stdout.puts "  Bin Dir     #{bin_dir.gsub(/\\/, "/")}"
         # OpenSSL rows mirror Bundler::Env (env.rb:106-112): every row is gated
         # on OpenSSL being loaded, so a plain `bundle env` prints none of them.
         openssl_values = {
@@ -531,8 +535,12 @@ module Celerite
         stdout.puts "## Bundler Build Metadata"
         stdout.puts
         stdout.puts "```"
-        stdout.puts "Timestamp  #{build_timestamp}"
-        stdout.puts "Git SHA    #{git_sha}"
+        # Bundler::BuildMetadata is baked into each release (build_metadata.rb);
+        # `bundle env` prints that constant, not the reporting process's own
+        # git checkout. Fall back to this checkout only for unknown profiles.
+        release = Celerite::ReleaseMetadata.for(bundler_version)
+        stdout.puts "Timestamp  #{release ? release[0] : build_timestamp}"
+        stdout.puts "Git SHA    #{release ? release[1] : git_sha}"
         stdout.puts "```"
 
         # settings section: one block per local-config key (reference shape)
@@ -1994,28 +2002,22 @@ module Celerite
         stdout.puts "  Platforms   #{platforms.join(", ")}"
         stdout.puts "Ruby          #{re.ruby_env_line}"
         stdout.puts "  Full Path   #{re.ruby_exe.gsub(/\\/, "/")}"
-        stdout.puts "  Config Dir  #{config_dir}"
+        stdout.puts "  Config Dir  #{(re.system_config_dir || config_dir).gsub(/\\/, "/")}"
         stdout.puts "RubyGems      #{re.rubygems_version}"
-        # When BUNDLE_PATH is configured, the reference restart reports the
-        # bundle-path gem home as its Gem Home/Path/Bin (Bundler 4 behavior
-        # under install-like flows with a switch).
-        config = Config.new
-        bundle_path = config["path"].to_s
-        gem_home = if bundle_path.empty?
-                     re.default_gem_dir.gsub(/\\/, "/")
-                   else
-                     abi = InstallPaths.ruby_abi(bridge)
-                     File.join(InstallPaths.gem_root(config, bridge.ruby_environment.default_gem_dir, abi)).gsub(/\\/, "/")
-                   end
+        # `Gem.dir`/`Gem.path`/`Gem.bindir` as RubyGems resolves them, not the
+        # bundle path: `Bundler::Env` reports the interpreter's gem environment
+        # and leaves BUNDLE_PATH to the "## Bundler settings" section.
+        gem_home = re.default_gem_dir.gsub(/\\/, "/")
         stdout.puts "  Gem Home    #{gem_home}"
-        stdout.puts "  Gem Path    #{gem_home}"
+        stdout.puts "  Gem Path    #{re.gem_paths.map(&.gsub(/\\/, "/")).join(Process::PATH_DELIMITER)}"
         user_dir = re.user_gem_dir
         if user_dir
           forward = user_dir.gsub(/\\/, "/")
           stdout.puts "  User Home   #{forward.sub(/\.local\/share\/gem.*/, "").rstrip("/")}"
           stdout.puts "  User Path   #{forward}"
         end
-        stdout.puts "  Bin Dir     #{File.join(gem_home, "bin")}"
+        bin_dir = re.gem_bindir || File.join(gem_home, "bin")
+        stdout.puts "  Bin Dir     #{bin_dir.gsub(/\\/, "/")}"
         stdout.puts "Tools         "
         stdout.puts "  Git         #{git_version}"
         stdout.puts "  RVM         not installed"
@@ -2026,8 +2028,9 @@ module Celerite
         stdout.puts "## Bundler Build Metadata"
         stdout.puts
         stdout.puts "```"
-        stdout.puts "Timestamp  #{build_timestamp}"
-        stdout.puts "Git SHA    #{git_sha}"
+        release = Celerite::ReleaseMetadata.for(bundler_version)
+        stdout.puts "Timestamp  #{release ? release[0] : build_timestamp}"
+        stdout.puts "Git SHA    #{release ? release[1] : git_sha}"
         stdout.puts "```"
         stdout.puts
 
