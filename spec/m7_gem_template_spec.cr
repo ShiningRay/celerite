@@ -93,4 +93,62 @@ describe "M7(3) bundle gem default scaffold" do
       )
     end
   end
+
+  # gem.rb:45-49 gates the git identity reads on use_git, and gem.rb:113-116
+  # only merges gitignore.tt when the scaffold includes a repository. Thor also
+  # generates a `--no-<name>` for every boolean option, so `--no-git` is valid.
+  it "skips git, .gitignore and the identity lookups under --no-git" do
+    with_project({} of String => String) do
+      code, out, err = run_cli(["gem", "nogitgem", "--no-git"])
+      code.should eq(0)
+      err.should_not contain("fatal")
+
+      target = File.join(Dir.current, "nogitgem")
+      File.exists?(File.join(target, ".gitignore")).should be_false
+      File.exists?(File.join(target, ".git")).should be_false
+
+      gemspec = File.read(File.join(target, "nogitgem.gemspec"))
+      gemspec.should contain(%(f.start_with?(*%w[bin/ Gemfile])))
+      gemspec.should contain(%(spec.authors = ["TODO: Write your name"]))
+      gemspec.should contain(%(spec.email = ["TODO: Write your email address"]))
+
+      out.should_not contain("Initializing git repo")
+      out.should contain("      create  nogitgem/nogitgem.gemspec")
+      out.should_not contain("      create  nogitgem/.gitignore")
+    end
+  end
+
+  it "accepts the Thor negations that match the default scaffold" do
+    with_project({} of String => String) do
+      code, _out, err = run_cli([
+        "gem", "negatedgem",
+        "--no-mit", "--no-coc", "--no-changelog", "--no-exe", "--no-bundle",
+      ])
+      code.should eq(0)
+      err.should_not contain("Unknown switches")
+      File.exists?(File.join(Dir.current, "negatedgem", "negatedgem.gemspec")).should be_true
+    end
+  end
+
+  # cli.rb:607-608 turns both spellings into a removed-option error before the
+  # scaffold runs.
+  it "reports the removed --rubocop switch instead of scaffolding" do
+    with_project({} of String => String) do
+      code, out, err = run_cli(["gem", "rubogem", "--rubocop"])
+      code.should eq(15)
+      out.should be_empty
+      err.should eq("--rubocop has been removed, use --linter=rubocop\n")
+      File.exists?(File.join(Dir.current, "rubogem")).should be_false
+    end
+  end
+
+  it "reports the removed --no-rubocop switch instead of scaffolding" do
+    with_project({} of String => String) do
+      code, out, err = run_cli(["gem", "rubogem", "--no-rubocop"])
+      code.should eq(15)
+      out.should be_empty
+      err.should eq("--no-rubocop has been removed, use --no-linter\n")
+      File.exists?(File.join(Dir.current, "rubogem")).should be_false
+    end
+  end
 end

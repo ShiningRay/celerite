@@ -405,7 +405,7 @@ module Celerite
           elsif attached_short_value?(arg)
             # Thor accepts attached values for short options (`-j2`, `-gfoo`,
             # `-PLowSecurity`); the whole token is the option plus its value.
-          elsif !allowed_flags.includes?(name)
+          elsif !allowed_flags.includes?(name) && !negated_flag?(name, allowed_flags)
             unknown << arg
           end
         end
@@ -418,6 +418,14 @@ module Celerite
       # Thor only accepts attached values for `-j` (`aliases: "-j"`); `-g`
       # (array alias) and `-P` (singular alias) reject `-gfoo`/`-PLow...`.
       arg.starts_with?("-j") && arg.size > 2 && arg[2..].each_char.all?(&.ascii_number?)
+    end
+
+    # Thor generates a `--no-<name>` counterpart for every boolean switch, so
+    # `bundle gem demo --no-git` and `--no-mit` are valid even though only the
+    # positive spelling is declared. Value options have no negation.
+    private def self.negated_flag?(name : String, allowed_flags : Array(String)) : Bool
+      return false unless name.starts_with?("--no-") && name.size > 5
+      allowed_flags.includes?("--" + name[5..])
     end
 
     private def self.reject_unknown_switches(stderr : IO, rest : Array(String), allowed_flags : Array(String),

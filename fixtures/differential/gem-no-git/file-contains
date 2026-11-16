@@ -1,0 +1,2 @@
+foogem/foogem.gemspec	f.start_with?(*%w[bin/ Gemfile])
+foogem/README.md	## Development

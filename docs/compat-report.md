@@ -2524,3 +2524,50 @@ oracle（4.0.24，隔离 HOME/BUNDLE_USER_*）：`config get without|cache_all|r
 已声明差异：`--help` 的 manpage 文本不复刻（退出码与是否为错误一致）；`lod`/`config` 等命令的内部选项文案仍按各自既有实现。
 
 未验证：`outdated` 在已有 lockfile 但部分 gem 未安装时的逐条输出；`doctor --ssl`/`--tls-version`/`--verify-mode` 的诊断行为；`gem --ext=c` 等仅在模板生成阶段可见的开关语义。
+
+## 2026-11-16（M7(3)：`bundle gem` 的 Thor 否定开关、removed `--rubocop` 与 git 门控）
+
+参考锚点：
+
+- `bundler-4.0.24/lib/bundler/cli.rb:607-608`：`gem` 任务里 `--rubocop` 与 `--no-rubocop` 都直接 `raise InvalidOption`（`--rubocop has been removed, use --linter=rubocop` / `--no-rubocop has been removed, use --no-linter`），exit 15。
+- `bundler-4.0.24/lib/bundler/vendor/thor/lib/thor/parser/`：Thor 为每个布尔选项自动生成 `--no-<name>` 否定式，故 `--no-git` 是合法写法；值选项没有否定式。
+- `bundler-4.0.24/lib/bundler/cli/gem.rb:45-49`：`user.name` / `user.email` / `github.user` 三次 `git config` 读取全部以 `use_git` 为条件，否则 gemspec 保留 `TODO: Write your name` / `TODO: Write your email address`。
+- `bundler-4.0.24/lib/bundler/cli/gem.rb:113-116`：只有 `use_git` 时才 merge `gitignore.tt`，并把 `.gitignore` 追加进 `ignore_paths` —— 于是 gemspec 里的清单在 `--no-git` 时是 `%w[bin/ Gemfile]`。
+- `bundler-4.0.24/lib/bundler/cli/gem.rb:257-262`：git 初始化行是 `Bundler.ui.info "\nInitializing git repo in #{target}"`（消息自带前置空行），`git init` 的 stdout 被吞掉。
+- `bundler-4.0.24/lib/bundler/cli/gem.rb:289`：成功行 `"\nGem '<name>' was successfully created. …"`。
+- `bundler-4.0.24/lib/bundler/cli/gem.rb:299-310`、`:322-426`：`ask_and_set` / `ask_and_set_test_framework` / `_ci` / `_linter` 先读 `options[key] || settings["gem.<key>"]`，只有为 nil 才打印提示并提问 —— 预置 `BUNDLE_GEM__MIT` 等环境变量即可让参考完全不交互。
+
+修复前（同一沙箱、独立 HOME，无锁文件）：
+
+| 命令 | 参考 4.0.24 | 修复前 |
+| --- | --- | --- |
+| `gem demo --no-git` | exit 0；9 个文件，无 `.gitignore`，无 `.git` | exit 15 `Unknown switches "--no-git"` + `Did you mean?  "--git"` |
+| `gem demo --rubocop` | exit 15 单行 `--rubocop has been removed, use --linter=rubocop` | exit 15 `Unknown switches "--rubocop"` + 建议行 |
+| `gem demo --no-rubocop` | exit 15 单行 `--no-rubocop has been removed, use --no-linter` | 同上 |
+| 差分夹具 `gem-default`（4.0.24） | 先打印 20 行交互提示再按默认模板生成 | FAIL：我方缺交互提示文本，diff 为参考多出的 20 行 |
+
+实现：
+
+1. `Commands.negated_flag?(name, allowed_flags)`：`unknown_switch_tokens` 把 `--no-<name>` 视为 `--<name>` 的 Thor 生成否定式，只要 `--<name>` 在允许表里就放行；值选项不受影响。
+2. `Commands.gem` 在脚手架之前处理 `--rubocop` / `--no-rubocop`（原文写 stderr、exit 15、不创建任何文件），并把「保持默认」的否定式 `--git/--no-git/--no-mit/--no-coc/--no-changelog/--no-exe/--no-bundle` 加入白名单。
+3. `GemTemplate.render` 的 `.gitignore` 条目改为条件项；`gemspec` 新增 `use_git` 参数，ignore 清单随之为 `bin/ Gemfile .gitignore` 或 `bin/ Gemfile`。
+4. `Commands.gem` 的 author/email/github_username 只在 `use_git` 时读 `git config`，否则留空并落到 `TODO:` 占位。
+5. git 初始化行改为先输出一个空行再打印 `Initializing git repo in <path>`，与 `gem.rb:257` 的 `"\nInitializing …"` 对齐。
+
+证据：
+
+- A/B（`.tmp-scratch/gem59e`，两侧各自 HOME/GEM_HOME/GEM_PATH/TEMP/WORKDIR，项目 `.bundle/config` 预置六项 `BUNDLE_GEM__*: "false"`）：`gem demo --no-git --no-mit --no-coc --no-changelog --no-exe --no-bundle` 两侧 exit 0、stdout 逐字相同，9 个文件 SHA-256 全部相同。
+- A/B（`.tmp-scratch/gem59f`，git 启用）：归一化沙箱路径后 stdout 相同，10 个文件（含 `.gitignore` 73 字节与带 Contributing 段的 README 1671 字节）逐字节相同；两侧 stderr 的 `LF will be replaced by CRLF` 警告数量与条目一致。
+- `spec/m7_gem_template_spec.cr`：**7 examples, 0 failures**（原 3 例 + 新增 `--no-git` 脚手架、默认否定式、`--rubocop`、`--no-rubocop` 共 4 例）。
+- 差分：4.0.24 `gem-default`、`gem-no-git` 均 PASS（各 exit 0）；2.7.2 两者均按 `deferred-2.7.2` 跳过。
+
+已声明差异：
+
+- 交互式脚手架提问（test / CI / linter / license / COC / changelog）未实现；差分夹具通过 `extra/.bundle/config` 预置 `BUNDLE_GEM__*: "false"` 让参考跳过提问，从而只比对模板与信息输出。
+- 非默认模板选项（`--mit`、`--coc`、`--changelog`、`--exe`、`--bundle`、`--linter`、`--test` 等）仍按 fast-fail 处理并打印 `bundle gem option --x is not supported by Celerite`，不生成对应文件。
+- 2.7.2 参考使用旧版成功链接 `https://bundler.io/guides/creating_gem.html` 且 `templates/newgem` 内容不同，故两个 gem 夹具在 2.7.2 下 deferred。
+
+未验证：
+
+- `--linter=rubocop` 生成的 `.rubocop.yml` 未与参考比对（属非默认模板分支）。
+- `--no-git` 与 `git add` 交互时的 `git status` 输出未额外断言。

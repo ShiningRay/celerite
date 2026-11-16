@@ -36,21 +36,23 @@ module Celerite
         source_code_uri = "https://github.com/#{github}/#{name}"
       end
 
-      [
+      entries = [
         FileEntry.new("Gemfile", gemfile(name)),
         FileEntry.new("lib/#{namespaced}.rb", library(namespaced, constant)),
         FileEntry.new("lib/#{namespaced}/version.rb", version(constant)),
         FileEntry.new("sig/#{namespaced}.rbs", rbs(constant)),
         FileEntry.new("#{name}.gemspec",
-          gemspec(name, namespaced, constant, author, email, homepage_uri, source_code_uri)),
+          gemspec(name, namespaced, constant, author, email, homepage_uri, source_code_uri, use_git)),
         FileEntry.new("Rakefile", rake_file),
         FileEntry.new("README.md", readme(name, namespaced, constant, github, use_git)),
         FileEntry.new("bin/console", console(namespaced)),
         FileEntry.new("bin/setup", setup_script),
-        FileEntry.new(".gitignore", gitignore),
-        # Crystal heredocs do not include the final newline; the reference
-        # templates all end with exactly one LF.
-      ].map { |entry| FileEntry.new(entry.path, terminate(entry.content)) }
+      ]
+      # gem.rb:113-116 only adds gitignore.tt when the git scaffold is enabled.
+      entries << FileEntry.new(".gitignore", gitignore) if use_git
+      # Crystal heredocs do not include the final newline; the reference
+      # templates all end with exactly one LF.
+      entries.map { |entry| FileEntry.new(entry.path, terminate(entry.content)) }
     end
 
     private def self.terminate(text : String) : String
@@ -116,7 +118,9 @@ module Celerite
 
     private def self.gemspec(name : String, namespaced : String, constant : String,
                              author : String, email : String,
-                             homepage_uri : String, source_code_uri : String) : String
+                             homepage_uri : String, source_code_uri : String,
+                             use_git : Bool) : String
+      ignore_paths = use_git ? "bin/ Gemfile .gitignore" : "bin/ Gemfile"
       <<-TEXT
       # frozen_string_literal: true
 
@@ -148,7 +152,7 @@ module Celerite
         spec.files = IO.popen(%w[git ls-files -z], chdir: __dir__, err: IO::NULL) do |ls|
           ls.readlines("\\x0", chomp: true).reject do |f|
             (f == gemspec) ||
-              f.start_with?(*%w[bin/ Gemfile .gitignore])
+              f.start_with?(*%w[#{ignore_paths}])
           end
         end
         spec.bindir = "exe"

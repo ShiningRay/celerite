@@ -2273,11 +2273,25 @@ module Celerite
         return 15
       end
 
+      # gem.rb/cli.rb:607-608: the deprecated `--rubocop` spellings raise
+      # InvalidOption before any work.
+      if rest.includes?("--rubocop")
+        stderr.puts "--rubocop has been removed, use --linter=rubocop"
+        return 15
+      end
+      if rest.includes?("--no-rubocop")
+        stderr.puts "--no-rubocop has been removed, use --no-linter"
+        return 15
+      end
+
       # DECLARED DEVIATION: non-default options are rejected instead of
       # rendered. The reference accepts them (--mit adds the MIT license block,
       # --test adds a test framework, --exe adds exe/, ...). See
       # docs/compat-report.md "gem 模板对齐" for the measured reference output.
-      supported = ["--git", "--no-git"]
+      # Negations (`--no-git`, `--no-mit`, ...) all mean "keep the default", so
+      # Thor accepts them and the scaffold is unchanged.
+      supported = ["--git", "--no-git", "--no-mit", "--no-coc", "--no-changelog",
+                   "--no-exe", "--no-bundle"]
       unsupported = rest.select { |arg| arg.starts_with?("-") && !supported.includes?(arg) }
       unless unsupported.empty?
         stderr.puts "bundle gem option #{unsupported.first} is not supported by Celerite"
@@ -2295,18 +2309,25 @@ module Celerite
       end
 
       # gem.rb:47-49: author/email/github come from `git config`, with the TODO
-      # fallbacks at gem.rb:69-70 and "[USERNAME]" at gem.rb:16/77.
-      author = git_config("user.name")
+      # fallbacks at gem.rb:69-70 and "[USERNAME]" at gem.rb:16/77. All three
+      # reads are gated on use_git (gem.rb:45-49): with `--no-git` the gemspec
+      # keeps the TODO placeholders.
+      author = use_git ? git_config("user.name") : ""
       author = "TODO: Write your name" if author.empty?
-      email = git_config("user.email")
+      email = use_git ? git_config("user.email") : ""
       email = "TODO: Write your email address" if email.empty?
-      github_username = git_config("github.user")
+      github_username = use_git ? git_config("github.user") : ""
 
       stdout.puts "Creating gem '#{name}'..."
-      stdout.puts
+      # gem.rb prompts for test/CI/linter/license/COC/changelog and prefixes each
+      # question block with a blank line. Celerite does not implement the
+      # interactive prompts (declared deviation in docs/compat-report.md), so no
+      # blank separator is printed here.
 
       if use_git
-        # gem.rb:257-262: `git init` output is captured, hints stay on stderr.
+        # gem.rb:257-262: the git-init line starts with a blank separator and
+        # `git init` output is captured, hints stay on stderr.
+        stdout.puts
         stdout.puts "Initializing git repo in #{target.gsub('\\', "/")}"
         Process.run("git", ["init", target], output: IO::Memory.new, error: :inherit)
       end
