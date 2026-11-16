@@ -2347,3 +2347,47 @@ profile 门控：`Commands.preserve_lockfile_crlf?`（`commands.cr:320`）= `!(E
 - 全局 `--verbose` 回显（`Running `bundle env --verbose` with bundler 4.0.24`）未实现；实测参考该行参数按选项定义顺序重排（`env --verbose --no-color` 打印 `env --no-color --verbose`），且 `check --verbose` 不打印，暂不复制。
 - `version extra` 的 stderr 参考用 CRLF（Ruby 文本模式），我方 LF。
 - `issue` 的 Build Metadata 未加单独差分夹具（与 `env` 共用同一常量与打印路径）。
+
+## 2026-11-16（M7(2)/M7(3)：无 lockfile 的 `show`/`info` 发现与用户主目录语义）
+
+参考锚点：
+
+- `bundler/cli/show.rb:10-26`、`bundler/cli/info.rb:10-30`：先 `Bundler.load.lock` 再 `Bundler::CLI::Common.select_spec`。
+- `bundler/cli/common.rb:68-96` `select_spec`：遍历 `Bundler.definition.specs`，命中即返回；未命中时 `default_gem_spec(name)`；仍为 0 条时，若该名字是 `current_dependencies` 中被组过滤掉的依赖，抛组消息，否则抛 `gem_not_found_message`。
+- `bundler/definition.rb:249-250` `specs` = `materialize(requested_dependencies)`：没有 lockfile 时 `Bundler.load` 会**先解析 Gemfile**，再逐个 materialize 已解析的 spec。
+- Ruby 的 `File.expand_path("~")`/`Gem.user_dir` 在 Windows 上优先 `HOME`（实测 `HOME=<tmp>` 且 `USERPROFILE=C:\Users\ShiningRay` 时两者都指向 `<tmp>`），Bundler 的用户级缓存/配置因此跟随 `HOME`。
+
+实测 oracle（4.0.24；`file://` 源 + 无 `Gemfile.lock`；两侧独立 HOME）：
+
+| 场景 | 参考 | 修复前我方 |
+| --- | --- | --- |
+| `my_plugin`（索引有、宿主未装）`show my_plugin` / `info my_plugin` / `show` / `show --paths my_plugin` | exit 7，stderr `Could not find gem 'my_plugin' in locally installed gems.` | exit 20，`Could not find <abs>/Gemfile.lock for resolution` |
+| 同上、Gemfile 写 `gem "my_plugin", "0.1.0"` | exit 7，`Could not find gem 'my_plugin (= 0.1.0)' in locally installed gems.`（`Gem::Dependency#to_s` 保留非默认 requirement） | 同上 exit 20 |
+| `json_pure 2.8.1`（宿主默认 gem 目录已装）`show json_pure` / `show --paths` / `info json_pure` | exit 0，打印 `C:/Ruby40-x64/lib/ruby/gems/4.0.0/gems/json_pure-2.8.1`（info 另含字段） | exit 7，`Could not find json_pure-2.8.1 in locally installed gems` |
+| 同上裸 `show` | exit 0，`Gems included by the bundle:` + `  * bundler (4.0.24)` + `  * json_pure (2.8.1)` | exit 7（先打印表头再报缺失） |
+
+修复前缺陷：
+
+1. `show_info` 无条件 `definition.lockfile!`，没有 lockfile 时抛 `LockfileError`（exit 20），而参考此时解析 Gemfile。
+2. `system_gem_search_dirs` 被 `CELERITE_BRIDGE_SERVER`/`CELERITE_REFERENCE_BUNDLER_LIB` **门控**：普通运行（不设这两个变量）拿不到 GEM_PATH/默认 gem 目录，`installed_gem_dir` 只在 bundle 路径里找，宿主已安装的 gem 一律判为缺失（与此前 `list`/`show` 组过滤同一类装具门控缺陷）。
+3. `Config.user_home` 在 Windows 上优先 `USERPROFILE`，与 Ruby 的 `~` 语义相反：差分/spec 隔离 `HOME` 后，用户级 `.bundle` 配置与 compact-index 缓存仍写到真实 profile，本机 Low-IL 下直接 `Error opening file with mode 'wb' ... 拒绝访问`（exit 1）。
+4. 无 lockfile 的缺失消息用了 spec `full_name`，参考用依赖显示名（含非默认 requirement）。
+
+实现：
+
+- `src/celerite/cli/commands.cr` `show_info`：`resolved_from_gemfile = !definition.lockfile_exists?`；无 lockfile 时 `Resolution.new(definition, false)` 解析并取 `generated_lockfile`，同时把 `resolution.evaluation.dependencies` 的显示名（`Gem::Dependency#to_s` 语义：默认 `>= 0` 省略 requirement）记入 `dependency_displays`；缺失分支在无 lockfile 时打印 `Could not find gem '<display>' in locally installed gems.`（无表头）。
+- `src/celerite/cli/commands_surface.cr` `system_gem_search_dirs`：去掉桥环境门控，直接向桥取 `default_gem_dir`/`gem_paths`/`user_gem_dir`，失败仅返回空列表。
+- `src/celerite/config.cr` `Config.user_home`：所有平台先认 `HOME`（非空），Windows 再回退 `USERPROFILE` → `HOMEDRIVE`+`HOMEPATH`。
+
+证据：
+
+- `spec/m7_show_no_lockfile_spec.cr`（新）5 例：无 lockfile 未安装（4 条命令同消息）、requirement 显示、GEM_PATH 已安装（用临时 GEM_HOME 造 `gems/json_pure-2.8.1` + `specifications/*.gemspec`）、裸 `show` 列表；`5 examples, 0 failures`。
+- 差分：新增 `fixtures/differential/show-no-lockfile-missing`（`show my_plugin`）与 `show-no-lockfile-installed`（`show json_pure`）。4.0.24：`show-no-lockfile-missing show-no-lockfile-installed show-group-ignored show-missing-installed version-plain env-report` -> `6 passed, 0 failed`；2.7.2 同 6 条 -> `6 passed, 0 failed`。
+- 负对照：把 `resolved_from_gemfile` 硬置 `false` 重建二进制 -> 两个新夹具均 `FAIL`（`exit code: reference=7 celerite=20`，diff 显示 `< Could not find gem 'json_pure (= 2.8.1)' ...` / `> Could not find <sandbox>/Gemfile.lock` + `> for resolution`），还原后复绿。
+- 全量：`crystal spec` 结果见本轮提交说明（基线 486/0/4）；`crystal tool format --check` 与 `crystal build --no-codegen` 均 EXIT 0。
+
+已声明差异与未验证：
+
+- `file://C:/...`（两斜杠）这种非规范源写法，参考可正常解析，我方 URI 归一化成 `file://C/...` 后在索引里找不到 gem，报 `... in rubygems repository file://C/... or installed locally`。规范写法 `file:///C:/...` 两侧一致；本轮未改 URI 归一化，登记为已声明差异。
+- 无 lockfile 时 `info` 的 metadata 依赖已安装 gemspec；只在临时 GEM_HOME 里造了占位 gemspec，未验证真实宿主 gem 的完整字段（宿主已装 `json_pure` 的手工探针输出与参考逐字一致）。
+- `show`/`info` 无 lockfile 会触发一次解析（与参考一致），未测大 Gemfile 的耗时差异。

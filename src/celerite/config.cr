@@ -207,10 +207,17 @@ module Celerite
     end
 
     def self.user_home : String?
+      # Ruby's `File.expand_path("~")` honors HOME before the Windows profile
+      # variables, so a caller that isolates HOME (specs, differential sandboxes)
+      # also moves the user-level `.bundle` config and cache. Preferring
+      # USERPROFILE sent those writes to the real profile instead.
+      if home = ENV["HOME"]?
+        return home unless home.empty?
+      end
       {% if flag?(:windows) %}
         ENV["USERPROFILE"]? || (ENV["HOMEDRIVE"]? && ENV["HOMEPATH"]? && File.join(ENV["HOMEDRIVE"].not_nil!, ENV["HOMEPATH"].not_nil!))
       {% else %}
-        ENV["HOME"]?
+        nil
       {% end %}
     end
 

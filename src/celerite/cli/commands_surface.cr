@@ -737,24 +737,25 @@ module Celerite
       end
       dirs = [] of String
       begin
-        server = ENV["CELERITE_BRIDGE_SERVER"]?
-        ref_lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]?
-        if (server && !server.empty? && File.file?(server)) || (ref_lib && !ref_lib.empty? && Dir.exists?(ref_lib))
-          bridge = Bridge::Client.new
-          begin
-            env = bridge.ruby_environment
-            unless env.default_gem_dir.empty?
-              dirs << env.default_gem_dir
-            end
-            env.gem_paths.each do |p|
-              dirs << p unless p.empty?
-            end
-            if user = env.user_gem_dir
-              dirs << user unless user.empty?
-            end
-          ensure
-            bridge.close
+        # The bridge is how a normal CLI run learns RubyGems' own directories, so
+        # this must not be gated on the test/differential environment variables
+        # (CELERITE_BRIDGE_SERVER / CELERITE_REFERENCE_BUNDLER_LIB): gating it
+        # made `show`/`info`/`check` miss gems installed in the default gem dir
+        # outside the harness. A failed bridge call just yields no extra dirs.
+        bridge = Bridge::Client.new
+        begin
+          env = bridge.ruby_environment
+          unless env.default_gem_dir.empty?
+            dirs << env.default_gem_dir
           end
+          env.gem_paths.each do |p|
+            dirs << p unless p.empty?
+          end
+          if user = env.user_gem_dir
+            dirs << user unless user.empty?
+          end
+        ensure
+          bridge.close
         end
       rescue
         dirs = [] of String

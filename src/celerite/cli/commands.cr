@@ -926,7 +926,32 @@ module Celerite
 
       definition = Definition.build
       validate_ruby_runtime!(definition)
-      lockfile = definition.lockfile!
+      # Reference `Bundler.load` resolves the Gemfile when no lockfile exists yet,
+      # so `show`/`info` work before the first `bundle install`; asking for the
+      # lockfile here raised LockfileError (exit 20) instead of resolving.
+      resolved_from_gemfile = !definition.lockfile_exists?
+      # Gemfile dependencies are only reachable through the resolution object; the
+      # missing-gem message spells the requirement out (`'json_pure (= 2.8.1)'`),
+      # so remember the display form before the bridge goes away.
+      dependency_displays = {} of String => String
+      lockfile = if resolved_from_gemfile
+                   resolution = Resolution.new(definition, false)
+                   begin
+                     resolution.resolve!
+                     resolution.evaluation.dependencies.each do |dep|
+                       # `Gem::Dependency#to_s` omits the requirement when it is
+                       # the default `>= 0` (`Gem::Requirement#none?`), which is how
+                       # the reference renders `'my_plugin'` vs `'json_pure (= 2.8.1)'`.
+                       none = dep.requirements.empty? || dep.requirements == [">= 0"]
+                       dependency_displays[dep.name] = none ? dep.name : "#{dep.name} (#{dep.requirements.join(", ")})"
+                     end
+                     resolution.generated_lockfile
+                   ensure
+                     resolution.close
+                   end
+                 else
+                   definition.lockfile!
+                 end
       # Measured against 4.0.24: `show`/`show --paths`/`show GEM`/`info GEM` do
       # NOT run the frozen ruby-unlock production check (they exit 0 and print
       # the listing/paths); only `check` raises ProductionError here.
@@ -948,9 +973,18 @@ module Celerite
       # (see `bundle show --paths` in cli.rb / printer.rb).
       missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
       if missing.any?
-        stdout.puts "Gems included by the bundle:" if command == "show" && names.empty? && !paths
-        full_names = missing.map(&.full_name).join(", ")
-        stderr.puts "Could not find #{full_names} in locally installed gems"
+        if resolved_from_gemfile
+          # Resolved from the Gemfile but not installed anywhere: the reference
+          # reports the dependency (name plus its requirement, e.g.
+          # `json_pure (= 2.8.1)`) and prints no listing header, because
+          # materializing the definition is what fails.
+          display = dependency_displays[missing.first.name]? || missing.first.name
+          stderr.puts "Could not find gem '#{display}' in locally installed gems."
+        else
+          stdout.puts "Gems included by the bundle:" if command == "show" && names.empty? && !paths
+          full_names = missing.map(&.full_name).join(", ")
+          stderr.puts "Could not find #{full_names} in locally installed gems"
+        end
         return 7
       end
       if command == "show" && names.empty?
