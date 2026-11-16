@@ -1,0 +1,2 @@
+Gemfile	gem "json_pure", "= 2.8.1"
+Gemfile.lock	json_pure (2.8.1)

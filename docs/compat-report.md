@@ -2167,3 +2167,43 @@ profile 门控：`Commands.preserve_lockfile_crlf?`（`commands.cr:320`）= `!(E
 - 已声明差异：`install-frozen`——removed-flag 的参考三行专属文案与 `Did you mean?` 未实现。
 - 环境（Low-IL `0xC0000022`）：`git-glob`、`git-installed-discovery`、`git-path-install`、`git-pristine`、`git-tag`、`plugin-git-local`、`plugin-git-local2`、`native-ext`、`native-ext-target` 共 9 条。
 - 2 条 SKIP 仍为 `git-submodules`（参考侧被 git ≥2.38 的 submodule file-transport 挡住）与 `plugin-source-disabled`（装具无法逐夹具设 `BUNDLE_PLUGINS=false`）。
+
+## 2026-11-16（M7(2)：`bundle add` 的开关面、`bundle remove` 的消息与 remove/clean 分工）
+
+参考语义（逐行核对 `bundler-4.0.24`）：
+
+- `lib/bundler/cli.rb:404-426` 声明 `add GEM VERSION` 的 `--version/-v`、`--group/-g`、`--source/-s`、`--require/-r`、`--path`、`--git`、`--github`、`--branch`、`--ref`、`--glob`、`--quiet`、`--skip-install`、`--optimistic`、`--strict`、`--cooldown`。
+- `lib/bundler/cli/add.rb:41-60` `validate_options!`：`--strict` 与 `--optimistic` 同时出现 → `InvalidOption`；未知开关由 Thor 先拒（先于「至少一个 gem 名」）。
+- `lib/bundler/injector.rb:63-76` `remove`：`Bundler.ui.info "Removing gems from <Gemfile>"`，逐个 `Bundler.ui.confirm "#{pretty_dependency(dep)} was removed."`；`shared_helpers.rb:170-180` 的 `pretty_dependency` 在 requirement 非默认时输出 `name (requirement)`，即**按 Gemfile 里的 requirement 原文**。
+- `lib/bundler/installer.rb:74` 的 `Bundler.ui.warn "The Gemfile specifies no dependencies"` 走 stderr（`remove` 自身仍 exit 0 并把移除行打在 stdout）。
+
+修复前（实测）：
+
+- `celerite add racc --group dev` → exit 15 `Unknown switches "--group"`；`add racc --version=1.8.1` → exit 15 `Unknown switches "--version=1.8.1"`。根因：`self.add` 把 `rest.select(&.starts_with?("--"))` 直接透传给 `install`，而 `run_install` 的 `INSTALL_SWITCH_*` 白名单不认识 add 专属开关。
+- `celerite remove <pinned>` 只打印 `racc was removed.`（缺 ` (~> 1.8)`），因为它从**锁文件**取 requirement。
+- 更隐蔽的一处：`remove` 结束后会顺手剪掉「不在锁文件里」的 gem 目录；此前之所以没暴露，是因为旧代码在 `install` 之前先读过一次 `definition.lockfile!`（留下陈旧缓存），剪枝时看到的仍是包含被移除 gem 的旧锁文件。改为从 Gemfile 行取消息后缓存不再陈旧，剪枝真的执行 → `bundle remove` 之后再 `bundle clean` 就什么都不打印了（`spec/m7_clean_spec.cr` 3 例失败）。
+
+实现：
+
+- `src/celerite/cli/commands_surface.cr`：新增 `ADD_SWITCH_FLAGS`/`ADD_SWITCH_VALUES`；`self.add` 先 `reject_unknown_switches`（未知开关 → 15，`=值` 形态保留原始 token），再判 `--strict` + `--optimistic` → 15 并逐字输出 `` You cannot specify `--strict` and `--optimistic` at the same time. ``（带句点）。
+- 新增 `private def self.install_args_from_add(rest, name)`：委托 `install` 前剔除 add 专属开关（含其值）与 gem 名位置参数，保留 `--quiet/--verbose/--no-color/--retry/--jobs/--cooldown` 等 install 认识的开关。
+- `latest_requirement_for` 的索引探针改为静默 `resolve`，随后按参考顺序打印 `Fetching source index from <remote>/` + `Resolving dependencies...`（path/git 源仍走原分支）。
+- `self.remove`：按 Gemfile 行里**引号内的 requirement 原文**拼 `name (req) was removed.`；Gemfile 已无 `gem` 行时把 `The Gemfile specifies no dependencies` 打到 stderr。
+- `self.remove` **不再剪枝**：与参考一致，被移除的 gem 仍留在 bundle 目录里，由后续 `bundle clean` 报告 `Removing <name> (<version>)`。
+
+证据与门禁（首辅亲跑）：
+
+- 新增 `spec/m7_add_remove_spec.cr` 6 例：`add --bogus` → 15 + 逐字；`--strict`+`--optimistic` → 15 + 逐字；`add json_pure --version=2.8.1` → 0 且 Gemfile 出现 `"= 2.8.1"`；`remove` 三种 requirement 形态的消息；空 Gemfile 时 stderr 那句。
+- 新增差分夹具 `add-version-plain`、`add-group-plain`、`unknown-switch-add`、`add-strict-optimistic`、`remove-requirement`（全用 `json_pure`，避开 native ext）。4.0.24 与 2.7.2 各跑 10 个夹具（含回归 `add-skip-install`/`add-source`/`add-path`/`add-git`/`install-fresh`）：**各 10 passed, 0 failed, 0 skipped**。
+- 逐命令 A/B（同一沙箱布局，两侧独立 HOME/BUNDLE_PATH）：`add json_pure --version=2.8.1`、`add json_pure --group dev`、`add --bogus`、`add json_pure --strict --optimistic` 的 stdout+stderr+exit **逐字相同**（`same=True` ×4）。
+- `install` → `remove thor` → `clean` 序列 A/B：两侧 `remove` 后 `gems/thor-1.3.2` 都还在，`clean` 都打印 `Removing thor (1.3.2)` 且最终目录相同。
+- 负对照（首辅亲做）：把 `install_args_from_add` 改成 `return rest.reject { |a| a == name }` 重新构建 → `FAIL add-version-plain`/`FAIL add-group-plain`，原文 `Unknown switches "--group"`、`Only in SANDBOX/project: Gemfile.lock`，汇总 `0 passed, 2 failed`；还原后复绿。
+- 负对照（回归承重点）：把剪枝代码放回 `remove` → `spec/m7_clean_spec.cr` `4 examples, 3 failures`（`Expected: "" to include: "Removing thor (1.3.2)"`），还原后 `spec/m7_clean_spec.cr spec/m7_add_remove_spec.cr` 联跑 `10 examples, 0 failures`。
+- 门禁：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen --link-flags <shim> src/cli.cr` EXIT 0（仅既有 2 条 `File.executable?` deprecation）；全量 **462 examples, 0 failures, 4 errors, 0 pending**（4 = 既有 `spec/git_source_spec.cr` Low-IL；基线 456/0/4）；`git diff --check` EXIT 0；`bash -n script/differential` EXIT 0。
+
+已声明差异与未验证：
+
+- `add --github/--branch/--ref/--glob` 的组合语义与 `--cooldown` 未实现（开关被接受但语义未接线，属下一轮补齐对象）。
+- `add --skip-install` 时参考是否仍打印探针抓取行未逐字取证（本轮只覆盖需要安装的路径）。
+- `remove` 的 `Gemfile` 行解析按「引号内 token」取 requirement；多 requirement（`gem "x", "~> 1", ">= 1.0.2"`）、`group:`/`path:` 等选项、多 `gemfile`（`eval_gemfile`）场景未取 oracle。
+- `add-version`/`add-strict`/`add-optimistic`/`add-remove` 四个旧夹具仍因要安装 `racc`（native ext，本机 msys `0xC0000022`）无法在 cel 侧通过，保持 FAIL，属环境阻塞。

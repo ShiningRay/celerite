@@ -211,7 +211,24 @@ module Celerite
     # ------------------------------------------------------------------
     # add: append `gem "name"` to the Gemfile and install
     # ------------------------------------------------------------------
+    # `bundle add` option surface (bundler-4.0.24 cli.rb:404-426). Values that
+    # are accepted but not implemented yet (--github/--glob/--cooldown) stay
+    # here so the switch check matches the reference; their semantics are
+    # recorded as a declared gap instead.
+    ADD_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--skip-install", "--optimistic", "--strict"]
+    ADD_SWITCH_VALUES = SWITCH_VALUES_COMMON + [
+      "--version", "-v", "--group", "-g", "--source", "-s", "--require", "-r",
+      "--path", "--git", "--github", "--branch", "--ref", "--glob", "--cooldown",
+    ]
+
     def self.add(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if code = reject_unknown_switches(stderr, rest, ADD_SWITCH_FLAGS, ADD_SWITCH_VALUES)
+        return code
+      end
+      if rest.includes?("--strict") && rest.includes?("--optimistic")
+        stderr.puts "You cannot specify `--strict` and `--optimistic` at the same time."
+        return 15
+      end
       name = rest.reject(&.starts_with?("--")).first?
       if name.nil?
         stderr.puts "`add` requires at least 1 argument"
@@ -259,10 +276,37 @@ module Celerite
       # Reference add prints two fetches (requirement probing + shared
       # resolution); install() repeats the second fetch when the lockfile
       # is (re)written.
-      code = install(stdout, stderr,
-        rest.reject { |a| a == name || a.starts_with?("--") } + rest.select(&.starts_with?("--")),
+      code = install(stdout, stderr, install_args_from_add(rest, name),
         summary: false, no_reuse: true)
       code
+    end
+
+    # `run_install` validates its arguments with INSTALL_SWITCH_*, which does
+    # not know add-only options; forwarding them was a real exit-15 bug. Drop
+    # the add-specific flags (and their values) plus the gem name positional.
+    private def self.install_args_from_add(rest : Array(String), name : String) : Array(String)
+      add_values = [
+        "--version", "-v", "--group", "-g", "--source", "-s", "--require", "-r",
+        "--path", "--git", "--github", "--branch", "--ref", "--glob", "--cooldown",
+      ]
+      add_flags = ["--skip-install", "--optimistic", "--strict"]
+      filtered = [] of String
+      skip_value = false
+      rest.each do |arg|
+        if skip_value
+          skip_value = false
+          next
+        end
+        next if arg == name
+        next if add_flags.includes?(arg)
+        matched = add_values.find { |flag| arg == flag || arg.starts_with?("#{flag}=") }
+        if matched
+          skip_value = arg == matched
+          next
+        end
+        filtered << arg
+      end
+      filtered
     end
 
     # Gemfile options added by `bundle add` (--path/--git/--branch/--ref/
@@ -295,9 +339,20 @@ module Celerite
       bridge = Bridge::Client.new
       begin
         resolution = Resolution.new(definition, false, bridge)
-        resolution.progress = stdout # probe resolves first: prints fetch+Resolving
-        resolution.show_resolving = true
-        resolution.resolve! # lines 1-2 of the reference add output
+        if flag_value(rest, "--path").nil? && flag_value(rest, "--git").nil?
+          # Reference probes the index source before resolving: the fetch line
+          # comes first, then the resolver announcement.
+          resolution.progress = IO::Memory.new
+          resolution.show_resolving = false
+          resolution.resolve!
+          remote = resolution.primary_remote
+          stdout.puts "Fetching source index from #{remote.chomp("/")}/" unless remote.empty?
+          stdout.puts "Resolving dependencies..."
+        else
+          resolution.progress = stdout # path/git probes use the local gemspec
+          resolution.show_resolving = true
+          resolution.resolve!
+        end
 
         if explicit = flag_value(rest, "--version") || flag_value(rest, "-v")
           return ", \"= #{explicit}\""
@@ -373,38 +428,31 @@ module Celerite
       eol = {{ flag?(:windows) }} ? "\r\n" : "\n"
       File.write(gemfile_path, kept.join(eol) + eol)
       removed.each do |line|
-        label = line.sub(/^gem\s+/, "").gsub(/['"]/, "").split(",")[0].strip
-        req_label = definition.lockfile!.dependencies.find(&.name.==(label)).try do |dep|
-          reqs = dep.requirements
-          reqs.nil? || reqs.empty? ? label : "#{label} (#{reqs.join(", ")})"
-        end || label
-        stdout.puts "#{req_label} was removed."
+        # The message mirrors the Gemfile line: quoted tokens are the gem name
+        # followed by the requirement(s) exactly as written (`~> 2.8`,
+        # `= 2.8.1`, or several constraints). Options such as `group: :dev`
+        # use bare symbols and are not quoted, so they are ignored here.
+        quoted = line.scan(/"([^"]*)"|'([^']*)'/).map { |m| m[1]? || m[2]? }.compact
+        label = quoted.first? || line
+        requirements = quoted.skip(1)
+        display = requirements.empty? ? label : "#{label} (#{requirements.join(", ")})"
+        stdout.puts "#{display} was removed."
       end
 
-      # Reference remove: regenerate the lockfile and prune the bundle
-      # silently (no progress/summary output).
+      if kept.none? { |l| l.strip.starts_with?("gem ") }
+        # Reference install reports this on stderr (the remove command still
+        # exits 0 and prints the removal lines on stdout).
+        stderr.puts "The Gemfile specifies no dependencies"
+      end
+
+      # Reference remove: regenerate the lockfile and reinstall silently (no
+      # progress/summary output). It does **not** prune the bundle directory:
+      # the gem that was just dropped from the Gemfile stays installed, and the
+      # follow-up `bundle clean` is what reports `Removing <name> (<version>)`.
+      # Pruning here used to be hidden by a stale `definition.lockfile!`
+      # cache; reading the fresh lockfile made `clean` print nothing.
       null = IO::Memory.new
       install(null, stderr, rest, summary: false)
-
-      # silently remove the unneeded gems from the bundle path
-      bridge = Bridge::Client.new
-      begin
-        abi = InstallPaths.ruby_abi(bridge)
-        install_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi)
-        used = Set(String).new
-        definition.lockfile!.specs.each { |s| used << s.full_name }
-        gems_dir = File.join(install_root, "gems")
-        if Dir.exists?(gems_dir)
-          Dir.children(gems_dir).each do |full_name|
-            next if used.includes?(full_name)
-            FileUtils.rm_rf(File.join(gems_dir, full_name))
-            spec_file = File.join(install_root, "specifications", "#{full_name}.gemspec")
-            File.delete(spec_file) if File.file?(spec_file)
-          end
-        end
-      ensure
-        bridge.close
-      end
       0
     end
 
