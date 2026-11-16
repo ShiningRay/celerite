@@ -2891,3 +2891,52 @@ exec --bogus true                     ref 127   cel 127（参考同样把未知�
 - 相对路径 `--gemfile` 在跨盘符时的展开形态（只测了同盘沙箱）。
 - `BUNDLE_GEMFILE` 已设置时 `--gemfile` 的优先级（参考的 `find_gemfile` 顺序未单独取 oracle）。
 - 2.x 的 `--gemfile` 错误文本（只比对了两 profile 的差分夹具，二者一致）。
+## 2026-11-17（M7(2)：`bundle lock` 的平台编辑、命名更新与开关面）
+
+参考锚点：
+
+- `bundler/cli/lock.rb:28-70`：先 `options["remove-platform"].flatten.each { definition.remove_platform }`，再 `options["add-platform"].flatten.each { |platform| ... }`，`platform.to_s == "unknown"` 时 `raise InvalidOption, "The platform <raw> is unknown to RubyGems and can't be added to the lockfile."`（exit 1）；随后 `definition.platforms.empty?` → `raise InvalidOption, "Removing all platforms from the bundle is not allowed"`（exit 15）。
+- `bundler/definition.rb:538-546`：`remove_platform` 对不在列表的平台 `raise InvalidOption, "Unable to remove the platform ... since the only platforms are ..."`。
+- `bundler/cli/common.rb:95-103 ensure_all_gems_in_lockfile!`：有锁文件时，`--update NAME` 指向未锁定的 gem → `GemNotFound` + `gem_not_found_message`（exit 7）；无锁文件直接返回。
+- `bundler/cli/lock.rb:107-116 check_for_conflicting_options`：`--normalize-platforms` 与 `--add-platform`/`--remove-platform` 各有一条独立消息。
+- 开关面以 `Bundler::CLI.commands[name].options` 的反射结果为准：`lock` 无 `--ruby`/`--path`/`--without`/`--with`/`--source`/`--trust-policy`，`update` 无 `--prefer-local`/`--system`/`--binstubs`/`--path`/`--without` 等；2.7.2 与 4.0.24 除 `--cooldown` 外完全一致。
+
+修复前（同一沙箱、两侧独立 HOME/GEM_HOME/BUNDLE_PATH）：
+
+| 场景 | 参考 | 修复前我方 |
+| --- | --- | --- |
+| `lock --add-platform nonsense` | exit 1 + 平台未知消息 | exit 0，把 `nonsense` 写进 `PLATFORMS` |
+| `lock --remove-platform java`（锁里只有本机平台） | exit 15 + `Unable to remove the platform ...` | exit 0 |
+| `lock --remove-platform <唯一平台>` | exit 15 + `Removing all platforms from the bundle is not allowed` | exit 0 |
+| `lock --update nosuchgem`（已有锁） | exit 7 + `Could not find gem 'nosuchgem'.` | exit 0 |
+| `lock --update json_pure` | 打印两次 `Resolving dependencies...` | 只打印一次 |
+| `lock --ruby` / `--path x` / `--source x` / `--trust-policy strict` / `--with dev` | `Unknown switches` exit 15 | 接受并静默忽略 |
+| `update --prefer-local` / `--system` / `--binstubs` / `--path x` / `--without dev` | `Unknown switches` exit 15 | 接受并静默忽略（还会多打一条 `[DEPRECATED]`） |
+
+实现（`src/celerite/cli/commands.cr` 的 `run_lock`）：
+
+1. 冲突检查拆成两条精确消息（无 `Error:` 前缀）：`--normalize-platforms can't be used with --add-platform` / `... --remove-platform`，均 exit 15。
+2. 平台编辑按参考顺序（先 remove 后 add）在 `Definition.build` 之后、解析之前执行：remove 命中不在当前列表的平台 → exit 15；add 的平台归一化为 `unknown` → exit 1；编辑后列表为空 → exit 15。
+3. `--update NAME` 在 `lockfile_exists?` 时校验 `lockfile!.specs.map(&.name)`，未命中 → `gem_not_found_message_for` + exit 7；无锁文件不校验。
+4. 命名更新把 `unlock` 从布尔改为 `Array(String)`，并在写盘前补打印第二次 `Resolving dependencies...`（`--print` 模式走 stderr），复刻参考「按名解锁 → 物化一次 + `#remotely!` 再一次」。
+5. `LOCK_SWITCH_FLAGS/VALUES`、`UPDATE_SWITCH_FLAGS/VALUES` 按 Thor 反射结果重写：`lock` 去掉 `--ruby`/`--path`/`--without`/`--with`/`--source`/`--trust-policy`/`-P`，`--bundler` 移入值选项；`update` 去掉 `--prefer-local`/`--standalone`/`--no-cache`/`--no-lock`/`--redownload`/`--system`/`--binstubs`/`--clean`/`--path`/`--without`/`--with`/`--trust-policy`/`-P`/`--shebang` 并把 `--bundler` 移入值选项。
+
+证据：
+
+- A/B 14 例矩阵（`lock` 的 add/remove/update/normalize/print/add-checksums 组合）：exit、stdout、stderr、生成的 `Gemfile.lock` **14/14 逐字相同**；另 5 个边界例（`remove`+`add` 同时、`add-platform ruby`、`update --conservative`）亦全同。
+- 开关面 12 例探针（`lock --ruby/--path/--source/--trust-policy/--with`、`update --prefer-local/--system/--binstubs/--path/--without`、两侧合法的 `lock --bundler`、`update --ruby`）：除 `lock --bundler` 输出里的沙箱绝对路径外全部一致。
+- `spec/m7_lock_switches_spec.cr` 8 例 0 失败；`spec/cli_spec.cr` 的平台往返用例按参考改写（先加第二平台再删本机平台，最后拒绝删除最后一个平台）。
+- 差分夹具 `lock-add-unknown-platform`、`lock-remove-absent-platform`、`lock-update-named`（预置锁）、`unknown-switch-lock-ruby`：4.0.24 4 passed，2.7.2 4 passed（+`install-fresh` 回归）。
+- 负对照：把 `if normalized == "unknown"` 改成 `if false` 重建 `bin/celerite-nc.exe` → `lock-add-unknown-platform` FAIL（我方 exit 0 且写出锁文件），还原后 PASS。
+
+已声明差异：
+
+- `--cooldown` 只存在于 4.0.24 的 `lock`/`update` 选项表（2.7.2 没有），本实现保留它以对齐 4.x；2.7.2 下 `lock --cooldown 7`/`update --cooldown 7` 会与我方不同。
+- `cache` 的开关表本轮未重排（仍接受 `--force`/`--redownload`/`--no-cache`/`--local`/`--path`/`--without`/`--with`）；`install` 保留 `--path`/`--without`/`--with` 作为已声明的语义实现。
+- `--bundler` 只做接受，不做版本固定语义；`--add-platform` 只写平台，不触发平台专属变体解析。
+
+未验证：
+
+- `lock --update` 与 `--conservative` 组合在 2.7.2 下的完整输出（只用 4.0.24 取过 oracle）。
+- `PLATFORMS` 段在多次增删后的排序规则（只比对过 `java` + 本机平台两例）。
+- `--print` 与命名更新同时使用时第二次 `Resolving dependencies...` 是否确实走 stderr（只读过源码路径）。

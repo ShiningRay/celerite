@@ -564,11 +564,15 @@ module Celerite
     INSTALL_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--local", "--prefer-local", "--full-index", "--standalone", "--no-cache", "--no-lock", "--force", "--redownload", "--path", "--without", "--with"]
     INSTALL_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--target-rbconfig", "--cooldown", "--trust-policy", "-P", "--lockfile"]
 
-    UPDATE_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--all", "--local", "--prefer-local", "--full-index", "--standalone", "--no-cache", "--no-lock", "--force", "--redownload", "--patch", "--minor", "--major", "--pre", "--strict", "--conservative", "--system", "--binstubs", "--clean", "--ruby", "--bundler", "--path", "--without", "--with"]
-    UPDATE_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--group", "-g", "--source", "--trust-policy", "-P", "--shebang", "--cooldown"]
+    # `update` and `lock` switch surface, taken from the declared Thor options
+    # (`Bundler::CLI.commands[name].options`, identical in 2.7.2 and 4.0.24
+    # except `--cooldown`). Anything else must be rejected as an unknown switch
+    # instead of being accepted and ignored.
+    UPDATE_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--all", "--local", "--full-index", "--force", "--patch", "--minor", "--major", "--pre", "--strict", "--conservative", "--ruby"]
+    UPDATE_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--group", "-g", "--source", "--bundler", "--cooldown"]
 
-    LOCK_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--local", "--full-index", "--print", "--normalize-platforms", "--add-checksums", "--patch", "--minor", "--major", "--pre", "--strict", "--conservative", "--update", "--bundler", "--ruby", "--path", "--without", "--with"]
-    LOCK_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--add-platform", "--remove-platform", "--source", "--trust-policy", "-P", "--cooldown", "--lockfile"]
+    LOCK_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--local", "--full-index", "--print", "--normalize-platforms", "--add-checksums", "--patch", "--minor", "--major", "--pre", "--strict", "--conservative", "--update"]
+    LOCK_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--add-platform", "--remove-platform", "--bundler", "--cooldown", "--lockfile"]
 
     CACHE_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--no-install", "--all-platforms", "--force", "--redownload", "--no-cache", "--local", "--path", "--without", "--with"]
     CACHE_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--cache-path", "--cooldown"]
@@ -677,6 +681,26 @@ module Celerite
         values << value if value && !value.starts_with?("--")
       end
       values
+    end
+
+    # RubyGems platform normalization used by `--add-platform`/`--remove-platform`
+    # (`Gem::Platform.new(value)`, cli/lock.rb L49-58). Unknown names normalize to
+    # "unknown", which the reference rejects for adds.
+    def self.normalized_platform(value : String) : String
+      Celerite::Gem::Platform.new(value).to_s
+    rescue
+      "unknown"
+    end
+
+    # Platform list a definition starts from before add/remove edits
+    # (`@platforms = @locked_platforms.dup`, definition.rb L108; a fresh lock
+    # seeds the local platform via `add_current_platform`).
+    def self.platforms_before_changes(definition : Definition) : Array(String)
+      if definition.lockfile_exists?
+        definition.lockfile!.platforms.map { |entry| normalized_platform(entry) }
+      else
+        [normalized_platform(Celerite::Gem::Platform.local.to_s)]
+      end
     end
 
     # Thor `word_wrap` (pinned contract: friendly-errors `wrap: true`).
@@ -1687,12 +1711,22 @@ module Celerite
         end
       end
       # --normalize-platforms is mutually exclusive with platform add/remove
-      if rest.includes?("--normalize-platforms") && (rest.includes?("--add-platform") || rest.includes?("--remove-platform"))
-        stderr.puts "Error: --normalize-platforms can't be used with --add-platform/--remove-platform"
-        return 15
+      # (`CLI::Lock#check_for_conflicting_options`, cli/lock.rb L107-116).
+      if rest.includes?("--normalize-platforms")
+        if rest.includes?("--add-platform")
+          stderr.puts "--normalize-platforms can't be used with --add-platform"
+          return 15
+        end
+        if rest.includes?("--remove-platform")
+          stderr.puts "--normalize-platforms can't be used with --remove-platform"
+          return 15
+        end
       end
       add_platforms = platform_flag_values(rest, "--add-platform")
       remove_platforms = platform_flag_values(rest, "--remove-platform")
+      # `--update` is a repeatable array option in the reference; a bare
+      # `--update` records `true`, names record a per-gem unlock list.
+      update_names = platform_flag_values(rest, "--update")
 
       definition = Definition.build
       if unsupported = Commands.unsupported_setting_error(definition.config, stderr)
@@ -1700,11 +1734,53 @@ module Celerite
         return 1
       end
 
+      # Platform edits run before resolution, removals first
+      # (`Definition#remove_platform`, definition.rb L541-546; cli/lock.rb L49-67).
+      if !remove_platforms.empty? || !add_platforms.empty?
+        current = platforms_before_changes(definition)
+        remove_platforms.each do |value|
+          normalized = normalized_platform(value)
+          unless current.includes?(normalized)
+            stderr.puts "Unable to remove the platform `#{value}` since the only platforms are #{current.join(", ")}"
+            return 15
+          end
+          current.delete(normalized)
+        end
+        # Unknown platform names are rejected before they reach the lockfile
+        # (cli/lock.rb L56-63).
+        add_platforms.each do |value|
+          normalized = normalized_platform(value)
+          if normalized == "unknown"
+            stderr.puts "The platform `#{value}` is unknown to RubyGems and can't be added to the lockfile."
+            return 1
+          end
+          current << normalized unless current.includes?(normalized)
+        end
+        if current.empty?
+          stderr.puts "Removing all platforms from the bundle is not allowed"
+          return 15
+        end
+      end
+      # `--update NAME` must name a gem that is already locked
+      # (`CLI::Common.ensure_all_gems_in_lockfile!`, cli/common.rb L95-103).
+      # It returns early when there is no lockfile at all, so a first-time lock
+      # with named updates is not an error.
+      unless update_names.empty?
+        if definition.lockfile_exists?
+          locked_names = definition.lockfile!.specs.map(&.name)
+          update_names.each do |name|
+            next if locked_names.includes?(name)
+            stderr.puts gem_not_found_message_for(name, locked_names)
+            return 7
+          end
+        end
+      end
+      # Removing every platform is rejected before resolution (cli/lock.rb L65-67).
       print_mode = rest.includes?("--print")
       update = rest.includes?("--update") || rest.includes?("--all")
 
       definition = Definition.build
-      unlock : Bool | Array(String) = update ? true : false
+      unlock : Bool | Array(String) = update_names.empty? ? update : update_names
 
       resolution = Resolution.new(definition, unlock)
       # The Bundler dependency API warning for scoped Rubygems sources
@@ -1754,6 +1830,13 @@ module Celerite
       else
         data = resolution.generated_lockfile
         text = data.to_lock
+      end
+
+      # A named `--update` unlocks specific gems, and the reference materializes
+      # the definition once for the unlock list and again in `#remotely!`, so the
+      # progress line appears twice (pinned oracle for `lock --update <gem>`).
+      unless update_names.empty?
+        (print_mode ? stderr : stdout).puts "Resolving dependencies..."
       end
 
       if print_mode

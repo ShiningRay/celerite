@@ -277,7 +277,7 @@ describe Celerite::CLI do
   end
 
   describe "lock" do
-    it "manages platforms natively (remove then re-add is a no-op change)" do
+    it "manages platforms natively" do
       local_platform = Celerite::Gem::Platform.local.to_s
       index_url = file_source_url(File.expand_path(File.join(__DIR__, "..", "fixtures", "gem-index")))
       with_project({
@@ -290,18 +290,28 @@ describe Celerite::CLI do
           # the user's HOME (it used to fetch https://rubygems.org).
           code, out, err = run_cli(["lock"])
           code.should eq(0)
-          baseline = File.read(File.join(dir, "Gemfile.lock"))
 
-          # remove the local platform then re-add it: the lockfile round-trips
+          code, out, err = run_cli(["lock", "--add-platform", "java"])
+          code.should eq(0)
+          File.read(File.join(dir, "Gemfile.lock")).should contain("java")
+
+          # Removing one of several platforms keeps the lockfile usable.
           code, out, err = run_cli(["lock", "--remove-platform", local_platform])
           code.should eq(0)
           lock_after_remove = File.read(File.join(dir, "Gemfile.lock"))
+          lock_after_remove.should contain("java")
           lock_after_remove.should_not contain(local_platform)
-          lock_after_remove.should contain(index_url)
+
+          # Removing the last platform is rejected (cli/lock.rb L65-67).
+          code, out, err = run_cli(["lock", "--remove-platform", "java"])
+          code.should eq(15)
+          err.should eq("Removing all platforms from the bundle is not allowed\n")
 
           code, out, err = run_cli(["lock", "--add-platform", local_platform])
           code.should eq(0)
-          File.read(File.join(dir, "Gemfile.lock")).should eq(baseline)
+          lock_after_readd = File.read(File.join(dir, "Gemfile.lock"))
+          lock_after_readd.should contain("java")
+          lock_after_readd.scan(local_platform).size.should eq(1)
         ensure
           ENV.delete("CELERITE_BRIDGE_SERVER")
         end
