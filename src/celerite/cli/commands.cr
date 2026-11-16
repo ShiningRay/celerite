@@ -599,6 +599,13 @@ module Celerite
     private def self.with_gemfile_overrides(rest : Array(String), &)
       gemfile = flag_value_ornext(rest, "--gemfile")
       lockfile = flag_value_ornext(rest, "--lockfile")
+      # The reference validates the switch after Thor but before the definition
+      # is built, so a missing file raises `GemfileNotFound` (exit 10) with the
+      # expanded path and `not found` on its own line.
+      if gemfile
+        expanded = File.expand_path(gemfile)
+        raise GemfileNotFound.new("#{expanded.gsub('\\', "/")}\nnot found") unless File.file?(expanded)
+      end
       previous_gemfile = ENV["BUNDLE_GEMFILE"]?
       previous_lockfile = ENV["BUNDLE_LOCKFILE"]?
       ENV["BUNDLE_GEMFILE"] = gemfile if gemfile
@@ -893,20 +900,10 @@ module Celerite
         return code
       end
       # `--gemfile FILE` is command-level in the reference: check really builds
-      # its definition from that file. Definition.find_gemfile already prefers
-      # BUNDLE_GEMFILE, so scope the override to this command and restore it on
-      # every exit path (including exceptions).
-      requested_gemfile = flag_value_ornext(rest, "--gemfile")
-      previous_gemfile = ENV["BUNDLE_GEMFILE"]?
-      ENV["BUNDLE_GEMFILE"] = requested_gemfile if requested_gemfile
-      begin
+      # its definition from that file (`with_gemfile_overrides` also rejects a
+      # missing path with GemfileNotFound, exit 10).
+      with_gemfile_overrides(rest) do
         run_check(stdout, stderr, rest)
-      ensure
-        if previous_gemfile
-          ENV["BUNDLE_GEMFILE"] = previous_gemfile
-        else
-          ENV.delete("BUNDLE_GEMFILE")
-        end
       end
     end
 
@@ -1675,13 +1672,8 @@ module Celerite
       if code = reject_unknown_switches(stderr, rest, LOCK_SWITCH_FLAGS, LOCK_SWITCH_VALUES)
         return code
       end
-      # `--gemfile` is command-level: the reference validates it after Thor, so
-      # a missing file is GemfileNotFound (exit 10) with `<absolute path>` and
-      # `not found` on two lines -- not a Ruby Errno leaking out of the bridge.
-      if gemfile = flag_value_ornext(rest, "--gemfile")
-        expanded = File.expand_path(gemfile)
-        raise GemfileNotFound.new("#{expanded.gsub('\\', "/")}\nnot found") unless File.file?(expanded)
-      end
+      # `--gemfile` validation lives in `with_gemfile_overrides` so every
+      # command that accepts the switch reports the same GemfileNotFound.
       with_gemfile_overrides(rest) do
         run_lock(stdout, stderr, rest)
       end

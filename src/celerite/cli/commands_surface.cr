@@ -1875,7 +1875,9 @@ module Celerite
         end
         verbose = ENV["CELERITE_VERBOSE"]? == "1"
         if verbose
-          stdout.puts "Running `bundle outdated --verbose` with bundler #{resolution.bridge_bundler_version}"
+          # The `Running ...` echo is emitted once by `Commands.dispatch`
+          # (`print_command_echo`); only the reference debug line is printed
+          # here, so the two never duplicate.
           primary = resolution.primary_remote
           if primary.starts_with?("file:") || primary.includes?("127.0.0.1") || primary.includes?("localhost")
             stdout.puts "Re-resolving dependencies because bundler is unlocking Using a local server, bundler won't use the CompactIndex API"

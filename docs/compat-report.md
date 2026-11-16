@@ -2849,3 +2849,45 @@ exec --bogus true                     ref 127   cel 127（参考同样把未知�
 - 非 Windows 平台上的平台名归一（本机只测 `x64-mingw-ucrt` 与 `x86_64-linux` 两种字符串）。
 - 锁文件 `PLATFORMS` 为空数组时的参考行为（我方按「空则通过」处理，未取 oracle）。
 - `bundle lock --add-platform` 之后的重新校验路径（该命令的写入尚未实现）。
+## 2026-11-17（M7(2)：`--gemfile` 的缺失校验与 `outdated --verbose` 的重复回显）
+
+参考锚点（`bundler-4.0.24`）：
+
+- `bundler/cli.rb`：`method_option "gemfile", type: :string` 只声明在 `init`（L216）、`check`（L229）、`install`（L271）、`update`（L324）、`cache`（L470）、`lock`（L644）上；`list`/`show`/`binstubs`/`add` 等不接受该开关（`Unknown switches "--gemfile"`，exit 15）。
+- `bundler/errors.rb`：`GemfileNotFound < BundlerError`，`status_code(10)`；`friendly_errors.rb` 直接打印消息（不折行，因为长度未超过 80 列）。
+- 参考输出（`check --gemfile <缺失路径>`）：
+
+  ```
+  C:/Users/.../missing/Gemfile
+  not found
+  ```
+
+修复前的我方行为：
+
+- `check`/`update`/`cache --gemfile <缺失路径>`：exit 1，stderr 是 Ruby 侧的 `No such file or directory @ rb_sysopen - <路径>`（桥把 `Errno::ENOENT` 透传出来）；
+- `lock` 已在命令体内单独校验（exit 10 正确），因此只有 `lock` 行为正确。
+
+实现：
+
+- `src/celerite/cli/commands.cr` 的 `with_gemfile_overrides` 在设置 `BUNDLE_GEMFILE` 之前校验：`File.expand_path(gemfile)` 不是文件时 `raise GemfileNotFound.new("#{expanded.gsub('\\', "/")}\nnot found")`。`lock` 原先的重复校验随之删除（唯一来源）。
+- `check` 改用同一个 `with_gemfile_overrides`（原先手写 ENV 覆盖/还原），因此缺失校验、覆盖与还原都在一处。
+- `src/celerite/cli/commands_surface.cr` 的 `outdated`：删除处理器内重复打印的 `Running \`bundle outdated --verbose\` with bundler …`（该行由 `Commands.dispatch#print_command_echo` 统一输出，此前每个 `outdated --verbose` 会打印两次），保留参考的调试行。
+
+证据：
+
+- A/B（同一沙箱布局，两侧独立 `HOME`/`GEM_HOME`/`BUNDLE_PATH`）：`check`/`lock`/`cache`/`update --gemfile <缺失>` 全部 exit 10，stderr 逐字相同（参考 CRLF、我方 LF，按行比较相同）；`check --gemfile=<缺失>` 同样一致。
+- 差分新夹具 `check-gemfile-missing`（`command`=`check --gemfile missing/Gemfile`）：4.0.24 与 2.7.2 均 `PASS (exit=10)`。
+- `outdated-verbose` 夹具此前因重复回显失败，修复后 4.0.24 与 2.7.2 均 `PASS (exit=1)`（两侧都在发现可更新时退出 1）。
+- `spec/m7_gemfile_switch_spec.cr` 3 例：`check` 缺失、`lock`/`update`/`cache` 缺失（三命令同消息）、`lock --gemfile Alt.gemfile` 真的按该文件解析并写 `Alt.gemfile.lock`；负对照把校验短路后 2 failures（`Expected: 10 got: 1`）。
+- `crystal tool format --check src spec` 0；`git diff --check` 0；全量 `crystal spec` 568 examples / 0 failures / 4 errors（4 = 既有 `spec/git_source_spec.cr` 的 msys Low-IL；`spec/m7_build_args_spec.cr:97` 在首轮全量偶发失败、单独跑 5/0，为本机原生扩展构建的环境抖动）。
+
+已声明差异：
+
+- `install`/`cache` 的 `--gemfile` 校验与参考同形，但这两个命令的后续安装路径仍按已声明差异处理（`cache` 的 `--all-platforms` 语义、`install` 的 removed flags）。
+- `init --gemfile` 不校验存在性（参考用它指定**新建**文件名），未纳入本次改动。
+
+未验证：
+
+- 相对路径 `--gemfile` 在跨盘符时的展开形态（只测了同盘沙箱）。
+- `BUNDLE_GEMFILE` 已设置时 `--gemfile` 的优先级（参考的 `find_gemfile` 顺序未单独取 oracle）。
+- 2.x 的 `--gemfile` 错误文本（只比对了两 profile 的差分夹具，二者一致）。
