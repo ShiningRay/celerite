@@ -2112,3 +2112,58 @@ profile 门控：`Commands.preserve_lockfile_crlf?`（`commands.cr:320`）= `!(E
 - 无 Gemfile 时执行 `plugin install --source` 的参考行为未取证（我方会装到全局 root）。
 - `plugin uninstall` 在无 Gemfile（全局 root）下的行为未差分。
 - 真实 https 索引源未测（夹具走 `file://`）；参考 stdout 的 `Fetching source index from …` 尾斜杠随索引 URL 而定，夹具已覆盖但未逐字断言。
+
+## 2026-11-16（M7(5)：文件系统错误按参考映射，含 ENOSPC/EROFS/EPERM/ENOTSUP/EPROTO）
+
+参考语义（`bundler-4.0.24`）：
+
+- `bundler/shared_helpers.rb:105-127` `filesystem_access` 把 OS 错误映射成专属异常：`EACCES`→`PermissionError`、`EAGAIN`→`TemporaryResourceError`、`ENOSPC`→`NoSpaceOnDeviceError`、`EROFS`→`ReadOnlyFileSystemError`、`EPERM`→`OperationNotPermittedError`、`ENOTSUP`→`OperationNotSupportedError`、`EPROTO`→`VirtualProtocolError`；`EEXIST`/`ENOENT` 原样抛出；其余→`GenericSystemCallError`。
+- `bundler/errors.rb:94-219` 的状态码与消息：23/26/27/28/31/32/42/43。其中 `TemporaryResourceError` 的 "trythe" 连写、`VirtualProtocolError` 不含 path/action、`GenericSystemCallError` 在消息尾部追加 `The underlying system error is <class>: <msg>`，均逐字保留。
+
+实现：
+
+- 新增 `src/celerite/filesystem_errors.cr`（56 行）：`FilesystemErrors.map(error : File::Error, action : Symbol = :write) : Celerite::Error?`。`File::AccessDeniedError` 直接映射 `PermissionError`；`Errno` 分支覆盖 EACCES/EAGAIN/ENOSPC/EPERM/EROFS，POSIX 专属的 EPROTO/ENOTSUP 用 `{% unless flag?(:win32) %}` 编译期裁掉；Windows 侧补 `WinError::ERROR_DISK_FULL`/`ERROR_HANDLE_DISK_FULL`/`ERROR_WRITE_PROTECT`/`ERROR_ACCESS_DENIED`；`EEXIST`/`ENOENT` 返回 nil 由调用方原样抛出；兜底 `GenericSystemCallError("There was an error creating|accessing `path`.", error)`。
+- `src/celerite/errors.cr`：`PermissionError` 抽出 `action_phrase`/`permission_description`/`default_message`（消息与状态 23 不变，`:create` 仍写父目录）；新增 `TemporaryResourceError`(26)、`VirtualProtocolError`(27，独立 `Error` 子类，对齐参考不含 path)、`OperationNotSupportedError`(28)、`NoSpaceOnDeviceError`(31)、`GenericSystemCallError`(32)、`ReadOnlyFileSystemError`(42)、`OperationNotPermittedError`(43)。
+- `src/celerite/lockfile/writer.cr`：`rescue ex : File::Error` → `FilesystemErrors.map(ex, :write)`；映射值存在则抛映射值，否则原样抛出（`EEXIST`/`ENOENT` 不被吞）。
+
+证据与门禁（首辅亲跑）：
+
+- 新 spec `spec/m7_filesystem_error_mapping_spec.cr` 10 例：EAGAIN/ENOSPC/EPERM/EROFS/EACCES 的状态码与逐字消息、EEXIST/ENOENT 返回 nil、EINVAL→`GenericSystemCallError`（含尾部 `The underlying system error is File::Error:`）、`:create` 的父目录短语、Windows 两条 `WinError` 映射。与既有 `spec/m7_filesystem_errors_spec.cr` 联跑 14/0。
+- 负对照（首辅亲做）：把 `ENOSPC` 分支改成 `return nil` → `10 examples, 1 failures`，原文 `Failure/Error: mapped.should be_a(Celerite::NoSpaceOnDeviceError)` / `Expected nil (Nil) to be a Celerite::NoSpaceOnDeviceError`（`spec/m7_filesystem_error_mapping_spec.cr:44`）；还原后 10/0。
+- 门禁：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen --link-flags <shim> src/cli.cr` EXIT 0（仅既有 2 条 `File.executable?` deprecation）；全量 **456 examples, 0 failures, 4 errors, 0 pending**（4 = 既有 `spec/git_source_spec.cr` 的 Low-IL `0xC0000022`；基线 446/0/4，+10 为本节新 spec）；`git diff --check` EXIT 0。
+
+未验证与仍存差异：
+
+- 真实 `ENOSPC`/`EROFS`/`EPERM` 未在真机复现，单测用 `File::Error.from_os_error` 构造。
+- 映射目前只接入锁文件写出（`Lockfile.write`）；参考的 `filesystem_access` 还覆盖下载缓存、bundle 目录创建等路径，其余调用点尚未接入。
+- `DirectoryRemovalError`(36)、`YamlSyntaxError`(25)、`GemRequireError`(24) 未纳入。
+
+## 2026-11-16 续（全量差分复测 160/16/2 与两处修复）
+
+全量差分（4.0.24，`CELERITE_BIN=bin/celerite.exe`（按当前 HEAD + 工作树重建）、`CELERITE_DIFF_EXTRA_PATH='/c/Program Files/nodejs'`、`CELERITE_DIFF_WORK_ROOT=<repo>/.difftmp47full`，日志 `.tmp-scratch/differential-full-47b.log`）：**160 passed, 16 failed, 2 skipped**（本轮早些时候用旧二进制测得 135/19/2；重建后基线抬升）。
+
+修复 1：`cache --cache-path` 被 install 白名单打回
+
+- 修复前：`FAIL cache-path (cache --cache-path=sub/cached)`，`exit code: reference=0 celerite=15`，stderr `Unknown switches "--cache-path=sub/cached"`；参考 stdout 11 行（含 `Updating files in sub/cached` 与两条 `  * <gem>`）。
+- 根因：`src/celerite/cli/commands_install.cr` 的 `run_cache` 把原始 `rest` 直接传给 `install`，而 `run_install` 用 `INSTALL_SWITCH_*` 白名单校验。
+- 修复：新增 `private def self.install_args_from_cache(rest : Array(String)) : Array(String)`，剔除只属于 `cache` 的 `--cache-path`（`=值` 与空格两种形态及其值）、`--all-platforms`、`--no-install`，其余开关原样透传。
+
+修复 2：无 Gemfile 的工程被创建 `.bundle`
+
+- 修复前：`FAIL plugin-source`、`FAIL plugin-gemfile-missing`，均 `project tree differs: Only in SANDBOX/project: .bundle`（上一轮 `plugin_install_remote` 引入的回归）。
+- 修复：`src/celerite/cli/commands_surface.cr` 新增 `plugin_app_config_root`（有 Gemfile → `<Gemfile 目录>/.bundle`；无 → `~/.bundle`），`plugin_tree_root` 改为 `app_config_root/plugin`；合成 Gemfile 的临时目录改到 `app_config_root/tmp`，并在 `ensure` 中于清空 `tmp` 之后再删除「本命令新建的空 `.bundle` 壳」（`app_root_was_absent` 标记）。
+
+证据与门禁（首辅亲跑）：
+
+- 差分 6 夹具双 profile：4.0.24 与 2.7.2 各 `PASS cache-path (exit=0)`/`PASS plugin-source (exit=7)`/`PASS plugin-gemfile-missing (exit=7)`/`PASS plugin-install-source (exit=0)`/`PASS plugin-command-list (exit=0)`/`PASS install-fresh (exit=0)` → 各 `6 passed, 0 failed, 0 skipped`。
+- 负对照 1（把 `cache` 的原始 `rest` 直接透传）→ `FAIL cache-path`，原文 `stderr differs: 0a1 > Unknown switches "--cache-path=sub/cached"`、`Only in SANDBOX/project: Gemfile.lock`、`Only in SANDBOX/project: sub`，汇总 `0 passed, 1 failed`。
+- 负对照 2（禁用空 `.bundle` 壳清理，保留 `~/.bundle` 作为 app config 根）→ `FAIL plugin-source`、`FAIL plugin-gemfile-missing`，原文 `project tree differs: Only in SANDBOX/project: .bundle`，汇总 `0 passed, 2 failed`；还原后复绿。据此确认「清理空壳」是这条命中的承重改动（仅改 app config 根不足以消除残留）。
+- 门禁：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen --link-flags <shim> src/cli.cr` EXIT 0（仅既有 2 条 `File.executable?` deprecation）；全量 **456 examples, 0 failures, 4 errors, 0 pending**（4 = 既有 `spec/git_source_spec.cr` 的 Low-IL `0xC0000022`）；`git diff --check` EXIT 0。
+
+全量差分剩余 16 条 FAIL 的分桶（逐条读日志原文）：
+
+- 产品：`add` 家族 5 条（`add-version`/`add-group`/`add-strict`/`add-optimistic`/`add-remove`）——`bundle add` 未接受 `--version`/`--group`/`--strict`/`--optimistic` 等开关（参考 exit 0 并安装，我方 exit 15 `Unknown switches …`），下一轮处理。
+- 产品（部分）：`cache-all-platforms`——`cache --all-platforms` 的跨平台缓存语义未实现。
+- 已声明差异：`install-frozen`——removed-flag 的参考三行专属文案与 `Did you mean?` 未实现。
+- 环境（Low-IL `0xC0000022`）：`git-glob`、`git-installed-discovery`、`git-path-install`、`git-pristine`、`git-tag`、`plugin-git-local`、`plugin-git-local2`、`native-ext`、`native-ext-target` 共 9 条。
+- 2 条 SKIP 仍为 `git-submodules`（参考侧被 git ≥2.38 的 submodule file-transport 挡住）与 `plugin-source-disabled`（装具无法逐夹具设 `BUNDLE_PLUGINS=false`）。

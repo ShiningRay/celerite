@@ -146,9 +146,10 @@ module Celerite
   # Bundler::PermissionError (errors.rb:94-128, status 23): a filesystem
   # operation was denied. The reference raises this from
   # `SharedHelpers#filesystem_access` (shared_helpers.rb:105-127) and the lock
-  # writer wraps the write in it (definition.rb:436-442). `action` and
-  # `permission_type` follow the reference exactly; `:create` names the parent
-  # folder because creating a file needs write access to it.
+  # writer wraps the write in it (definition.rb:436-442). Most filesystem
+  # errors subclass this and only replace the closing sentence; `action` is the
+  # `filesystem_access` action (:read/:write/:create/:executable) and `:create`
+  # names the parent folder because creating a file needs write access to it.
   class PermissionError < Error
     getter path : String
     getter permission_type : Symbol
@@ -158,20 +159,30 @@ module Celerite
       super(message)
     end
 
+    protected def action_phrase : String
+      case permission_type
+      when :read       then "read from"
+      when :write      then "write to"
+      when :executable then "execute"
+      when :exec       then "execute"
+      else                  permission_type.to_s
+      end
+    end
+
+    protected def permission_description : String
+      if permission_type == :create
+        "executable permissions for all parent directories and write permissions for `#{parent_folder}`"
+      else
+        "#{permission_type} permissions for that path"
+      end
+    end
+
+    protected def default_message : String
+      "There was an error while trying to #{action_phrase} `#{path}`. It is likely that you need to grant #{permission_description}."
+    end
+
     def message : String
-      action = case permission_type
-               when :read       then "read from"
-               when :write      then "write to"
-               when :executable then "execute"
-               when :exec       then "execute"
-               else                  permission_type.to_s
-               end
-      permission = if permission_type == :create
-                     "executable permissions for all parent directories and write permissions for `#{parent_folder}`"
-                   else
-                     "#{permission_type} permissions for that path"
-                   end
-      "There was an error while trying to #{action} `#{path}`. It is likely that you need to grant #{permission}."
+      default_message
     end
 
     def parent_folder : String
@@ -180,6 +191,104 @@ module Celerite
 
     def status_code : Int32
       23
+    end
+
+    def wrap? : Bool
+      true
+    end
+  end
+
+  # bundler/errors.rb:156-164. The reference concatenates "try" and
+  # "the operation again." without a space, so the message really says
+  # "trythe"; kept verbatim for parity.
+  class TemporaryResourceError < PermissionError
+    def status_code : Int32
+      26
+    end
+
+    protected def default_message : String
+      "There was an error while trying to #{action_phrase} `#{path}`. Some resource was temporarily unavailable. It's suggested that you trythe operation again."
+    end
+  end
+
+  # bundler/errors.rb:166-173 (a BundlerError, not a PermissionError: the
+  # message carries no path/action).
+  class VirtualProtocolError < Error
+    def initialize
+      super(nil)
+    end
+
+    def status_code : Int32
+      27
+    end
+
+    def message : String
+      "There was an error relating to virtualization and file access. It is likely that you need to grant access to or mount some file system correctly."
+    end
+
+    def wrap? : Bool
+      true
+    end
+  end
+
+  # bundler/errors.rb:175-181.
+  class OperationNotSupportedError < PermissionError
+    def status_code : Int32
+      28
+    end
+
+    protected def default_message : String
+      "Attempting to #{action_phrase} `#{path}` is unsupported by your OS."
+    end
+  end
+
+  # bundler/errors.rb:183-190.
+  class NoSpaceOnDeviceError < PermissionError
+    def status_code : Int32
+      31
+    end
+
+    protected def default_message : String
+      "There was an error while trying to #{action_phrase} `#{path}`. There was insufficient space remaining on the device."
+    end
+  end
+
+  # bundler/errors.rb:192-199.
+  class ReadOnlyFileSystemError < PermissionError
+    def status_code : Int32
+      42
+    end
+
+    protected def default_message : String
+      "There was an error while trying to #{action_phrase} `#{path}`. File system is read-only."
+    end
+  end
+
+  # bundler/errors.rb:201-208.
+  class OperationNotPermittedError < PermissionError
+    def status_code : Int32
+      43
+    end
+
+    protected def default_message : String
+      "There was an error while trying to #{action_phrase} `#{path}`. Underlying OS system call raised an EPERM error."
+    end
+  end
+
+  # bundler/errors.rb:210-219.
+  class GenericSystemCallError < Error
+    getter underlying_error : Exception
+
+    def initialize(message : String, @underlying_error : Exception)
+      super(message)
+    end
+
+    def message : String
+      "#{super}\nThe underlying system error is #{underlying_error.class}: #{underlying_error}"
+    end
+
+    def status_code : Int32
+      32
     end
 
     def wrap? : Bool

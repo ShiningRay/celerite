@@ -1,5 +1,6 @@
 require "file"
 require "../errors"
+require "../filesystem_errors"
 
 module Celerite
   module Lockfile
@@ -15,11 +16,12 @@ module Celerite
         text = contents.gsub(/(?<!\r)\n/, "\r\n")
       end
       File.write(path, text)
-    rescue ex : File::AccessDeniedError
+    rescue ex : File::Error
       # Reference: `filesystem_access(file) { File.open(p, "wb") { ... } }`
-      # maps Errno::EACCES/EPERM to PermissionError (status 23). NotFound is a
-      # different failure and intentionally not mapped here.
-      raise PermissionError.new(path, :write)
+      # maps EACCES/EPERM/ENOSPC/... to their Bundler error classes; ENOENT
+      # and EEXIST keep bubbling unchanged.
+      mapped = FilesystemErrors.map(ex, :write)
+      mapped ? raise mapped : raise ex
     end
   end
 end

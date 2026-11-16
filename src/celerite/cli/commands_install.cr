@@ -562,6 +562,28 @@ module Celerite
       end
     end
 
+    # `bundle cache` accepts switches that `install` does not (`--cache-path`,
+    # `--all-platforms`, `--no-install`); strip those before delegating to the
+    # install pipeline, which validates with INSTALL_SWITCH_*.
+    private def self.install_args_from_cache(rest : Array(String)) : Array(String)
+      filtered = [] of String
+      skip_value = false
+      rest.each do |arg|
+        if skip_value
+          skip_value = false
+          next
+        end
+        if arg == "--cache-path"
+          skip_value = true
+          next
+        end
+        next if arg.starts_with?("--cache-path=")
+        next if arg == "--all-platforms" || arg == "--no-install"
+        filtered << arg
+      end
+      filtered
+    end
+
     private def self.run_cache(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       if code = reject_unknown_switches(stderr, rest, CACHE_SWITCH_FLAGS, CACHE_SWITCH_VALUES)
         return code
@@ -575,7 +597,7 @@ module Celerite
       cache_target = cache_arg ? File.expand_path(cache_arg) : File.join(Dir.current, "vendor", "cache")
       cache_label = cache_arg ? cache_arg.gsub(/\\/, "/") : "vendor/cache"
       unless rest.includes?("--no-install")
-        code = install(stdout, stderr, rest)
+        code = install(stdout, stderr, install_args_from_cache(rest))
         return code if code != 0
       end
 

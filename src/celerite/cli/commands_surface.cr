@@ -1156,11 +1156,16 @@ module Celerite
       bridge = Bridge::Client.new
       tmp_dir = ""
       tmp_root = ""
+      app_root = ""
+      app_root_was_absent = false
       begin
         stdout.puts "Fetching #{git_remote}" if git_remote
-        # Reference `Bundler.tmp` lives inside the project; the system TEMP is
-        # neither writable in this sandbox nor the project's temp dir.
-        tmp_root = File.join(plugin_project_dir, ".bundle", "tmp")
+        # Reference `Bundler.tmp` lives under the app config root; the system
+        # TEMP is neither writable here nor the project's temp dir. For a
+        # Gemfile-less cwd this must not create a project-local `.bundle`.
+        app_root = plugin_app_config_root
+        app_root_was_absent = !Dir.exists?(app_root)
+        tmp_root = File.join(app_root, "tmp")
         Dir.mkdir_p(tmp_root)
         tmp_dir = File.join(tmp_root, "celerite-plugin-#{Process.pid}-#{rand(1 << 30)}")
         Dir.mkdir_p(tmp_dir)
@@ -1343,6 +1348,12 @@ module Celerite
         if !tmp_root.empty? && Dir.exists?(tmp_root) && Dir.empty?(tmp_root)
           Dir.delete(tmp_root)
         end
+        # A project without a Gemfile must stay byte-clean: when this command
+        # created the app config root only to hold its temp dir, drop the empty
+        # shell as well.
+        if app_root_was_absent && !app_root.empty? && Dir.exists?(app_root) && Dir.empty?(app_root)
+          Dir.delete(app_root)
+        end
         bridge.close
       end
       0
@@ -1365,6 +1376,21 @@ module Celerite
     # owns the Gemfile, or the current directory when there is no Gemfile. The
     # reference keeps `plugin list` and plugin commands working without a
     # Gemfile, and always materializes plugins under `<project>/.bundle/plugin`.
+    # Reference app-config root: `<Gemfile dir>/.bundle` inside a bundle,
+    # otherwise the user-level `~/.bundle` (`Bundler.app_config_path`).
+    private def self.plugin_app_config_root : String
+      gemfile = begin
+        Definition.find_gemfile
+      rescue GemfileNotFound
+        nil
+      end
+      if gemfile
+        File.join(File.dirname(gemfile), ".bundle")
+      else
+        File.join(Config.user_home || ".", ".bundle")
+      end
+    end
+
     private def self.plugin_project_dir : String
       gemfile = begin
         Definition.find_gemfile
@@ -1375,21 +1401,11 @@ module Celerite
     end
 
     private def self.plugin_tree_root : String
-      gemfile = begin
-        Definition.find_gemfile
-      rescue GemfileNotFound
-        nil
-      end
-      if gemfile
-        File.join(File.dirname(gemfile), ".bundle", "plugin")
-      else
-        # `Bundler::Plugin.root`: the global root
-        # (`Bundler.user_bundle_path("plugin")` = `~/.bundle/plugin`) when the
-        # cwd is not inside a bundle. The reference therefore prints
-        # `No plugins installed` for a Gemfile-less cwd unless that global root
-        # already holds plugins.
-        File.join(Config.user_home || ".", ".bundle", "plugin")
-      end
+      # `Bundler::Plugin.root` = `app_config_path/plugin`: project-local inside
+      # a bundle, `~/.bundle/plugin` for a Gemfile-less cwd (which is why the
+      # reference prints `No plugins installed` there unless the global root
+      # already holds plugins).
+      File.join(plugin_app_config_root, "plugin")
     end
 
     private def self.plugin_index_path : String
