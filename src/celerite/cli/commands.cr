@@ -1,6 +1,7 @@
 require "json"
 require "../../celerite"
 require "../errors"
+require "../suggestions"
 require "../gem/platform"
 require "../lockfile/parser"
 require "../lockfile/writer"
@@ -288,11 +289,73 @@ module Celerite
     end
 
     private def self.reject_unknown_switches(stderr : IO, rest : Array(String), allowed_flags : Array(String),
-                                             allowed_values : Array(String)) : Int32?
+                                             allowed_values : Array(String),
+                                             dictionary : Array(String)? = nil) : Int32?
       unknown = unknown_switch_tokens(rest, allowed_flags, allowed_values)
       return nil if unknown.empty?
       stderr.puts "Unknown switches " + unknown.map { |token| "\"#{token}\"" }.join(", ")
+      if hinted = Suggestions.message(unknown.first, dictionary || (allowed_flags + allowed_values))
+        stderr.puts hinted
+      end
       15
+    end
+
+    # 4.x rejects these flags (`print_remembered_flag_deprecation`); 2.7.x only
+    # warns (`[DEPRECATED] The ... flag is deprecated ... in future versions`)
+    # and keeps going, which is why the same helper serves both profiles.
+    record RemovedFlag, flag : String, option_name : String, value : String, special_message : String? = nil
+
+    def self.removed_flag(rest : Array(String), command : String) : RemovedFlag?
+      flags = rest.map { |arg| arg.split("=", 2)[0] }
+      case command
+      when "install"
+        # Order pinned to `bundler/cli.rb:290-300`: clean, deployment, frozen
+        # (handled before this call), no-prune, path, shebang, without, with,
+        # then --system, --no-deployment and --binstubs.
+        {"--clean" => "clean", "--deployment" => "deployment", "--no-prune" => "no_prune", "--system" => "path.system"}.each do |flag, option|
+          return RemovedFlag.new(flag, option, "true") if flags.includes?(flag)
+        end
+        if flags.includes?("--path")
+          value = flag_value_ornext(rest, "--path") || "path"
+          return RemovedFlag.new("--path", "path", "'#{value}'")
+        end
+        if flags.includes?("--shebang")
+          value = flag_value_ornext(rest, "--shebang") || "shebang"
+          return RemovedFlag.new("--shebang", "shebang", "'#{value}'")
+        end
+        if flags.includes?("--without")
+          values = flag_values(rest, "--without")
+          value = values.empty? ? "without" : values.join(" ")
+          return RemovedFlag.new("--without", "without", "'#{value}'")
+        end
+        if flags.includes?("--with")
+          values = flag_values(rest, "--with")
+          value = values.empty? ? "with" : values.join(" ")
+          return RemovedFlag.new("--with", "with", "'#{value}'")
+        end
+        if flags.includes?("--no-deployment")
+          return RemovedFlag.new("--no-deployment", "deployment", "false")
+        end
+        if flags.includes?("--binstubs")
+          return RemovedFlag.new("--binstubs", "binstubs", "true",
+            "The --binstubs option has been removed in favor of `bundle binstubs --all`")
+        end
+      when "cache"
+        return RemovedFlag.new("--all", "cache_all", "true") if flags.includes?("--all")
+        return RemovedFlag.new("--no-all", "cache_all", "false") if flags.includes?("--no-all")
+        return RemovedFlag.new("--no-prune", "no_prune", "true") if flags.includes?("--no-prune")
+        return RemovedFlag.new("--frozen", "frozen", "true") if flags.includes?("--frozen")
+      end
+      nil
+    end
+
+    def self.removed_flag_message(flag : RemovedFlag) : String
+      return flag.special_message.not_nil! if flag.special_message
+      "The `#{flag.flag}` flag has been removed because it relied on being remembered across bundler invocations, which bundler no longer does. Instead please use `bundle config set #{flag.option_name} #{flag.value}`, and stop using this flag"
+    end
+
+    def self.removed_flag_deprecation(flag : RemovedFlag) : String
+      "[DEPRECATED] The `#{flag.flag}` flag is deprecated because it relies on being remembered across bundler invocations, which bundler will no longer do in future versions. Instead please use `bundle config set #{flag.option_name} #{flag.value}`, and stop using this flag"
     end
 
     # Install-family switch surface, measured against the 4.0.24 (and 2.7.2)
@@ -313,6 +376,17 @@ module Celerite
 
     CACHE_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--no-install", "--all-platforms", "--force", "--redownload", "--no-cache", "--local", "--path", "--without", "--with"]
     CACHE_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--cache-path", "--cooldown"]
+
+    # Thor's `Unknown switches` suggestion dictionary is `switches`, i.e. every
+    # declared option name -- including the removed ones (they are still
+    # `method_option`s) and excluding aliases such as `--redownload`
+    # (`method_option "force", aliases: "--redownload"`). Typo suggestions are
+    # therefore wider than the accepted switch surface, and `install --frozenn`
+    # must suggest `--frozen` even though `--frozen` itself is rejected.
+    INSTALL_REMOVED_FLAGS      = ["--clean", "--deployment", "--frozen", "--no-prune", "--system", "--binstubs", "--shebang", "--no-deployment"]
+    CACHE_REMOVED_FLAGS        = ["--all", "--no-all", "--no-prune", "--frozen"]
+    INSTALL_SUGGEST_DICTIONARY = (INSTALL_SWITCH_FLAGS + INSTALL_SWITCH_VALUES + INSTALL_REMOVED_FLAGS).reject { |flag| flag == "--redownload" }
+    CACHE_SUGGEST_DICTIONARY   = (CACHE_SWITCH_FLAGS + CACHE_SWITCH_VALUES + CACHE_REMOVED_FLAGS).reject { |flag| flag == "--redownload" }
 
     # Reference 2.7.x reads the existing lockfile in text mode on Windows, so
     # its `match?("\r\n")` never fires and a CRLF lockfile is rewritten as LF;

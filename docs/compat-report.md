@@ -2207,3 +2207,55 @@ profile 门控：`Commands.preserve_lockfile_crlf?`（`commands.cr:320`）= `!(E
 - `add --skip-install` 时参考是否仍打印探针抓取行未逐字取证（本轮只覆盖需要安装的路径）。
 - `remove` 的 `Gemfile` 行解析按「引号内 token」取 requirement；多 requirement（`gem "x", "~> 1", ">= 1.0.2"`）、`group:`/`path:` 等选项、多 `gemfile`（`eval_gemfile`）场景未取 oracle。
 - `add-version`/`add-strict`/`add-optimistic`/`add-remove` 四个旧夹具仍因要安装 `racc`（native ext，本机 msys `0xC0000022`）无法在 cel 侧通过，保持 FAIL，属环境阻塞。
+
+## 2026-11-16（M7(2)：removed-flag 专属文案与 `Did you mean?` 建议）
+
+参考实现（`bundler-4.0.24`）：
+
+- `lib/bundler/cli.rb:290-300`：`install` 在 Thor 分发后的第一件事就按 `clean`、`deployment`、`frozen`、`no-prune`、`path`、`shebang`、`without`、`with` 的顺序调用 `remembered_flag_deprecation`，随后单独处理 `--system`、`--no-deployment` 与 `--binstubs`。
+- `lib/bundler/cli.rb:817-838`：`print_remembered_flag_deprecation` 拼出 `The --<flag> flag has been removed because it relied on being remembered across bundler invocations, which bundler no longer does. Instead please use `bundle config set <option> <value>`, and stop using this flag`；布尔选项不加引号，其余用 `'<value>'`，数组按空格连接。
+- `lib/bundler/cli.rb:404-426`：`add` 声明了 `--version/-v`、`--group/-g`、`--source/-s`、`--require/-r`、`--path`、`--git`、`--github`、`--branch`、`--ref`、`--glob`、`--quiet`、`--skip-install`、`--optimistic`、`--strict`、`--cooldown`；`lib/bundler/cli/add.rb:41-60` 校验 `--strict` 与 `--optimistic` 互斥并报 `You cannot specify `--strict` and `--optimistic` at the same time.`。
+- Thor 1.5 的未知开关路径用 `DidYouMean::SpellChecker`（`error.rb:65-89`），格式化器输出 `"\nDid you mean?  \"<first>\""`，后续候选按 15 个空格缩进。
+- `did_you_mean/spell_checker.rb:8-44`：先 `normalize`（`downcase` 加 `delete("@")`），Jaro-Winkler 阈值 `0.834`（输入长度大于 3，否则 `0.77`），候选按 Jaro-Winkler **降序**；编辑预算 `ceil(输入长度 * 0.25)` 过滤 `Levenshtein`；预算过滤为空时走 misspell 分支，取满足 `distance < min(输入长度, 候选长度)` 的第一个候选。`jaro_winkler.rb` 的 Winkler 加权只在 `jaro > 0.7` 时生效，前缀上限 4。
+
+首辅实测 oracle（`bundle install|cache|lock|update <flag>`，4.0.24 与 2.7.2）：
+
+| 命令 | 参考输出 | exit |
+| --- | --- | --- |
+| `install --frozen`（同 `--deployment`/`--clean`/`--no-prune`/`--system`/`--shebang`） | removed 文案（80 列折行）；2.7.2 只打 `[DEPRECATED] ...` 并继续 | 15 / 10 |
+| `install --binstubs` | `The --binstubs option has been removed in favor of `bundle binstubs --all`` | 15 |
+| `install --path vendor/x` | `... Instead please use `bundle config set path 'vendor/x'`, and stop using this flag` | 15 |
+| `install --path`（无值） | `path 'path'` | 15 |
+| `install --without development` | `without 'development'` | 15 |
+| `cache --all`/`--no-prune`/`--frozen` | removed 文案（`cache_all`/`no_prune`/`frozen`） | 15 |
+| `cache --deployment`、`lock --frozen`、`lock --deployment`、`update --frozen` | 仅 `Unknown switches "--x"` | 15 |
+| `install --forse` | `Did you mean?  "--force"` | 15 |
+| `install --jbos` | 仅 `"--jobs"`（`--verbose` 超出 edit budget） | 15 |
+| `install --lockfil` | `"--lockfile"` 与 `"--local"`（3 次编辑正好在预算内） | 15 |
+| `install --deploy` | `"--deployment"`（4 次编辑超预算，靠 misspell 分支命中） | 15 |
+| `install --redownloa` | 无建议（`--redownload` 只是 `--force` 的 alias，不在 Thor 字典里） | 15 |
+
+修复前的两处缺陷：
+
+1. `install --frozen`/`--deployment`/`--clean`/`--no-prune`/`--system`/`--shebang`、`cache --all`/`--no-prune`/`--frozen` 一律退成 `Unknown switches "--x"`，与参考的 removed 文案不符。
+2. 未知开关只打 `Unknown switches ...`，缺 `Did you mean?` 段；补上后又与参考在 7 个 typo 上不一致（`--frozenn`、`--deploy`、`--no-prun`、`--binstub`、`--sheban`、`--jbos`、`--lockfil`、`--redownloa`），根因是本实现先把前导 `--` 剥掉再算 Jaro-Winkler 与 Levenshtein，而 did_you_mean 用完整字符串。
+
+实现：
+
+- `src/celerite/suggestions.cr`：`Suggestions.for(input, dictionary)` 逐行对齐 `SpellChecker#correct`（`normalize` 只做 `downcase` 加 `delete('@')`；Jaro-Winkler 阈值 0.834/0.77；按 JW 降序；`ceil(len * 0.25)` 的编辑预算；misspell 分支只取 1 条；最多 5 条），`message` 输出 `Did you mean?  "<first>"` 与 15 空格缩进的后续候选。
+- `src/celerite/cli/commands.cr`：新增 `RemovedFlag` 记录与 `removed_flag(rest, command)`（install 顺序对齐 `cli.rb:290-300`，cache 为 `--all`/`--no-all`/`--no-prune`/`--frozen`）、`removed_flag_message`、`removed_flag_deprecation`；`reject_unknown_switches` 增加可选 `dictionary` 参数；新增 `INSTALL_REMOVED_FLAGS`、`CACHE_REMOVED_FLAGS` 与 `INSTALL_SUGGEST_DICTIONARY`、`CACHE_SUGGEST_DICTIONARY`（声明名全集，去掉 alias `--redownload`）。
+- `src/celerite/cli/commands_install.cr`：`run_install`/`run_cache` 在未知开关检查之前先判 removed flag（4.x 折行打印并返回 15，2.7.x 打 `[DEPRECATED]` 后继续），`cache` 的 `--cache-path` 等命令专属选项仍透传。
+- `src/celerite/cli/commands_surface.cr`：`add` 在取 gem 名前做未知开关检查（白名单含 add 全部选项），`--strict`/`--optimistic` 互斥报参考文案，委托 `install` 前剔除 add 专属开关。
+
+证据：
+
+- 22 个 typo 的 A/B（同布局双沙箱、独立 HOME 与 `BUNDLE_PATH`，逐条比对 exit 与完整 stderr）：修复前 7 条 DIFF，修复后 **22/22 完全一致**。
+- `spec/m7_removed_flags_spec.cr`（新增）**12 examples, 0 failures**：removed 文案 5 例、cache 专属 2 例、`update --frozen` 建议、`--forse`、`--deploy`（misspell）、`--lockfil`（多建议）、`--jbos`（预算外剔除）、`--redownloa`（alias 不提示）。
+- 差分：`install-frozen`、`removed-flag-path`、`unknown-switch-typo`、`unknown-switch-{install,update,lock,cache}`、`install-fresh` 在 4.0.24 与 2.7.2 各 **8 passed, 0 failed, 0 skipped**（2.7.2 的 `removed-flag-path` 走 `[DEPRECATED]` 分支，参考与本实现同为 exit 10）。
+- 门禁：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen --link-flags <shim> src/cli.cr` EXIT 0（仅既有 2 条 `File.executable?` deprecation）；全量 spec 与基线一致（4 个既有 `spec/git_source_spec.cr` error 属本机 Low-IL 共享内存限制）；`git diff --check` EXIT 0。
+
+已声明偏差与未验证：
+
+- `--help`/`help <cmd>` 仍不渲染 manpage；`install --frozen --verbose` 参考会先打印 `Running `bundle install --frozen --verbose` with bundler 4.0.24` 再抛完整回溯报告，本实现只给折行后的 removed 文案。
+- `--redownload` 作为 `--force` 的 alias 仍被接受（与参考一致），只是不进入建议字典。
+- 未验证：`update`/`lock` 的完整 removed 面（它们没有 removed 文案，只验证了 `--frozen` 的建议）、`--all-platforms` 在 cache 上的行为（本机 `racc` 原生扩展撞 msys `0xC0000022`）、`Did you mean?` 对命令名（非开关）的建议、2.7.2 的 typo 建议是否与 4.0.24 完全一致（本轮只在 4.0.24 上逐条对拍 22 个 typo，2.7.2 只跑了 8 个差分夹具）。

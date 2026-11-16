@@ -58,7 +58,8 @@ describe "M7(2) install-family unknown switches" do
 
       code, _out, err = run_family_switch(["install", "--version"])
       code.should eq(15)
-      err.should eq("Unknown switches \"--version\"\n")
+      # Verified against 4.0.24: the suggestion line follows the Unknown line.
+      err.should eq("Unknown switches \"--version\"\nDid you mean?  \"--verbose\"\n")
     end
   end
 
@@ -84,11 +85,11 @@ describe "M7(2) install-family unknown switches" do
     end
   end
 
-  it "still accepts the removed --path/--without/--with flags this port implements" do
+  it "reports the remembered --path/--without/--with flags as removed in 4.x" do
     with_family_switches_bridge do
       code, _out, err = run_family_switch(["install", "--path", "vendor/bundle", "--without", "test"])
-      code.should eq(10)
-      err.should contain("Could not locate Gemfile")
+      code.should eq(15)
+      err.should contain("The `--path` flag has been removed because it relied on being remembered")
     end
   end
 

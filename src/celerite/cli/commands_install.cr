@@ -127,16 +127,35 @@ module Celerite
     end
 
     private def self.run_install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false) : Int32
-      if code = reject_unknown_switches(stderr, rest, INSTALL_SWITCH_FLAGS, INSTALL_SWITCH_VALUES)
-        return code
-      end
       if rest.includes?("--frozen")
         # Thor rejects the flag before any Gemfile validation; the exact
         # message depends on the profile and the command (see frozen helper).
         bundle_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
-        if code = frozen_flag_exit(rest, stderr, Definition.build.lockfile_exists?, bundle_version, "install")
+        lockfile_exists = begin
+          Definition.build.lockfile_exists?
+        rescue
+          false
+        end
+        if code = frozen_flag_exit(rest, stderr, lockfile_exists, bundle_version, "install")
           return code
         end
+      end
+      # `--path`/`--without`/`--with`/`--clean`/... are accepted by our switch
+      # surface because this port implements their semantics, but 4.x reports
+      # the removed-flag message; the check runs before the switch whitelist so
+      # those flags keep their reference wording. 2.7.x only warns (and keeps
+      # going: `install --path` still reaches the Gemfile check).
+      if removed = Commands.removed_flag(rest, "install")
+        bundle_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+        if bundle_version.starts_with?("2.")
+          stderr.puts Commands.removed_flag_deprecation(removed) unless removed.special_message
+        else
+          stderr.puts Commands.word_wrap(Commands.removed_flag_message(removed), 80)
+          return 15
+        end
+      end
+      if code = reject_unknown_switches(stderr, rest, INSTALL_SWITCH_FLAGS, INSTALL_SWITCH_VALUES, INSTALL_SUGGEST_DICTIONARY)
+        return code
       end
       definition = Definition.build
       config = definition.config
@@ -585,7 +604,16 @@ module Celerite
     end
 
     private def self.run_cache(stdout : IO, stderr : IO, rest : Array(String)) : Int32
-      if code = reject_unknown_switches(stderr, rest, CACHE_SWITCH_FLAGS, CACHE_SWITCH_VALUES)
+      if removed = Commands.removed_flag(rest, "cache")
+        bundle_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+        if bundle_version.starts_with?("2.")
+          stderr.puts Commands.removed_flag_deprecation(removed) unless removed.special_message
+        else
+          stderr.puts Commands.word_wrap(Commands.removed_flag_message(removed), 80)
+          return 15
+        end
+      end
+      if code = reject_unknown_switches(stderr, rest, CACHE_SWITCH_FLAGS, CACHE_SWITCH_VALUES, CACHE_SUGGEST_DICTIONARY)
         return code
       end
       definition = Definition.build

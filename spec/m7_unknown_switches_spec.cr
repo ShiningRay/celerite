@@ -105,7 +105,7 @@ describe "M7 option surface: unknown switches and check --gemfile" do
     with_project({} of String => String) do
       code, _out, err = capture_switches { |o, e| Celerite::Commands.show_info("info", o, e, ["--paths"]) }
       code.should eq(15)
-      err.should eq("Unknown switches \"--paths\"\n")
+      err.should eq("Unknown switches \"--paths\"\nDid you mean?  \"--path\"\n")
 
       code, _out, err = capture_switches { |o, e| Celerite::Commands.show_info("info", o, e, ["--gemfile=Empty.gemfile"]) }
       code.should eq(15)
