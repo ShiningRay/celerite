@@ -2494,3 +2494,33 @@ oracle（4.0.24，隔离 HOME/BUNDLE_USER_*）：`config get without|cache_all|r
 已声明差异：2.x 的旧式 base 接口未实现（2.x `config <name>` 不打印弃用行且始终退出 0；2.x `config get <name>` 未设置也退出 0），对应夹具以 `deferred-2.7.2` 标注原因；`--verbose` 下参考附带的调试层不复刻。
 
 未验证：插件命令与 `config` 子命令同名冲突；`BUNDLE_IGNORE_CONFIG` 与临时设置叠加时的优先级；真实用户 HOME（含历史残留键）下 `config list` 的输出。
+## 2026-11-16（M7(2)：命令面的 unknown-switch 拒绝与只读命令的本地/远程解析分工）
+
+参考锚点：`bundler-4.0.24/lib/bundler/cli.rb` 的 `method_option` 声明（口径用 `Bundler::CLI.commands[name].options` 反射得到）、`bundler/cli.rb:669-671`（`subcommand("doctor", Doctor)`，`doctor` 的选项属于子命令 `diagnose`）、`cli/doctor/diagnose.rb:74-76`（`check!` 直接复用 `Check#run`，因此缺失列表后仍打印安装提示）、`cli/licenses.rb` 与 `cli/outdated.rb`（只走 `Bundler.load`/`definition.specs`，不触发索引抓取）、`shared_helpers.rb` 与 `friendly_errors.rb:31-36`（`Unknown switches` 走 `ui.error`，退出 15）。
+
+修复前实测（参考 4.0.24，`--bogus` 或命令自带未知开关）：
+
+| 命令 | 参考 | 修复前 celerite |
+| --- | --- | --- |
+| `licenses --format=csv` | `Unknown switches "--format=csv"`，15 | 0，静默忽略 |
+| `pristine`/`console`/`env`/`init`/`gem`/`fund`/`remove`/`open` `--bogus` | `Unknown switches "--bogus"`，15 | 0，静默忽略 |
+| `outdated --bogus` | `Unknown switches "--bogus"` + `Did you mean?  "--groups"`，15 | 0，静默忽略 |
+| `doctor --bogus` | `ERROR: "bundle doctor diagnose" was called with arguments ["--bogus"]` / `Usage: "bundle doctor diagnose [OPTIONS]"`，15 | 0，静默忽略 |
+| `licenses`（无 lockfile、未安装） | 7，`Could not find gem 'json_pure (= 2.8.1)' in locally installed gems.` | 20，`Could not find …/Gemfile.lock for resolution` |
+| `outdated`（无 lockfile、未安装） | 7，同上 | 0，无输出 |
+| `doctor`（无 lockfile、未安装） | 1，stdout 抓索引 + `The following gems are missing` / ` * json_pure (2.8.1)` / ``Install missing gems with `bundle install` `` | 20，锁文件错误 |
+| `fund --group development`（依赖都在 default 组） | 0，`None of the installed gems you directly depend on are looking for funding.` | 7，`Could not find gem 'json_pure' in locally installed gems.` |
+
+实现：
+
+1. `src/celerite/cli/commands.cr` 新增 Thor 口径的开关表：`SWITCH_FLAGS_CLASS`（`--help/-h/--no-color/--quiet/--verbose/-V`）、`SWITCH_VALUES_CLASS`（`--retry/-r`），以及 `BARE_*`、`INIT_*`、`FUND_*`、`OPEN_*`、`REMOVE_*`、`OUTDATED_*`、`GEM_*`、`DOCTOR_SUBCOMMAND_*`；新增 `subcommand_arguments` 把子命令路由下未被选项表消费的 token 收集成「剩余参数」。
+2. `src/celerite/cli/commands_surface.cr`：`remove`/`env`/`licenses`/`fund`/`open`/`pristine`/`init`/`outdated`/`console`/`gem` 开头统一调用 `reject_unknown_switches`；`doctor` 用 `subcommand_arguments` 复刻子命令式参数错误。
+3. `licenses` 改 `materialize_lockfile(definition, stdout, local_only: true)`；`outdated` 在无锁文件时先做一次静默的 `materialize_lockfile(definition, nil, local_only: true)`（复刻 `Bundler.load` 先物化）；`doctor` 改 `materialize_lockfile(definition, stdout)`（远程，等价 `check!`）并补 `Install missing gems with \`bundle install\`` 提示行。
+4. `fund` 先按 `--group`/`without` 过滤 `evaluation.dependencies`，依赖为空时直接输出「没有需要资助的 gem」，不再解析 bundle（参考 `dependencies_for` 先缩窄定义）。
+5. `dispatch` 对 `--help`/`-h` 统一返回 0 并打印 usage（manpage 文本仍为已声明差异，`exec` 保持透传）。
+
+证据：24 条 A/B 矩阵（含 `--no-color`/`--retry 3` 仍被接受、`fund --group development`、`outdated --parseable`、裸 `licenses`/`outdated`/`doctor`/`fund`）逐字相同（仅沙箱路径不同）；`spec/m7_command_switch_surface_spec.cr` 9 例 9/0；差分夹具 `unknown-switch-licenses`/`unknown-switch-doctor`/`fund-group-empty`/`outdated-no-lockfile` 在 4.0.24 与 2.7.2 上各 4/4 PASS；负对照（注释掉 `outdated` 的本地预解析）令 `outdated-no-lockfile` 变为 `reference=7 celerite=0` 并多出抓索引输出。
+
+已声明差异：`--help` 的 manpage 文本不复刻（退出码与是否为错误一致）；`lod`/`config` 等命令的内部选项文案仍按各自既有实现。
+
+未验证：`outdated` 在已有 lockfile 但部分 gem 未安装时的逐条输出；`doctor --ssl`/`--tls-version`/`--verify-mode` 的诊断行为；`gem --ext=c` 等仅在模板生成阶段可见的开关语义。

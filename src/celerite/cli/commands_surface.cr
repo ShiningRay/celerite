@@ -402,6 +402,11 @@ module Celerite
     # remove: delete `gem "name"` lines from the Gemfile and clean up
     # ------------------------------------------------------------------
     def self.remove(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      # Thor parses options before the command body runs, so unknown switches
+      # are rejected even though `remove` has no options of its own.
+      if (code = reject_unknown_switches(stderr, rest, REMOVE_SWITCH_FLAGS, REMOVE_SWITCH_VALUES))
+        return code
+      end
       names = rest.reject(&.starts_with?("--"))
       if names.empty?
         stderr.puts "`remove` requires at least 1 argument"
@@ -492,6 +497,9 @@ module Celerite
     # env: full environment dump (pinned reference sections)
     # ------------------------------------------------------------------
     def self.env(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if (code = reject_unknown_switches(stderr, rest, BARE_SWITCH_FLAGS, BARE_SWITCH_VALUES))
+        return code
+      end
       definition = Definition.build
       bridge = Bridge::Client.new
       begin
@@ -652,9 +660,18 @@ module Celerite
     # doctor
     # ------------------------------------------------------------------
     def self.doctor(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      # `subcommand("doctor", Doctor)` makes Thor report unknown options as
+      # leftover arguments of `diagnose` (cli.rb:669-671).
+      unless (arguments = subcommand_arguments(rest, DOCTOR_SUBCOMMAND_FLAGS, DOCTOR_SUBCOMMAND_VALUES)).empty?
+        stderr.puts %(ERROR: "bundle doctor diagnose" was called with arguments #{arguments.inspect})
+        stderr.puts %(Usage: "bundle doctor diagnose [OPTIONS]")
+        return 15
+      end
       definition = Definition.build
       Commands.validate_ruby_runtime!(definition)
-      lockfile = definition.lockfile!
+      # `doctor` resolves like `check` (cli/doctor.rb): it may fetch the index,
+      # unlike the local-only read commands.
+      lockfile = materialize_lockfile(definition, stdout)
       locked_specs = lockfile.specs.sort_by(&.full_name)
 
       if locked_specs.empty?
@@ -666,6 +683,9 @@ module Celerite
         else
           stderr.puts "The following gems are missing"
           missing.each { |spec| stderr.puts " * #{spec.name} (#{spec.version})" }
+          # `doctor` delegates to `Check#run` (doctor/diagnose.rb:74-76), which
+          # prints the install hint right after the missing list.
+          stderr.puts "Install missing gems with `bundle install`"
           return 1
         end
       end
@@ -820,13 +840,18 @@ module Celerite
     # licenses / fund
     # ------------------------------------------------------------------
     def self.licenses(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if (code = reject_unknown_switches(stderr, rest, BARE_SWITCH_FLAGS, BARE_SWITCH_VALUES))
+        return code
+      end
       definition = Definition.build
       Commands.validate_ruby_runtime!(definition)
       bridge = Bridge::Client.new
       begin
         abi = InstallPaths.ruby_abi(bridge)
         install_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi)
-        definition.lockfile!.specs.each do |spec|
+        # `licenses` reads the materialized bundle without touching the index
+        # (`cli/licenses.rb`), so a missing lockfile re-resolves locally.
+        materialize_lockfile(definition, stdout, local_only: true).specs.each do |spec|
           next if spec.name == "bundler"
           license = spec_license(bridge, install_root, spec)
           stdout.puts "#{spec.name}: #{license}"
@@ -848,12 +873,11 @@ module Celerite
     end
 
     def self.fund(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if (code = reject_unknown_switches(stderr, rest, FUND_SWITCH_FLAGS, FUND_SWITCH_VALUES))
+        return code
+      end
       definition = Definition.build
       Commands.validate_ruby_runtime!(definition)
-      # `fund.rb:14-27` walks `Bundler.definition` (dependencies_for + specs),
-      # which resolves from the Gemfile when the lockfile is missing.  The
-      # sources stay local-only: fund never fetches the index.
-      lockfile = materialize_lockfile(definition, stdout, local_only: true)
       bridge = Bridge::Client.new
       begin
         evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
@@ -876,6 +900,19 @@ module Celerite
         deps = evaluation.dependencies.select do |dep|
           dep.groups.any? { |group| requested_groups.includes?(group) }
         end
+
+        # `fund.rb`: `dependencies_for(groups)` narrows the definition before
+        # it resolves, so a group with no dependencies never touches the
+        # bundle (and never reports a missing gem).
+        if deps.empty?
+          stdout.puts "None of the installed gems you directly depend on are looking for funding."
+          return 0
+        end
+
+        # `fund.rb:14-27` walks `Bundler.definition` (dependencies_for + specs),
+        # which resolves from the Gemfile when the lockfile is missing.  The
+        # sources stay local-only: fund never fetches the index.
+        lockfile = materialize_lockfile(definition, stdout, local_only: true)
 
         # A missing PATH source fails Bundler's definition validation with
         # PathError (source/path.rb:198-204, status 13).  Reproduce it before
@@ -1010,6 +1047,9 @@ module Celerite
     # open
     # ------------------------------------------------------------------
     def self.open(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if (code = reject_unknown_switches(stderr, rest, OPEN_SWITCH_FLAGS, OPEN_SWITCH_VALUES))
+        return code
+      end
       name = rest.first?
       editor = ENV["BUNDLER_EDITOR"]? || ENV["EDITOR"]?
       if editor.nil? || editor.empty?
@@ -1536,6 +1576,9 @@ module Celerite
     # pristine: reinstall gems from their cached packages
     # ------------------------------------------------------------------
     def self.pristine(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if (code = reject_unknown_switches(stderr, rest, BARE_SWITCH_FLAGS, BARE_SWITCH_VALUES))
+        return code
+      end
       definition = Definition.build
       Commands.validate_ruby_runtime!(definition)
       gems = rest.reject(&.starts_with?("--"))
@@ -1625,6 +1668,9 @@ module Celerite
     TEXT
 
     def self.init(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if (code = reject_unknown_switches(stderr, rest, INIT_SWITCH_FLAGS, INIT_SWITCH_VALUES))
+        return code
+      end
       gemfile_path = File.join(Dir.current, rest.select(&.starts_with?("--gemfile")).first?.try { |f| f.split("=")[1]? } || "Gemfile")
       if File.file?(gemfile_path)
         stderr.puts "Gemfile already exists at #{gemfile_path.gsub(/\\/, "/")}"
@@ -1639,7 +1685,14 @@ module Celerite
     # outdated: table of gems with newer versions (pinned reference columns)
     # ------------------------------------------------------------------
     def self.outdated(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if (code = reject_unknown_switches(stderr, rest, OUTDATED_SWITCH_FLAGS, OUTDATED_SWITCH_VALUES))
+        return code
+      end
       definition = Definition.build
+      # `outdated` materializes the bundle before consulting the index
+      # (`cli/outdated.rb` -> DependencyAPI/`Bundler.load`), so a missing
+      # lockfile surfaces the local-only resolution error first.
+      materialize_lockfile(definition, nil, local_only: true) unless definition.lockfile_exists?
       bridge = Bridge::Client.new
       begin
         evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
@@ -2130,6 +2183,9 @@ module Celerite
     # console: exec an interactive console inside the bundle environment
     # ------------------------------------------------------------------
     def self.console(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if (code = reject_unknown_switches(stderr, rest, BARE_SWITCH_FLAGS, BARE_SWITCH_VALUES))
+        return code
+      end
       definition = Definition.build
       Commands.validate_ruby_runtime!(definition)
 
@@ -2200,6 +2256,9 @@ module Celerite
     # gem: project skeleton (bundle gem NAME)
     # ------------------------------------------------------------------
     def self.gem(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if (code = reject_unknown_switches(stderr, rest, GEM_SWITCH_FLAGS, GEM_SWITCH_VALUES))
+        return code
+      end
       # Thor rejects a missing/multiple positionals before any work; the
       # reference (4.0.24) prints these exact lines and exits 15.
       positionals = rest.reject(&.starts_with?("-"))

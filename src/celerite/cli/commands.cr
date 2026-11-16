@@ -40,6 +40,13 @@ module Celerite
       rest = args[1..]
       print_command_echo(command, rest, verbose_requested, cli_retry, stdout)
 
+      # Thor prints the command's manpage for `--help` before the body runs.
+      # The manpage text itself stays a declared divergence: we print the shared
+      # usage banner instead, but the exit status matches the reference.
+      if command != "exec" && (rest.includes?("--help") || rest.includes?("-h"))
+        return help(stdout, [command])
+      end
+
       case command
       when "version", "--version", "-v"
         version(command, stdout, stderr, rest)
@@ -423,6 +430,62 @@ module Celerite
         stderr.puts hinted
       end
       15
+    end
+
+    # Thor's class options are accepted by every subcommand.
+    SWITCH_FLAGS_CLASS  = ["--help", "-h", "--no-color", "--quiet", "--verbose", "-V"]
+    SWITCH_VALUES_CLASS = ["--retry", "-r"]
+
+    # Option surfaces of commands that used to accept anything, transcribed
+    # from `Bundler::CLI.commands[name].options` (Thor declarations in
+    # `bundler-4.0.24/lib/bundler/cli.rb`).
+    BARE_SWITCH_FLAGS     = SWITCH_FLAGS_CLASS
+    BARE_SWITCH_VALUES    = SWITCH_VALUES_CLASS
+    INIT_SWITCH_FLAGS     = BARE_SWITCH_FLAGS
+    INIT_SWITCH_VALUES    = BARE_SWITCH_VALUES + ["--gemfile", "--gemspec"]
+    FUND_SWITCH_FLAGS     = BARE_SWITCH_FLAGS
+    FUND_SWITCH_VALUES    = BARE_SWITCH_VALUES + ["--group", "-g"]
+    OPEN_SWITCH_FLAGS     = BARE_SWITCH_FLAGS
+    OPEN_SWITCH_VALUES    = BARE_SWITCH_VALUES + ["--path"]
+    REMOVE_SWITCH_FLAGS   = BARE_SWITCH_FLAGS + ["--install"]
+    REMOVE_SWITCH_VALUES  = BARE_SWITCH_VALUES
+    OUTDATED_SWITCH_FLAGS = BARE_SWITCH_FLAGS + [
+      "--filter-major", "--filter-minor", "--filter-patch", "--filter-strict",
+      "--groups", "--local", "--major", "--minor", "--only-explicit",
+      "--parseable", "--porcelain", "--patch", "--pre", "--strict", "--update-strict",
+    ]
+    OUTDATED_SWITCH_VALUES = BARE_SWITCH_VALUES + ["--cooldown", "--group", "--source"]
+    GEM_SWITCH_FLAGS       = BARE_SWITCH_FLAGS + [
+      "--bundle", "--changelog", "--coc", "--exe", "--bin", "-b", "--git", "--mit", "--rubocop",
+    ]
+    GEM_SWITCH_VALUES = BARE_SWITCH_VALUES + [
+      "--ci", "--edit", "-e", "--ext", "--github-username", "--linter", "--test",
+    ]
+    DOCTOR_SUBCOMMAND_FLAGS  = BARE_SWITCH_FLAGS + ["--ssl"]
+    DOCTOR_SUBCOMMAND_VALUES = BARE_SWITCH_VALUES + ["--gemfile", "--tls-version", "--verify-mode"]
+
+    # `doctor`/`plugin` route through Thor subcommands, which report unknown
+    # options as leftover arguments instead of `Unknown switches` (measured on
+    # 4.0.24: `bundle doctor diagnose --bogus`).
+    private def self.subcommand_arguments(rest : Array(String), allowed_flags : Array(String),
+                                          allowed_values : Array(String)) : Array(String)
+      arguments = [] of String
+      index = 0
+      while index < rest.size
+        arg = rest[index]
+        name = arg.split("=", 2)[0]
+        if allowed_values.includes?(name)
+          index += 2 unless arg.includes?("=")
+          next
+        end
+        if allowed_flags.includes?(name) || attached_short_value?(arg)
+          index += 1
+          next
+        end
+        arguments << arg
+        index += 1
+      end
+      arguments
     end
 
     # 4.x rejects these flags (`print_remembered_flag_deprecation`); 2.7.x only
