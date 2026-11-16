@@ -973,8 +973,7 @@ module Celerite
       sub = rest.first? || "list"
       case sub
       when "list"
-        definition = Definition.build
-        index_path = PluginCommands.index_path(definition.gemfile_path)
+        index_path = plugin_index_path
         index = File.file?(index_path) ? YAML.parse(File.read(index_path)) : YAML.parse("{}")
         # Reference order: `installed_plugins` = @plugin_paths.keys (insertion
         # order, plugin/index.rb:128-130); never sorted.
@@ -1014,7 +1013,6 @@ module Celerite
           return 19
         end
 
-        definition = Definition.build
         stdout.puts "Resolving dependencies..."
 
         bridge = Bridge::Client.new
@@ -1024,7 +1022,7 @@ module Celerite
           bridge.close
         end
 
-        index_dir = File.join(File.dirname(definition.gemfile_path), ".bundle", "plugin")
+        index_dir = plugin_tree_root
         Dir.mkdir_p(index_dir)
         index_path = File.join(index_dir, "index")
         index = File.file?(index_path) ? (YAML.parse(File.read(index_path)) || YAML.parse("{}")) : YAML.parse("{}")
@@ -1091,8 +1089,7 @@ module Celerite
       when "uninstall"
         all = rest.includes?("--all")
         names = rest[1..].reject(&.starts_with?("--"))
-        definition = Definition.build
-        index_path = File.join(File.dirname(definition.gemfile_path), ".bundle", "plugin", "index")
+        index_path = plugin_index_path
         installed = installed_plugins
         targets = all ? installed : names
         if targets.empty?
@@ -1157,10 +1154,15 @@ module Celerite
       end
 
       bridge = Bridge::Client.new
+      tmp_dir = ""
+      tmp_root = ""
       begin
         stdout.puts "Fetching #{git_remote}" if git_remote
-        # Synthesize a captured Gemfile
-        tmp_dir = File.tempname("celerite-plugin", "proj")
+        # Reference `Bundler.tmp` lives inside the project; the system TEMP is
+        # neither writable in this sandbox nor the project's temp dir.
+        tmp_root = File.join(plugin_project_dir, ".bundle", "tmp")
+        Dir.mkdir_p(tmp_root)
+        tmp_dir = File.join(tmp_root, "celerite-plugin-#{Process.pid}-#{rand(1 << 30)}")
         Dir.mkdir_p(tmp_dir)
         synthesized = if git_remote
                         body = "source \"https://rubygems.org/\"\n\ngem \"#{names.first.not_nil!}\", git: \"#{git_remote}\""
@@ -1174,6 +1176,8 @@ module Celerite
         File.write(File.join(tmp_dir, "Gemfile"), synthesized)
         old_env = ENV["BUNDLE_GEMFILE"]?
         ENV["BUNDLE_GEMFILE"] = File.join(tmp_dir, "Gemfile")
+        old_bundle_path = ENV["BUNDLE_PATH"]?
+        ENV["BUNDLE_PATH"] = File.join(tmp_dir, "bundle")
         begin
           definition = Definition.build
           resolution = Resolution.new(definition, false, bridge)
@@ -1189,10 +1193,15 @@ module Celerite
           else
             ENV.delete("BUNDLE_GEMFILE")
           end
+          if old_bundle_path
+            ENV["BUNDLE_PATH"] = old_bundle_path
+          else
+            ENV.delete("BUNDLE_PATH")
+          end
         end
 
         host_root = old_env ? Dir.current : Dir.current
-        plugin_root = File.join(host_root, ".bundle", "plugin")
+        plugin_root = plugin_tree_root
         Dir.mkdir_p(plugin_root)
         abi = InstallPaths.ruby_abi(bridge)
         gem_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi)
@@ -1280,9 +1289,12 @@ module Celerite
             hooks_map[key.as_s] = value.as_a?.try(&.map(&.as_s)) || [] of String
           end
           gem_dir = if git_remote
-                      File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "bundler", "gems", "#{GitSource.base_name(git_remote)}-#{spec.version}").gsub(/\\/, "/")
+                      File.join(plugin_root, "bundler", "gems", "#{GitSource.base_name(git_remote)}-#{spec.version}").gsub(/\\/, "/")
                     else
-                      File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "gems", spec.full_name).gsub(/\\/, "/")
+                      # Installed plugin gems live in the plugin tree
+                      # (`<project>/.bundle/plugin/gems/<full>`), not in the
+                      # application bundle directory (Bundler::Plugin.root).
+                      File.join(plugin_root, "gems", spec.full_name).gsub(/\\/, "/")
                     end
           lib_dir = File.join(gem_dir, "lib").gsub(/\\/, "/")
           registered = PluginCommands.commands(index_path)
@@ -1327,6 +1339,10 @@ module Celerite
         stderr.puts ex.message
         return ex.status_code
       ensure
+        FileUtils.rm_rf(tmp_dir) unless tmp_dir.empty?
+        if !tmp_root.empty? && Dir.exists?(tmp_root) && Dir.empty?(tmp_root)
+          Dir.delete(tmp_root)
+        end
         bridge.close
       end
       0
@@ -1345,9 +1361,43 @@ module Celerite
       nil
     end
 
+    # Plugin project root and tree (`Bundler::Plugin.root`): the project that
+    # owns the Gemfile, or the current directory when there is no Gemfile. The
+    # reference keeps `plugin list` and plugin commands working without a
+    # Gemfile, and always materializes plugins under `<project>/.bundle/plugin`.
+    private def self.plugin_project_dir : String
+      gemfile = begin
+        Definition.find_gemfile
+      rescue GemfileNotFound
+        nil
+      end
+      gemfile ? File.dirname(gemfile) : Dir.current
+    end
+
+    private def self.plugin_tree_root : String
+      gemfile = begin
+        Definition.find_gemfile
+      rescue GemfileNotFound
+        nil
+      end
+      if gemfile
+        File.join(File.dirname(gemfile), ".bundle", "plugin")
+      else
+        # `Bundler::Plugin.root`: the global root
+        # (`Bundler.user_bundle_path("plugin")` = `~/.bundle/plugin`) when the
+        # cwd is not inside a bundle. The reference therefore prints
+        # `No plugins installed` for a Gemfile-less cwd unless that global root
+        # already holds plugins.
+        File.join(Config.user_home || ".", ".bundle", "plugin")
+      end
+    end
+
+    private def self.plugin_index_path : String
+      File.join(plugin_tree_root, "index")
+    end
+
     private def self.installed_plugins : Array(String)
-      definition = Definition.build
-      index_path = File.join(File.dirname(definition.gemfile_path), ".bundle", "plugin", "index")
+      index_path = plugin_index_path
       return [] of String unless File.file?(index_path)
 
       index = YAML.parse(File.read(index_path))

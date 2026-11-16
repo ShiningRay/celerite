@@ -2075,3 +2075,40 @@ profile 门控：`Commands.preserve_lockfile_crlf?`（`commands.cr:320`）= `!(E
 - 负对照（首辅亲做）：把删除条件改成 `if false && File.file?(…)` → `4 examples, 1 failures`（`spec/m7_install_failure_spec.cr:95` `Expected: false / got: true`）；`edit` 还原后 4/0，`negative-control` 无残留。
 - 端到端 A/B（`.tmp-scratch/cache45b`，等长 `failref`/`failcel` 沙箱）：两侧 `exit=5 cache=[] gems=[fail-ext-0.1.0] specs=[]` —— 三处残留树逐项一致。
 - 未验证：其它失败类型（校验失败、网络失败）是否同样不留缓存包；多平台 `full_name`（带 platform）变体的缓存文件名；`cache`/`package` 子命令对失败残留的处理；2.7.2 profile 下单独跑该 spec 断言。
+## 2026-11-16（M7(6)：`plugin install <gem> --source` 的插件树与无 Gemfile 行为）
+
+参考 4.0.24 与 2.7.2 实测（探针 `.tmp-scratch/plug46`，插件 gem `candle_plug-0.1.0` 的 `plugins.rb` 声明 `command "candle"`，索引由 `gem generate_index` 生成）：
+
+- `bundle plugin install candle_plug --source file:///<index>`（带 Gemfile）→ exit 0，stdout 五行：`Fetching source index from …` / `Resolving dependencies...` / `Fetching candle_plug 0.1.0` / `Installing candle_plug 0.1.0` / `Installed plugin candle_plug`。
+- 索引 `<project>/.bundle/plugin/index`：`commands: candle: "candle_plug"`；`load_paths: candle_plug: ["<project>/.bundle/plugin/gems/candle_plug-0.1.0/lib"]`；`plugin_paths: candle_plug: "<project>/.bundle/plugin/gems/candle_plug-0.1.0"`。
+- 插件树落 `<project>/.bundle/plugin/{build_info,cache,doc,extensions,gems,plugins,specifications,index}`（`cache/candle_plug-0.1.0.gem`、`gems/candle_plug-0.1.0/{lib,plugins.rb}`、`specifications/candle_plug-0.1.0.gemspec`），**应用 bundle 目录下无该 gem**。
+- `plugin list` → `candle_plug` / `-----` / `  candle` / 空行；`bundle candle x y` → `candle: x,y`。
+- 无 Gemfile 的目录：`plugin list` → `No plugins installed` exit 0；`candle x y` → `Could not find command "candle".` exit 15（全局 root `~/.bundle/plugin` 恰好指向该工程时才会命中）。
+
+修复前三处真实缺陷：
+
+1. 合成 Gemfile 用系统 TEMP（`File.tempname`），在本沙箱/受限环境直接 `celerite internal error: Unable to create directory: '<系统 TEMP>…': 拒绝访问` exit 1；参考用项目内 `<project>/.bundle/tmp`（`Bundler.tmp`）。
+2. 索引 `load_paths`/`plugin_paths` 指向应用 bundle 的 `<BUNDLE_PATH>/ruby/<abi>/gems/<full>`，参考指向 `<project>/.bundle/plugin/gems/<full>`；插件 gem 还会被装进应用 bundle。
+3. `plugin list`/`plugin <cmd>`/`plugin uninstall` 一律 `Definition.build`，无 Gemfile 时报 `Could not locate Gemfile` exit 10。
+
+实现（`src/celerite/cli/commands_surface.cr`、`src/celerite/cli/commands.cr`）：
+
+- 新增 `plugin_project_dir` / `plugin_tree_root` / `plugin_index_path`（有 Gemfile → `<project>/.bundle/plugin`；无 Gemfile → `Config.user_home/.bundle/plugin`，与 `Bundler::Plugin.root` 的全局 root 分支一致）；`plugin list`、`plugin install --path`、`plugin uninstall`、`installed_plugins` 与 `dispatch_plugin_command` 改为使用它们，不再要求 Gemfile。
+- `plugin_install_remote` 的合成 Gemfile 目录改为 `<project>/.bundle/tmp/celerite-plugin-<pid>-<rand>`，期间临时 `BUNDLE_PATH=<该目录>/bundle`（不写用户 bundle），`ensure` 精确还原两个 ENV 并删除临时目录、空则删除 `.bundle/tmp`。
+- 非 git 插件安装后，把临时 bundle 里的 `gems/<full>`、`cache/<full>.gem`、`specifications/<full>.gemspec` 物化到插件树，并补空目录 `extensions`/`doc`/`build_info`/`plugins`；索引 `load_paths`/`plugin_paths` 指向插件树。
+- `script/differential` 新增 `@PLUGIN_INDEX_DIR@`（5 处替换，写法同 `@PLATFORM_INDEX_DIR@`）。
+
+证据：
+
+- 差分夹具 `fixtures/differential/plugin-install-source/`（`Gemfile` = `source "file:///@INDEX_DIR@"` + `gem "json_pure"`；`command` 四行：`install`、`plugin install candle_plug --source file:///@PLUGIN_INDEX_DIR@`、`plugin list`、`candle x y`）与仓库内插件索引 `fixtures/gem-index-plugin/`。4.0.24 与 2.7.2 均 `PASS plugin-install-source (exit=0)`；回归 `plugin-command-list`、`install-fresh` 同轮双 profile 全 PASS（各 3 passed, 0 failed）。
+- 新 spec `spec/m7_plugin_install_source_spec.cr` 3 例（index 指向 `.bundle/plugin/gems` 且不含 `/bundle/ruby/`；插件树含 `plugins.rb`/`specifications`/`cache` 且 `.bundle/tmp` 不残留；`plugin list` 逐字节、`candle x y`、删 Gemfile 后仍可用、空 HOME 下 `No plugins installed` 与 `Could not find command` exit 15）。
+- 首辅独立端到端（`.tmp-scratch/plug46/celproj5`，TEMP/TMP/TMPDIR 故意指向被沙箱拒绝的系统 TEMP）：`plugin install` exit 0；索引与参考逐字相同（仅沙箱路径不同）；`<project>/.bundle/plugin` 下 8 个条目与参考一致；应用 bundle 内 `candle_plug*` 命中 **0**；`.bundle/tmp` 运行后不存在；`plugin list`/`candle x y` 与参考一致；无 Gemfile + 空 HOME → `No plugins installed` exit 0、`candle` → exit 15。
+- 负对照（首辅亲做）：把合成 Gemfile 目录改回 `File.tempname` 并重建 `bin` → 该 spec `3 examples, 2 failures`（`Expected: 0`）。spec 已把 TEMP/TMP/TMPDIR 指向工程内一个**普通文件**，使任何「用系统 TEMP」的实现必然失败，避免该断言恒真。
+- 门禁：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen --link-flags <shim> src/cli.cr` EXIT 0（仅既有 2 条 `File.executable?` deprecation）；新 spec 3/0/0/0；全量 **446 examples, 0 failures, 4 errors, 0 pending**（4 = 既有 `spec/git_source_spec.cr` Low-IL；基线 443/0/4）；`git diff --check` EXIT 0；`bash -n script/differential` EXIT 0。
+
+已声明偏差与未验证：
+
+- `plugin install --git` 的插件树路径（`<plugin_root>/bundler/gems/<name>-<version>`）未取参考 oracle。
+- 无 Gemfile 时执行 `plugin install --source` 的参考行为未取证（我方会装到全局 root）。
+- `plugin uninstall` 在无 Gemfile（全局 root）下的行为未差分。
+- 真实 https 索引源未测（夹具走 `file://`）；参考 stdout 的 `Fetching source index from …` 尾斜杠随索引 URL 而定，夹具已覆盖但未逐字断言。

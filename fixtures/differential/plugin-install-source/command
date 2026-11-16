@@ -1,0 +1,4 @@
+install
+plugin install candle_plug --source file:///@PLUGIN_INDEX_DIR@
+plugin list
+candle x y

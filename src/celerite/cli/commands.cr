@@ -1479,14 +1479,27 @@ module Celerite
       return nil if command.empty? || command.starts_with?("-")
       return nil if BUILTIN_COMMANDS.includes?(command)
 
-      definition = begin
-        Definition.build
-      rescue
-        return nil
+      gemfile = begin
+        Definition.find_gemfile
+      rescue GemfileNotFound
+        nil
       end
-      return nil unless PluginCommands.enabled?(definition.config)
+      project_dir = gemfile ? File.dirname(gemfile) : Dir.current
+      config = begin
+        Config.new(project_dir)
+      rescue
+        nil
+      end
+      return nil if config && !PluginCommands.enabled?(config)
 
-      index = PluginCommands.index_path(definition.gemfile_path)
+      # `Bundler::Plugin.root`: project plugin tree in a bundle, global
+      # (`~/.bundle/plugin`) otherwise — a Gemfile-less cwd does not see a
+      # project-local plugin install.
+      index = if gemfile
+                File.join(project_dir, ".bundle", "plugin", "index")
+              else
+                File.join(Config.user_home || ".", ".bundle", "plugin", "index")
+              end
       return nil unless File.file?(index)
       return nil unless PluginCommands.commands(index).has_key?(command)
 
