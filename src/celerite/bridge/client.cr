@@ -227,6 +227,20 @@ module Celerite
         request("read_gem_spec", {"path" => path})
       end
 
+      # `Bundler::CLI::Common.default_gem_spec` (common.rb:98-101): the
+      # interpreter's default gem for a bare name, if any. `bundle open`
+      # appends it to the regex candidates so `bundle open json` can offer
+      # the interpreter's own `json` next to the bundled `json_pure`.
+      def default_gem_spec(name : String) : NamedTuple(name: String, version: String, full_gem_path: String)?
+        result = request("default_gem_spec", {"name" => name})
+        return nil if result.raw.nil?
+        {
+          name:          result["name"].as_s,
+          version:       result["version"].as_s,
+          full_gem_path: result["full_gem_path"].as_s,
+        }
+      end
+
       def write_installed_spec(gem_path : String, destination : String, gem_dir : String) : JSON::Any
         request("write_installed_spec", {"gem_path" => gem_path, "destination" => destination, "gem_dir" => gem_dir})
       end

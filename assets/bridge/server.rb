@@ -244,6 +244,21 @@ def op_installed_specs(payload)
   end
 end
 
+# `Bundler::CLI::Common.default_gem_spec` (cli/common.rb:98-101): the last
+# installed spec for the name, only when it is a default gem. `bundle open`
+# appends it to the regex candidates so `bundle open json` can offer the
+# interpreter's default gem alongside the bundled json_pure.
+def op_default_gem_spec(payload)
+  name = payload["name"]
+  spec = Gem::Specification.find_all_by_name(name).last
+  return nil unless spec && spec.default_gem?
+  {
+    "name" => spec.name,
+    "version" => spec.version.to_s,
+    "full_gem_path" => spec.full_gem_path,
+  }
+end
+
 def op_read_gem_spec(payload)
   require "rubygems/package"
   path = payload["path"]
@@ -507,6 +522,7 @@ def bridge_dispatch(id, op, payload)
            when "exec_plugin_hook" then op_exec_plugin_hook(payload)
            when "plugin_gemfile_eval" then op_plugin_gemfile_eval(payload)
   when "installed_specs" then op_installed_specs(payload)
+    when "default_gem_spec" then op_default_gem_spec(payload)
            else
              return bridge_error(id, "UnknownOp", "unknown bridge op #{op.inspect}")
            end

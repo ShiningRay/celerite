@@ -1046,38 +1046,193 @@ module Celerite
     # ------------------------------------------------------------------
     # open
     # ------------------------------------------------------------------
+    # `bundle open` (cli/open.rb:12-26). The whole point is fidelity of the
+    # error surface: Thor validates the arity before `run`, and `run` then
+    # rejects an empty `--path`, resolves the editor in
+    # BUNDLER_EDITOR/VISUAL/EDITOR order, and only then selects the gem
+    # (cli/common.rb:68-96: exact name, else regex, else the interpreter's
+    # default gem, else an interactive picker).
     def self.open(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       if (code = reject_unknown_switches(stderr, rest, OPEN_SWITCH_FLAGS, OPEN_SWITCH_VALUES))
         return code
       end
-      name = rest.first?
-      editor = ENV["BUNDLER_EDITOR"]? || ENV["EDITOR"]?
-      if editor.nil? || editor.empty?
+
+      path_option : String? = nil
+      names = [] of String
+      index = 0
+      while index < rest.size
+        arg = rest[index]
+        if arg == "--path"
+          index += 1
+          path_option = rest[index]? || ""
+        elsif value = arg.lchop?("--path=")
+          path_option = value
+        else
+          names << arg
+        end
+        index += 1
+      end
+
+      if names.empty?
+        stderr.puts %(ERROR: "bundle open" was called with no arguments)
+        stderr.puts %(Usage: "bundle open GEM")
+        return 15
+      end
+      if names.size > 1
+        stderr.puts %(ERROR: "bundle open" was called with arguments #{names.inspect})
+        stderr.puts %(Usage: "bundle open GEM")
+        return 15
+      end
+      if (path = path_option) && path.empty?
+        stderr.puts "Cannot specify `--path` option without a value"
+        return 15
+      end
+
+      editor = [ENV["BUNDLER_EDITOR"]?, ENV["VISUAL"]?, ENV["EDITOR"]?].find { |value| !value.nil? && !value.empty? }
+      unless editor
         stdout.puts "To open a bundled gem, set $EDITOR or $BUNDLER_EDITOR"
         return 0
       end
-      if name.nil?
-        stderr.puts "Usage: bundle open [GEM]"
-        return 1
-      end
 
+      name = names.first
       definition = Definition.build
       bridge = Bridge::Client.new
       begin
+        lockfile = materialize_lockfile(definition, nil, local_only: true)
         abi = InstallPaths.ruby_abi(bridge)
         install_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi)
-        spec = definition.lockfile!.specs.find(&.name.==(name))
-        unless spec
-          stderr.puts "Could not find '#{name}' in the bundle."
-          return 7
+        specs = lockfile.specs.sort_by(&.full_name)
+
+        chosen = specs.find(&.name.==(name))
+        if chosen
+          gem_dir = open_gem_dir(bridge, install_root, chosen.full_name)
+          return run_editor(stdout, editor, gem_dir, path)
         end
-        gem_dir = File.join(install_root, "gems", spec.full_name)
-        Process.run("#{editor} #{gem_dir.gsub(/\\/, "/")}", shell: true,
-          output: :inherit, error: :inherit, input: :inherit)
-        0
+
+        candidates = [] of NamedTuple(name: String, path: String, default_gem: Bool)
+        regexp = begin
+          Regex.new(name)
+        rescue Regex::Error
+          nil
+        end
+        if rx = regexp
+          specs.each do |spec|
+            candidates << {name: spec.name, path: open_gem_dir(bridge, install_root, spec.full_name), default_gem: false} if spec.name.matches?(rx)
+          end
+        end
+        if (default_spec = bridge.default_gem_spec(name))
+          candidates << {name: default_spec[:name], path: default_spec[:full_gem_path], default_gem: true}
+        end
+
+        case candidates.size
+        when 0
+          evaluation = begin
+            bridge.evaluate_gemfile(definition.gemfile_path)
+          rescue
+            nil
+          end
+          groups = evaluation.try(&.dependencies.find(&.name.==(name)).try(&.groups)) || [] of String
+          if groups.empty? && evaluation && evaluation.dependencies.any? { |dep| dep.name == name }
+            groups = ["default"]
+          end
+          if groups.empty? && evaluation.nil?
+            groups = gem_groups_for(definition, name)
+          end
+          if !groups.empty?
+            message = "Could not find gem '#{name}', because it's in the #{verbalize_groups(groups)}, configured to be ignored."
+            stderr.puts word_wrap(message, CLI.terminal_width)
+          else
+            alternatives = evaluation.try(&.dependencies.map(&.name)) || lockfile.dependencies.map(&.name)
+            stderr.puts gem_not_found_message_for(name, alternatives)
+          end
+          return 7
+        when 1
+          return open_candidate(stdout, stderr, editor, name, path, candidates.first)
+        else
+          candidates.each_with_index do |candidate, position|
+            stdout.puts "#{position + 1} : #{candidate[:name]}"
+          end
+          stdout.puts "0 : - exit -"
+          # Reference prompt is Thor's ask, which prints the statement plus
+          # a trailing space (`">  "`).
+          stdout.print ">  "
+          stdout.flush
+          answer = STDIN.gets
+          number = answer ? answer.strip.to_i : 0
+          return 0 if number <= 0
+          candidate = candidates[number - 1]?
+          return 0 unless candidate
+          return open_candidate(stdout, stderr, editor, name, path, candidate)
+        end
       ensure
         bridge.close
       end
+    end
+
+    private def self.open_candidate(stdout : IO, stderr : IO, editor : String, name : String,
+                                    path : String?, candidate : NamedTuple(name: String, path: String, default_gem: Bool)) : Int32
+      if candidate[:default_gem]
+        stdout.puts "Unable to open #{name} because it's a default gem, so the directory it would normally be installed to does not exist."
+        return 0
+      end
+      run_editor(stdout, editor, candidate[:path], path)
+    end
+
+    # The installed directory of a locked gem, taken from the bridge's spec
+    # list (`spec.full_gem_path`) rather than recomputed from the install root:
+    # Bundler installs into Gem.dir unless `path` is configured, so the root
+    # alone does not tell where a gem actually lives.
+    private def self.open_gem_dir(bridge : Bridge::Client, install_root : String, full_name : String) : String
+      specs = begin
+        bridge.installed_specs(File.join(install_root, "specifications")).as_a
+      rescue
+        [] of JSON::Any
+      end
+      spec = specs.find { |entry| entry["full_name"]?.try(&.as_s?) == full_name }
+      spec.try(&.["full_gem_path"]?.try(&.as_s?)) || File.join(install_root, "gems", full_name)
+    end
+
+    private def self.run_editor(stdout : IO, editor : String, gem_dir : String, path : String?) : Int32
+      # RubyGems reports `full_gem_path` with forward slashes on Windows; the
+      # reference hands that form straight to the editor.
+      target = (path ? File.join(gem_dir, path) : gem_dir).tr("\\\\", "/")
+      # open.rb:28-37: on Windows a value naming an existing file is taken as a
+      # single word (shell splitting would corrupt "Program Files" paths).
+      words = if File.file?(editor)
+                [editor]
+              else
+                editor.split(/\s+/, remove_empty: true)
+              end
+      command = words + [target]
+      status = spawn_editor(words, target, gem_dir)
+      # Ruby's `system` runs a `.cmd`/`.bat` editor through the command
+      # processor (CreateProcess alone cannot execute batch files), so retry
+      # the same line under cmd.exe before reporting a failure.
+      if status.nil? && {{ flag?(:windows) }} && batch_file?(words.first)
+        status = spawn_editor(words, target, gem_dir, via_shell: true)
+      end
+      if status.nil? || !status.success?
+        stdout.puts "Could not run '#{command.join(" ")}'"
+      end
+      0
+    end
+
+    private def self.batch_file?(path : String) : Bool
+      name = path.downcase
+      name.ends_with?(".cmd") || name.ends_with?(".bat")
+    end
+
+    private def self.spawn_editor(words : Array(String), target : String, gem_dir : String,
+                                  via_shell : Bool = false) : Process::Status?
+      if via_shell
+        Process.run("#{words.join(" ")} #{target}", shell: true, chdir: gem_dir,
+          output: Process::Redirect::Inherit, error: Process::Redirect::Inherit, input: Process::Redirect::Inherit)
+      else
+        Process.run(words.first, words[1..] + [target], chdir: gem_dir,
+          output: Process::Redirect::Inherit, error: Process::Redirect::Inherit, input: Process::Redirect::Inherit)
+      end
+    rescue ex : File::Error | RuntimeError
+      nil
     end
 
     # ------------------------------------------------------------------
@@ -2068,7 +2223,9 @@ module Celerite
         stdout.puts
         stdout.puts "```"
         bundler_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
-        stdout.puts "Bundler       #{bundler_version} (Celerite #{Celerite::VERSION}, compatibility profile)"
+        # Same line as `env` (env.rb:44): the reference has no Celerite suffix,
+        # and `issue` embeds the identical environment report.
+        stdout.puts "Bundler       #{bundler_version}"
         platforms = [Gem::Platform::RUBY.to_s, Gem::Platform.local.to_s]
         stdout.puts "  Platforms   #{platforms.join(", ")}"
         stdout.puts "Ruby          #{re.ruby_env_line}"

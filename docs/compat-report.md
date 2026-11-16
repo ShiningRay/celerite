@@ -2610,3 +2610,38 @@ exec --bogus true                     ref 127   cel 127（参考同样把未知�
 
 - `--keep-file-descriptors` 的真实 fd 继承行为（本机 Windows 无对应语义，只验证开关被接受）。
 - `disable_exec_load=1` 与 `--gemfile` 组合未单列夹具。
+
+## 2026-11-16（M7(2)：`bundle open` 的参数校验、编辑器顺序与 select_spec 选 gem）
+
+参考锚点：`bundler-4.0.24/lib/bundler/cli/open.rb:12-26`（`run`：先 `--path` 空值检查，再按 `BUNDLER_EDITOR`/`VISUAL`/`EDITOR` 找编辑器，无编辑器直接提示并返回；随后 `select_spec(name, :regex_match)`，`default_gem?` 打专用提示，否则 `system(*editor_command(editor) << File.join([root_path, path].compact), chdir: root_path)`，失败打 `Could not run '<command>'`），`:28-37`（Windows 上把「现存文件」当单字，其余走 `Shellwords.split`）；`lib/bundler/cli/common.rb:68-96`（`select_spec`：精确名→正则命中→`default_gem_spec`→`ask_for_spec_from`，0 条时按「组被忽略」或 `gem_not_found_message` 抛错）、`:98-101`（`Gem::Specification.find_all_by_name(name).last` 且 `default_gem?`）、`:103-111`（`N : name` + `0 : - exit -` + `>  `，`num > 0 ? specs[num-1] : nil`）、`:113-123`（`Could not find gem '<name>'.` + `Did you mean …?`）；Thor 的参数错误（`ERROR: "bundle open" was called with no arguments` / `with arguments ["a", "b"]` + `Usage: "bundle open GEM"`，exit 15）在 `run` 之前发生。
+
+修复前（4.0.24 实测）：
+
+- `bundle open` → 我方 exit 1、自造 `Usage: bundle open [GEM]`；参考 exit 15 + 两行 Thor 错误。
+- `bundle open json_pure --path`（无值）→ 我方照样打开；参考 exit 15 `Cannot specify \`--path\` option without a value`。
+- 编辑器只认 `BUNDLER_EDITOR`/`EDITOR`，漏掉 `VISUAL`；缺失 gem 报 `Could not find '<name>' in the bundle.`，与参考的 `Could not find gem '<name>'.` 不同；正则与默认 gem 回退都未实现。
+- `bundle issue` 的 `## Environment` 首行仍带 ` (Celerite 0.1.0, compatibility profile)` 后缀（`env` 早已去掉）。
+
+实现：
+
+1. `src/celerite/cli/commands_surface.cr` 的 `open` 重写：先 `reject_unknown_switches`（`--path` 属值选项），再按「参数个数 → `--path` 空值 → 编辑器 → 选 gem」的顺序校验，错误文本与退出码照抄参考；编辑器取 `BUNDLER_EDITOR`/`VISUAL`/`EDITOR` 中第一个非空值。
+2. 选 gem：`materialize_lockfile(definition, nil, local_only: true)` 得锁定 specs（参考 `Bundler.definition.specs` 不碰索引），精确名 → 正则命中（`RegexpError` 退化为「找不到」）→ `bridge.default_gem_spec(name)` 追加；0 条时按 Gemfile 声明的组给「because it's in the group … configured to be ignored」，否则 `gem_not_found_message_for`（含 `Did you mean?`）；>1 条打印 `N : name` / `0 : - exit -` / `>  `（参考提示符是 `> ` 加一个空格）并从 stdin 读编号，EOF 或 `0` 退出 0。
+3. gem 目录取 `spec.full_gem_path`（桥新增 `default_gem_spec` op；已安装 specs 由 `installed_specs` 提供 `full_gem_path`），只有查不到时才退回 `<install root>/gems/<full_name>`；`--path` 以 `/` 形式拼在 gem 目录下（RubyGems 的 `full_gem_path` 在 Windows 上也是正斜杠）。
+4. 执编辑器：Windows 上 `.cmd`/`.bat` 先按 `CreateProcess` 直接跑，失败后用 `cmd.exe` 重试（Ruby 的 `system` 同样经命令处理器执行批处理）；失败打 `Could not run '<cmd>'` 并返回 0。
+5. `issue` 的环境报告首行改用与 `env` 相同的 `Bundler       <version>`。
+
+证据：
+
+- A/B（`.tmp-scratch/open61`，两侧独立 `HOME`/`GEM_HOME`/`GEM_PATH`/`BUNDLE_PATH`/`BUNDLE_USER_*`，`EDITOR`/`BUNDLER_EDITOR`/`VISUAL` 指向记录参数的 `.cmd`）9 例全同：`open`、`open json_pure extra`、`open json_pure extra --path lib`、`open json_pure --path`、`open nosuchgem`、`open jso`、`open json`（默认 gem 选择器）、`open json_pure --path lib`、`open json_pure`。
+- `spec/m7_open_spec.cr` **8 examples, 0 failures**（无参/多参/空 `--path`/无编辑器/找不到 gem/精确名/正则/`--path lib`）。
+- 差分夹具 `open-no-arguments`、`open-extra-arguments`：4.0.24 与 2.7.2 各 **2 passed**。
+- 负对照：删掉 `open` 的无参分支（改为直接 `return 0`）→ `spec/m7_open_spec.cr` `8 examples, 1 failures`（`Expected: 15 got: 0`），还原后 8/0。
+- 门禁：`crystal tool format --check src spec` 0、`crystal build src/cli.cr` 0、全量 `crystal spec` 见下节。
+
+已声明差异：`open --help` 打印 Celerite 的 `Usage:` 摘要而非 `bundle-open(1)` manpage（与其余命令同一差异）；交互式选择器的提示符已按参考补成 `>  `（两空格），但输入回显依赖终端，未做夹具。
+
+未验证：
+
+- 选择器输入非法编号（如 `9`）后两侧的返回码一致（我方返回 0，参考 `specs[num-1]` 为 nil 亦返回 0），未做自动化用例。
+- 默认 gem 选择后 `Unable to open …` 路径只在手工探针里验证（ci 无默认 json gem 保证）。
+- 另一处**发现但未修**：只设 `GEM_HOME`/`GEM_PATH`、未设 `BUNDLE_PATH`/`path` 时，参考把 gem 装进 `Gem.dir`（GEM_HOME）且**不**打印 `Bundled gems are installed into …`，我方仍装进 `<home>/.bundle/ruby/<abi>` 并打印该行；`open` 已改为读 `full_gem_path`，不会因此开错目录，但 `install` 的目标目录本身仍是差异（记入下轮候选）。
