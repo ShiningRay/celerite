@@ -170,9 +170,19 @@ def op_bundler_cache_file(payload)
   require "bundler"
   version = payload["version"]
   version = Bundler::VERSION if version.nil? || version.empty?
-  spec = Gem::Specification.find_by_name("bundler", version)
-  { "path" => spec.cache_file, "exists" => File.exist?(spec.cache_file) }
-rescue Gem::LoadError, Gem::MissingSpecError, Gem::MissingSpecVersionError
+  spec = begin
+    Gem::Specification.find_by_name("bundler", version)
+  rescue Gem::LoadError, Gem::MissingSpecError, Gem::MissingSpecVersionError
+    nil
+  end
+  if spec && File.exist?(spec.cache_file)
+    return { "path" => spec.cache_file, "exists" => true }
+  end
+  # An isolated GEM_PATH hides the default gem dir from Gem::Specification
+  # (GEM_PATH replaces the default path), but the reference still records the
+  # running Bundler's checksum from its cache file in Gem.default_dir.
+  default_cache = File.join(Gem.default_dir, "cache", "bundler-#{version}.gem")
+  return { "path" => default_cache, "exists" => true } if File.exist?(default_cache)
   # Isolated GEM_PATH: fall back to the load-path-provided gem (the running
   # Bundler), matching how the reference's metadata source finds it.
   if lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]

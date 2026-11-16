@@ -2423,3 +2423,29 @@ oracle（4.0.24，两侧独立 HOME，`file:///` 夹具索引）：
 - 无 lockfile 时 `check` 仍 exit 20（`Could not find <abs>/Gemfile.lock for resolution`），参考会先解析并写锁后打印满足信息；这是本轮新发现的独立缺口，未修，记入 roadmap。
 - 桥不可用（降级构建）时运行时校验被跳过，不算通过；本机 Crystal 产物在沙箱内为 Low IL，与参考 Medium IL 的差异不影响本项结论。
 - Gemfile 带 `engine`/`engine_version`/`patchlevel` 的正例仍由既有 `ruby-engine-*`/`ruby-patchlevel-*` 夹具覆盖，本轮未重跑全量差分；`--ruby` 更新路径只做了手工探针（有锁保留、`--ruby` 改写），未加夹具。
+
+## 2026-11-16（M7(1)：无 lockfile 的 `bundle check` 解析与写锁）
+
+本轮把上一节声明为「未修」的独立缺口补齐：项目还没有 `Gemfile.lock` 时，`bundle check` 不再报 `Could not find <abs>/Gemfile.lock for resolution`（exit 20），而是像参考一样先解析、按依赖是否装齐分流，并在满足且非 `--dry-run` 时写锁。
+
+参考锚点：
+- `bundler/cli/check.rb:11-36`：`definition.check!` 负责建定义并解析；`not_installed = definition.missing_specs`；`GemNotFound/GitError/SolveFailure` → `Bundler can't satisfy your Gemfile's dependencies.` + 提示 + exit 1；缺失非空 → `The following gems are missing` + 逐条 ` * name (version)` + `Install missing gems with \`bundle install\`` + exit 1；否则 `definition.lock(true) unless options[:"dry-run"]` 之后打印 `The Gemfile's dependencies are satisfied`。
+- 解析进度文本（`Fetching source index from <remote>/`、`Resolving dependencies...`）来自 `Bundler::Definition#resolve` 的 `Bundler.ui.info` 调用；`file:` 源走 `Fetching source index from` 而不是 `Fetching gem metadata from`。
+
+两处实现：
+1. `src/celerite/cli/commands.cr` 的 `run_check`：`resolved_from_gemfile = !definition.lockfile_exists?` 为真时用 `Resolution.new(definition, false)` 现场解析（`resolution.progress = stdout`、`resolve!`、取 `generated_lockfile` 并保留 `to_lock` 文本，`ensure resolution.close`），否则沿用 `definition.lockfile!`。缺失分支因此在无锁时不再撞 `LockfileError`。
+2. 同一函数在「满足」分支前按需落盘：仅当无锁、未带 `--dry-run`、且与磁盘上内容（`semantic_content`）不同时才 `Lockfile.write(..., preserve_crlf: preserve_lockfile_crlf?)`，与 `install` 的写法一致。
+3. `assets/bridge/server.rb` 的 `op_bundler_cache_file`：`Gem::Specification.find_by_name("bundler", version)` 在隔离 `GEM_PATH` 下会隐藏默认目录（`GEM_PATH` 替换默认路径），导致 `CHECKSUMS` 少一行 `bundler (4.0.24) sha256=…`；现在 spec 查不到或 cache 文件不存在时回退 `Gem.default_dir/cache/bundler-<version>.gem`，再回退 `CELERITE_REFERENCE_BUNDLER_LIB` 推导的仓库路径。
+
+证据（首辅亲跑，`.tmp-scratch/ck54i` 与 `probe54.ps1`，两侧各自独立 HOME/GEM_HOME/GEM_PATH，`file:///<repo>/fixtures/gem-index`）：
+- `nolock-missing`（未装 json_pure）：两侧 exit 1，stdout 两行进度 + stderr 三行完全一致，且都不写锁。
+- `nolock-installed`（假 json_pure 2.8.1 装进 GEM_HOME）：两侧 exit 0，stdout 一致；写出的锁文件逐字相同，含 `CHECKSUMS` 的 `bundler (4.0.24) sha256=16ca64e20816a0cf151a948fb141d788602996d2b4d73577b74388fe84fa98bc` 与 `json_pure (2.8.1)`。
+- `nolock-installed --dry-run`：两侧 exit 0，输出一致，均不写锁。
+- spec：新增 `spec/m7_check_no_lockfile_spec.cr`（3 例：缺失 exit 1 且不写锁、已装 exit 0 且写锁含 `BUNDLED WITH`、`--dry-run` 不写锁）；全量 **499 examples, 0 failures, 4 errors**（4 = 既有 `spec/git_source_spec.cr` msys Low-IL）。
+- 差分：新增 `fixtures/differential/check-no-lockfile-missing`（`check`，exit 1）与 `check-no-lockfile-installed`（`check`，含 `bundle-preset` 预装 json_pure，exit 0，锁文件参与比对）；4.0.24 与 2.7.2 各 2/2 PASS；2.7.2 回归集 `check-no-lockfile-* check-satisfied-nolock-ruby ruby-requirement-mismatch show-group-ignored install-fresh` = 6 passed / 0 failed。
+- 负对照：把 `run_check` 的 `resolved_from_gemfile` 硬置 `false` 重建 `bin/celerite-nc.exe` → 两条新夹具 **0 passed / 2 failed**，diff 为 `exit code: reference=1 celerite=20`、stderr 变成 `Could not find <sandbox>/Gemfile.lock` / `for resolution`、且 `Only in SANDBOX/project: Gemfile.lock`；还原后重建真二进制复跑 2/2 PASS。
+
+已声明差异与未验证：
+- 解析在无锁 `check` 下会走一次完整网络/索引解析；参考同样如此，但耗时未量化。
+- `CHECKSUMS` 回退只覆盖「bundler 缓存在 `Gem.default_dir/cache`」的本机布局；Ruby 安装未保留 `.gem` 缓存时两侧都不写 bundler 行，未加夹具。
+- 差分只跑新夹具与相邻回归集，未重跑全量；全量 4.0.24/2.7.2 分类沿用前一节的 168/15/2 与 170/13/4（均为环境类）。

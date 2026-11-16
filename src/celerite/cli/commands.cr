@@ -693,7 +693,27 @@ module Celerite
         raise ProductionError.new("Frozen mode is set, but there's no lockfile")
       end
 
-      lockfile = definition.lockfile!
+      # Reference `Bundler.definition.check!` resolves the Gemfile when no
+      # lockfile exists yet, so `bundle check` works before the first install:
+      # the resolver announces the source-index fetch and the resolve, and the
+      # lockfile is written only once every gem turns out to be installed
+      # (bundler/cli/check.rb:18-34 `definition.check!` + `definition.lock(true)`).
+      resolved_from_gemfile = !definition.lockfile_exists?
+      generated_text : String? = nil
+      lockfile = if resolved_from_gemfile
+                   resolution = Resolution.new(definition, false)
+                   begin
+                     resolution.progress = stdout
+                     resolution.resolve!
+                     data = resolution.generated_lockfile
+                     generated_text = data.to_lock
+                     data
+                   ensure
+                     resolution.close
+                   end
+                 else
+                   definition.lockfile!
+                 end
       all_groups = bridge_available? ? lockfile_groups(definition, lockfile) : ["default"]
 
       # `check` has no group switches in the reference; BUNDLE_WITH/WITHOUT
@@ -743,6 +763,18 @@ module Celerite
         end
         stderr.puts "Install missing gems with `bundle install`"
         return 1
+      end
+
+      # A definition resolved straight from the Gemfile has no lockfile yet;
+      # the reference persists one as part of a satisfied `check` unless
+      # `--dry-run` was given (`definition.lock(true) unless options[:"dry-run"]`).
+      if resolved_from_gemfile && !rest.includes?("--dry-run")
+        if text = generated_text
+          existing = File.file?(definition.lockfile_path) ? File.read(definition.lockfile_path) : nil
+          if existing.nil? || semantic_content(existing) != semantic_content(text)
+            Lockfile.write(definition.lockfile_path, text, preserve_crlf: preserve_lockfile_crlf?)
+          end
+        end
       end
 
       stdout.puts "The Gemfile's dependencies are satisfied"
