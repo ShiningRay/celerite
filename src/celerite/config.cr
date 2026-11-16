@@ -145,28 +145,88 @@ module Celerite
         locations << "Set for the current command: #{Config.display_value(name, v)}"
       end
       if v = @local_config[key]?
-        locations << "Set for your local app (#{(@local_config_file || "").gsub(/\\/, "/")}): #{Config.display_value(name, v)}"
+        locations << "Set for your local app (#{Config.display_path(@local_config_file || "")}): #{Config.display_value(name, v)}"
       end
       if v = @env[key]?
         locations << "Set via #{key}: #{Config.display_value(name, v)}"
       end
       if v = @global_config[key]?
-        locations << "Set for the current user (#{(@global_config_file || "").gsub(/\\/, "/")}): #{Config.display_value(name, v)}"
+        locations << "Set for the current user (#{Config.display_path(@global_config_file || "")}): #{Config.display_value(name, v)}"
       end
 
       return ["You have not configured a value for `#{name}`"] if locations.empty?
       locations
     end
 
+    # The reference builds these paths with `Pathname`, whose separator is `/`
+    # even on Windows (`C:/Users/...`); a native Crystal path would print
+    # `C:\Users\...` and no longer match the reference byte for byte.
+    def self.display_path(path : String) : String
+      path.gsub(/\\/, "/")
+    end
+
+    # Reference `STRING_KEYS` (settings.rb:59-77): values printed as-is instead
+    # of being redacted as credentials/userinfo.
+    STRING_KEYS = [
+      "bin", "cache_path", "console", "default_cli_command", "gem.ci",
+      "gem.github_username", "gem.linter", "gem.rubocop", "gem.test",
+      "gemfile", "lockfile", "path", "shebang", "simulate_version",
+      "system_bindir", "trust-policy", "version",
+    ]
+
+    # `Bundler::Settings#is_string` (settings.rb:358-361).
+    def self.string_key?(name : String) : Bool
+      normalized = name.lchop("BUNDLE_").downcase
+      STRING_KEYS.includes?(normalized) || normalized.starts_with?("local.") ||
+        normalized.starts_with?("mirror.") || normalized.starts_with?("build.")
+    end
+
+    # `Bundler::Settings#printable_value` (settings.rb:441-462): credential
+    # keys are fully redacted and any other string containing a colon is
+    # treated as `user:pass`, keeping only the user name. The reference does
+    # this for every non-string setting, so a Windows path such as
+    # `C:\Users\me` prints as `"C:[REDACTED]"`.
+    def self.printable_value(name : String, value : Value) : ConvertedValue
+      converted = convert(value, name)
+      return converted unless converted.is_a?(String)
+      normalized = name.lchop("BUNDLE_").downcase
+      if string_key?(normalized)
+        converted
+      elsif normalized == "gem.push_key"
+        "[REDACTED]"
+      elsif converted.includes?(":")
+        parts = converted.split(":", 2)
+        username = parts[0]
+        password = parts.size > 1 ? parts[1] : ""
+        if password == "x-oauth-basic"
+          username = "[REDACTED]"
+        else
+          password = "[REDACTED]"
+        end
+        "#{username}:#{password}"
+      else
+        converted
+      end
+    end
+
+    # `--parseable` rendering (`#{setting}=#{value}`): arrays use the symbol
+    # form `[:test, :development]`, everything else converts without `inspect`.
+    def self.parseable_converted(converted : ConvertedValue) : String
+      if converted.is_a?(Array(String))
+        "[" + converted.map { |item| ":#{item}" }.join(", ") + "]"
+      else
+        converted.to_s
+      end
+    end
+
     # Reference display of a converted value: array settings (`with`,
     # `without`) are symbol arrays, so `inspect` renders `[:test, :development]`.
     def self.display_value(name : String, value : Value) : String
-      converted = convert(value, name)
-      if ARRAY_KEYS.includes?(name)
-        array = converted.is_a?(Array(String)) ? converted : [] of String
-        return "[" + array.map { |item| ":#{item}" }.join(", ") + "]"
+      printable = printable_value(name, value)
+      if printable.is_a?(Array(String))
+        return "[" + printable.map { |item| ":#{item}" }.join(", ") + "]"
       end
-      converted.inspect
+      printable.inspect
     end
 
     # `Bundler::Settings.key_for`: dots doubled, dashes tripled, uppercased,

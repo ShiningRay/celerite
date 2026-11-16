@@ -1668,47 +1668,125 @@ module Celerite
     # ------------------------------------------------------------------
     # config: get/list/set/unset (pinned 4.0.24 output)
     # ------------------------------------------------------------------
+    CONFIG_FLAGS = ["--global", "-g", "--local", "--delete", "--parseable"]
+
     def self.config(stdout : IO, stderr : IO, rest : Array(String)) : Int32
-      sub = rest.first?
-      case sub
+      case rest.first?
       when nil
-        stderr.puts "[DEPRECATED] Using the `config` command without a subcommand [list, get, set, unset] is deprecated and will be removed in the future. Use `bundle config list` instead."
-        config_list(stdout)
+        config_deprecated(stdout, stderr, rest)
       when "get"
         config_get(stdout, stderr, rest)
       when "list"
-        config_list(stdout)
+        config_list(stdout, stderr, rest)
       when "set"
         config_set(stdout, stderr, rest)
       when "unset"
-        config_unset(rest, stderr)
+        config_unset(stderr, rest)
       else
-        stderr.puts "Could not find command \"config #{sub}\"."
-        15
+        config_deprecated(stdout, stderr, rest)
       end
+    end
+
+    # Reference `bundle config NAME [VALUE]` (`cli/config.rb:16-32 base`): the
+    # legacy interface is deprecated but still applied to the given NAME/VALUE.
+    private def self.config_deprecated(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      argv = ["config"] + rest
+      replacement =
+        if argv.size == 1
+          ["config", "list"]
+        elsif argv.includes?("--delete")
+          argv.map { |arg| arg == "--delete" ? "unset" : arg }
+        elsif argv.includes?("--global") || argv.includes?("--local") || argv.size == 3
+          ["config", "set"] + argv[1..]
+        else
+          ["config", "get", argv[1]]
+        end
+      stderr.puts "[DEPRECATED] Using the `config` command without a subcommand [list, get, set, unset] is deprecated and will be removed in the future. Use `bundle #{replacement.join(" ")}` instead."
+
+      parseable = rest.includes?("--parseable")
+      global_flag = rest.includes?("--global") || rest.includes?("-g")
+      local_flag = rest.includes?("--local")
+      return config_scope_conflict(stderr) if global_flag && local_flag
+      explicit_scope = global_flag || local_flag
+      scope = if global_flag
+                "global"
+              elsif local_flag
+                "local"
+              else
+                config_project_root ? "local" : "global"
+              end
+
+      positionals = rest.reject { |arg| CONFIG_FLAGS.includes?(arg) }
+      name = positionals.first?
+      value = positionals.size > 1 ? positionals[1..].join(" ") : nil
+
+      if name.nil?
+        config_warn_unused_scope(stderr, explicit_scope, parseable, "Ignoring --#{scope}")
+        return config_list(stdout, stderr, ["list"] + (parseable ? ["--parseable"] : [] of String))
+      end
+
+      if rest.includes?("--delete")
+        return config_unset_values(stderr, name, explicit_scope, scope)
+      end
+
+      if value.nil?
+        config_warn_unused_scope(stderr, explicit_scope, parseable, "Ignoring --#{scope} since no value to set was given")
+        return config_confirm_or_parseable(stdout, stderr, name, parseable)
+      end
+
+      config_store(stdout, stderr, name, value, scope, parseable)
+    end
+
+    # Reference `scope_options` + `validate_scope!` (cli/config.rb:183-196).
+    private def self.config_scope_conflict(stderr : IO) : Int32
+      stderr.puts word_wrap("The options global and local were specified. Please only use one of the switches at a time.", CLI.terminal_width)
+      15
+    end
+
+    # Reference `warn_unused_scope` (cli/config.rb:176-181): only with an
+    # explicit scope and never in `--parseable` mode.
+    private def self.config_warn_unused_scope(stderr : IO, explicit : Bool, parseable : Bool, message : String) : Nil
+      return unless explicit && !parseable
+      stderr.puts message
     end
 
     def self.config_get(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       parseable = rest.includes?("--parseable")
-      name = rest.reject(&.starts_with?("--")).reject(&.==("get")).first?
-      if name.nil?
-        return config_argument_error(stderr, "get", "NAME")
-      end
+      args = rest[1..].reject { |arg| arg == "--parseable" }
+      return config_argument_error(stderr, "get", "NAME") if args.empty?
+      return config_argument_error(stderr, "get", "NAME", args) if args.size > 1
+      name = args.first
+      return config_confirm_or_parseable(stdout, stderr, name, parseable)
+    end
+
+    # Reference `Base#run` when no value was given (cli/config.rb:88-105).
+    private def self.config_confirm_or_parseable(stdout : IO, stderr : IO, name : String, parseable : Bool) : Int32
       config = config_for_command
+      value = config[name]
       if parseable
-        value = config[name]
-        stdout.puts "#{name}=#{value}" unless value.nil?
+        unless value.nil?
+          stdout.puts "#{name}=#{Config.parseable_converted(value)}"
+        end
         return value.nil? ? 1 : 0
       end
       stdout.puts "Settings for `#{name}` in order of priority. The top value will be used"
       config.pretty_values_for(name).each do |line|
         stdout.puts line
       end
-      config.has?(name) ? 0 : 1
+      value.nil? ? 1 : 0
     end
 
-    private def self.config_list(stdout : IO) : Int32
+    private def self.config_list(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      parseable = rest.includes?("--parseable")
+      args = rest[1..].reject { |arg| arg == "--parseable" }
+      return config_argument_error(stderr, "list", "", args) unless args.empty?
       config = config_for_command
+      if parseable
+        config.all.each do |name|
+          stdout.puts "#{name}=#{Config.parseable_converted(config[name])}"
+        end
+        return 0
+      end
       stdout.puts "Settings are listed in order of priority. The top value will be used."
       config.all.each do |name|
         stdout.puts name
@@ -1742,19 +1820,27 @@ module Celerite
       else
         stderr.puts %(ERROR: "bundle config #{sub}" was called with arguments [#{args.map(&.inspect).join(", ")}])
       end
-      stderr.puts %(Usage: "bundle config #{sub} #{usage}")
+      suffix = usage.empty? ? "" : " #{usage}"
+      stderr.puts %(Usage: "bundle config #{sub}#{suffix}")
       15
     end
 
     def self.config_set(stdout : IO, stderr : IO, rest : Array(String)) : Int32
-      return config_argument_error(stderr, "set", "NAME VALUE", rest[1..]) if rest.size < 3
-      explicit = rest.includes?("--global") ? "global" : (rest.includes?("--local") ? "local" : nil)
-      # Without a project the reference defaults `config set` to global.
-      scope = explicit || (config_project_root.nil? ? "global" : "local")
-      args = rest.reject(&.starts_with?("--")).reject(&.==("set"))
-      name = args[0]?
+      parseable = rest.includes?("--parseable")
+      args = rest[1..].reject { |arg| CONFIG_FLAGS.includes?(arg) }
+      return config_argument_error(stderr, "set", "NAME VALUE", args) if args.size < 2
+      global_flag = rest.includes?("--global") || rest.includes?("-g")
+      local_flag = rest.includes?("--local")
+      return config_scope_conflict(stderr) if global_flag && local_flag
+      scope = global_flag ? "global" : (local_flag ? "local" : (config_project_root ? "local" : "global"))
+      name = args.first
       value = args[1..].join(" ")
-      return config_argument_error(stderr, "set", "NAME VALUE", rest[1..]) if name.nil? || value.empty?
+      config_store(stdout, stderr, name, value, scope, parseable)
+    end
+
+    # Reference `Base#run` set branch (cli/config.rb:107-108) with the
+    # `message`/`new_value` helpers (cli/config.rb:134-162).
+    private def self.config_store(stdout : IO, stderr : IO, name : String, value : String, scope : String, parseable : Bool) : Int32
       config = config_for_command
       new_value = value
       # Reference `new_value`: `local.<gem>` values that are directories are
@@ -1762,43 +1848,60 @@ module Celerite
       if name.starts_with?("local.") && Dir.exists?(value)
         new_value = File.expand_path(value).gsub(/\\/, "/")
       end
+      if parseable
+        stdout.puts "#{name}=#{new_value}"
+      else
+        message = config_set_message(config, name, value, new_value, scope)
+        stdout.puts message if message
+      end
       if scope == "global"
-        local_value = config.local_config[Config.key_for(name)]?
-        if !local_value.nil?
-          stdout.puts "Your application has set #{name} to #{local_value.inspect}. This will override the global value you are currently setting"
-        elsif (env_value = ENV[Config.key_for(name)]?)
-          stdout.puts "You have a bundler environment variable for #{name} set to #{env_value.inspect}. This will take precedence over the global value you are setting"
-        else
-          current = config.global_config[Config.key_for(name)]?
-          if !current.nil? && Config.convert(current, name).to_s != new_value
-            stdout.puts "You are replacing the current global value of #{name}, which is currently #{current.inspect}"
-          end
-        end
         config.set_global(name, new_value)
       else
-        current = config.local_config[Config.key_for(name)]?
-        if !current.nil? && Config.convert(current, name).to_s != new_value
-          stdout.puts "You are replacing the current local value of #{name}, which is currently #{current.inspect}"
-        end
         config.set_local(name, new_value)
       end
       0
     end
 
-    def self.config_unset(rest : Array(String), stderr : IO) : Int32
-      return config_argument_error(stderr, "unset", "NAME") if rest.size < 2
-      explicit = rest.includes?("--global") ? "global" : (rest.includes?("--local") ? "local" : nil)
-      args = rest.reject(&.starts_with?("--")).reject(&.==("unset"))
-      name = args[0]?
-      return config_argument_error(stderr, "unset", "NAME") if name.nil?
+    private def self.config_set_message(config : Config, name : String, value : String, new_value : String, scope : String) : String?
+      if scope == "global"
+        local_value = config.local_config[Config.key_for(name)]?
+        if !local_value.nil?
+          return "Your application has set #{name} to #{local_value.inspect}. This will override the global value you are currently setting"
+        elsif (env_value = ENV[Config.key_for(name)]?)
+          return "You have a bundler environment variable for #{name} set to #{env_value.inspect}. This will take precedence over the global value you are setting"
+        end
+        current = config.global_config[Config.key_for(name)]?
+        if !current.nil? && current.to_s != value
+          return "You are replacing the current global value of #{name}, which is currently #{current.inspect}"
+        end
+      else
+        current = config.local_config[Config.key_for(name)]?
+        if !current.nil? && current.to_s != value
+          return "You are replacing the current local value of #{name}, which is currently #{current.inspect}"
+        end
+      end
+      nil
+    end
+
+    def self.config_unset(stderr : IO, rest : Array(String)) : Int32
+      args = rest[1..].reject { |arg| CONFIG_FLAGS.includes?(arg) }
+      return config_argument_error(stderr, "unset", "NAME", args) if args.empty?
+      return config_argument_error(stderr, "unset", "NAME", args) if args.size > 1
+      global_flag = rest.includes?("--global") || rest.includes?("-g")
+      local_flag = rest.includes?("--local")
+      return config_scope_conflict(stderr) if global_flag && local_flag
+      explicit_scope = global_flag || local_flag
+      scope = global_flag ? "global" : (local_flag ? "local" : nil)
+      config_unset_values(stderr, args.first, explicit_scope, scope)
+    end
+
+    # Reference `Base#run` delete branch (cli/config.rb:78-86).
+    private def self.config_unset_values(stderr : IO, name : String, explicit_scope : Bool, scope : String?) : Int32
       config = config_for_command
-      # Reference: unset removes from local and global unless a scope is given.
-      if explicit != "global"
-        config.set_local(name, nil)
-      end
-      if explicit != "local"
-        config.set_global(name, nil)
-      end
+      # With no explicit scope both levels are cleared; `--local` clears only
+      # the local level and `--global` only the global one.
+      config.set_local(name, nil) unless explicit_scope && scope == "global"
+      config.set_global(name, nil) unless explicit_scope && scope == "local"
       0
     end
 

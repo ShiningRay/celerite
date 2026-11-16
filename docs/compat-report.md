@@ -2479,3 +2479,18 @@ oracle（4.0.24，两侧独立 HOME，`file:///` 夹具索引）：
 证据：无锁 6 场景（`fund`/`clean --dry-run`/`binstubs` × 已安装/未安装）stdout、stderr、退出码与参考逐字相同；binstubs 文案矩阵 5 例与重复写桩 4 例全 same；`spec/m7_no_lockfile_commands_spec.cr` 4 例 0 失败；差分夹具 `fund-no-lockfile`/`clean-no-lockfile` 在 4.0.24（2 passed）与 2.7.2（含回归 4 passed）均 PASS；负对照把 `fund` 的 `local_only` 改回 `false` 时该 spec 失败（`Fetching source index from file:///…/gem-index/` 出现），恢复后 4/0。
 
 已声明差异：`check` 在 install 之后仍会打印 `Fetching source index …`（与参考一致，不属本节范围）；参考在 `--verbose` 下附带的调试层不复刻。
+## 2026-11-16（M7(2)：`bundle config` 的 base 弃用接口、作用域校验与取值呈现）
+
+参考锚点：`bundler-4.0.24/lib/bundler/cli/config.rb`（`base` 按原始 ARGV 复算替换串并经 `SharedHelpers.feature_deprecated!` 打印消息；`Base#validate_scope!` 的 `inside_app? ? "local" : "global"` 与双 scope 的 `InvalidOption`；`Base#run` 的 `--delete` 与无值分支、`current_value.nil? ? 1 : 0`；`confirm`/`confirm_all`）、`bundler/settings.rb:109-120`（temporary→local→env→global→DEFAULT_CONFIG）、`:425-439`（`converted_value`：未设置的数组键得到 `[]`、布尔/数字默认键非 nil）、`:205-228`（`pretty_values_for` 四层）、`:441-462`（`printable_value`：凭证键 `[REDACTED]`，含 `:` 的字符串按 `user:pass` 处理，因此 Windows 路径显示成 `"C:[REDACTED]"`）、`bundler/errors.rb:34`（`InvalidOption` 状态 15）与 `bundler/friendly_errors.rb:31-36`（`ui.error message, wrap: true`，80 列折行）。
+
+oracle（4.0.24，隔离 HOME/BUNDLE_USER_*）：`config get without|cache_all|retry`（有默认值）退出 0；`config get jobs|path|mirror.…`（无默认值）退出 1；`config get user_cache` 打印 `"C:[REDACTED]"`；`config get gem.push_key` 打印 `"[REDACTED]"`；`config frobnicate` 打印 `[DEPRECATED] … Use `bundle config get frobnicate` instead.` 再执行 get、退出 1；`config without development` 打印弃用行、写入本地配置、退出 0；`config --delete without` 的弃用行改写为 `unset`；`config path vendor/bundle extra` 的弃用行说 `get`，实际仍按 `set` 写入 `"vendor/bundle extra"`；`config list --parseable` 打印 `path=…|without=[:development]` 且无表头；`config get path --global` 为 Thor 参数错误（退出 15）；`config set/unset --local --global …` 打印 `The options global and local were specified. Please only use one of the switches at a time.`（退出 15）。
+
+修复前缺陷：未知子命令一律 `Could not find command "config …"`（退出 15），base 弃用接口整体缺失；`config get` 只在「值非 nil」时退出 0，漏掉参考的默认值规则（`retry`/`without`/`cache_all` 退出码相反）；无 `--parseable`；无 scope 冲突校验；凭证与 userinfo 未脱敏；全局配置文件路径以原生反斜杠打印（参考来自 `Pathname`，恒为 `/`）。
+
+实现：`src/celerite/config.cr` 新增 `STRING_KEYS`/`string_key?`/`printable_value`/`parseable_converted`/`display_path`，`pretty_values_for` 与 `display_value` 走新呈现层；`src/celerite/cli/commands.cr` 的 `config` 在未知子命令时进入 `config_deprecated`（按原始 `["config"] + rest` 复算替换串、打印参考弃用行，随后仍按原始 name/value 执行对应子命令），并补 `config_scope_conflict`、`config_warn_unused_scope`、`config_confirm_or_parseable`、`config_set_message`、`config_argument_error`。
+
+证据：32 条命令的 A/B 矩阵 `TOTAL=32 DIFF=0`；`spec/m7_config_semantics_spec.cr` 7 例与 `spec/config_spec.cr` 联跑 16/0；差分夹具 `config-get-default`/`config-deprecated-get`/`config-list-parseable`/`config-get-user-cache`/`config-global`/`config-local`/`config-set-unset` 在 4.0.24 上 7/7 PASS，在 2.7.2 上 5 passed + 2 documented deferrals；`spec/cli_spec.cr` 的 `config get reports unset values` 由「`retry` 未设置退出 1」改为参考语义（退出 0，另断言 `jobs` 退出 1）。
+
+已声明差异：2.x 的旧式 base 接口未实现（2.x `config <name>` 不打印弃用行且始终退出 0；2.x `config get <name>` 未设置也退出 0），对应夹具以 `deferred-2.7.2` 标注原因；`--verbose` 下参考附带的调试层不复刻。
+
+未验证：插件命令与 `config` 子命令同名冲突；`BUNDLE_IGNORE_CONFIG` 与临时设置叠加时的优先级；真实用户 HOME（含历史残留键）下 `config list` 的输出。
