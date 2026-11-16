@@ -745,13 +745,22 @@ module Celerite
       # This aligns `check/list/show/info/doctor` with Bundler behavior when
       # locked gems are satisfied by gems installed in GEM_PATH/system/default
       # locations (e.g. default gems) rather than the bundle install path.
-      if source.nil? || source.type == "GEM"
+      # A custom `path` keeps materialization limited to that path, exactly
+      # like the reference (`bundle show` with `BUNDLE_PATH=.bundle` reports a
+      # gem that only exists in `Gem.dir` as missing).
+      if (source.nil? || source.type == "GEM") && system_gem_fallback_allowed?(definition)
         system_gem_search_dirs.each do |base|
           gem_dir = File.join(base, "gems", spec.full_name)
           return gem_dir if Dir.exists?(gem_dir)
         end
       end
       nil
+    end
+
+    # System gem dirs hold the bundle when no custom `path` is configured (the
+    # reference `!bundler_5_mode?` default) or when `path.system` is set.
+    private def self.system_gem_fallback_allowed?(definition : Definition) : Bool
+      InstallPaths.use_system_gems?(definition.config, InstallPaths.install_path(definition.config))
     end
 
     @@system_gem_search_dirs : Array(String)? = nil

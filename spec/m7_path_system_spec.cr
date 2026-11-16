@@ -64,14 +64,28 @@ describe "M7(4) path.system install root" do
     root.should_not contain("ruby/4.0.0")
   end
 
-  it "keeps the product default .bundle/ruby/<abi> without any path setting" do
+  it "uses the system gem dir without any path setting" do
+    config = path_system_config({} of String => Celerite::Config::Value)
+
+    # `!bundler_5_mode?` for the 2.7.x/4.x profiles: nothing configured means
+    # RubyGems owns the bundle path (settings.rb L260-264).
+    Celerite::InstallPaths.system_gems?(config, "/fake/system/gems").should be_true
+    base = Celerite::InstallPaths.base_path(config, "/fake/system/gems")
+    base.should eq(File.expand_path("/fake/system/gems"))
+
+    root = Celerite::InstallPaths.gem_root(config, "/fake/system/gems", "4.0.0")
+    root.should eq(File.expand_path("/fake/system/gems"))
+    root.should_not contain("ruby/4.0.0")
+  end
+
+  it "falls back to .bundle when the gem dir cannot be resolved" do
     config = path_system_config({} of String => Celerite::Config::Value)
 
     Celerite::InstallPaths.system_gems?(config).should be_false
-    base = Celerite::InstallPaths.base_path(config, "/fake/system/gems")
+    base = Celerite::InstallPaths.base_path(config, "")
     base.should eq(File.expand_path(File.join(Celerite::Config.user_home || ".", ".bundle")))
 
-    root = Celerite::InstallPaths.gem_root(config, "/fake/system/gems", "4.0.0")
+    root = Celerite::InstallPaths.gem_root(config, "", "4.0.0")
     root.should eq(File.join(base, "ruby", "4.0.0"))
   end
 

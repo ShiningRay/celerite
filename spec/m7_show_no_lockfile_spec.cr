@@ -138,18 +138,44 @@ describe "show/info without a lockfile" do
     begin
       show_no_lock_bridge do
         with_gem_path(gem_home) do
-          with_bundle_path(gem_home) do
+          # No BUNDLE_PATH: with nothing configured the bundle path is the
+          # RubyGems directory itself, so GEM_PATH entries materialize
+          # (reference `show json_pure` exits 0 there).
+          with_project({"Gemfile" => show_no_lock_gemfile(%(gem "json_pure", "2.8.1"))}) do
+            code, out, err = run_cli(["show", "json_pure"])
+            code.should eq(0)
+            err.should eq("")
+            out.strip.should eq(installed_dir.gsub('\\', "/"))
+          end
+        end
+      end
+    ensure
+      FileUtils.rm_rf(gem_home)
+    end
+  end
+
+  it "does not materialize gems that live outside a custom path" do
+    gem_home = File.tempname("celerite-spec", "gemhome")
+    install_fake_gem(gem_home, "json_pure", "2.8.1")
+    bundle_path = File.tempname("celerite-spec", "custompath")
+    begin
+      show_no_lock_bridge do
+        with_gem_path(gem_home) do
+          with_bundle_path(bundle_path) do
             with_project({"Gemfile" => show_no_lock_gemfile(%(gem "json_pure", "2.8.1"))}) do
+              # Reference materializes only the configured path: the gem in
+              # GEM_PATH is invisible and `show` reports it as missing.
               code, out, err = run_cli(["show", "json_pure"])
-              code.should eq(0)
-              err.should eq("")
-              out.strip.should eq(installed_dir.gsub('\\', "/"))
+              code.should eq(7)
+              out.should eq("")
+              err.should eq("Could not find gem 'json_pure (= 2.8.1)' in locally installed gems.\n")
             end
           end
         end
       end
     ensure
       FileUtils.rm_rf(gem_home)
+      FileUtils.rm_rf(bundle_path)
     end
   end
 

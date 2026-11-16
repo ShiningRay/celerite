@@ -23,10 +23,15 @@ end
 
 private def with_clean_home(dir : String, & : ->) : Nil
   saved = {} of String => String?
-  {"HOME", "USERPROFILE"}.each do |key|
+  {"HOME", "USERPROFILE", "GEM_HOME"}.each do |key|
     saved[key] = ENV[key]?
-    ENV[key] = dir
   end
+  ENV["HOME"] = dir
+  ENV["USERPROFILE"] = dir
+  # Nothing configures `path`, so the install target is `Gem.dir`; keep it
+  # inside the project directory.
+  ENV["GEM_HOME"] = File.join(dir, ".gem-home")
+  Dir.mkdir_p(ENV["GEM_HOME"])
   begin
     yield
   ensure
@@ -48,18 +53,11 @@ private def clean_gemfile(remote : String) : String
   %(source "#{remote}"\n\ngem "json_pure"\ngem "thor"\n)
 end
 
-# `<project>/.bundle/ruby/<abi>/gems` holds the isolated install root
-# (`with_clean_home` points HOME/USERPROFILE at the project). Dir.glob treats
-# backslashes as escapes on Windows, so walk the ruby/ directory instead.
+# `<project>/.gem-home/gems` holds the install root when no `path` is
+# configured (the RubyGems install dir); `with_clean_home` points GEM_HOME at
+# the project so the suite never touches the machine's gem home.
 private def clean_gems_dir(dir : String) : String
-  base = File.join(dir, ".bundle", "ruby")
-  if Dir.exists?(base)
-    Dir.children(base).each do |abi|
-      candidate = File.join(base, abi, "gems")
-      return candidate if Dir.exists?(candidate)
-    end
-  end
-  File.join(base, "missing", "gems")
+  File.join(dir, ".gem-home", "gems")
 end
 
 describe "clean" do

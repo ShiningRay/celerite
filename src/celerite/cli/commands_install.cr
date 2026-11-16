@@ -481,7 +481,7 @@ module Celerite
           # `cli/install.rb` L59-64 as of 2.7.2/4.0.24: system gems report the
           # `bundle info` hint, a custom path prints the base path relative to
           # the working directory (no ruby scope).
-          if InstallPaths.use_system_gems?(config)
+          if InstallPaths.use_system_gems?(config, bridge.ruby_environment.default_gem_dir)
             stdout.puts "Use `bundle info [gemname]` to see where a bundled gem is installed."
           else
             # `Pathname` renders with `/` even on Windows, and the reference

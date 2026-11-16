@@ -14,10 +14,15 @@ module Celerite
   # Install path helpers shared by Resolution and the CLI commands.
   #
   # Mirrors `Bundler::Settings::Path` (settings.rb L238-297): an explicit
-  # `path` wins; `path.system` (or `disable_shared_gems: false`) selects the
-  # RubyGems install dir (`Gem.dir`); otherwise the product default
-  # `<home>/.bundle` is used. The ruby scope (`ruby/<abi>`) is appended only
-  # when system gems are **not** in use.
+  # `path` wins; deployment mode injects `vendor/bundle`; with nothing
+  # configured the RubyGems install dir (`Gem.dir`) is used, exactly like the
+  # reference for the 2.7.x/4.x profiles. `path.system` (or the legacy
+  # `disable_shared_gems: false`) also selects `Gem.dir`. The ruby scope
+  # (`ruby/<abi>`) is appended only when system gems are **not** in use.
+  #
+  # Call sites that cannot resolve `Gem.dir` (a bridge RPC) pass no
+  # `system_gem_dir`; they keep the `<home>/.bundle` fallback, which is only
+  # used for process locks and cache roots there.
   module InstallPaths
     # `Settings#path` (settings.rb L238-251) injects `vendor/bundle` as the
     # configured path when deployment mode is on and no path was given, which
@@ -39,19 +44,20 @@ module Celerite
     # `Path#use_system_gems?` (settings.rb L260-264) decides whether the
     # install root is the RubyGems directory: `path.system` (or the legacy
     # `disable_shared_gems: false`) turns system gems on, an explicit `path`
-    # (including the deployment default) turns them off. The reference also
-    # defaults to system gems when nothing is configured (`!bundler_5_mode?`
-    # for the 2.7.x/4.x profiles); the product default stays
-    # `<home>/.bundle` — declared in docs/compat-report.md.
-    def self.use_system_gems?(config : Config) : Bool
-      return false if deployment_path_requested?(config)
+    # (including the deployment default) turns them off. With nothing
+    # configured the reference also uses system gems (`!bundler_5_mode?` for
+    # the 2.7.x/4.x profiles); that branch needs the resolved `Gem.dir`, so a
+    # call site without `system_gem_dir` keeps the `<home>/.bundle` fallback.
+    def self.use_system_gems?(config : Config, system_gem_dir : String = "") : Bool
       return false unless config["path"].to_s.empty?
-      config["path.system"] == true || config["disable_shared_gems"] == false
+      return false if deployment_path_requested?(config)
+      return true if config["path.system"] == true || config["disable_shared_gems"] == false
+      !system_gem_dir.empty?
     end
 
     # Backwards-compatible name used by the CLI surfaces.
-    def self.system_gems?(config : Config) : Bool
-      use_system_gems?(config)
+    def self.system_gems?(config : Config, system_gem_dir : String = "") : Bool
+      use_system_gems?(config, system_gem_dir)
     end
 
     # `Path#validate!` (settings.rb L287-297): an explicit `path` cannot be
@@ -76,7 +82,7 @@ module Celerite
         root = config.project_root || Dir.current
         return File.expand_path(File.join(root, DEPLOYMENT_PATH))
       end
-      if use_system_gems?(config) && !system_gem_dir.empty?
+      if use_system_gems?(config, system_gem_dir) && !system_gem_dir.empty?
         return File.expand_path(system_gem_dir)
       end
       File.expand_path(File.join(Config.user_home || ".", ".bundle"))
@@ -115,14 +121,14 @@ module Celerite
     # gem root (no `ruby/<abi>` level).
     def self.gem_root(config : Config, system_gem_dir : String, abi : String) : String
       base = base_path(config, system_gem_dir)
-      use_system_gems?(config) ? base : File.join(base, "ruby", abi)
+      use_system_gems?(config, system_gem_dir) ? base : File.join(base, "ruby", abi)
     end
 
     # Directory holding every ruby scope (`<base>/ruby`), or the gem dir itself
     # for `path.system` (there is no ruby scope then).
     def self.ruby_root(config : Config, system_gem_dir : String) : String
       base = base_path(config, system_gem_dir)
-      use_system_gems?(config) ? base : File.join(base, "ruby")
+      use_system_gems?(config, system_gem_dir) ? base : File.join(base, "ruby")
     end
 
     # `Path#validate!` message body: `pretty_values_for` blocks for `path`,

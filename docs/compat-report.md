@@ -2654,7 +2654,7 @@ exec --bogus true                     ref 127   cel 127（参考同样把未知�
 - `Path#base_path`（L266-271）：显式 `path` → 否则 `.bundle`（仅非系统 gems）→ 否则 `Bundler.rubygems.gem_dir`。
 - `Path#base_path_relative_to_pwd`（L273-285）：`expand_path(Bundler.root)` 后相对 pwd；以 `..` 开头且 `base_path` 本身是绝对路径时回退成配置里的绝对写法；否则加 `./` 前缀；`Pathname` 在 Windows 也输出 `/`。
 - `Path#validate!`（L287-297）：`explicit_path && system_path` → `InvalidOption`，消息为 `Using a custom path while using system gems is unsupported.` + `path:` / `path.system:` / `disable_shared_gems:` 三段 `pretty_values_for`（friendly-errors 以 `wrap: true` 折行，exit 15）。
-- `cli/install.rb` L56-64：`Bundle complete!` 之后，系统 gems 打印 ``Use `bundle info [gemname]` to see where a bundled gem is installed.``，否则打印 ``Bundled gems are installed into `#{base_path_relative_to_pwd}` ``（base 路径，不含 `ruby/<abi>`）。
+- `cli/install.rb` L56-64：`Bundle complete!` 之后，系统 gems 打印 ```Use `bundle info [gemname]` to see where a bundled gem is installed.```，否则打印 ``Bundled gems are installed into `#{base_path_relative_to_pwd}` ``（base 路径，不含 `ruby/<abi>`）。
 
 修复前实测（`.tmp-scratch/conflict62*`、`msg62*`，两侧独立 HOME/GEM_HOME/TEMP）：
 
@@ -2730,3 +2730,36 @@ exec --bogus true                     ref 127   cel 127（参考同样把未知�
 - 2.7.2 的 `install --deployment`（显式 flag → `explicit_flag` 为真）提示省略只做了代码路径镜像，未与参考逐字对照。
 - 跨盘符的相对 `path`（`ArgumentError` 回退）未在差分中复现。
 - 部署模式下 `.bundle/config` 的 `BUNDLE_FROZEN=false` 覆盖（`--deployment` 与 `frozen false` 组合）未逐条核对。
+---
+## 2026-11-16（M7(4)：无 `path` 配置时的安装目标与自定义 path 的物化边界）
+
+参考锚点：
+- `bundler-4.0.24/lib/bundler/settings.rb:238-251`：`Settings#path` 在 `path`/`path.system`/`disable_shared_gems` 都未配置时返回 `Path.new(nil, false)`。
+- 同文件 `:260-264`：`Path#use_system_gems?` 先看 `system_path`、再看 `explicit_path`，都没有时才看 `!Bundler.feature_flag.bundler_5_mode?`。
+- 同文件 `:266-271`：`Path#base_path` 在 `use_system_gems?` 为真时返回 `Bundler.rubygems.gem_dir`。
+- `bundler-2.7.2/lib/bundler/feature_flag.rb` 与 `bundler-4.0.24/lib/bundler/feature_flag.rb`：`bundler_N_mode?` 定义为 `@major_version >= N`，故两个 profile 的 `bundler_5_mode?` 都是 `false`。
+- `bundler-4.0.24/lib/bundler/cli/install.rb:56-64`：`use_system_gems?` 时打印 ``Use `bundle info [gemname]` to see where a bundled gem is installed.``，否则打印 ``Bundled gems are installed into `<base_path_relative_to_pwd>` ``。
+
+修复前的实测行为：
+- 不设 `BUNDLE_PATH`：参考把 gem 装进 `$GEM_HOME/gems/json_pure-2.8.1` 并打印 ``Use `bundle info [gemname]` …``；celerite 装进 `<home>/.bundle/ruby/4.0.0/gems/…` 并打印 ``Bundled gems are installed into `<home>/.bundle` ``。
+- `BUNDLE_PATH` 指向自定义目录、gem 摊在 `<path>/gems`（没有 `ruby/<abi>` 层）时：参考 `show json_pure` 与裸 `show` 都返回 exit 7（`Could not find gem 'json_pure (= 2.8.1)' in locally installed gems.`）；celerite 却因为 `installed_gem_dir` 无条件回退到系统 gem 目录而返回 0。
+
+实现：
+- `InstallPaths.use_system_gems?(config, system_gem_dir)`（`src/celerite/resolution.cr`）：显式 `path` → false；部署默认 `vendor/bundle` → false；`path.system` 或 `disable_shared_gems == false` → true；其余情况「能解析出 `Gem.dir`（`default_gem_dir`）就返回 true」。`system_gems?` 保留为同义入口，`base_path`/`gem_root`/`ruby_root` 都带上 `system_gem_dir` 判定。拿不到 `Gem.dir` 的调用点（进程锁、下载缓存根）继续回退 `<home>/.bundle`。
+- `src/celerite/cli/commands_install.cr`：`Bundle complete!` 之后用 `InstallPaths.use_system_gems?(config, bridge.ruby_environment.default_gem_dir)` 选择收尾消息。
+- `src/celerite/cli/commands_surface.cr`：`installed_gem_dir` 的系统目录回退改成有条件——新增 `system_gem_fallback_allowed?(definition)`（`use_system_gems?(config, install_path(config))`），只有 bundle path 本身就是 `Gem.dir` 时才回退，`git`/`path` 源不回退。
+- 测试隔离：`spec/spec_helper.cr` 在 `GEM_HOME` 未设置时把它指到临时目录（默认目标变成 RubyGems 目录后，否则整包会写真实 `C:/Ruby40-x64/lib/ruby/gems/4.0.0`）；`spec/m7_clean_spec.cr` 的 `clean_gems_dir` 随之改读 `GEM_HOME/gems`；`spec/m7_path_system_spec.cr` 拆成「无配置 → 系统目录」与「拿不到 `Gem.dir` → 回退 `.bundle`」两条；`spec/m7_show_no_lockfile_spec.cr` 的 GEM_PATH 用例去掉 `BUNDLE_PATH`（对齐上面 oracle）。
+
+证据：
+- A/B 探针（`.tmp-scratch/gemhome64`，两侧独立 `HOME`/`USERPROFILE`/`GEM_HOME`/`GEM_PATH`/`TEMP`，不设 `BUNDLE_PATH`）：`install` 的 exit、stdout、stderr 逐字相同，双方都装进 `<GEM_HOME>/gems/json_pure-2.8.1`，末行同为 ``Use `bundle info [gemname]` to see where a bundled gem is installed.``；随后 `check`、`list` 逐字相同（exit 0），`show json_pure` 仅沙箱路径不同（同为 `<GEM_HOME>/gems/json_pure-2.8.1`）。
+- oracle（`.tmp-scratch/show64b`、`show64c`）：`BUNDLE_PATH=<gem_home>` + `GEM_PATH=<gem_home>` 且 gem 摊在 `<gem_home>/gems` 时参考 `show json_pure`、裸 `show` 均 exit 7；去掉 `BUNDLE_PATH` 后分别 exit 0 并打印 `<gem_home>/gems/json_pure-2.8.1` 与 `Gems included by the bundle:` + `  * bundler (4.0.24)` + `  * json_pure (2.8.1)`。
+- 差分回归 10 个夹具（4.0.24）：`install-fresh`、`install-path-conflict`、`install-custom-path-summary`、`check-no-lockfile-missing`、`check-no-lockfile-installed`、`show-group-ignored`、`show-missing-installed`、`show-no-lockfile-missing`、`show-no-lockfile-installed`、`install-deployment-empty-checksums` → `10 passed, 0 failed, 0 skipped`。
+- 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen` 0、全量 `crystal spec` **557 examples, 0 failures, 4 errors**（4 = 既有 `spec/git_source_spec.cr` 的 msys Low-IL）、`git diff --check` 0。
+
+已声明差异：
+- 「无配置 → `Gem.dir`」无法做差分夹具：`script/differential` 对参考与 celerite 两侧都固定设置 `BUNDLE_PATH`（`script/differential:301-302`、`:402-403`），默认目标在夹具里永远不会被触发；该行为只用上面的 A/B 探针取证。
+
+未验证：
+- 只覆盖 4.0.24 与 2.7.2 两个 profile 的默认目标，其它版本未测。
+- `GEM_HOME` 指向不存在的目录时 `Gem.dir` 的取值未测。
+- 进程锁与下载缓存根仍落在 `<home>/.bundle`（调用点拿不到 `Gem.dir`），与参考在系统 gems 模式下 `bundle cache` 的位置是否一致未逐条核对。
