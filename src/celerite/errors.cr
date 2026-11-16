@@ -25,6 +25,19 @@ module Celerite
     end
   end
 
+  # `Bundler::Settings::Path#validate!` (settings.rb L287-297): a custom `path`
+  # cannot be combined with system gems. The reference raises `InvalidOption`,
+  # which friendly-errors prints word-wrapped at the terminal width.
+  class PathConflictError < Error
+    def status_code : Int32
+      15
+    end
+
+    def wrap? : Bool
+      true
+    end
+  end
+
   # Raised when an operation has no native implementation yet; the CLI reports
   # the engine explicitly instead of silently degrading (architecture §2.3).
   class UnsupportedCommandError < Error

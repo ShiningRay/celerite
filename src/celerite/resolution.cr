@@ -14,9 +14,10 @@ module Celerite
   # Install path helpers shared by Resolution and the CLI commands.
   #
   # Mirrors `Bundler::Settings::Path` (settings.rb L238-297): an explicit
-  # `path` wins; `path.system` selects the RubyGems install dir (`Gem.dir`);
-  # otherwise the product default `<home>/.bundle` is used. The ruby scope
-  # (`ruby/<abi>`) is appended only when system gems are **not** in use.
+  # `path` wins; `path.system` (or `disable_shared_gems: false`) selects the
+  # RubyGems install dir (`Gem.dir`); otherwise the product default
+  # `<home>/.bundle` is used. The ruby scope (`ruby/<abi>`) is appended only
+  # when system gems are **not** in use.
   module InstallPaths
     # Base directory (without the ruby scope). Kept as the compatibility entry
     # used by process locks and other non-gem-root call sites.
@@ -24,22 +25,69 @@ module Celerite
       base_path(config, system_gem_dir)
     end
 
-    # `Path#use_system_gems?` (settings.rb L246-253): an explicit `path`
-    # disables system gems, so both keys can never be "active" together (the
-    # reference validator clears the earlier one at settings/validator.rb
-    # L57-63).
-    def self.system_gems?(config : Config) : Bool
-      config["path"].to_s.empty? && config["path.system"] == true
+    # `Path#use_system_gems?` (settings.rb L260-264) decides whether the
+    # install root is the RubyGems directory: `path.system` (or the legacy
+    # `disable_shared_gems: false`) turns system gems on, an explicit `path`
+    # turns them off. The reference also defaults to system gems when nothing
+    # is configured (`!bundler_5_mode?` for the 2.7.x/4.x profiles); the
+    # product default stays `<home>/.bundle` — declared in
+    # docs/compat-report.md (2026-11-16, `bundle open` section, "发现未修").
+    def self.use_system_gems?(config : Config) : Bool
+      return false unless config["path"].to_s.empty?
+      config["path.system"] == true || config["disable_shared_gems"] == false
     end
 
-    # `Path#base_path` (settings.rb L255-260).
+    # Backwards-compatible name used by the CLI surfaces.
+    def self.system_gems?(config : Config) : Bool
+      use_system_gems?(config)
+    end
+
+    # `Path#validate!` (settings.rb L287-297): an explicit `path` cannot be
+    # combined with system gems; the reference reports every configured value
+    # of the three involved keys and exits 15.
+    def self.validate!(config : Config) : Nil
+      return if config["path"].to_s.empty?
+      return unless config["path.system"] == true || config["disable_shared_gems"] == false
+      raise PathConflictError.new(conflict_message(config))
+    end
+
+    # `Path#base_path` (settings.rb L266-271).
     def self.base_path(config : Config, system_gem_dir : String) : String
+      validate!(config)
       configured = config["path"].to_s
       return File.expand_path(configured) unless configured.empty?
-      if system_gems?(config) && !system_gem_dir.empty?
+      if use_system_gems?(config) && !system_gem_dir.empty?
         return File.expand_path(system_gem_dir)
       end
       File.expand_path(File.join(Config.user_home || ".", ".bundle"))
+    end
+
+    # `Path#base_path_relative_to_pwd` (settings.rb L273-285): the install
+    # summary prints the base path relative to the working directory (prefixed
+    # with `./`), falling back to the configured absolute path when the base
+    # lives above the working directory and was given absolutely.
+    def self.base_path_relative_to_pwd(config : Config, project_root : String,
+                                       system_gem_dir : String = "") : String
+      # Keep the configured spelling: the reference decides the "above pwd"
+      # branch on whether `base_path` itself was absolute, and prints it as
+      # given in that case.
+      configured = config["path"].to_s
+      base = configured.empty? ? base_path(config, system_gem_dir) : configured
+      begin
+        expanded = File.expand_path(base, project_root)
+        relative = Path[expanded].relative_to(Dir.current).to_s
+        value = if relative.starts_with?("..")
+                  Path[base].absolute? ? base : relative
+                else
+                  relative == "." ? "." : "./#{relative}"
+                end
+        # `Pathname` prints `/` even on Windows.
+        value.gsub(/\\/, "/")
+      rescue ArgumentError
+        # Windows paths on different drives cannot be made relative
+        # (Pathname.relative_path_from raises ArgumentError there too).
+        File.expand_path(base, project_root).gsub(/\\/, "/")
+      end
     end
 
     # `Path#path` (settings.rb L270-280): the ruby scope is appended only when
@@ -47,14 +95,29 @@ module Celerite
     # gem root (no `ruby/<abi>` level).
     def self.gem_root(config : Config, system_gem_dir : String, abi : String) : String
       base = base_path(config, system_gem_dir)
-      system_gems?(config) ? base : File.join(base, "ruby", abi)
+      use_system_gems?(config) ? base : File.join(base, "ruby", abi)
     end
 
     # Directory holding every ruby scope (`<base>/ruby`), or the gem dir itself
     # for `path.system` (there is no ruby scope then).
     def self.ruby_root(config : Config, system_gem_dir : String) : String
       base = base_path(config, system_gem_dir)
-      system_gems?(config) ? base : File.join(base, "ruby")
+      use_system_gems?(config) ? base : File.join(base, "ruby")
+    end
+
+    # `Path#validate!` message body: `pretty_values_for` blocks for `path`,
+    # `path.system` and `disable_shared_gems`, each preceded by a blank line
+    # and a title (the reference only adds a block when the key has values).
+    private def self.conflict_message(config : Config) : String
+      parts = ["Using a custom path while using system gems is unsupported."]
+      {"path" => "path:", "path.system" => "path.system:",
+       "disable_shared_gems" => "disable_shared_gems:"}.each do |name, title|
+        values = config.pretty_values_for(name)
+        next if values.empty?
+        parts << "" << title
+        parts.concat(values)
+      end
+      parts.join("\n")
     end
 
     def self.downloader_cache_root : String

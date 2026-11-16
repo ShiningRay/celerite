@@ -472,7 +472,17 @@ module Celerite
             stdout.puts "Updating files in vendor/cache"
           end
           stdout.puts "Bundle complete! #{deps_count} Gemfile dependenc#{deps_count == 1 ? "y" : "ies"}, #{gems_count} gem#{gems_count == 1 ? "" : "s"} now installed."
-          stdout.puts "Bundled gems are installed into `#{install_path.gsub(/\\\\/, "/").gsub(/\\/, "/")}`"
+          # `cli/install.rb` L59-64 as of 2.7.2/4.0.24: system gems report the
+          # `bundle info` hint, a custom path prints the base path relative to
+          # the working directory (no ruby scope).
+          if InstallPaths.use_system_gems?(config)
+            stdout.puts "Use `bundle info [gemname]` to see where a bundled gem is installed."
+          else
+            # `Pathname` renders with `/` even on Windows, and the reference
+            # prints it back with `./` for paths below the working directory.
+            relative = InstallPaths.base_path_relative_to_pwd(config, definition.project_root)
+            stdout.puts "Bundled gems are installed into `#{relative.gsub(/\\/, "/")}`"
+          end
           print_cooldown_summary(resolution, stdout)
         end
 

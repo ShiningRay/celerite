@@ -2636,7 +2636,7 @@ exec --bogus true                     ref 127   cel 127（参考同样把未知�
 - `spec/m7_open_spec.cr` **8 examples, 0 failures**（无参/多参/空 `--path`/无编辑器/找不到 gem/精确名/正则/`--path lib`）。
 - 差分夹具 `open-no-arguments`、`open-extra-arguments`：4.0.24 与 2.7.2 各 **2 passed**。
 - 负对照：删掉 `open` 的无参分支（改为直接 `return 0`）→ `spec/m7_open_spec.cr` `8 examples, 1 failures`（`Expected: 15 got: 0`），还原后 8/0。
-- 门禁：`crystal tool format --check src spec` 0、`crystal build src/cli.cr` 0、全量 `crystal spec` 见下节。
+- 门禁：`crystal tool format --check src spec` 0、`crystal build src/cli.cr` 0、全量 `crystal spec` **546 examples, 0 failures, 4 errors**（4 = 既有 `spec/git_source_spec.cr` 的 msys Low-IL）。
 
 已声明差异：`open --help` 打印 Celerite 的 `Usage:` 摘要而非 `bundle-open(1)` manpage（与其余命令同一差异）；交互式选择器的提示符已按参考补成 `>  `（两空格），但输入回显依赖终端，未做夹具。
 
@@ -2645,3 +2645,47 @@ exec --bogus true                     ref 127   cel 127（参考同样把未知�
 - 选择器输入非法编号（如 `9`）后两侧的返回码一致（我方返回 0，参考 `specs[num-1]` 为 nil 亦返回 0），未做自动化用例。
 - 默认 gem 选择后 `Unable to open …` 路径只在手工探针里验证（ci 无默认 json gem 保证）。
 - 另一处**发现但未修**：只设 `GEM_HOME`/`GEM_PATH`、未设 `BUNDLE_PATH`/`path` 时，参考把 gem 装进 `Gem.dir`（GEM_HOME）且**不**打印 `Bundled gems are installed into …`，我方仍装进 `<home>/.bundle/ruby/<abi>` 并打印该行；`open` 已改为读 `full_gem_path`，不会因此开错目录，但 `install` 的目标目录本身仍是差异（记入下轮候选）。
+## 2026-11-16（M7(4)：`install` 目标目录的 `Settings::Path` 语义与 `path`/`path.system` 冲突）
+
+参考契约（`bundler-4.0.24/lib/bundler/settings.rb`）：
+
+- `Settings#path`（L238-251）：逐个 config 层取 `path`/`path.system`/`disable_shared_gems`，`system_path = path_system || (disabled_shared_gems == false)`；没有任何配置时若有 `deployment` 则 `path = "vendor/bundle"`。
+- `Path#use_system_gems?`（L260-264）：`system_path` 为真 → 系统 gems；显式 `path` → 非系统；否则 `!Bundler.feature_flag.bundler_5_mode?`（2.7.2/4.0.24 都是 `major < 5`，即默认系统 gems）。
+- `Path#base_path`（L266-271）：显式 `path` → 否则 `.bundle`（仅非系统 gems）→ 否则 `Bundler.rubygems.gem_dir`。
+- `Path#base_path_relative_to_pwd`（L273-285）：`expand_path(Bundler.root)` 后相对 pwd；以 `..` 开头且 `base_path` 本身是绝对路径时回退成配置里的绝对写法；否则加 `./` 前缀；`Pathname` 在 Windows 也输出 `/`。
+- `Path#validate!`（L287-297）：`explicit_path && system_path` → `InvalidOption`，消息为 `Using a custom path while using system gems is unsupported.` + `path:` / `path.system:` / `disable_shared_gems:` 三段 `pretty_values_for`（friendly-errors 以 `wrap: true` 折行，exit 15）。
+- `cli/install.rb` L56-64：`Bundle complete!` 之后，系统 gems 打印 ``Use `bundle info [gemname]` to see where a bundled gem is installed.``，否则打印 ``Bundled gems are installed into `#{base_path_relative_to_pwd}` ``（base 路径，不含 `ruby/<abi>`）。
+
+修复前实测（`.tmp-scratch/conflict62*`、`msg62*`，两侧独立 HOME/GEM_HOME/TEMP）：
+
+- `.bundle/config` 同时写 `BUNDLE_PATH: "vendor/bundle"` 与 `BUNDLE_PATH__SYSTEM: "true"`：参考 `install` **exit 15** + 上述三段消息；我方 **exit 0**，静默按 `path` 装到 `vendor/bundle`（`path.system` 被忽略）。
+- `path.system` 生效时参考打印 `Use \`bundle info [gemname]\` …`；我方打印 `Bundled gems are installed into \`<绝对 Gem.dir>\``。
+- 显式 `BUNDLE_PATH=vendor/bundle` 时参考打印 `Bundled gems are installed into \`./vendor/bundle\``（相对 pwd、带 `./`）；我方打印绝对路径。
+
+实现（`src/celerite/resolution.cr` 的 `InstallPaths` + `src/celerite/errors.cr` + `src/celerite/cli/commands_install.cr`）：
+
+1. 新增 `PathConflictError < Error`（`status_code` 15、`wrap?` true），由 `InstallPaths.validate!` 在 `explicit_path` 与 `system_path` 同时成立时抛出；消息按 `pretty_values_for` 生成与参考同形的三段块（空行 + 标题行 + 值）。
+2. `InstallPaths.use_system_gems?`：`path.system == true` 或 `disable_shared_gems == false` → 系统 gems；显式 `path` → 非系统；其余保持产品默认 `<home>/.bundle`（**已声明差异**，见下）。`system_gems?` 保留为同义入口，`base_path`/`gem_root`/`ruby_root` 统一走它。
+3. `base_path_relative_to_pwd(config, project_root, system_gem_dir)`：用配置里的原始拼写判断 `..` 分支（相对路径则保留相对写法），否则加 `./` 前缀，最后把 `\` 归一成 `/`；跨盘等 `ArgumentError` 时退回绝对路径。
+4. `install` 的 summary 按 `use_system_gems?` 分支：系统 gems 打印 `bundle info` 提示，否则打印相对 base 路径（不再带 `ruby/<abi>`）。
+
+证据（首辅亲跑）：
+
+- 探针（`.tmp-scratch/msg62e`，两侧各自 `GEM_HOME` 隔离、其余输入相同）：`BUNDLE_PATH__SYSTEM=true` 与 `BUNDLE_PATH=vendor/bundle` 两例的 stdout/stderr 内容逐字相同（仅参考 CRLF 与我方 LF 的行尾差异），末行分别为 `Use \`bundle info [gemname]\` …` 与 `Bundled gems are installed into \`./vendor/bundle\``。
+- 冲突探针（`.tmp-scratch/conflict62d`）：我方 **exit 15**、stderr 与参考同形（三段 `pretty_values_for`，80 列折行）。
+- 差分夹具 `install-path-conflict`（`extra/.bundle/config` 同时写两键，`command`=`install`）与 `install-custom-path-summary`（`BUNDLE_PATH: "../vendor-bundle"`）：4.0.24 **2 passed**、2.7.2 **2 passed**；回归 `install-fresh`、`check-no-lockfile-missing` 仍 PASS（4.0.24 共 4 passed）。
+- `spec/m7_path_system_spec.cr` **8 examples, 0 failures**（新增：冲突 → `PathConflictError` 且消息含三段标题；`disable_shared_gems: false` → 系统 gems；`base_path_relative_to_pwd` → `./vendor/bundle` 且不含反斜杠；`path.system` 端到端安装打印 `bundle info` 提示；自定义 `path` 端到端打印 `./vendor/bundle`）。
+- 负对照：把 `InstallPaths.base_path` 里的 `validate!(config)` 注释掉重建 `bin/celerite-nc.exe` → 差分 `install-path-conflict` **FAIL**（我方 exit 0、装了 `vendor/` 并在 stdout 少掉整段冲突消息），恢复后 PASS。
+- 门禁：`crystal tool format --check src spec` 0、`crystal build src/cli.cr` 0、全量 `crystal spec` **549 examples, 0 failures, 4 errors**（4 = 既有 `spec/git_source_spec.cr` 的 msys Low-IL）。
+
+已声明差异：
+
+- **无任何 `path` 配置时的默认目标**：参考装进系统 gems（`Gem.dir`）并打印 `bundle info` 提示；我方仍装进 `<home>/.bundle/ruby/<abi>` 并打印 `Bundled gems are installed into …`。改成系统 gems 会让 9 个未隔离 `GEM_HOME` 的 spec 与所有本地使用直接写宿主 RubyGems 目录，故本轮只把语义入口（`use_system_gems?`）与消息分支对齐，默认目标的切换留待下轮并需同时给相关 spec 加 `GEM_HOME` 隔离。
+- `deployment` 且无显式 `path` 时参考默认 `vendor/bundle`（settings.rb L248）：我方未实现（同一轮候选）。
+- `bundler_5_mode?` 分支未建模（2.7.x/4.x 下恒为 false，不影响当前 profile）。
+
+未验证：
+
+- `disable_shared_gems: false` 的端到端安装（只做了 `use_system_gems?`/`gem_root` 单测）。
+- 冲突配置下不计算 gem root 的命令（如 `config list`）是否也 exit 15，未逐条对齐。
+- 参考在 `path` 指向不同盘符时的 `ArgumentError` 回退分支未在本机复现（只做了代码路径镜像）。
