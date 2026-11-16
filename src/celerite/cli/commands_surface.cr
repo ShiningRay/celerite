@@ -1904,6 +1904,23 @@ module Celerite
             i += 1
           end
         end
+        # `Bundler::CLI::Outdated#run` validates the named gems against a
+        # *silenced* resolve (`Bundler.ui.silence { Bundler.definition.resolve }`)
+        # before it starts the printing resolution. A missing name therefore
+        # reports `Could not find gem '<name>'.` (exit 7) with no index fetch
+        # and no `Resolving dependencies...` line in front of it.
+        unless selected.empty?
+          known_names = if definition.lockfile_exists?
+                          definition.lockfile!.specs.map(&.name)
+                        else
+                          materialize_lockfile(definition, nil, local_only: true).specs.map(&.name)
+                        end
+          selected.each do |gem_name|
+            unless known_names.includes?(gem_name)
+              raise GemNotFoundError.new("Could not find gem '#{gem_name}'.")
+            end
+          end
+        end
         specs = resolution.resolve!
         cooldown_days = cooldown_flag_value(rest)
         cooldown_now = resolution.cooldown_now || Time.utc.to_unix
@@ -1913,11 +1930,6 @@ module Celerite
         # A named-gem request makes the reference build and resolve a
         # second (gem-scoped) definition for output.
         stdout.puts "Resolving dependencies..." if !selected.empty? && !local_flag
-        selected.each do |gem_name|
-          unless specs.any? { |spec| spec.name == gem_name }
-            raise GemNotFoundError.new("Could not find gem '#{gem_name}'.")
-          end
-        end
         filter_major = rest.includes?("--filter-major")
         filter_minor = rest.includes?("--filter-minor")
         filter_patch = rest.includes?("--filter-patch")

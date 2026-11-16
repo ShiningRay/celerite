@@ -2986,3 +2986,25 @@ exec --bogus true                     ref 127   cel 127（参考同样把未知�
 - 2.7.2 的 `--path` + `--cache-path` 组合下的缓存落点。
 - `cache --quiet` 与 `--cooldown`（本轮未测其输出抑制与冷却行为，只确认开关被接受）。
 - `cache --no-install` 与 PATH/GIT 源 gem 的组合（只测了 rubygems 源）。
+## 2026-11-17（M7(2)：`bundle outdated` 的命名 gem 校验顺序）
+
+- 参考行为（`bundler-4.0.24/lib/bundler/cli/outdated.rb:26-50`，`bundler-2.7.2/lib/bundler/cli/outdated.rb:25-38` 同）：`run` 顺序为 `check_for_deployment_mode!` → `validate_cooldown!` → `Bundler.definition.validate_runtime!` → `current_specs = Bundler.ui.silence { Bundler.definition.resolve }`（**静默解析**）→ 对每个命令行 gem 名 `raise GemNotFound, "Could not find gem '<name>'."`（`GemNotFound` status 7）→ 之后才构造 `Bundler.definition(gems:, sources:)` 并做会打印进度的解析。因此未知 gem 名的输出必须**只有** stderr 一行，stdout 为空。
+- 修复前行为（`.tmp-scratch/od70`、`od70c` 对照）：
+
+  | 命令 | 参考 | 修复前我方 |
+  | --- | --- | --- |
+  | `outdated nosuchgem` | exit 7、stdout 空、stderr `Could not find gem 'nosuchgem'.` | exit 7，但 stdout 先打印 `Fetching source index from <remote>`、`Resolving dependencies...`、`Resolving dependencies...` |
+  | `outdated --parseable nosuchgem` | exit 7、stdout 空、stderr 一行 | stderr 多 `Fetching source index …` 与 `Resolving dependencies...` |
+  | `outdated --groups development` | exit 7、stdout 空、stderr `Could not find gem 'development'.` | 同上（`development` 被当作位置参数 gem 名） |
+  | `outdated json_pure` | exit 1、两条 `Resolving dependencies...` | 一致 |
+
+- 根因：`src/celerite/cli/commands_surface.cr` 的 `outdated` 先把 `resolution.progress` 指向真正的输出流，`specs = resolution.resolve!` 打印完索引抓取与 `Resolving` 行之后，才在 `selected.each` 里对 gem 名做存在性校验。参考是在**打印型解析之前**用静默解析完成校验。
+- 实现：把命名校验前移到 `resolution.resolve!` 之前，名字集合取自有锁文件的 `definition.lockfile!.specs`，无锁文件时走 `materialize_lockfile(definition, nil, local_only: true)`（同样静默），命中缺失即 `raise GemNotFoundError.new("Could not find gem '<name>'.")`；校验通过后才设置打印用 progress 并解析，原 `Resolving dependencies...` 的两次输出保持不变。
+- 证据：
+  - A/B（`.tmp-scratch/od70c`，两侧独立 `HOME`/`GEM_HOME`/`GEM_PATH`/`BUNDLE_PATH`/`BUNDLE_USER_*`/`TEMP`，Gemfile 声明 `json_pure 2.6.0` 与 `group :development { thor 1.3.2 }`）：6 例 `named-json`、`named-thor`、`named-missing`、`named-missing-parseable`、`groups-flag`、`groups-dev-flag` 修复后 **6/6 逐字相同**（修复前 3 例不同）。无锁文件场景（`.tmp-scratch/od70d`）`outdated nosuchgem` 与裸 `outdated` 也两侧相同（exit 7 与 `Could not find gem 'json_pure (= 2.6.0)' in locally installed gems.`）。
+  - 新 spec `spec/m7_outdated_naming_spec.cr` **4 examples, 0 failures**（未知名 stdout 空 + exit 7、`--parseable` 只一行、`--groups development` 同形、有效名仍 exit 1 且含两条 `Resolving dependencies...`）。
+  - 负对照：把校验块移到 `resolution.resolve!` 之后重建，spec 得 **3 failures**（`Expected: "" got: "Fetching source index from …`），恢复后 4/0。
+  - 差分夹具 `fixtures/differential/outdated-missing-gem/`（`command` = `install` 与 `outdated nosuchgem` 两行）：4.0.24 与 2.7.2 均 `PASS (exit=7)`；4.0.24 回归批（`outdated-missing-gem`、`outdated-no-lockfile`、`outdated-verbose`、`outdated-parseable`、`outdated-cooldown-table`、`install-fresh`、`show-group-ignored`）**7 passed**。
+  - 门禁：`crystal tool format --check src spec` 0、`git diff --check` 0、全量 `crystal spec` 见下节。
+- 已声明差异：名字集合取自锁文件而非再做一次完整静默解析；锁文件过期（Gemfile 有、锁里无）时参考可能给出 `Could not find gem '<name>'.` 而我方仍按锁文件名字集判断，反之亦然。
+- 未验证：命名 gem 与 `--source` 组合时的输出顺序；`--groups` 作为「过滤全部组」与位置参数混用的其余组合；2.7.2 profile 的 `--parseable` 命名缺失场景（仅验了 4.0.24）。
