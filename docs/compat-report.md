@@ -2384,7 +2384,7 @@ profile 门控：`Commands.preserve_lockfile_crlf?`（`commands.cr:320`）= `!(E
 - `spec/m7_show_no_lockfile_spec.cr`（新）5 例：无 lockfile 未安装（4 条命令同消息）、requirement 显示、GEM_PATH 已安装（用临时 GEM_HOME 造 `gems/json_pure-2.8.1` + `specifications/*.gemspec`）、裸 `show` 列表；`5 examples, 0 failures`。
 - 差分：新增 `fixtures/differential/show-no-lockfile-missing`（`show my_plugin`）与 `show-no-lockfile-installed`（`show json_pure`）。4.0.24：`show-no-lockfile-missing show-no-lockfile-installed show-group-ignored show-missing-installed version-plain env-report` -> `6 passed, 0 failed`；2.7.2 同 6 条 -> `6 passed, 0 failed`。
 - 负对照：把 `resolved_from_gemfile` 硬置 `false` 重建二进制 -> 两个新夹具均 `FAIL`（`exit code: reference=7 celerite=20`，diff 显示 `< Could not find gem 'json_pure (= 2.8.1)' ...` / `> Could not find <sandbox>/Gemfile.lock` + `> for resolution`），还原后复绿。
-- 全量：`crystal spec` 结果见本轮提交说明（基线 486/0/4）；`crystal tool format --check` 与 `crystal build --no-codegen` 均 EXIT 0。
+- 全量：`crystal spec` **491 examples, 0 failures, 4 errors**（4 = 既有 `spec/git_source_spec.cr` 的 msys Low-IL 项；基线 486/0/4）；`crystal tool format --check` 与 `crystal build --no-codegen` 均 EXIT 0。
 
 已声明差异与未验证：
 
