@@ -574,8 +574,12 @@ module Celerite
     LOCK_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--local", "--full-index", "--print", "--normalize-platforms", "--add-checksums", "--patch", "--minor", "--major", "--pre", "--strict", "--conservative", "--update"]
     LOCK_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--add-platform", "--remove-platform", "--bundler", "--cooldown", "--lockfile"]
 
-    CACHE_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--no-install", "--all-platforms", "--force", "--redownload", "--no-cache", "--local", "--path", "--without", "--with"]
-    CACHE_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--cache-path", "--cooldown"]
+    # `cache` declares only all/all-platforms/cache-path/cooldown/frozen/gemfile/
+    # no-install/no-prune/path/quiet (`bundler/cli.rb:466-497`). `--force`,
+    # `--redownload`, `--no-cache`, `--local`, `--without` and `--with` are
+    # install switches: Thor rejects them here instead of ignoring them.
+    CACHE_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--no-install", "--all-platforms", "--path"]
+    CACHE_SWITCH_VALUES = ["--retry", "-r", "--gemfile", "--cache-path", "--cooldown"]
 
     # Thor's `Unknown switches` suggestion dictionary is `switches`, i.e. every
     # declared option name -- including the removed ones (they are still

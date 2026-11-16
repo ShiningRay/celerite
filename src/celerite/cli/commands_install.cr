@@ -120,13 +120,13 @@ module Celerite
 
     # `--gemfile`/`--lockfile` really take effect for install in the reference;
     # scope the ENV override to this command and restore on every exit path.
-    def self.install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false) : Int32
+    def self.install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false, no_install : Bool = false) : Int32
       with_gemfile_overrides(rest) do
-        run_install(stdout, stderr, rest, summary, show_resolving, no_reuse)
+        run_install(stdout, stderr, rest, summary, show_resolving, no_reuse, no_install)
       end
     end
 
-    private def self.run_install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false) : Int32
+    private def self.run_install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false, no_install : Bool = false) : Int32
       if rest.includes?("--frozen")
         # Thor rejects the flag before any Gemfile validation; the exact
         # message depends on the profile and the command (see frozen helper).
@@ -222,6 +222,7 @@ module Celerite
         downloader = Downloader.new(resolution.primary_remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, resolution.primary_remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(resolution.primary_remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config))
         installer = Installer.new(gem_root, abi, bridge, downloader, stdout)
         installer.config = config
+        installer.no_install = no_install
         installer.dependency_tree = ->(gem_name : String) { resolution.dependency_tree_for(gem_name) }
         installer.gemfile_name = File.basename(definition.gemfile_path)
         installers_by_remote = {resolution.primary_remote => installer}
@@ -343,16 +344,19 @@ module Celerite
               remote_downloader = Downloader.new(remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config))
               next_installer = Installer.new(gem_root, abi, bridge, remote_downloader, stdout)
               next_installer.config = config
+              next_installer.no_install = no_install
               next_installer.dependency_tree = ->(gem_name : String) { resolution.dependency_tree_for(gem_name) }
               next_installer.gemfile_name = File.basename(definition.gemfile_path)
               installers_by_remote[remote] = next_installer
               next_installer
             end
-            install_events << {
-              kind: "install",
-              name: spec.full_name,
-              line: "Installing #{spec.name} #{spec.version}#{platform_suffix(spec.platform)}#{was_suffix.call(spec)}#{native_suffix(bridge, cached)}",
-            }
+            unless no_install
+              install_events << {
+                kind: "install",
+                name: spec.full_name,
+                line: "Installing #{spec.name} #{spec.version}#{platform_suffix(spec.platform)}#{was_suffix.call(spec)}#{native_suffix(bridge, cached)}",
+              }
+            end
             spec_installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum, gem_file: cached)
             # The reference records the installed package's sha256 in CHECKSUMS
             # even for file:// sources.
@@ -614,11 +618,11 @@ module Celerite
           skip_value = false
           next
         end
-        if arg == "--cache-path"
+        if arg == "--cache-path" || arg == "--path"
           skip_value = true
           next
         end
-        next if arg.starts_with?("--cache-path=")
+        next if arg.starts_with?("--cache-path=") || arg.starts_with?("--path=")
         next if arg == "--all-platforms" || arg == "--no-install"
         filtered << arg
       end
@@ -626,8 +630,8 @@ module Celerite
     end
 
     private def self.run_cache(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      bundle_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
       if removed = Commands.removed_flag(rest, "cache")
-        bundle_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
         if bundle_version.starts_with?("2.")
           stderr.puts Commands.removed_flag_deprecation(removed) unless removed.special_message
         else
@@ -638,18 +642,38 @@ module Celerite
       if code = reject_unknown_switches(stderr, rest, CACHE_SWITCH_FLAGS, CACHE_SWITCH_VALUES, CACHE_SUGGEST_DICTIONARY)
         return code
       end
+
+      # `--path` is declared by Thor but rejected before the install in 4.x;
+      # 2.7.x only deprecates it and remembers it as the install path
+      # (`Bundler::CLI::Cache#install` forwards the option to the installer).
+      has_path = rest.any? { |arg| arg == "--path" || arg.starts_with?("--path=") }
+      if has_path
+        if bundle_version.starts_with?("2.")
+          stderr.puts "[DEPRECATED] The `--path` flag is deprecated because its semantics are unclear. Use `bundle config cache_path` to configure the path of your cache of gems, and `bundle config path` to configure the path where your gems are installed, and stop using this flag"
+        else
+          stderr.puts Commands.word_wrap("The `--path` flag has been removed because its semantics were unclear. Use `bundle config cache_path` to configure the path of your cache of gems, and `bundle config path` to configure the path where your gems are installed, and stop using this flag", 80)
+          return 15
+        end
+      end
+
       definition = Definition.build
       if unsupported = Commands.unsupported_setting_error(definition.config, stderr)
         stderr.puts unsupported
         return 1
       end
+      if has_path && bundle_version.starts_with?("2.")
+        if path_value = flag_value(rest, "--path")
+          definition.config.set_local("path", path_value) unless path_value.empty?
+        end
+      end
       cache_arg = flag_value(rest, "--cache-path") if rest.any? { |a| a == "--cache-path" || a.starts_with?("--cache-path=") }
       cache_target = cache_arg ? File.expand_path(cache_arg) : File.join(Dir.current, "vendor", "cache")
       cache_label = cache_arg ? cache_arg.gsub(/\\/, "/") : "vendor/cache"
-      unless rest.includes?("--no-install")
-        code = install(stdout, stderr, install_args_from_cache(rest))
-        return code if code != 0
-      end
+
+      # `cache` always runs the install pipeline (reference `CLI::Cache#run` →
+      # `CLI::Install`); `--no-install` only suppresses unpacking the gems.
+      code = install(stdout, stderr, install_args_from_cache(rest), no_install: rest.includes?("--no-install"))
+      return code if code != 0
 
       Commands.validate_ruby_runtime!(definition)
       Dir.mkdir_p(cache_target)

@@ -22,6 +22,11 @@ module Celerite
     property dependency_tree : Proc(String, Array(NamedTuple(name: String, version: String?)))? = nil
     property gemfile_name : String = "Gemfile"
 
+    # `--no-install` (set through `bundle cache`): download/cache the package but
+    # leave `<gem_root>/gems` untouched, mirroring `source/rubygems.rb:211` and
+    # `source/git.rb:202` in the reference.
+    property no_install : Bool = false
+
     # `install_root` is the gem root: `<base>/ruby/<abi>`, or `Gem.dir` itself
     # for `path.system` (see InstallPaths.gem_root).
     def initialize(@install_root : String, @ruby_abi : String, @bridge : Bridge::Client,
@@ -68,7 +73,22 @@ module Celerite
       # `vendor/cache`) pass it directly; the reference installs app-cache gems
       # without a second fetch.
       file = gem_file || @downloader.fetch(name, version, platform, checksum)
+      if @no_install
+        # The reference still caches the package under `<bundle_path>/cache`
+        # (the downloader writes it there) but never unpacks it.
+        cache_package(file, full_name)
+        return true
+      end
       install_file(file, name, version, platform, full_name)
+    end
+
+    # Copies a package into `<install_root>/cache` without installing it.
+    private def cache_package(gem_file : String, full_name : String) : Nil
+      return unless File.file?(gem_file)
+      cache_dir = File.join(@install_root, "cache")
+      Dir.mkdir_p(cache_dir)
+      destination = File.join(cache_dir, "#{full_name}.gem")
+      FileUtils.cp(gem_file, destination) unless File.file?(destination)
     end
 
     # Reinstalls an installed gem from its cached package (pristine). The
@@ -265,6 +285,7 @@ module Celerite
     # source checkout in place and materializes only its executable stubs
     # in the bundle bin directory (pinned by `exec-loader`).
     def install_source_gem(name : String, version : String, platform : String?, source_dir : String) : Bool
+      return true if @no_install
       full_name = (platform.nil? || platform == "ruby") ? "#{name}-#{version}" : "#{name}-#{version}-#{platform}"
       info = Bridge::GemSpecInfo.from_json(@bridge.load_gemspec_dir(source_dir).to_json)
       return false if info.executables.empty?

@@ -2940,3 +2940,49 @@ exec --bogus true                     ref 127   cel 127（参考同样把未知�
 - `lock --update` 与 `--conservative` 组合在 2.7.2 下的完整输出（只用 4.0.24 取过 oracle）。
 - `PLATFORMS` 段在多次增删后的排序规则（只比对过 `java` + 本机平台两例）。
 - `--print` 与命名更新同时使用时第二次 `Resolving dependencies...` 是否确实走 stderr（只读过源码路径）。
+
+## 2026-11-17（M7(2)：`bundle cache` 的开关面、`--path` 的移除文案与 `--no-install`）
+
+参考锚点（bundler-4.0.24）：
+
+- `lib/bundler/cli.rb:466-497`：`cache` 的 `method_option` 表只有 `all` / `all-platforms` / `cache-path`(string) / `cooldown`(numeric) / `frozen` / `gemfile`(string) / `no-install` / `no-prune` / `path`(string) / `quiet`；`--path` 在这里用专属 `removed_message` 抛 `InvalidOption`（"The `--path` flag has been removed because its semantics were unclear. Use `bundle config cache_path` …"），`--all` / `--no-all` 走 `print_remembered_flag_deprecation`。
+- `lib/bundler/cli/cache.rb`：`run` = `set_command_option_if_given :cache_path` → `install` → `settings.temporary(cache_all_platforms:) { Bundler.load.cache }`；私有 `install` 复制选项、把 `local` 置 false（当 `cache_all_platforms`）、`no-cache` 置 true 后交给 `Bundler::CLI::Install` —— 即 `cache` **总是**跑完整的 install 流水线。
+- `lib/bundler/cli/install.rb:121`：`set_command_option_if_given :no_install, options["no-install"]`；该设置只被 `source/rubygems.rb:211` 与 `source/git.rb:202` 的 `return if Bundler.settings[:no_install]` 消费，也就是只跳过"把包解到 `<bundle_path>/gems`"，解析、下载、写锁文件与安装摘要照旧。
+
+修复前的实测差异（同一沙箱、两侧独立 HOME/GEM_HOME/GEM_PATH/BUNDLE_PATH，参考 4.0.24 与 `bin/celerite.exe`）：
+
+| 命令 | 参考 | 修复前我方 |
+| --- | --- | --- |
+| `cache --force` | exit 15，`Unknown switches "--force"` + `Did you mean?  "--frozen"` | exit 0，照常安装并写出 `vendor/cache/*.gem` |
+| `cache --local` / `--redownload` | exit 15，`Unknown switches "--local"` / `"--redownload"` | exit 0，静默接受 |
+| `cache --without dev` | exit 15，`Unknown switches "--without"` | exit 15，但走 install 的"remembered"文案 |
+| `cache --path vendor/x` | exit 15，专属"semantics were unclear"文案 | exit 15，走通用"remembered across bundler invocations"文案 |
+| `cache --no-install` | exit 0，完整安装摘要 + `Updating files in vendor/cache`，包落在 `<bundle>/ruby/<abi>/cache` 而 `gems/` 为空 | exit 20（`Could not find <proj>/Gemfile.lock for resolution`），只打 cache 段 |
+
+实现：
+
+1. `src/celerite/cli/commands.cr`：`CACHE_SWITCH_FLAGS` 收窄为 `SWITCH_FLAGS_COMMON + ["--no-install", "--all-platforms", "--path"]`，`CACHE_SWITCH_VALUES` 改为 `["--retry", "-r", "--gemfile", "--cache-path", "--cooldown"]`（`--jobs` / `-j` 未被 `cache` 声明，参考同样是 `Unknown switches`）。被移除的 `--all` / `--no-all` / `--no-prune` / `--frozen` 仍留在 `CACHE_REMOVED_FLAGS`，因而 `--force` 的建议候选里仍有 `--frozen`。
+2. `src/celerite/cli/commands_install.cr` 的 `run_cache`：`--path` 在构建 definition **之前**分出两条 profile 分支（4.x 打印专属文案并返回 15；2.7.x 只打 `[DEPRECATED]` 并把值写进 `.bundle/config` 的 `path`），随后**无条件**调用 `install(...)`，用 `no_install: rest.includes?("--no-install")` 传入。
+3. `InstallPaths` 之外的最小改动：`Installer` 新增 `property no_install : Bool = false`；`install` 在下载/取到 `<bundle>/cache/<full>.gem` 之后，若 `no_install` 则只把包复制进 `<install_root>/cache`（`cache_package`）并返回，不再解包、不写 `specifications/`、不建 bin 桩、不跑扩展；`install_source_gem` 同样短路。`run_install` 在 `no_install` 时不再排队 `Installing <gem>` 进度行（参考的该行由安装动作产生）。
+4. `install_args_from_cache` 现在也剥掉 `--path` 及其值/`--path=` 形式，避免把 install 专属的 `--path` 透传进 install 的 removed-flag 检查。
+
+证据：
+
+- A/B（4.0.24，13 条命令，stdout+stderr+exit 全比）：`path` / `force` / `local` / `redownload` / `without` / `no-install` / `plain` / `jobs` / `retry` / `all` / `frozen` / `cache-path` / `all-platforms` → **13/13 逐字相同**。
+- A/B（2.7.2，5 条）：`path` / `force` / `without` / `no-install` 逐字相同；`plain` 只剩一处既有差异（见下方"已声明差异"）。
+- `--no-install` 产物对齐（两侧各自 clean 沙箱）：`Gemfile.lock` 写出、`<bundle>/ruby/<abi>/cache/json_pure-2.8.1.gem` 存在、`gems/` 与 `specifications/` 为空、`vendor/cache/json_pure-2.8.1.gem` 就位 —— 五项全同。
+- 新 spec `spec/m7_cache_switches_spec.cr` **3 examples, 0 failures**：`--force`/`--local`/`--without` 的 `Unknown switches`（含 `Did you mean?  "--frozen"`）、`--path` 的专属文案（按 `Commands.word_wrap(..., 80)` 断言）、`--no-install` 的锁与产物形态。
+- 负对照：把 `no_install:` 实参改成 `false`（注释 `negative-control`）后该 spec `1 failure`（`bundle/ruby/<abi>/gems/json_pure-2.8.1` 被解包出来），还原后 3/0。
+- 差分：新夹具 `cache-force-unknown-switch`（`cache --force`）、`cache-path-removed`（`cache --path vendor/x`）、`cache-no-install`（`cache --no-install`）→ 4.0.24 与 `cache-path` / `install-fresh` 回归一起 **5 passed, 0 failed**；2.7.2 **4 passed, 0 failed, 1 skipped**（`cache-path-removed` 记为 `deferred-2.7.2`，原因见下）。
+
+已声明差异：
+
+- 2.7.x 的 `--path` 只被 `[DEPRECATED]` 警告并记住为安装路径：参考会把包装到 `vendor/x/ruby/<abi>` 并在 `vendor/x/vendor/cache` 建缓存、额外生成 `build_info` / `doc` / `extensions` / `plugins` 目录，我方目前只做到"按 `vendor/x` 安装、缓存仍写项目根 `vendor/cache`"，故该夹具在 2.7.2 上 deferred。
+- 2.7.x 在 `<bundle>/cache` 已有 `.gem`、但 `gems/` 被删掉的场景下会**省略** `Fetching <gem>` 行（只打 `Installing`），我方仍打印 `Fetching`。这是 install 流水线的既有差异（与本轮 cache 改动无关），在干净的差分夹具里不会出现。
+- `cache --all-platforms` 的既有夹具仍受本机 msys Low-IL 影响（racc 原生扩展 `Gem::Ext::BuildError`），未在本轮重测。
+
+未验证：
+
+- 2.7.2 的 `--path` + `--cache-path` 组合下的缓存落点。
+- `cache --quiet` 与 `--cooldown`（本轮未测其输出抑制与冷却行为，只确认开关被接受）。
+- `cache --no-install` 与 PATH/GIT 源 gem 的组合（只测了 rubygems 源）。
