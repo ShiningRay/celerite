@@ -36,6 +36,10 @@ module Celerite
       getter platform : String
       getter ruby_exe : String
       getter gem_paths : Array(String)
+      # RubyGems' built-in search path (`Gem.default_path`), which ignores a
+      # user-set GEM_PATH. `bundle exec` needs it to find the bundler gem it
+      # loads into the child process.
+      getter default_path : Array(String)? = nil
       getter default_gem_dir : String
       getter user_gem_dir : String?
       # `Gem.bindir` / the system-wide RubyGems config directory; reported by

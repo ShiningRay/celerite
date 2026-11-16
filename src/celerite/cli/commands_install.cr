@@ -775,6 +775,61 @@ module Celerite
     # exec
     # ------------------------------------------------------------------
     def self.exec(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      # `--gemfile` is applied through BUNDLE_GEMFILE so the definition and the
+      # child process see the same Gemfile, but the override must not leak into
+      # the caller (CLI.run is used in-process by the specs).
+      previous_gemfile = ENV["BUNDLE_GEMFILE"]?
+      begin
+        exec_in_bundle(stdout, stderr, rest)
+      ensure
+        if previous_gemfile
+          ENV["BUNDLE_GEMFILE"] = previous_gemfile
+        else
+          ENV.delete("BUNDLE_GEMFILE")
+        end
+      end
+    end
+
+    private def self.exec_in_bundle(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      # Thor hands `exec` a splat, so the reference accepts its own switches
+      # (`--gemfile`, `--keep-file-descriptors`) plus the class switches before
+      # the command name; everything from the first non-switch token onward is
+      # forwarded verbatim (cli.rb `desc "exec"` keeps the command's own flags).
+      args = rest.dup
+      gemfile_override : String? = nil
+      cleaned = [] of String
+      index = 0
+      while index < args.size
+        token = args[index]
+        if token == "--"
+          index += 1
+          break
+        end
+        break unless token.starts_with?("-")
+        case token
+        when "--help", "-h"
+          return Commands.help(stdout, ["exec"])
+        when "--keep-file-descriptors", "--no-keep-file-descriptors"
+          # The reference keeps descriptors by default; the switch is accepted
+          # for compatibility only.
+        when "--gemfile"
+          index += 1
+          gemfile_override = args[index]?
+        else
+          if value = token.lchop?("--gemfile=")
+            gemfile_override = value
+          else
+            cleaned << token
+          end
+        end
+        index += 1
+      end
+      cleaned.concat(args[index..]) if index < args.size
+      rest = cleaned
+      if override = gemfile_override
+        ENV["BUNDLE_GEMFILE"] = File.expand_path(override)
+      end
+
       command = rest.first?
       if command.nil? || command.empty?
         stderr.puts "bundler: exec needs a command to run"
@@ -812,22 +867,26 @@ module Celerite
         # "PATH".
         path_value = ENV["PATH"]? || ""
         process_env.keys.select { |k| k.downcase == "path" }.each { |k| process_env.delete(k) }
-        setup_path = File.join(bundler_lib, "bundler/setup")
-        setup_require = setup_path.includes?(" ") ? "-rbundler/setup" : "-r#{setup_path}"
-        existing_rubyopt = (process_env["RUBYOPT"]? || "").split(" ").reject(&.empty?)
-        unless existing_rubyopt.includes?(setup_require)
-          existing_rubyopt.unshift(setup_require)
+        # Never inject a `-r` that cannot resolve: a missing bundler lib would
+        # abort the child with a LoadError before the command runs.
+        unless bundler_lib.empty?
+          setup_path = File.join(bundler_lib, "bundler/setup")
+          setup_require = setup_path.includes?(" ") ? "-rbundler/setup" : "-r#{setup_path}"
+          existing_rubyopt = (process_env["RUBYOPT"]? || "").split(" ").reject(&.empty?)
+          unless existing_rubyopt.includes?(setup_require)
+            existing_rubyopt.unshift(setup_require)
+          end
+          process_env["RUBYOPT"] = existing_rubyopt.join(" ")
+          rubylib = (process_env["RUBYLIB"]? || "").split(path_delimiter_static).reject(&.empty?)
+          rubylib.unshift(bundler_lib) unless rubylib.includes?(bundler_lib)
+          process_env["RUBYLIB"] = rubylib.join(path_delimiter_static)
+          process_env["BUNDLER_SETUP"] = setup_path
+          exe_candidate = File.join(bundler_lib, "..", "exe", "bundle")
+          process_env["BUNDLE_BIN_PATH"] = File.expand_path(exe_candidate).gsub(/\\/, "/") if File.file?(exe_candidate)
         end
-        process_env["RUBYOPT"] = existing_rubyopt.join(" ")
-        rubylib = (process_env["RUBYLIB"]? || "").split(path_delimiter_static).reject(&.empty?)
-        rubylib.unshift(bundler_lib) unless rubylib.includes?(bundler_lib)
-        process_env["RUBYLIB"] = rubylib.join(path_delimiter_static)
         process_env["BUNDLE_GEMFILE"] = File.expand_path(definition.gemfile_path).gsub(/\\/, "/")
         process_env["BUNDLE_LOCKFILE"] = File.expand_path(definition.lockfile_path).gsub(/\\/, "/")
         process_env["BUNDLER_VERSION"] = bundler_version
-        process_env["BUNDLER_SETUP"] = setup_path
-        exe_candidate = File.join(bundler_lib, "..", "exe", "bundle")
-        process_env["BUNDLE_BIN_PATH"] = File.expand_path(exe_candidate).gsub(/\\/, "/") if File.file?(exe_candidate)
         path_delimiter = {{ flag?(:windows) }} ? ";" : ":"
         process_env["PATH"] = "#{bin_dir.gsub(/\\/, "/")}#{path_delimiter}#{path_value}"
 
@@ -934,23 +993,36 @@ module Celerite
       {% end %}
     end
 
-    # Locate the reference bundler library for exec's setup injection. Prefer
-    # the pinned/profile bundler gem when installed (regular envs), so
-    # `bundle exec` can require bundler/setup and satisfy BUNDLER_VERSION
-    # without requiring callers to set CELERITE_REFERENCE_BUNDLER_LIB (the
-    # differential harness still supplies it explicitly). Falls back to the
-    # Ruby-adjacent lib directory for compatibility.
+    # Locate the reference bundler library for exec's setup injection.
+    # `exec.rb:59` loads the bundler that ships with the running `bundle`
+    # (`require_relative "../setup"`), i.e. entirely independent of GEM_PATH.
+    # Mirror that by searching RubyGems' built-in path first (`Gem.default_path`
+    # ignores a user-set GEM_PATH), then the configured gem paths, then any
+    # installed bundler version.
     private def self.find_bundler_lib(env : Bridge::RubyEnvironment, version : String) : String
-      gem_dirs = env.gem_paths.dup
-      gem_dirs << env.default_gem_dir unless env.default_gem_dir.empty?
+      roots = [] of String
+      roots.concat(env.default_path || [] of String)
+      roots << env.default_gem_dir unless env.default_gem_dir.empty?
+      roots.concat(env.gem_paths)
       if user = env.user_gem_dir
-        gem_dirs << user unless user.empty?
+        roots << user unless user.empty?
       end
-      gem_dirs.uniq.each do |dir|
+      roots = roots.uniq
+      roots.each do |dir|
         candidate = File.join(dir, "gems", "bundler-#{version}", "lib")
         return candidate if File.file?(File.join(candidate, "bundler", "setup.rb"))
       end
-      File.expand_path("../lib", File.dirname(env.ruby_exe))
+      roots.each do |dir|
+        gems_dir = File.join(dir, "gems")
+        next unless Dir.exists?(gems_dir)
+        entries = Dir.children(gems_dir).select(&.starts_with?("bundler-")).sort!.reverse!
+        entries.each do |entry|
+          candidate = File.join(gems_dir, entry, "lib")
+          return candidate if File.file?(File.join(candidate, "bundler", "setup.rb"))
+        end
+      end
+      ruby_lib = File.expand_path("../lib", File.dirname(env.ruby_exe))
+      File.file?(File.join(ruby_lib, "bundler", "setup.rb")) ? ruby_lib : ""
     end
 
     # Pinned `Bundler::CLI::Exec#directly_loadable?`: a non-empty Ruby script

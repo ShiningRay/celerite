@@ -81,6 +81,11 @@ def op_ruby_environment(_payload)
     # default gem dir when a user-set GEM_PATH omits it — splitting GEM_PATH
     # verbatim would drop that entry.
     "gem_paths" => Gem.path,
+    # `Gem.default_path` is RubyGems' built-in search path: unlike `Gem.path`
+    # it ignores a user-set GEM_PATH, which is what `bundle exec` needs when it
+    # looks for the bundler gem it must load in the child (exec.rb:59 injects
+    # its own `lib` directory regardless of GEM_PATH).
+    "default_path" => Gem.default_path,
     "default_gem_dir" => (ENV["GEM_HOME"] || Gem.default_dir),
     "user_gem_dir" => (Gem.user_dir rescue nil),
     # `Bundler::Env#report` prints `Gem.bindir` (env.rb:78) and the directory

@@ -2571,3 +2571,42 @@ oracle（4.0.24，隔离 HOME/BUNDLE_USER_*）：`config get without|cache_all|r
 
 - `--linter=rubocop` 生成的 `.rubocop.yml` 未与参考比对（属非默认模板分支）。
 - `--no-git` 与 `git add` 交互时的 `git status` 输出未额外断言。
+## 2026-11-16（M7(2)：`bundle exec` 的自有开关与 bundler lib 解析）
+
+参考锚点：`bundler/cli.rb:419-431`（`exec` 以 splat 收尾并声明 `--gemfile`/`--keep-file-descriptors`）、`bundler/cli/exec.rb:59`（`require_relative "../setup"`）、`bundler/shared_helpers.rb:362-378`（`set_rubyopt`/`set_rubylib` 用 `File.expand_path("..", __dir__)` 取 Bundler 自身 lib 根，与 `GEM_PATH` 无关）。
+
+修复前（A/B，`gem "json_pure", "2.8.1"`、隔离 HOME/GEM_PATH）：
+
+```text
+exec ruby -e "puts 7"                 ref 0     cel 1   cannot load such file -- C:\Ruby40-x64\lib\bundler/setup (LoadError)
+exec --keep-file-descriptors ruby -e  ref 0     cel 127 bundler: command not found: --keep-file-descriptors
+exec --gemfile Gemfile ruby -e        ref 0     cel 127 bundler: command not found: --gemfile
+exec --help                           ref 0     cel 127
+exec                                  ref 128   cel 128 bundler: exec needs a command to run
+exec no_such_command_xyz              ref 127   cel 127
+exec --bogus true                     ref 127   cel 127（参考同样把未知开关当命令）
+```
+
+根因：`find_bundler_lib` 在 `GEM_PATH` 被隔离时找不到 bundler gem，回退到 Ruby 自己的 lib 根（`C:\Ruby40-x64\lib`，不含 `bundler/setup.rb`），却仍把它拼进子进程 `RUBYOPT`，于是子进程在执行命令前就 `LoadError`。
+
+实现：
+
+- 桥 `op_ruby_environment` 新增 `default_path`（`Gem.default_path`：RubyGems 内置搜索路径，忽略用户设置的 `GEM_PATH`）。
+- `find_bundler_lib` 依次搜索 `default_path`、`default_gem_dir`、`gem_paths`、`user_gem_dir` 下的 `gems/bundler-<ver>/lib`，再按 `bundler-*` 目录降序取任一版本；Ruby lib 根只有确实含 `bundler/setup.rb` 时才采用，否则返回空串。
+- 空串时**不注入** `RUBYOPT`/`RUBYLIB`/`BUNDLER_SETUP`/`BUNDLE_BIN_PATH`，避免把不可解析的 `-r` 交给子进程。
+- `exec` 先解析自身开关再转发命令：`--help`/`-h` 打印 usage 并 exit 0、`--keep-file-descriptors`/`--no-keep-file-descriptors` 接受、`--gemfile VALUE`/`--gemfile=VALUE` 设置 `BUNDLE_GEMFILE`、`--` 终止解析、未知 `-x` 仍作为命令交给执行器（与参考一致，127）。
+- `--gemfile` 写入的 `BUNDLE_GEMFILE` 在调用结束后还原：`CLI.run` 在 spec 中以进程内方式调用，不还原会污染后续用例。
+
+证据：
+
+- 8 条 A/B（`exec ruby -e …`、`--gemfile`、`--gemfile=`、`--keep-file-descriptors`、`--`、`--verbose`、`--no-color`、`BUNDLE_GEMFILE` 透传）全部 same=True（仅沙箱路径差异未归一化）。无 lockfile 且未安装时两侧同为 exit 1，回溯逐字相同（2453 字节）。
+- 新 `spec/m7_exec_spec.cr` 6 examples / 0 failures；负对照（`find_bundler_lib` 直接返回 Ruby lib 根）→ `exec ruby -e "puts 7"` 得 exit 1 + `LoadError`，还原后 exit 0。
+- 差分夹具 `exec-unknown-command`（127）与 `exec-no-arguments`（128）：4.0.24 `2 passed`、2.7.2 `2 passed`。
+- 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen` 0、全量 **538 examples, 0 failures, 4 errors**（4 为既有 msys Low-IL `git_source_spec`）、`git diff --check` 0。
+
+已声明差异：`exec --help` 打印 Celerite 的 `Usage:` 摘要而非 `bundle-exec(1)` manpage（与其余命令同一差异）。
+
+未验证：
+
+- `--keep-file-descriptors` 的真实 fd 继承行为（本机 Windows 无对应语义，只验证开关被接受）。
+- `disable_exec_load=1` 与 `--gemfile` 组合未单列夹具。
