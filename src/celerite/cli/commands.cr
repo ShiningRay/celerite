@@ -939,7 +939,16 @@ module Celerite
       end
       # `bundler/cli/check.rb:15` runs `ensure_equivalent_gemfile_and_lockfile`
       # before resolving, so the CHECKSUMS reason wins over the resolve output.
-      definition.validate_frozen_lockfile!
+      # The Gemfile diff needs the evaluated dependencies; a bridge that is
+      # unavailable only narrows the reason list, never the outcome.
+      gemfile_dependencies : Array(Bridge::EvaluatedDependency)? = nil
+      if config.frozen? && definition.lockfile_exists?
+        begin
+          gemfile_dependencies = Bridge::Client.new.evaluate_gemfile(definition.gemfile_path).dependencies
+        rescue
+        end
+      end
+      definition.validate_frozen_lockfile!(gemfile_dependencies: gemfile_dependencies)
 
       # Reference `Bundler.definition.check!` resolves the Gemfile when no
       # lockfile exists yet, so `bundle check` works before the first install:

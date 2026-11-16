@@ -2763,3 +2763,40 @@ exec --bogus true                     ref 127   cel 127（参考同样把未知�
 - 只覆盖 4.0.24 与 2.7.2 两个 profile 的默认目标，其它版本未测。
 - `GEM_HOME` 指向不存在的目录时 `Gem.dir` 的取值未测。
 - 进程锁与下载缓存根仍落在 `<home>/.bundle`（调用点拿不到 `Gem.dir`），与参考在系统 gems 模式下 `bundle cache` 的位置是否一致未逐条核对。
+---
+## 2026-11-16（M7(4)：frozen 模式的 Gemfile 差异理由与加/删条目）
+
+参考锚点：
+- `bundler-4.0.24/lib/bundler/definition.rb:475-492`：`ensure_equivalent_gemfile_and_lockfile` 先要求锁文件存在，再取 `lockfile_changes_summary`，为空即放行。
+- 同文件 `:906-921`：理由按固定顺序拼接——源变更、依赖变更、平台缺失、新平台、path/git gemspec、`@missing_lockfile_dep`、bundler 版本、CHECKSUMS 缺失/为空、锁定 spec 缺依赖/依赖不满足。
+- 同文件 `:1043-1090`：`lockfile_changes_summary` 用 `new_deps`/`deleted_deps` 生成 `* <pretty_dependency>` 条目，消息前缀是「理由首字母大写 + }, but 」；**当拼接后的消息不以 `Your lockfile` 开头时才插入 `the lockfile `**。
+- 同文件 `:1051-1087`：`converge_dependencies` 只在「依赖新增」或「需求不匹配」时置位 `@dependency_changes`；纯删除不置位，但删除列表照样打印。
+- `bundler/shared_helpers.rb` 的 `pretty_dependency`：`name` + ` (requirement)`，默认需求（`>= 0`）只留名字。
+
+修复前实测：
+- Gemfile 新增 `thor` + 锁文件旧 → celerite 只报 CHECKSUMS 理由，缺 `The dependencies in your gemfile changed` 与 `You have added to the Gemfile:` 段落，也缺 `* ` 前缀。
+- 纯删除场景，参考的 `Your lockfile has an empty CHECKSUMS entry …` 之后**不**出现 `the lockfile `（因为大写后的消息以 `Your lockfile` 开头）；celerite 在小写理由上判断前缀，多打印了 `the lockfile `。
+- 需求变更（`json_pure 2.8.1` → `2.6.0`）参考同时列 `added` 与 `deleted`；celerite 只列 added。
+
+实现（`src/celerite/definition.cr`）：
+- `validate_frozen_lockfile!(explicit_flag, gemfile_dependencies)` 收集理由数组（依赖变更 + CHECKSUMS 缺失/为空），用 `", "` 连接后统一加工：首字母大写、按大写后的消息判断是否补 `the lockfile `、追加 `can't be updated because frozen mode is set`、`You have added to the Gemfile:` / `You have deleted from the Gemfile:` 段落、`Run \`bundle install\` elsewhere …` 段与开发机提示。
+- `dependency_diff` 对齐 `lockfile_changes_summary`：added = Gemfile 有而 `DEPENDENCIES` 无（或需求不同）的条目；deleted = `DEPENDENCIES` 与 Gemfile **按名字+需求**都不匹配的条目；条目渲染为 `* name (req)`；只有 added 非空才置 `dependencies changed` 理由。
+- 调用点：`install` 把已经求值出的 `evaluation.dependencies` 传进来（`commands_install.cr`）；`check` 在 frozen 且有锁时按需新建桥求值，桥不可用只导致理由变少、不改变结论。
+- 需求归一化：`">= 0"` 视为默认需求（等价于 `Gem::Requirement.default`），Gemfile 与锁文件两侧同样处理。
+
+证据：
+- A/B 三场景（新增 `racc`、删除 `thor`、`json_pure 2.8.1`→`2.6.0`，两侧独立 `HOME`/`GEM_HOME`/`GEM_PATH`/`BUNDLE_PATH`，`BUNDLE_FROZEN=true`）：exit 均为 16，stdout 与 stderr 逐字相同（含 80 列折行位置）。
+- `spec/m7_deployment_path_spec.cr` 扩到 **9 examples, 0 failures**（新增：新增依赖的理由+条目、纯删除不出现依赖变更理由、需求变更同时列 added/deleted）。
+- 负对照：把 `install` 的 `gemfile_dependencies` 换成 `nil` → 上述三条用例变 3 failures；恢复后 9/0。
+- 差分夹具 `install-frozen-gemfile-added`（`extra/.bundle/config` 写 `BUNDLE_FROZEN: "true"`，Gemfile 多一个 `thor`）：4.0.24 与 2.7.2 均 `PASS (exit=16)`；同批 `install-deployment-empty-checksums`、`install-fresh` 仍 PASS。
+- 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen` 0、全量 `crystal spec` **560 examples, 0 failures, 4 errors**（4 = 既有 `spec/git_source_spec.cr` 的 msys Low-IL）、`git diff --check` 0。
+
+已声明差异：
+- 只实现「依赖新增/删除/需求变更」与 CHECKSUMS 两类理由；源变更（`the list of sources changed`）、平台缺失/新增平台、path/git gemspec 变更、`@missing_lockfile_dep`、bundler 版本更新、锁定 spec 缺依赖/依赖不满足均未建模。
+- `You have changed in the Gemfile:`（源切换）段落未实现。
+- `pretty_dependency` 未附加依赖的平台组（参考对多平台依赖会追加 `x64-mingw-ucrt` 等）。
+
+未验证：
+- 依赖声明带 `platforms:`/`require:`/`group:` 时的 added/deleted 渲染未与参考逐字对照。
+- `check` 在桥不可用时降级为「只看 CHECKSUMS 理由」的路径未做端到端测试。
+- 2.7.2 的同一场景只验证了差分夹具，未逐条比对 3 个 A/B 场景。

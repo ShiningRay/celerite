@@ -184,8 +184,10 @@ module Celerite
       begin
         # Runtime Ruby requirement validation (Bundler validate_runtime!/validate_ruby!)
         # for install flows when evaluation is available.
+        gemfile_dependencies : Array(Bridge::EvaluatedDependency)? = nil
         begin
           evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+          gemfile_dependencies = evaluation.dependencies
           RubyRuntime.validate!(evaluation.ruby, bridge.ruby_environment) if evaluation.ruby
         rescue ex : Error
           raise ex
@@ -200,7 +202,7 @@ module Celerite
         # still leaves `vendor/bundle/ruby/<abi>` behind.
         install_root = InstallPaths.gem_root(config, bridge.ruby_environment.default_gem_dir, InstallPaths.ruby_abi(bridge))
         Dir.mkdir_p(install_root)
-        definition.validate_frozen_lockfile!(rest.includes?("--deployment"))
+        definition.validate_frozen_lockfile!(rest.includes?("--deployment"), gemfile_dependencies)
         if !cooldown_flag_valid?(rest, stderr, resolution.bridge_bundler_version)
           return 15
         end

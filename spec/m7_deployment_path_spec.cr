@@ -194,4 +194,79 @@ describe "M7(4) deployment install target" do
       end
     end
   end
+
+  it "lists an added dependency like the reference Gemfile diff" do
+    index = file_source_url(File.expand_path("../fixtures/gem-index", __DIR__))
+    files = dep_project_files(index)
+    files["Gemfile"] = "source \"#{index}\"\n\ngem \"json_pure\", \"2.8.1\"\ngem \"thor\", \"1.3.2\"\n"
+    with_project(files) do |dir|
+      with_dep_bridge do
+        with_dep_env(dep_isolated_env(dir, {"BUNDLE_FROZEN" => "true"})) do
+          code, _out, err = run_cli(["install"])
+          code.should eq(16), err
+          # definition.rb L906-921 joins the reasons in order, dependencies
+          # first, then the CHECKSUMS entry.
+          err.should contain("The dependencies in your gemfile changed, your lockfile has an empty CHECKSUMS")
+          err.should contain("entry for \"json_pure\", but the lockfile can't be updated because frozen mode is")
+          err.should contain("but the lockfile can't be updated because frozen mode")
+          err.should contain("You have added to the Gemfile:\n* thor (= 1.3.2)")
+          err.should_not contain("You have deleted from the Gemfile")
+        end
+      end
+    end
+  end
+
+  it "lists a deleted dependency without the dependency-changed reason" do
+    index = file_source_url(File.expand_path("../fixtures/gem-index", __DIR__))
+    lock = <<-LOCK
+    GEM
+      remote: #{index}
+      specs:
+        json_pure (2.8.1)
+        thor (1.3.2)
+
+    PLATFORMS
+      x64-mingw-ucrt
+
+    DEPENDENCIES
+      json_pure (= 2.8.1)
+      thor (= 1.3.2)
+
+    CHECKSUMS
+      json_pure (2.8.1)
+      thor (1.3.2)
+
+    BUNDLED WITH
+      4.0.24
+    LOCK
+    with_project({"Gemfile" => "source \"#{index}\"\n\ngem \"json_pure\", \"2.8.1\"\n", "Gemfile.lock" => lock}) do |dir|
+      with_dep_bridge do
+        with_dep_env(dep_isolated_env(dir, {"BUNDLE_FROZEN" => "true"})) do
+          code, _out, err = run_cli(["install"])
+          code.should eq(16), err
+          # A pure deletion does not set `@dependency_changes`
+          # (definition.rb L1051-1087) yet still prints the deleted list.
+          err.should contain("Your lockfile has an empty CHECKSUMS entry for \"json_pure\", but can't be updated")
+          err.should_not contain("The dependencies in your gemfile changed")
+          err.should contain("You have deleted from the Gemfile:\n* thor (= 1.3.2)")
+        end
+      end
+    end
+  end
+
+  it "reports a requirement change as one added and one deleted entry" do
+    index = file_source_url(File.expand_path("../fixtures/gem-index", __DIR__))
+    files = dep_project_files(index)
+    files["Gemfile"] = "source \"#{index}\"\n\ngem \"json_pure\", \"2.6.0\"\n"
+    with_project(files) do |dir|
+      with_dep_bridge do
+        with_dep_env(dep_isolated_env(dir, {"BUNDLE_FROZEN" => "true"})) do
+          code, _out, err = run_cli(["install"])
+          code.should eq(16), err
+          err.should contain("You have added to the Gemfile:\n* json_pure (= 2.6.0)")
+          err.should contain("You have deleted from the Gemfile:\n* json_pure (= 2.8.1)")
+        end
+      end
+    end
+  end
 end

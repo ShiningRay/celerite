@@ -1,6 +1,7 @@
 require "./errors"
 require "./config"
 require "./lockfile/parser"
+require "./bridge/client"
 
 module Celerite
   # Resolves the project context for a command run: Gemfile location, lockfile
@@ -93,24 +94,82 @@ module Celerite
 
     # `Bundler::Definition#ensure_equivalent_gemfile_and_lockfile`
     # (definition.rb:475-492): frozen mode refuses to update the lockfile.
-    # This port implements the CHECKSUMS reasons (missing / empty entry), the
-    # ones a deployment install of a source without checksums hits first; the
-    # Gemfile-diff reasons are still listed as an open gap in
-    # docs/compat-report.md.
-    def validate_frozen_lockfile!(explicit_flag : Bool = false) : Nil
+    # Implements the dependency-diff reasons plus the CHECKSUMS ones
+    # (definition.rb:906-921 order: dependencies before checksums); source,
+    # platform and path/git gemspec reasons remain open (see
+    # docs/compat-report.md).
+    def validate_frozen_lockfile!(explicit_flag : Bool = false,
+                                  gemfile_dependencies : Array(Bridge::EvaluatedDependency)? = nil) : Nil
       return unless config.frozen?
       raise ProductionError.new("Frozen mode is set, but there's no lockfile") unless lockfile_exists?
 
-      reason = lockfile_update_reason
-      return unless reason
+      reasons = [] of String
+      added = [] of String
+      deleted = [] of String
+      if deps = gemfile_dependencies
+        diff = dependency_diff(deps)
+        reasons << "the dependencies in your gemfile changed" if diff[2]
+        added = diff[0]
+        deleted = diff[1]
+      end
+      if reason = lockfile_update_reason
+        reasons << reason
+      end
+      return if reasons.empty? && added.empty? && deleted.empty?
 
+      reason = reasons.join(", ")
       lockfile_name = File.basename(lockfile_path)
-      message = "#{reason[0].upcase}#{reason[1..].strip}, but can't be updated because frozen mode is set"
+      message = "#{reason[0].upcase}#{reason[1..].strip}, but "
+      message += "the lockfile " unless message.starts_with?("Your lockfile")
+      message += "can't be updated because frozen mode is set"
+      message += "\n\nYou have added to the Gemfile:\n#{added.join("\n")}" unless added.empty?
+      message += "\n\nYou have deleted from the Gemfile:\n#{deleted.join("\n")}" unless deleted.empty?
       message += "\n\nRun `bundle install` elsewhere and add the updated #{lockfile_name} to version control.\n"
       unless explicit_flag || frozen_from_environment?
         message += "\n\nIf this is a development machine, remove the #{lockfile_name} freeze by running `bundle config set frozen false`."
       end
       raise ProductionError.new(message)
+    end
+
+    # `Definition#lockfile_changes_summary` (definition.rb:1053-1090): the
+    # added/deleted lists come from set differences between the Gemfile
+    # dependencies and the locked `DEPENDENCIES` entries, each rendered like
+    # `SharedHelpers.pretty_dependency`. Only additions or requirement changes
+    # set `@dependency_changes` (definition.rb:1051-1087); a pure deletion
+    # still lists the removed dependency.
+    private def dependency_diff(deps : Array(Bridge::EvaluatedDependency)) : Tuple(Array(String), Array(String), Bool)
+      locked = lockfile!.dependencies_section.try(&.dependencies) || [] of Lockfile::Dependency
+      added = [] of String
+      changed = false
+      deps.each do |dep|
+        wanted = normalized_requirements(dep.requirements)
+        match = locked.find { |entry| entry.name == dep.name }
+        if match.nil?
+          added << "* #{pretty_dependency(dep.name, wanted)}"
+          changed = true
+        elsif normalized_requirements(match.requirements) != wanted
+          added << "* #{pretty_dependency(dep.name, wanted)}"
+          changed = true
+        end
+      end
+      deleted = [] of String
+      locked.each do |entry|
+        reqs = normalized_requirements(entry.requirements)
+        next if deps.any? { |dep| dep.name == entry.name && normalized_requirements(dep.requirements) == reqs }
+
+        deleted << "* #{pretty_dependency(entry.name, reqs)}"
+      end
+      {added, deleted, changed}
+    end
+
+    private def normalized_requirements(requirements : Array(String)?) : Array(String)
+      (requirements || [] of String).reject { |value| value == ">= 0" }
+    end
+
+    private def pretty_dependency(name : String, requirements : Array(String)) : String
+      return name if requirements.empty?
+
+      "#{name} (#{requirements.join(", ")})"
     end
 
     # First CHECKSUMS reason the reference would report (definition.rb:984-1002:
