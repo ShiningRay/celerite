@@ -19,20 +19,32 @@ module Celerite
   # `<home>/.bundle` is used. The ruby scope (`ruby/<abi>`) is appended only
   # when system gems are **not** in use.
   module InstallPaths
+    # `Settings#path` (settings.rb L238-251) injects `vendor/bundle` as the
+    # configured path when deployment mode is on and no path was given, which
+    # then takes the explicit-path branch of `Path` (non-system gems, relative
+    # to the project root).
+    DEPLOYMENT_PATH = "vendor/bundle"
+
     # Base directory (without the ruby scope). Kept as the compatibility entry
     # used by process locks and other non-gem-root call sites.
     def self.install_path(config : Config, system_gem_dir : String = "") : String
       base_path(config, system_gem_dir)
     end
 
+    # Deployment mode without an explicit `path` (`Settings#path`, L238-251).
+    def self.deployment_path_requested?(config : Config) : Bool
+      config["path"].to_s.empty? && config["deployment"] == true
+    end
+
     # `Path#use_system_gems?` (settings.rb L260-264) decides whether the
     # install root is the RubyGems directory: `path.system` (or the legacy
     # `disable_shared_gems: false`) turns system gems on, an explicit `path`
-    # turns them off. The reference also defaults to system gems when nothing
-    # is configured (`!bundler_5_mode?` for the 2.7.x/4.x profiles); the
-    # product default stays `<home>/.bundle` — declared in
-    # docs/compat-report.md (2026-11-16, `bundle open` section, "发现未修").
+    # (including the deployment default) turns them off. The reference also
+    # defaults to system gems when nothing is configured (`!bundler_5_mode?`
+    # for the 2.7.x/4.x profiles); the product default stays
+    # `<home>/.bundle` — declared in docs/compat-report.md.
     def self.use_system_gems?(config : Config) : Bool
+      return false if deployment_path_requested?(config)
       return false unless config["path"].to_s.empty?
       config["path.system"] == true || config["disable_shared_gems"] == false
     end
@@ -55,7 +67,15 @@ module Celerite
     def self.base_path(config : Config, system_gem_dir : String) : String
       validate!(config)
       configured = config["path"].to_s
-      return File.expand_path(configured) unless configured.empty?
+      unless configured.empty?
+        # `Bundler.bundle_path` expands the configured path against the project
+        # root (bundler.rb L104), not against the process working directory.
+        return File.expand_path(configured, config.project_root)
+      end
+      if deployment_path_requested?(config)
+        root = config.project_root || Dir.current
+        return File.expand_path(File.join(root, DEPLOYMENT_PATH))
+      end
       if use_system_gems?(config) && !system_gem_dir.empty?
         return File.expand_path(system_gem_dir)
       end

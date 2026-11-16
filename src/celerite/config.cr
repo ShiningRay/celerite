@@ -108,8 +108,13 @@ module Celerite
       "\"#{escaped}\""
     end
 
+    # The project root the settings were loaded for (used to resolve relative
+    # `path` values and the deployment default `vendor/bundle`).
+    getter project_root : String?
+
     def initialize(project_root : String? = nil, temporary : Hash(String, Value) = {} of String => Value)
       @temporary = temporary
+      @project_root = project_root ? File.expand_path(project_root) : nil
       ignore = ENV["BUNDLE_IGNORE_CONFIG"]?
 
       local_root =

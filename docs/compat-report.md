@@ -2689,3 +2689,44 @@ exec --bogus true                     ref 127   cel 127（参考同样把未知�
 - `disable_shared_gems: false` 的端到端安装（只做了 `use_system_gems?`/`gem_root` 单测）。
 - 冲突配置下不计算 gem root 的命令（如 `config list`）是否也 exit 15，未逐条对齐。
 - 参考在 `path` 指向不同盘符时的 `ArgumentError` 回退分支未在本机复现（只做了代码路径镜像）。
+
+## 2026-11-16（M7(4)：部署模式 `vendor/bundle` 默认目标与 frozen CHECKSUMS 校验）
+
+参考契约：
+
+- `Settings#path`（settings.rb L238-251）：没有任何 `path` 配置且 `self[:deployment]` 为真时，把 `path` 当成 `"vendor/bundle"`，于是 `Path` 走进显式路径分支（非系统 gems）。
+- `Path#use_system_gems?`（L260-264）：`path.system` 为真或 `disable_shared_gems: false` 时为系统 gems；显式 `path`（含部署默认值）时为 false。
+- `Path#base_path`（L266-271）：`explicit_path` → 否则 `".bundle"`（非系统 gems）→ 否则 `Gem.dir`。
+- `Bundler.bundle_path`（bundler.rb L104）：`Pathname.new(configured_bundle_path.path).expand_path(root)`，相对路径按**项目根**展开，不按进程 cwd。
+- `Bundler::Definition#ensure_equivalent_gemfile_and_lockfile`（definition.rb L475-492）：frozen 模式拒绝更新锁文件；`lockfile_changes_summary`（L906-921）里 CHECKSUMS 的两条理由按 `missing` → `empty` 排列（L973-1002 `check_lockfile`），`empty_checksums_actionable?` 见 L651-659；错误类是 `ProductionError`（status 16）。
+- 调用点：`bundler/installer.rb:63-71`（先 `Bundler.create_bundle_path`，再 `definition.ensure_equivalent_gemfile_and_lockfile`）、`bundler/cli/check.rb:15`。
+
+修复前（本机实测）：`BUNDLE_DEPLOYMENT=true` 且锁文件 `CHECKSUMS` 里 `json_pure (2.8.1)` 为空时，参考 **exit 16** 并打印两段消息、**先创建** `vendor/bundle/ruby/4.0.0`；我方 **exit 0**、装进 `<home>/.bundle` 并打印 `Bundled gems are installed into …`。另外显式 `path` 为相对路径时，我方按进程 cwd 展开，参考按项目根展开。
+
+实现：
+
+- `src/celerite/resolution.cr`：`InstallPaths` 新增 `DEPLOYMENT_PATH = "vendor/bundle"`、`deployment_path_requested?(config)`（无显式 `path` 且 `deployment` 为真）、`use_system_gems?` 首行对部署默认值返回 false；`base_path` 增加部署分支（`<project_root>/vendor/bundle`），并让显式 `path` 按 `config.project_root` 展开（镜像 bundler.rb L104）。
+- `src/celerite/config.cr`：`Config` 记住 `project_root`（`getter project_root : String?`，构造时 `File.expand_path`），供相对 `path` 与部署默认值使用。
+- `src/celerite/definition.cr`：新增 `validate_frozen_lockfile!(explicit_flag = false)`（`config.frozen?` 才走；无锁 → `Frozen mode is set, but there's no lockfile`；`lockfile_update_reason` 依次判 missing/empty；消息首行首字母大写 + `, but can't be updated because frozen mode is set` + `Run `bundle install` elsewhere …` 段；`explicit_flag` 或 `BUNDLE_FROZEN=true` 时省略 `If this is a development machine …` 段）与私有 `lockfile_update_reason`/`checksum_matches?`/`frozen_from_environment?`。
+- `src/celerite/cli/commands_install.cr`：在进程锁之后、Cooldown 校验之前 `Dir.mkdir_p(gem_root)` 再 `definition.validate_frozen_lockfile!(rest.includes?("--deployment"))`（镜像 installer.rb L63-71 的顺序，部署失败仍留下 `vendor/bundle/ruby/<abi>`）。
+- `src/celerite/cli/commands.cr`：`run_check` 在冻结无锁检查之后调用 `definition.validate_frozen_lockfile!`（镜像 cli/check.rb:15 早于解析）。
+
+证据：
+
+- A/B 四场景（`.tmp-scratch/dep63e`，ref/cel 各自隔离 `HOME`/`GEM_HOME`/`BUNDLE_USER_*`，`Start-Process` 直接重定向原始 stderr）：`BUNDLE_DEPLOYMENT=true` + 空 CHECKSUMS → 双方 **exit 16**、stdout/stderr **逐字相同**、`vendor/bundle/ruby/4.0.0` 均存在；`BUNDLE_FROZEN=true` → 双方 exit 16 且都**省略** `If this is a development machine` 段；`check` 同锁 → 双方 exit 16 同文；无 `CHECKSUMS` 段的锁 → 双方 exit 0 且都写入 `vendor/bundle/ruby/4.0.0/gems/json_pure-2.8.1`。
+- `spec/m7_deployment_path_spec.cr` 6 examples / 0 failures（部署默认 base/relative/gem_root、显式 `path` 优先、空 CHECKSUMS install exit 16 + 目录已建、`BUNDLE_FROZEN` 省略提示、`check` 同错、无 CHECKSUMS 段照常安装）。
+- 差分：新增夹具 `fixtures/differential/install-deployment-empty-checksums/`（`deploy` 标记 + 空 CHECKSUMS 锁 + `command`=`install`）在 4.0.24 与 2.7.2 均 `PASS (exit=16)`；回归 `install-path-conflict` / `install-custom-path-summary` / `install-fresh` / `check-no-lockfile-missing` 在 4.0.24 仍全 PASS（5 passed）。
+- 负对照：注释掉 `install` 里的 `validate_frozen_lockfile!` 重建 `bin/celerite-nc.exe` → 差分 `install-deployment-empty-checksums` **FAIL**（参考 stderr 9 行消息全部缺失、我方 exit 0），还原后 PASS、`negative-control` 计数 0。
+- 门禁：`crystal tool format --check src spec` 0、`crystal build src/cli.cr` 0、全量 `crystal spec` **555 examples, 0 failures, 4 errors**（4 = 既有 `spec/git_source_spec.cr` msys Low-IL）、`git diff --check` 0。
+
+已声明差异：
+
+- frozen 校验只实现 CHECKSUMS 两条理由；参考 `lockfile_changes_summary` 里 Gemfile 依赖增删、`DEPENDENCIES` 变化等其余理由仍未实现（遇到时不会 exit 16）。
+- 无任何 `path` 配置时的默认目标仍为产品默认 `<home>/.bundle`（上一节已声明；本轮把部署默认值与相对路径展开对齐，默认目标切换仍需同步给 9 个 spec 加 `GEM_HOME` 隔离）。
+- `bundler_5_mode?` 分支未建模（2.7.x/4.x 恒 false，不影响当前 profile）。
+
+未验证：
+
+- 2.7.2 的 `install --deployment`（显式 flag → `explicit_flag` 为真）提示省略只做了代码路径镜像，未与参考逐字对照。
+- 跨盘符的相对 `path`（`ArgumentError` 回退）未在差分中复现。
+- 部署模式下 `.bundle/config` 的 `BUNDLE_FROZEN=false` 覆盖（`--deployment` 与 `frozen false` 组合）未逐条核对。

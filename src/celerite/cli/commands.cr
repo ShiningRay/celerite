@@ -937,6 +937,9 @@ module Celerite
       if config.frozen? && !definition.lockfile_exists?
         raise ProductionError.new("Frozen mode is set, but there's no lockfile")
       end
+      # `bundler/cli/check.rb:15` runs `ensure_equivalent_gemfile_and_lockfile`
+      # before resolving, so the CHECKSUMS reason wins over the resolve output.
+      definition.validate_frozen_lockfile!
 
       # Reference `Bundler.definition.check!` resolves the Gemfile when no
       # lockfile exists yet, so `bundle check` works before the first install:

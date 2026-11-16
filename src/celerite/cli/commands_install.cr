@@ -195,6 +195,12 @@ module Celerite
         resolution = Resolution.new(definition, false, bridge)
         resolution.progress = stdout
         lock = ProcessLock.lock(install_path(config))
+        # `Bundler.create_bundle_path` runs before the frozen validation
+        # (bundler/installer.rb:63-71), so a deployment install that then fails
+        # still leaves `vendor/bundle/ruby/<abi>` behind.
+        install_root = InstallPaths.gem_root(config, bridge.ruby_environment.default_gem_dir, InstallPaths.ruby_abi(bridge))
+        Dir.mkdir_p(install_root)
+        definition.validate_frozen_lockfile!(rest.includes?("--deployment"))
         if !cooldown_flag_valid?(rest, stderr, resolution.bridge_bundler_version)
           return 15
         end
