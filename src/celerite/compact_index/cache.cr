@@ -184,17 +184,24 @@ module Celerite
           headers["Authorization"] = "Basic " + Base64.strict_encode("#{user}:#{password || ""}")
         end
         response = HttpTransport.get(uri, path, headers, tls_ctx, @proxy, @timeout)
-        # fetcher/downloader.rb:70-73: 401 without credentials means the source
-        # requires authentication; 401 with credentials means they were
-        # rejected; the measured 4.0.24 oracle maps a 403 without
-        # WWW-Authenticate to the same "Authentication is required" text.
+        # fetcher/downloader.rb:69-73 + fetcher/index.rb:14-19: a 401 without
+        # credentials means the source requires authentication, a 401 with
+        # credentials means they were rejected, and a 403 means the source
+        # rejected the (possibly absent) token. The compact-index request is
+        # wrapped by `compact_index_request`, which lets 401 through and turns
+        # the 403 into a fallback to the legacy index; that legacy request
+        # reports the *full source URI* (`remote_uri`), which is what the
+        # measured 4.0.24 oracle prints for a source that answers 403 to
+        # everything.
         status = response.status_code
         if status == 401
           host = uri.host || uri.to_s
           raise Celerite::AuthenticationRequiredError.new(host) unless user || password
           raise Celerite::BadAuthenticationError.new(host)
         elsif status == 403
-          raise Celerite::AuthenticationRequiredError.new(uri.host || uri.to_s)
+          source = @uri.to_s
+          source = "#{source}/" unless source.ends_with?("/")
+          raise Celerite::AuthenticationForbiddenError.new(source)
         end
         response
       end

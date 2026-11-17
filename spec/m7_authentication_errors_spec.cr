@@ -1,10 +1,11 @@
 require "http/server"
 require "./spec_helper"
 
-# Reference mapping (bundler-4.0.24 fetcher/downloader.rb:70-73): a 401 with no
-# credentials is AuthenticationRequiredError, a 401 after credentials were sent
-# is BadAuthenticationError, and (measured oracle) a 403 without
-# `WWW-Authenticate` also surfaces as AuthenticationRequiredError. All are
+# Reference mapping (bundler-4.0.24 fetcher/downloader.rb:69-73 and
+# fetcher/index.rb:14-19): a 401 with no credentials is
+# AuthenticationRequiredError, a 401 after credentials were sent is
+# BadAuthenticationError, and a 403 is AuthenticationForbiddenError naming the
+# full source URI once the compact index falls back to the legacy index. All are
 # HTTPError subclasses: status 17, wrap: true.
 private def with_auth_status_server(status : Int32, &)
   server = HTTP::Server.new do |context|
@@ -61,6 +62,11 @@ private def bad_credentials_message : String
   "Please double-check your credentials and correct them.\n"
 end
 
+private def forbidden_message(port : Int32) : String
+  "Access token could not be authenticated for http://127.0.0.1:#{port}/.\n" \
+  "Make sure it's valid and has the necessary scopes configured.\n"
+end
+
 describe "private source authentication errors" do
   it "maps a credential-less 401 to AuthenticationRequiredError text and exit 17" do
     with_auth_bridge do
@@ -91,14 +97,18 @@ describe "private source authentication errors" do
     end
   end
 
-  it "maps a 403 without WWW-Authenticate to the same AuthenticationRequiredError text" do
+  it "maps a 403 to AuthenticationForbiddenError with the full source URI" do
     with_auth_bridge do
       with_auth_status_server(403) do |port|
         with_project({"Gemfile" => auth_gemfile(port)}) do |dir|
           code, out, err = run_cli(["lock"])
           code.should eq(17)
-          out.should eq(auth_stdout(dir))
-          err.should eq(auth_required_message)
+          # fetcher/compact_index.rb L9-23: the compact index swallows the 403
+          # and the legacy index logs its own fetch line before reporting it.
+          out.should eq(
+            auth_stdout(dir) + "Fetching source index from http://127.0.0.1:#{port}/\n\n"
+          )
+          err.should eq(forbidden_message(port))
         end
       end
     end

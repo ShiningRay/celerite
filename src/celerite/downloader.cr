@@ -232,9 +232,10 @@ module Celerite
           raise AuthenticationRequiredError.new(host) unless @credentials || uri.user || uri.password
           raise BadAuthenticationError.new(host)
         elsif response.status_code == 403
-          # Measured 4.0.24 oracle: a 403 without WWW-Authenticate surfaces as
-          # the same AuthenticationRequiredError message as a credential-less 401.
-          raise AuthenticationRequiredError.new(uri.host || uri.to_s)
+          # fetcher/downloader.rb:72-73: a 403 rejects the request outright and
+          # the message names only the host (`AuthenticationForbiddenError`
+          # reaches `filter_uri(uri.host)`; the reference does not retry).
+          raise AuthenticationForbiddenError.new(uri.host || uri.to_s)
         elsif response.status_code == 301 || response.status_code == 302 || response.status_code == 303 || response.status_code == 307 || response.status_code == 308
           # Follow redirect, honoring BUNDLE_REDIRECT max-redirect limit.
           if loc = response.headers["Location"]?

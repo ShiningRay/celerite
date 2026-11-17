@@ -3337,3 +3337,61 @@ Gemfile = `source "file:///<repo>/fixtures/gem-index/"` + `gem "json_pure", "2.6
 - 2.7.2 profile 的 standalone 未测（其 `installer/standalone.rb` 形态未逐一核对）；
 - `setup.rb` 里 `extensions/<platform>/…` 的替换依赖真实扩展包，本机只有纯 Ruby gem，未覆盖；
 - `--standalone` 与 `--deployment`/`--frozen` 同时给出时的组合语义未测。
+
+## 2026-11-17（M7(5)：403 的两处抛出点与紧凑索引的 legacy 回退）
+
+参考锚点：`bundler-4.0.24/lib/bundler/fetcher/downloader.rb` L69-73（`HTTPUnauthorized`
+按是否带 userinfo 分派 `AuthenticationRequiredError`/`BadAuthenticationError`，均传
+`uri.host`；`HTTPForbidden` → `AuthenticationForbiddenError, uri.host`）、
+`fetcher/index.rb` L14-19（legacy `specs` 的 403 → `AuthenticationForbiddenError, remote_uri`，
+即**完整源 URI**，含尾斜杠）、`fetcher.rb` L45-72（三个错误类的文案；
+`AuthenticationForbiddenError` 是 `Access token could not be authenticated for <subj>.` +
+`Make sure it's valid and has the necessary scopes configured.`）、
+`fetcher/compact_index.rb` L9-23（`compact_index_request` 只让 401 原样抛出，
+其余 `HTTPError` 记 trace 后返回 nil ⇒ **紧凑索引的 403 会退到 legacy 索引**，
+legacy 再用完整 URI 报错）。
+
+修复前实测（本地 `TCPServer` 对所有请求回固定状态；两侧独立 `HOME`/`GEM_HOME`/`GEM_PATH`/`TEMP`，
+Gemfile = `source "http://127.0.0.1:<port>/"` + `gem "json_pure", "2.6.0"`）：
+
+| 响应 | 参考 | 修复前我方 |
+| --- | --- | --- |
+| 全部 403（索引被拒） | exit 17，stdout `Fetching source index from http://127.0.0.1:<port>/` + 空行，stderr `Access token could not be authenticated for http://127.0.0.1:<port>/.` + `Make sure it's valid and has the necessary scopes configured.` | exit 17，stdout 空，stderr `Authentication is required for 127.0.0.1.` + 3 行引导 |
+| 401（带/不带 `WWW-Authenticate: Basic`） | exit 17，`Authentication is required for 127.0.0.1.` 4 行 | 逐字相同（本来就对） |
+
+实现（4 处）：
+
+1. `src/celerite/compact_index/cache.cr` 的 `HttpFetcher#perform`：403 改为
+   `AuthenticationForbiddenError.new(<@uri.to_s，缺尾斜杠则补>)`，401 分支保持不变；
+   注释记下两条抛出点的差异与 legacy 回退。
+2. `src/celerite/downloader.cr`：403 改为 `AuthenticationForbiddenError.new(uri.host || uri.to_s)`，
+   指向 `fetcher/downloader.rb` L72-73。
+3. `src/celerite/errors.cr`：`AuthenticationForbiddenError` 的类注释改为「参考有两个抛出点、
+   subject 不同」，并订正原先「403 报成 AuthenticationRequired」的错误断言。
+4. `src/celerite/resolution.cr` 的 `index_specs_from_remote`：`rescue AuthenticationForbiddenError`
+   时先按 legacy 回退那样打印 `Fetching source index from <remote>` 与一个空行，再抛出
+   （对齐参考「紧凑索引 403 → legacy 索引自己打抓取行后报错」的顺序）。
+
+证据：
+
+- A/B（全部 403）：`ERR_SAME=True OUT_SAME=True`，两侧 exit 17，stdout/stderr 逐字相同。
+- 新增 `spec/m7_forbidden_spec.cr` 2 例（403 → 完整 URI 文案 + 两行 stdout；401 → 仍为
+  `Authentication is required`），**2 examples, 0 failures**。
+- 负对照：把 403 分支改回 `AuthenticationRequiredError` → 第 1 例失败
+  （`Expected: "Access token could not be authenticated for http://127.0.0.1:58690/.\n"` /
+  `got: "Authentication is required for 127.0.0.1.\n"`），还原后 2/0，源码中
+  `negative-control` 计数为 0。
+
+已声明差异与未验证：
+
+- **gem 下载 403**（索引可读、只有 `/gems/<file>.gem` 返回 403）参考走 RubyGems 自己的下载器：
+  三次 `Retrying download gem from <source> due to error (n/4): Gem::RemoteFetcher::FetchError
+  bad response Forbidden 403 (<url>)`，然后 `Bundler::HTTPError: Could not download gem from
+  <source> due to underlying error <bad response Forbidden 403 (<url>)>` 加 Ruby 回溯、exit 5。
+  我方在该路径上（`Downloader`）报 `Access token could not be authenticated for 127.0.0.1.`、
+  exit 17，**未复刻** RubyGems 的重试与回溯，属已声明差异。
+- legacy 索引（`specs.4.8.gz`）本身未实现，故 403 时只复刻「抓取行 + 完整 URI 文案」，
+  真正的 legacy 解析未验证。
+- 403 与凭据（userinfo / `BUNDLE_<host>` 环境变量）组合时的分支未测。
+
+- 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen` 0、全量 `crystal spec` **613 examples, 0 failures, 4 errors**（4 = 既有 `spec/git_source_spec.cr` 的 msys Low-IL）、`git diff --check` 0。

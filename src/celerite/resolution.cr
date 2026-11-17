@@ -685,9 +685,9 @@ module Celerite
 
     # Build candidate specs for one gem from the compact index.
     private def index_specs_from_remote(name : String) : Array(Resolver::IndexSpec)
+      remote = remote_for(name)
       cache = @index_specs_cache ||= {} of String => Array(Resolver::IndexSpec)
       cache[name] ||= begin
-        remote = remote_for(name)
         client = remote == primary_remote ? compact_index_client : compact_index_client_for(remote)
         entries = client.info(name)
         log_fetch_for(remote)
@@ -715,6 +715,14 @@ module Celerite
           Resolver::IndexSpec.new(name, version, platform, deps, ruby_req, rubygems_req, checksum)
         end
       rescue ex : CompactIndex::Error
+        raise ex
+      rescue ex : Celerite::AuthenticationForbiddenError
+        # The compact index answered 403. `compact_index_request` swallows that
+        # and the reference falls back to the legacy index, which logs its own
+        # fetch line before the 403 is reported with the source URI
+        # (fetcher/compact_index.rb L9-23, fetcher/index.rb L14-19).
+        @progress.puts "Fetching source index from #{remote}"
+        @progress.puts ""
         raise ex
       rescue ex : Celerite::VersionError
         raise LockfileError.new("bad compact index data for #{name}: #{ex.message}")

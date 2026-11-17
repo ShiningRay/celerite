@@ -94,7 +94,7 @@ module Celerite
   end
 
   # Bundler::Fetcher::AuthenticationRequiredError (fetcher.rb:45-52, status 17):
-  # the source answered 401/403 and no usable credentials were supplied. The
+  # the source answered 401 and no usable credentials were supplied. The
   # message names the host (not the full URL) and the BUNDLE_* key the user
   # would have to set, matching the reference's `Settings.key_for(host)`.
   class AuthenticationRequiredError < Error
@@ -135,10 +135,11 @@ module Celerite
     end
   end
 
-  # Bundler::Fetcher::AuthenticationForbiddenError (fetcher.rb:60-64, status
-  # 17). Kept for completeness; the measured 4.0.24 oracle reports a plain 403
-  # without `WWW-Authenticate` as AuthenticationRequiredError, so call sites map
-  # 403 there and this class is not raised yet.
+  # Bundler::Fetcher::AuthenticationForbiddenError (fetcher.rb:67-72, status
+  # 17): the source answered 403. The reference raises it from two places with
+  # different subjects — `fetcher/index.rb:18` passes `remote_uri` (the full
+  # source URI, trailing slash included) while `fetcher/downloader.rb:73`
+  # passes `uri.host` — so call sites format accordingly.
   class AuthenticationForbiddenError < Error
     getter host : String
 
