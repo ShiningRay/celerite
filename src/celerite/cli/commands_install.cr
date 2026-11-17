@@ -173,6 +173,14 @@ module Celerite
       end
       definition = Definition.build
       config = definition.config
+      # `install --standalone` without an explicit path (and without `--local`)
+      # installs into `./bundle` for this run only — the reference uses
+      # `set_command_option :path, "bundle"` (cli/install.rb L112-114), which
+      # never reaches `.bundle/config`.
+      standalone_requested = rest.any? { |a| a == "--standalone" || a.starts_with?("--standalone=") }
+      if standalone_requested && config["path"].to_s.empty? && !rest.includes?("--local")
+        config.set_temporary("path", "bundle")
+      end
       if config.frozen? && !definition.lockfile_exists?
         raise ProductionError.new("Frozen mode is set, but there's no lockfile")
       end
@@ -484,7 +492,19 @@ module Celerite
         # works without RubyGems/Bundler activation.
         standalone = rest.any? { |a| a == "--standalone" || a.starts_with?("--standalone=") }
         if standalone
-          render_standalone_setup(install_path, abi, specs)
+          render_standalone_setup(install_path,
+            standalone_specs(specs, resolution.evaluation.dependencies, standalone_groups(rest)))
+          # `definition.specs_for(groups)` re-materializes the selected groups,
+          # so the reference fetches the index once more before its summary
+          # (installer/standalone.rb L10-12).
+          if !standalone_groups(rest).empty?
+            remote = resolution.primary_remote
+            if remote.starts_with?("file:")
+              stdout.puts "Fetching source index from #{remote}"
+            else
+              stdout.puts "Fetching gem metadata from #{remote}."
+            end
+          end
         end
 
         if summary
@@ -567,10 +587,55 @@ module Celerite
 
     # Writes the standalone `bundler/setup.rb` body (pinned
     # `Bundler::Standalone#generate`) next to the installed tree.
-    private def self.render_standalone_setup(install_path : String, abi : String, specs : Array(Resolution::ResolvedSpec)) : Nil
+    # `--standalone[=GROUP...]` is a Thor `:array` option (cli/install.rb L105):
+    # a bare flag means every group, otherwise the value carries the group list.
+    private def self.standalone_groups(rest : Array(String)) : Array(String)
+      groups = [] of String
+      index = 0
+      while index < rest.size
+        arg = rest[index]
+        if arg == "--standalone"
+          following = rest[index + 1]?
+          while following && !following.starts_with?("-")
+            groups.concat(following.split(',').map(&.strip).reject(&.empty?))
+            index += 1
+            following = rest[index + 1]?
+          end
+        elsif value = arg.lchop?("--standalone=")
+          groups.concat(value.split(',').map(&.strip).reject(&.empty?))
+        end
+        index += 1
+      end
+      groups.uniq
+    end
+
+    # `Bundler::Standalone#generate` renders `definition.specs_for(groups)`
+    # (installer/standalone.rb L10-12): without groups that is every spec but
+    # the running bundler, otherwise the selected groups plus their transitive
+    # dependencies.
+    private def self.standalone_specs(specs : Array(Resolution::ResolvedSpec),
+                                      deps : Array(Bridge::EvaluatedDependency),
+                                      groups : Array(String)) : Array(Resolution::ResolvedSpec)
+      return specs.reject { |spec| spec.name == "bundler" } if groups.empty?
+
+      by_name = {} of String => Resolution::ResolvedSpec
+      specs.each { |spec| by_name[spec.name] = spec unless by_name.has_key?(spec.name) }
+      selected = Set(String).new
+      queue = deps.select { |dep| !(dep.groups & groups).empty? }.map(&.name)
+      until queue.empty?
+        name = queue.pop
+        next if selected.includes?(name)
+        next unless spec = by_name[name]?
+        selected << name
+        spec.dependencies.each { |dep| queue << dep.name }
+      end
+      specs.select { |spec| selected.includes?(spec.name) }
+    end
+
+    private def self.render_standalone_setup(install_path : String, specs : Array(Resolution::ResolvedSpec)) : Nil
       target = File.join(install_path, "bundler")
       Dir.mkdir_p(target)
-      File.write(File.join(target, "setup.rb"), String.build do |io|
+      body = String.build do |io|
         io.puts "require 'rbconfig'"
         io.puts "module Kernel"
         io.puts "  remove_method(:gem) if private_method_defined?(:gem)"
@@ -611,7 +676,13 @@ module Celerite
           next unless spec.source_type == "GEM"
           io << "$:.unshift File.expand_path(\"\#{__dir__}/../\#{RUBY_ENGINE}/\#{Gem.ruby_api_version}/gems/#{spec.full_name}/lib\")\n"
         end
-      end)
+      end
+      # The reference opens the file in text mode (`File.open(..., "w")`), so
+      # Windows gets CRLF line endings.
+      {% if flag?(:windows) %}
+        body = body.gsub("\n", "\r\n")
+      {% end %}
+      File.write(File.join(target, "setup.rb"), body)
     end
 
     # ------------------------------------------------------------------

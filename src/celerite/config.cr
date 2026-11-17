@@ -331,6 +331,14 @@ module Celerite
         @env.has_key?(key) || @global_config.has_key?(key)
     end
 
+    # `Bundler.settings.set_command_option` (settings.rb L187-194): the value
+    # applies to the current command only and is never persisted. `install
+    # --standalone` relies on it to point `path` at `./bundle` for the run
+    # (cli/install.rb L112-114).
+    def set_temporary(name : String, value : Value) : Nil
+      @temporary[Config.key_for(name)] = value
+    end
+
     def set_local(name : String, value : String?) : Nil
       set_in(@local_config_file, @local_config, name, value)
     end

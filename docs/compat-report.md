@@ -3279,3 +3279,61 @@ L152/L908）。
 - 只在两条本机 profile（4.0.24、2.7.2）上比对，未覆盖 4.0.16 等其它版本。
 - 「锁与 Gemfile 一致」的判定只覆盖 `DEPENDENCIES` 与 spec 版本满足性；Bundler 的 `@dependency_changes` 内部状态（如 `Gemfile` 源顺序变化）未逐项比对。
 - `lock --add-platform` 的完整输出仅做了一次人工比对（见证据），未纳入差分装具。
+
+## 2026-11-17（M7(2)：`install --standalone` 的默认 path、组过滤与 CRLF）
+
+参考锚点：`bundler-4.0.24/lib/bundler/cli/install.rb` L108-116（`normalize_settings`：
+`if options["standalone"] && Bundler.settings[:path].nil? && !options["local"]` 时
+`Bundler.settings.set_command_option :path, "bundle"`，`settings.rb` L187-194 保证
+该值只作用于本次命令、不落盘）；`installer.rb`（安装结束后 `Standalone.new(...).generate`）；
+`installer/standalone.rb` L10-20（`@specs = definition.specs_for(groups)`，groups 为空时
+取全部且跳过 `bundler` 自身；`bundler_path = Bundler.root.join(settings[:path].to_s, "bundler")`；
+`File.open(..., "w")` 在 Windows 是文本模式写，即 CRLF；`paths` 对每个 spec 的
+`require_paths` 做相对化并替换 `#{RUBY_ENGINE}/#{Gem.ruby_api_version}` 与
+`extensions/<platform>/#{Gem.extension_api_version}`）。
+
+修复前实测（A/B，两侧独立 `HOME`/`GEM_HOME`/`GEM_PATH`/`BUNDLE_PATH`/`TEMP`；
+Gemfile = `source "file:///<repo>/fixtures/gem-index/"` + `gem "json_pure", "2.6.0"` +
+`group :development { gem "thor", "1.3.2" }`）：
+
+| 场景 | 参考 | 修复前我方 |
+| --- | --- | --- |
+| `install --standalone`（无 `BUNDLE_PATH`） | exit 0，末行 `Bundled gems are installed into `./bundle``，`./bundle/bundler/setup.rb` 1126 字节、CR=38、两条 unshift | exit 0，末行是 `Use `bundle info [gemname]` …`，**没有 setup.rb**，gem 装进 `Gem.dir` |
+| `BUNDLE_PATH=<abs>` + `install --standalone=development` | setup.rb 1016 字节、CR=37、**只含 thor**；`Installing` 之后多一行 `Fetching source index from …` | setup.rb 1088 字节、**LF**、含 json_pure + thor |
+| `install --standalone --local`（无 path） | exit 7，报本地缺失 | exit 7，同形（此时参考不设 path） |
+
+实现（3 处）：
+
+1. `src/celerite/config.cr`：新增 `set_temporary(name, value)`（写入 `@temporary`，与
+   `Bundler.settings.set_command_option` 同义，只作用于本次命令）。
+2. `src/celerite/cli/commands_install.cr` 的 `run_install`：`--standalone` 且 `path` 为空且
+   未给 `--local` 时 `config.set_temporary("path", "bundle")`，因此本跑安装/写入都落在
+   `./bundle`，且不会写进 `.bundle/config`。
+3. 同文件的 standalone 渲染：`standalone_groups(rest)` 解析 `--standalone[=]groups`
+   （逗号与后续裸 token 两种写法）；`standalone_specs(specs, deps, groups)` 在 groups 为空时取
+   全部并剔除 `bundler`，否则以 `dep.groups & groups` 非空的依赖为根、按
+   `ResolvedSpec#dependencies` 做闭包；`render_standalone_setup` 在 Windows 把正文
+   `gsub("\n", "\r\n")`（对齐文本模式写）；groups 非空时按 `installer/standalone.rb` L10-12
+   追加一行 `Fetching source index from …`（`file:` 源）或 `Fetching gem metadata from …`。
+
+证据：
+
+- A/B 三场景：A 两侧输出与 `setup.rb` **逐字节相同**（1126 字节、CR=38、两条 unshift 顺序一致）；
+  B 的 `setup.rb` 与参考**完全相同**（1016 字节、CR=37、只含 `gems/thor-1.3.2/lib`），stdout
+  仅剩参考并行下载造成的 `Fetching json_pure`/`Fetching thor` 行序差异；C 两侧 exit 7 且 stderr 相同。
+- 新增 `spec/m7_standalone_spec.cr` 3 例（`./bundle` 默认目标 + CRLF、`--standalone=development`
+  只含 thor 且抓取行恰好两次、`--standalone --local` 不设 path 且不建 `./bundle`），
+  **3 examples, 0 failures**；Crystal 陷阱：`String#count("…")` 按字符集合计数，
+  `count("\r\n")` 会把 CR/LF 都算上（76 vs 38），须用 `scan(/\n/).size` 与 `scan(/\r\n/).size`。
+- 负对照两次：①`standalone_specs` 忽略 groups → 第 2 例失败（`body.should_not contain("json_pure")`
+  得 1088 字节含 json_pure 的正文）；②跳过 `set_temporary("path", "bundle")` → 第 1 例失败
+  （末行不是 `Bundled gems are installed into `./bundle``）。两次均复原，源码中 `negative-control`
+  计数为 0。
+
+已声明差异与未验证：
+
+- `install --standalone` 的输出含并行下载行序（`Fetching json_pure` / `Fetching thor`），装具的
+  全量 stdout 比对会因此不稳，故本轮**不做**该命令的差分夹具，只以 A/B 探针取证；
+- 2.7.2 profile 的 standalone 未测（其 `installer/standalone.rb` 形态未逐一核对）；
+- `setup.rb` 里 `extensions/<platform>/…` 的替换依赖真实扩展包，本机只有纯 Ruby gem，未覆盖；
+- `--standalone` 与 `--deployment`/`--frozen` 同时给出时的组合语义未测。
