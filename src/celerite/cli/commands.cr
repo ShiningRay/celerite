@@ -29,6 +29,12 @@ module Celerite
       # from the raw invocation.
       verbose_requested = args.includes?("--verbose")
       cli_retry = extract_retry_switch(args)
+      # Thor parses the class option `--retry` before dispatch, so a
+      # non-numeric value fails before any command output.
+      if message = numeric_switch_error(args, ["--retry", "-r"])
+        stderr.puts message
+        return 15
+      end
       args = strip_global_flags(args)
 
       if args.empty?
@@ -51,7 +57,7 @@ module Celerite
       when "version", "--version", "-v"
         version(command, stdout, stderr, rest)
       when "platform"
-        platform(stdout, rest)
+        platform(stdout, stderr, rest)
       when "check"
         check(stdout, stderr, rest)
       when "list"
@@ -428,6 +434,74 @@ module Celerite
       allowed_flags.includes?("--" + name[5..])
     end
 
+    # Thor rejects unexpected positional arguments for commands declared
+    # without an argument list (`Thor::UnknownArgumentError`, exit 15). The
+    # usage line mirrors the reference banners: commands declared with
+    # `[OPTIONS]` keep the suffix, others do not (`cli.rb` desc strings).
+    NO_ARG_USAGE = {
+      "check"    => "[OPTIONS]",
+      "console"  => "[GROUP]",
+      "clean"    => "[OPTIONS]",
+      "install"  => "[OPTIONS]",
+      "cache"    => "[OPTIONS]",
+      "platform" => "[OPTIONS]",
+      "fund"     => "[OPTIONS]",
+      "list"     => "[OPTIONS]",
+      "lock"     => "",
+      "env"      => "",
+      "licenses" => "",
+      "issue"    => "",
+    }
+
+    # Thor `:array` options consume every following non-switch token, so those
+    # values must not be reported as stray positional arguments.
+    POSITIONAL_ARRAY_FLAGS = {
+      "list"    => ["--only-group", "--without-group"],
+      "install" => ["--with", "--without", "--standalone"],
+      "lock"    => ["--update", "--add-platform", "--remove-platform"],
+    }
+
+    # Thor rejects extra positional arguments before the command runs; `console`
+    # takes one optional GROUP (`bundle console [GROUP]`), everything else none.
+    private def self.reject_positional_arguments(stderr : IO, command : String, rest : Array(String),
+                                                 allowed_flags : Array(String),
+                                                 allowed_values : Array(String),
+                                                 max_positionals : Int32 = 0) : Int32?
+      suffix = NO_ARG_USAGE[command]?
+      return nil if suffix.nil?
+      value_flags = allowed_values + POSITIONAL_VALUE_FLAGS.fetch(command, [] of String)
+      array_flags = POSITIONAL_ARRAY_FLAGS.fetch(command, [] of String)
+      arguments = subcommand_arguments(rest, allowed_flags, value_flags, array_flags)
+      return nil if arguments.size <= max_positionals
+      stderr.puts "ERROR: \"bundle #{command}\" was called with arguments #{arguments.inspect}"
+      usage = suffix.empty? ? "bundle #{command}" : "bundle #{command} #{suffix}"
+      stderr.puts "Usage: \"#{usage}\""
+      15
+    end
+
+    # Thor parses `:numeric` options before running the command and rejects
+    # non-numeric values with `Expected numeric value for '--jobs'; got "x"`
+    # (`Thor::Option#parse`, exit 15).
+    private def self.numeric_switch_error(rest : Array(String), flags : Array(String)) : String?
+      rest.each_with_index do |token, index|
+        flags.each do |flag|
+          value : String? = nil
+          switch = flag
+          if token == flag
+            value = rest[index + 1]?
+          elsif flag.starts_with?("--") && token.starts_with?(flag + "=")
+            value = token.split("=", 2)[1]
+          end
+          next if value.nil?
+          next if value.empty?
+          next if value.matches?(/\A[-+]?\d+\z/)
+          canonical = flag == "-j" ? "--jobs" : (flag == "-r" ? "--retry" : flag)
+          return "Expected numeric value for '#{canonical}'; got #{value.inspect}"
+        end
+      end
+      nil
+    end
+
     private def self.reject_unknown_switches(stderr : IO, rest : Array(String), allowed_flags : Array(String),
                                              allowed_values : Array(String),
                                              dictionary : Array(String)? = nil) : Int32?
@@ -447,16 +521,26 @@ module Celerite
     # Option surfaces of commands that used to accept anything, transcribed
     # from `Bundler::CLI.commands[name].options` (Thor declarations in
     # `bundler-4.0.24/lib/bundler/cli.rb`).
-    BARE_SWITCH_FLAGS     = SWITCH_FLAGS_CLASS
-    BARE_SWITCH_VALUES    = SWITCH_VALUES_CLASS
-    INIT_SWITCH_FLAGS     = BARE_SWITCH_FLAGS
-    INIT_SWITCH_VALUES    = BARE_SWITCH_VALUES + ["--gemfile", "--gemspec"]
-    FUND_SWITCH_FLAGS     = BARE_SWITCH_FLAGS
-    FUND_SWITCH_VALUES    = BARE_SWITCH_VALUES + ["--group", "-g"]
-    OPEN_SWITCH_FLAGS     = BARE_SWITCH_FLAGS
-    OPEN_SWITCH_VALUES    = BARE_SWITCH_VALUES + ["--path"]
-    REMOVE_SWITCH_FLAGS   = BARE_SWITCH_FLAGS + ["--install"]
-    REMOVE_SWITCH_VALUES  = BARE_SWITCH_VALUES
+    BARE_SWITCH_FLAGS    = SWITCH_FLAGS_CLASS
+    BARE_SWITCH_VALUES   = SWITCH_VALUES_CLASS
+    INIT_SWITCH_FLAGS    = BARE_SWITCH_FLAGS
+    INIT_SWITCH_VALUES   = BARE_SWITCH_VALUES + ["--gemfile", "--gemspec"]
+    FUND_SWITCH_FLAGS    = BARE_SWITCH_FLAGS
+    FUND_SWITCH_VALUES   = BARE_SWITCH_VALUES + ["--group", "-g"]
+    OPEN_SWITCH_FLAGS    = BARE_SWITCH_FLAGS
+    OPEN_SWITCH_VALUES   = BARE_SWITCH_VALUES + ["--path"]
+    REMOVE_SWITCH_FLAGS  = BARE_SWITCH_FLAGS + ["--install"]
+    REMOVE_SWITCH_VALUES = BARE_SWITCH_VALUES
+
+    # Options that take a value but live in the matching `*_SWITCH_FLAGS` array
+    # (the command code reads those flags directly). Positional-argument
+    # detection must not mistake their values for arguments.
+    POSITIONAL_VALUE_FLAGS = {
+      "install" => ["--binstubs", "--path", "--shebang", "--standalone", "--target-rbconfig", "--trust-policy", "--with", "--without"],
+      "cache"   => ["--path"],
+      "lock"    => ["--update"],
+    }
+
     OUTDATED_SWITCH_FLAGS = BARE_SWITCH_FLAGS + [
       "--filter-major", "--filter-minor", "--filter-patch", "--filter-strict",
       "--groups", "--local", "--major", "--minor", "--only-explicit",
@@ -476,14 +560,26 @@ module Celerite
     # options as leftover arguments instead of `Unknown switches` (measured on
     # 4.0.24: `bundle doctor diagnose --bogus`).
     private def self.subcommand_arguments(rest : Array(String), allowed_flags : Array(String),
-                                          allowed_values : Array(String)) : Array(String)
+                                          allowed_values : Array(String),
+                                          array_flags : Array(String) = [] of String) : Array(String)
       arguments = [] of String
       index = 0
       while index < rest.size
         arg = rest[index]
         name = arg.split("=", 2)[0]
+        if array_flags.includes?(name) && !arg.includes?("=")
+          # Thor `:array` options also swallow space separated values
+          # (`--only-group development test`).
+          index += 1
+          while index < rest.size && !rest[index].starts_with?("-")
+            index += 1
+          end
+          next
+        end
         if allowed_values.includes?(name)
-          index += 2 unless arg.includes?("=")
+          # `--flag=value` carries its value in the same token; only the separated
+          # form consumes the next token. Advancing nothing here would spin forever.
+          index += arg.includes?("=") ? 1 : 2
           next
         end
         if allowed_flags.includes?(name) || attached_short_value?(arg)
@@ -759,7 +855,16 @@ module Celerite
       Celerite::RubyVersion.new(version, evaluation.ruby_patchlevel, evaluation.ruby_engine, evaluation.ruby_engine_version)
     end
 
-    def self.platform(stdout : IO, rest : Array(String)) : Int32
+    def self.platform(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      # `platform` takes no arguments in the reference, so Thor rejects both
+      # unknown switches and positional tokens before the definition is built.
+      platform_flags = BARE_SWITCH_FLAGS + ["--ruby"]
+      if code = reject_unknown_switches(stderr, rest, platform_flags, BARE_SWITCH_VALUES)
+        return code
+      end
+      if code = reject_positional_arguments(stderr, "platform", rest, platform_flags, BARE_SWITCH_VALUES)
+        return code
+      end
       definition = Definition.build
       parseable = rest.includes?("--ruby")
 
@@ -925,6 +1030,9 @@ module Celerite
     # ------------------------------------------------------------------
     def self.check(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       if code = reject_unknown_switches(stderr, rest, ["--dry-run"], ["--gemfile"])
+        return code
+      end
+      if code = reject_positional_arguments(stderr, "check", rest, ["--dry-run"], ["--gemfile"])
         return code
       end
       # `--gemfile FILE` is command-level in the reference: check really builds
@@ -1122,6 +1230,9 @@ module Celerite
       if code = reject_unknown_switches(stderr, rest, ["--name-only", "--paths"], format_values)
         return code
       end
+      if code = reject_positional_arguments(stderr, "list", rest, ["--name-only", "--paths"], format_values)
+        return code
+      end
       # Reference `cli/list.rb:17`: the two output selectors are exclusive and
       # the check happens before any spec loading.
       if rest.includes?("--name-only") && rest.includes?("--paths")
@@ -1257,9 +1368,21 @@ module Celerite
       # `show` and `info` expose different switches in the reference: show
       # takes --paths only, info takes --path/--version. Unknown switches are
       # rejected before the definition is built, like Thor.
-      allowed_flags = command == "info" ? ["--path", "--version"] : ["--paths"]
+      allowed_flags = command == "info" ? ["--path", "--version"] : ["--paths", "--outdated"]
       if code = reject_unknown_switches(stderr, rest, allowed_flags, [] of String)
         return code
+      end
+      # `cli.rb` L354-357: `show --outdated` is a removed flag with its own
+      # message (InvalidOption, exit 15, wrapped to the terminal width). 2.7.x
+      # only deprecates it: it warns and runs the outdated check instead.
+      if command == "show" && rest.includes?("--outdated")
+        if profile_bundler_version.starts_with?("2.")
+          stderr.puts "[DEPRECATED] the `--outdated` flag to `bundle show` will be removed in favor of `bundle show --verbose`"
+          rest = rest.reject { |arg| arg == "--outdated" }
+        else
+          stderr.puts word_wrap("the `--outdated` flag to `bundle show` has been removed in favor of `bundle show --verbose`", CLI.terminal_width)
+          return 15
+        end
       end
 
       names = rest.reject { |a| a.starts_with?("-") }
@@ -1698,6 +1821,9 @@ module Celerite
     # vars); scope the override to this command and restore afterwards.
     def self.lock(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       if code = reject_unknown_switches(stderr, rest, LOCK_SWITCH_FLAGS, LOCK_SWITCH_VALUES)
+        return code
+      end
+      if code = reject_positional_arguments(stderr, "lock", rest, LOCK_SWITCH_FLAGS, LOCK_SWITCH_VALUES)
         return code
       end
       # `--gemfile` validation lives in `with_gemfile_overrides` so every

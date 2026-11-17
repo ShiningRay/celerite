@@ -31,7 +31,7 @@ describe "M7 platform ruby requirement reporting" do
       }) do
         output = IO::Memory.new
         errors = IO::Memory.new
-        code = Celerite::Commands.platform(output, [] of String)
+        code = Celerite::Commands.platform(output, errors, [] of String)
         out = output.to_s
         err = errors.to_s
 
@@ -54,7 +54,7 @@ describe "M7 platform ruby requirement reporting" do
     }) do
       output = IO::Memory.new
       errors = IO::Memory.new
-      code = Celerite::Commands.platform(output, ["--ruby"])
+      code = Celerite::Commands.platform(output, errors, ["--ruby"])
       output.to_s.should eq("ruby 3.0.0\n")
       errors.to_s.should eq("")
       code.should eq(0)
@@ -71,7 +71,8 @@ describe "M7 platform ruby requirement reporting" do
         "Gemfile" => "source \"https://rubygems.org\"\n\nruby \">= 3.1\"\n\ngem \"json_pure\"\n",
       }) do
         output = IO::Memory.new
-        code = Celerite::Commands.platform(output, [] of String)
+        errors = IO::Memory.new
+        code = Celerite::Commands.platform(output, errors, [] of String)
         out = output.to_s
         code.should eq(0)
         out.should contain("Your Gemfile specifies a Ruby version requirement:")
@@ -79,7 +80,7 @@ describe "M7 platform ruby requirement reporting" do
         out.should_not contain("ruby >= 3.1")
 
         parseable = IO::Memory.new
-        Celerite::Commands.platform(parseable, ["--ruby"]).should eq(0)
+        Celerite::Commands.platform(parseable, errors, ["--ruby"]).should eq(0)
         parseable.to_s.should eq("ruby 3.1\n")
       end
     end

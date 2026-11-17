@@ -31,6 +31,10 @@ module Celerite
       if code = reject_unknown_switches(stderr, rest, UPDATE_SWITCH_FLAGS, UPDATE_SWITCH_VALUES)
         return code
       end
+      if message = numeric_switch_error(rest, ["--jobs", "-j"])
+        stderr.puts message
+        return 15
+      end
       if rest.includes?("--frozen")
         # Thor rejects the flag before any Gemfile validation; the exact
         # message depends on the profile and the command (see frozen helper).
@@ -483,7 +487,7 @@ module Celerite
       # Pruning here used to be hidden by a stale `definition.lockfile!`
       # cache; reading the fresh lockfile made `clean` print nothing.
       null = IO::Memory.new
-      install(null, stderr, rest, summary: false)
+      install(null, stderr, rest, summary: false, cli_arguments: false)
       0
     end
 
@@ -524,6 +528,9 @@ module Celerite
     # ------------------------------------------------------------------
     def self.env(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       if (code = reject_unknown_switches(stderr, rest, BARE_SWITCH_FLAGS, BARE_SWITCH_VALUES))
+        return code
+      end
+      if (code = reject_positional_arguments(stderr, "env", rest, BARE_SWITCH_FLAGS, BARE_SWITCH_VALUES))
         return code
       end
       definition = Definition.build
@@ -878,6 +885,9 @@ module Celerite
       if (code = reject_unknown_switches(stderr, rest, BARE_SWITCH_FLAGS, BARE_SWITCH_VALUES))
         return code
       end
+      if (code = reject_positional_arguments(stderr, "licenses", rest, BARE_SWITCH_FLAGS, BARE_SWITCH_VALUES))
+        return code
+      end
       definition = Definition.build
       Commands.validate_ruby_runtime!(definition)
       bridge = Bridge::Client.new
@@ -909,6 +919,9 @@ module Celerite
 
     def self.fund(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       if (code = reject_unknown_switches(stderr, rest, FUND_SWITCH_FLAGS, FUND_SWITCH_VALUES))
+        return code
+      end
+      if (code = reject_positional_arguments(stderr, "fund", rest, FUND_SWITCH_FLAGS, FUND_SWITCH_VALUES))
         return code
       end
       definition = Definition.build
@@ -1418,7 +1431,9 @@ module Celerite
         stderr.puts "The 'plugin new' command is not implemented yet."
         1
       else
-        stderr.puts "Could not find command \"plugin #{sub}\"."
+        # `plugin` is a Thor subcommand; an unknown subcommand is reported
+        # without the parent command prefix (`cli.rb` subcommand dispatch).
+        stderr.puts "Could not find command \"#{sub}\"."
         15
       end
     end
@@ -2260,6 +2275,14 @@ module Celerite
     end
 
     def self.issue(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      # `issue` takes no arguments: the reference rejects tokens in Thor
+      # (`Usage: "bundle issue"`, no `[OPTIONS]` suffix).
+      if (code = reject_unknown_switches(stderr, rest, BARE_SWITCH_FLAGS, BARE_SWITCH_VALUES))
+        return code
+      end
+      if (code = reject_positional_arguments(stderr, "issue", rest, BARE_SWITCH_FLAGS, BARE_SWITCH_VALUES))
+        return code
+      end
       stdout.puts issue_resources.rstrip
       stdout.puts
 
@@ -2390,6 +2413,10 @@ module Celerite
     # ------------------------------------------------------------------
     def self.console(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       if (code = reject_unknown_switches(stderr, rest, BARE_SWITCH_FLAGS, BARE_SWITCH_VALUES))
+        return code
+      end
+      # `bundle console [GROUP]` takes at most one positional group.
+      if (code = reject_positional_arguments(stderr, "console", rest, BARE_SWITCH_FLAGS, BARE_SWITCH_VALUES, max_positionals: 1))
         return code
       end
       definition = Definition.build

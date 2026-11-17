@@ -3057,3 +3057,57 @@ exec --bogus true                     ref 127   cel 127（参考同样把未知�
 - 2.7.2 下 `--all` 与选择器组合的文案（本轮 2.7.2 只跑了 6 个夹具，未覆盖该组合的负例）。
 - `update --bundler <ver>` 与选择器组合的等价性。
 - 版本回退（`Note: … version regressed …`）分支缺少端到端用例（需要可解析出更低版本的索引）。
+## 2026-11-17（M7(2)：Thor 解析期的参数校验：数值选项、位置参数与 `show --outdated`）
+
+参考实现在 Thor 解析阶段就拒绝若干参数形态；此前这些输入被接受后继续执行（或落到别的错误路径），属于「解析后静默忽略」。本轮把它们前移到 Thor 的时序上。
+
+参考锚点：
+
+- `bundler-4.0.24/lib/bundler/cli.rb:290-300`（`install` 的 `--jobs`/`--retry` 均为 `type: :numeric`）；
+- `thor` 的 `Thor::Option#parse` → `Expected numeric value for '--jobs'; got "bogus"`（`Thor::MalformattedArgumentError`，`exit_status` 15）；
+- 无参命令的 `Usage: "bundle <cmd> [OPTIONS]"`（`lock`/`env`/`licenses`/`issue`/`version` 为 `Usage: "bundle <cmd>"`，不带 `[OPTIONS]`）；
+- `bundler/cli.rb:354-357`：`show --outdated` 为 removed 标志，`raise InvalidOption, "the \`--outdated\` flag to \`bundle show\` has been removed in favor of \`bundle show --verbose\`"`；`bundler-2.7.2` 仅 `[DEPRECATED] … will be removed …` 并继续执行 outdated 检查；
+- `bundler/cli.rb` 的 `plugin` 子命令分发：未知子命令报 `Could not find command "<sub>".`（不带 `plugin ` 前缀）。
+
+修复前（首辅亲测 `.tmp-scratch/p72`，两侧独立 `HOME`/`GEM_HOME`/`BUNDLE_PATH`/`BUNDLE_USER_*`）：
+
+| 命令 | 参考 | 我方（修复前） |
+| --- | --- | --- |
+| `install --jobs bogus` | exit 15，`Expected numeric value for '--jobs'; got "bogus"` | exit 0，照常安装 |
+| `install -j bogus` / `--retry bogus` | 同上（规范化成 `--jobs`/`--retry`） | exit 0 |
+| `clean json_pure` | exit 15，`ERROR: "bundle clean" was called with arguments ["json_pure"]` + `Usage: "bundle clean [OPTIONS]"` | exit 15 但无参数错误（落到 gem 查找） |
+| `check extra` / `install extra` / `cache extra` | 同上（`[OPTIONS]` 形式） | 执行成功或被当作 gem 名 |
+| `lock a b` / `env extra` / `licenses extra` / `issue extra` | 同上，`Usage` **不带** `[OPTIONS]` | 静默忽略 |
+| `show --outdated` | exit 15，removed 文案（80 列折行） | `Unknown switches "--outdated"` |
+| `plugin extra` | `Could not find command "extra".` | `Could not find command "plugin extra".` |
+
+实现：
+
+1. `src/celerite/cli/commands.cr` 新增 `NO_ARG_USAGE`（命令 → usage 后缀；空串表示不带 `[OPTIONS]`）、`reject_positional_arguments(stderr, command, rest, allowed_flags, allowed_values) : Int32?`（用 `subcommand_arguments` 取出位置参数，空则放行，否则打印 Thor 的两行错误并返回 15）。
+2. 同文件新增 `numeric_switch_error(rest, flags) : String?`：识别 `--flag value` 与 `--flag=value`，值必须匹配 `/\A[-+]?\d+\z/`，错误里的开关名规范化（`-j`→`--jobs`、`-r`→`--retry`）。
+3. `dispatch` 在 `strip_global_flags` **之前**做类级 `--retry`/`-r` 数值校验（Thor 解析类选项早于命令分发，因此 `--retry bogus` 对任何命令都先失败）。
+4. 逐个命令接线：`check`/`list`/`lock`/`install`/`cache`/`clean`/`platform`/`fund`/`env`/`licenses`/`issue` 加位置参数拒绝（`install`/`update` 另加 `--jobs`/`-j` 数值校验）；`clean` 的开关表是 `BARE_SWITCH_FLAGS + ["--dry-run"]`（参考 `clean` 只多声明 `--dry-run`）。
+5. `show_info` 的 `show` 开关表加入 `--outdated`，并按 profile 分支：4.x 打印 removed 文案（`word_wrap(..., CLI.terminal_width)`）后返回 15；2.x 打印 `[DEPRECATED] … will be removed …` 后继续（`rest` 中剥离该标志）。
+6. `plugin` 的未知子命令消息去掉父命令前缀。
+7. `platform` 的签名加上 `stderr : IO`（原先只接收 `stdout`），`dispatch` 调用点同步；`spec/m7_platform_spec.cr` 的四处直接调用补齐 `IO::Memory`。
+8. 位置参数判定要与 Thor 的 `:array` 语义一致：`POSITIONAL_ARRAY_FLAGS`（`list` 的 `--only-group`/`--without-group`、`install` 的 `--with`/`--without`/`--standalone`、`lock` 的 `--update`/`--add-platform`/`--remove-platform`）会吞掉后续所有不以 `-` 开头的 token，故 `list --only-group development test` 不算多余位置参数；`console` 允许一个 `[GROUP]`（`max_positionals: 1`，`Usage: "bundle console [GROUP]"`）。
+
+证据：
+
+- A/B 三套探针（`.tmp-scratch/probe-p72*.ps1`，4.0.24，ref/cel 各自独立沙箱，`\r\n` 归一后逐字比较）：套件一 14/14、套件二 15/16、套件三 9/9 全 SAME。套件二唯一的 DIFF 是 `show --verbose`（参考输出 `Fetching remote specs for outdated check...` 与逐 gem 的 `Summary:`/`Homepage:`/`Status:` 块），属已声明的未实现路径，本轮不做。
+- 新 `spec/m7_thor_argument_spec.cr` 6 例（数值 2 例、无参命令位置参数 1 例含 `lock`/`issue` 的 usage 差异、取参命令不受影响 1 例、`show --outdated` 1 例、`plugin extra` 1 例）→ **6 examples, 0 failures**。
+- 负对照 1：`reject_positional_arguments` 首行 `return nil` → 1 failure（`Expected: 15`）；负对照 2：`numeric_switch_error` 首行 `return nil` → 2 failures；两次均恢复后 6/0、`negative-control` 计数 0。
+- 差分夹具 `fixtures/differential/unknown-numeric-jobs/`、`clean-positional-argument/`、`show-outdated-removed/`（后者带 `deferred-2.7.2`：2.7.x 继续走 outdated 检查，其 `Fetching remote specs for outdated check...` 块即未实现的 `show --verbose` 路径）→ 4.0.24 **9 passed, 0 failed**（含 `install-fresh`/`install-path-conflict`/`clean-no-lockfile`/`check-no-lockfile-missing`/`show-group-ignored`/`fund-no-lockfile` 回归）；2.7.2 **3 passed, 0 failed, 1 skipped**。
+- 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen` 0、`git diff --check` 0；全量 `crystal spec` **594 examples, 0 failures, 4 errors**（4 = 既有 `spec/git_source_spec.cr` 的 msys Low-IL 环境错误）。
+
+已声明差异：
+
+- `show --verbose` / `show --outdated`（2.x）的 outdated 检查输出（远程 specs 摘要、逐 gem `Summary`/`Homepage`/`Status` 块）未实现，仍是 `show` 的三行简表。
+- `plugin --bogus` 这类「未知开关当子命令」的 Thor 内部改写（参考报 `Could not find command "__bogus".`）未复刻；我方按原样 `--bogus` 处理。
+- 位置参数拒绝只覆盖 M7 已实现的命令；未实现的命令仍走各自的「未实现」路径。
+
+未验证：
+
+- `--jobs`/`--retry` 的极值（负数、超大整数）在两侧的后续行为（本轮只比较到 Thor 解析错误这一层）。
+- 通过 `THOR_COLUMNS` 改变终端宽度时 `--outdated` 文案的折行位置。
+- `install extra` 在「Gemfile 里恰好有名为 extra 的 gem」时的参考行为（本轮只覆盖无该 gem 的情形）。

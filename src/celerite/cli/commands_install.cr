@@ -120,13 +120,16 @@ module Celerite
 
     # `--gemfile`/`--lockfile` really take effect for install in the reference;
     # scope the ENV override to this command and restore on every exit path.
-    def self.install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false, no_install : Bool = false) : Int32
+    def self.install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false, no_install : Bool = false, cli_arguments : Bool = true) : Int32
+      # Thor parses `--jobs`/`--retry` as numeric values and rejects positional
+      # arguments before `install` runs; internal callers (add/remove/cache/clean)
+      # pass gem names through this entry, so they opt out of that check.
       with_gemfile_overrides(rest) do
-        run_install(stdout, stderr, rest, summary, show_resolving, no_reuse, no_install)
+        run_install(stdout, stderr, rest, summary, show_resolving, no_reuse, no_install, cli_arguments)
       end
     end
 
-    private def self.run_install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false, no_install : Bool = false) : Int32
+    private def self.run_install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false, no_install : Bool = false, cli_arguments : Bool = true) : Int32
       if rest.includes?("--frozen")
         # Thor rejects the flag before any Gemfile validation; the exact
         # message depends on the profile and the command (see frozen helper).
@@ -156,6 +159,17 @@ module Celerite
       end
       if code = reject_unknown_switches(stderr, rest, INSTALL_SWITCH_FLAGS, INSTALL_SWITCH_VALUES, INSTALL_SUGGEST_DICTIONARY)
         return code
+      end
+      # Thor parses `--jobs`/`--retry` as numeric and rejects positional arguments
+      # before `install` runs; internal callers pass gem names, so they opt out.
+      if cli_arguments
+        if message = numeric_switch_error(rest, ["--jobs", "-j"])
+          stderr.puts message
+          return 15
+        end
+        if code = reject_positional_arguments(stderr, "install", rest, INSTALL_SWITCH_FLAGS, INSTALL_SWITCH_VALUES)
+          return code
+        end
       end
       definition = Definition.build
       config = definition.config
@@ -642,6 +656,9 @@ module Celerite
       if code = reject_unknown_switches(stderr, rest, CACHE_SWITCH_FLAGS, CACHE_SWITCH_VALUES, CACHE_SUGGEST_DICTIONARY)
         return code
       end
+      if code = reject_positional_arguments(stderr, "cache", rest, CACHE_SWITCH_FLAGS, CACHE_SWITCH_VALUES)
+        return code
+      end
 
       # `--path` is declared by Thor but rejected before the install in 4.x;
       # 2.7.x only deprecates it and remembers it as the install path
@@ -672,7 +689,7 @@ module Celerite
 
       # `cache` always runs the install pipeline (reference `CLI::Cache#run` →
       # `CLI::Install`); `--no-install` only suppresses unpacking the gems.
-      code = install(stdout, stderr, install_args_from_cache(rest), no_install: rest.includes?("--no-install"))
+      code = install(stdout, stderr, install_args_from_cache(rest), no_install: rest.includes?("--no-install"), cli_arguments: false)
       return code if code != 0
 
       Commands.validate_ruby_runtime!(definition)
@@ -726,6 +743,16 @@ module Celerite
     # clean
     # ------------------------------------------------------------------
     def self.clean(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      # `clean` takes no arguments and declares only `--dry-run` on top of the
+      # class options (cli.rb), so Thor rejects other switches and positional
+      # tokens before `Bundler.load.clean` runs.
+      clean_flags = BARE_SWITCH_FLAGS + ["--dry-run", "--force"]
+      if code = reject_unknown_switches(stderr, rest, clean_flags, BARE_SWITCH_VALUES)
+        return code
+      end
+      if code = reject_positional_arguments(stderr, "clean", rest, clean_flags, BARE_SWITCH_VALUES)
+        return code
+      end
       dry_run = rest.includes?("--dry-run")
       definition = Definition.build
       bridge = Bridge::Client.new
