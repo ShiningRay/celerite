@@ -92,6 +92,31 @@ module Celerite
       File.file?(@lockfile_path)
     end
 
+    # True when `DEPENDENCIES` already matches the Gemfile declarations *and*
+    # every dependency has a locked spec that satisfies it, i.e. `bundle lock`
+    # has nothing to unlock. The reference resolves nothing in that case, so
+    # plain `lock` prints only its "Writing lockfile" line and `lock --print`
+    # prints only the lockfile (measured on 4.0.24 and 2.7.2). A lockfile whose
+    # `specs:` list is empty (or misses a dependency) still triggers a full
+    # resolution, as `spec/m7_lockfile_regen_spec.cr` pins.
+    def lockfile_matches_dependencies?(deps : Array(Bridge::EvaluatedDependency)) : Bool
+      return false unless lockfile_exists?
+      added, deleted, changed = dependency_diff(deps)
+      return false unless added.empty? && deleted.empty? && !changed
+
+      data = lockfile!
+      specs = data.sources.flat_map(&.specs)
+      deps.all? do |dep|
+        specs.any? do |spec|
+          next false unless spec.name == dep.name
+          requirement = Gem::Requirement.new(dep.requirements.map { |value| value.as(String) })
+          requirement.satisfied_by?(Gem::Version.new(spec.version))
+        end
+      end
+    rescue
+      false
+    end
+
     # Port of `Bundler::Definition#validate_platforms!` (definition.rb:524-530),
     # part of `validate_runtime!`: refuse to continue when the lockfile does
     # not list the local platform (and does not fall back to the `ruby`

@@ -636,6 +636,13 @@ module Celerite
           return RemovedFlag.new("--binstubs", "binstubs", "true",
             "The --binstubs option has been removed in favor of `bundle binstubs --all`")
         end
+      when "check"
+        # `check` carries the same remembered `--path` as `install`: 4.x rejects
+        # it, 2.7.x deprecates it and keeps using the value.
+        if flags.includes?("--path")
+          value = flag_value_ornext(rest, "--path") || "path"
+          return RemovedFlag.new("--path", "path", "'#{value}'")
+        end
       when "cache"
         return RemovedFlag.new("--all", "cache_all", "true") if flags.includes?("--all")
         return RemovedFlag.new("--no-all", "cache_all", "false") if flags.includes?("--no-all")
@@ -697,6 +704,15 @@ module Celerite
     # 4.x preserves the style. Mirror that per profile.
     def self.preserve_lockfile_crlf? : Bool
       !(ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")
+    end
+
+    # The reference re-serializes a lockfile with its own writer whenever it
+    # prints or rewrites one, so the parsed indentation of `BUNDLED WITH` and
+    # `RUBY VERSION` values never survives: 4.x emits two spaces, 2.x three
+    # (measured with the same three-space fixture on both profiles).
+    private def self.with_profile_indent(text : String) : String
+      indent = (ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.") ? "   " : "  "
+      text.gsub(/(BUNDLED WITH\n|RUBY VERSION\n)[ \t]*/) { "#{$1}#{indent}" }
     end
 
     # `--gemfile`/`--lockfile` are command-level in the reference: the flag is
@@ -1032,12 +1048,39 @@ module Celerite
     # ------------------------------------------------------------------
     # check
     # ------------------------------------------------------------------
+    # `check` declares only `dry-run` and `gemfile` besides the Thor class
+    # options (`bundler/cli.rb:305-312`). `--path` is still a `method_option`
+    # (Thor therefore does not call it unknown) but 4.x turns it into the
+    # remembered-flag error and 2.7.x only deprecates it -- and persists it, so
+    # the check keeps using that path (measured on both profiles).
+    CHECK_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--dry-run", "--path"]
+    CHECK_SWITCH_VALUES = ["--retry", "-r", "--gemfile"]
+    # `check` reaches the remembered-flag path only for `--path`; the other
+    # install flags are plain Thor errors here (`check --no-prune` is unknown and
+    # suggests `--no-color`, so they are absent from the Thor dictionary).
+    CHECK_REMOVED_FLAGS = ["--path"]
+    # Thor's suggestion dictionary is the declared switch list, including the
+    # removed ones (`check --no-prune` suggests `--no-color`).
+    CHECK_SUGGEST_DICTIONARY = CHECK_SWITCH_FLAGS + CHECK_SWITCH_VALUES + CHECK_REMOVED_FLAGS
+
     def self.check(stdout : IO, stderr : IO, rest : Array(String)) : Int32
-      if code = reject_unknown_switches(stderr, rest, ["--dry-run"], ["--gemfile"])
+      if code = reject_unknown_switches(stderr, rest, CHECK_SWITCH_FLAGS, CHECK_SWITCH_VALUES, CHECK_SUGGEST_DICTIONARY)
         return code
       end
-      if code = reject_positional_arguments(stderr, "check", rest, ["--dry-run"], ["--gemfile"])
+      if code = reject_positional_arguments(stderr, "check", rest, CHECK_SWITCH_FLAGS, CHECK_SWITCH_VALUES + ["--path"])
         return code
+      end
+      if flag = removed_flag(rest, "check")
+        if (ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")
+          stderr.puts removed_flag_deprecation(flag)
+          if flag.flag == "--path"
+            value = flag.value.strip('\'')
+            Definition.build.config.set_local("path", value) unless value.empty?
+          end
+        else
+          stderr.puts word_wrap(removed_flag_message(flag), CLI.terminal_width)
+          return 15
+        end
       end
       # `--gemfile FILE` is command-level in the reference: check really builds
       # its definition from that file (`with_gemfile_overrides` also rejects a
@@ -1659,8 +1702,20 @@ module Celerite
     # `CELERITE_REFERENCE_BUNDLER_LIB`).
     private def self.bundler_gem_dir : String?
       reference_lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]?
-      return nil if reference_lib.nil? || reference_lib.empty?
-      dir = File.dirname(reference_lib)
+      if reference_lib && !reference_lib.empty?
+        dir = File.dirname(reference_lib)
+        return dir if (File.directory?(dir) rescue false)
+      end
+      # Outside the harness the running Bundler is the gem the bridge reports:
+      # `find_bundler_lib` already walks the RubyGems paths (`Gem.default_path`,
+      # `Gem.dir`, `GEM_PATH`, user dir) and prefers the profile version, which
+      # is how the reference finds its own install directory even when GEM_HOME
+      # is isolated (`shared_helpers.rb:362-378` expands its own `lib`).
+      env = (Bridge::Client.new.ruby_environment rescue nil)
+      return nil unless env
+      bundler_lib = find_bundler_lib(env, profile_bundler_version)
+      return nil if bundler_lib.empty?
+      dir = File.dirname(bundler_lib)
       (File.directory?(dir) rescue false) ? dir : nil
     end
 
@@ -1996,8 +2051,28 @@ module Celerite
 
       definition = Definition.build
       unlock : Bool | Array(String) = update_names.empty? ? update : update_names
+      add_checksums = rest.includes?("--add-checksums")
+      normalize_platforms = rest.includes?("--normalize-platforms")
 
       resolution = Resolution.new(definition, unlock)
+      # Nothing to unlock and `DEPENDENCIES` already matches the Gemfile: the
+      # reference resolves nothing, so plain `lock` prints only "Writing
+      # lockfile to ..." and `lock --print` prints only the lock body (measured
+      # on 4.0.24 and 2.7.2 -- no "Fetching source index", no "Resolving
+      # dependencies..."). The forcing flags resolve too.
+      if !update && update_names.empty? && !add_checksums && !normalize_platforms &&
+         !rest.includes?("--add-platform") && !rest.includes?("--remove-platform") &&
+         definition.lockfile_exists? && definition.lockfile_matches_dependencies?(resolution.evaluation.dependencies)
+        resolution.close
+        text = with_profile_indent(definition.lockfile!.to_lock)
+        if print_mode
+          stdout.print text
+        else
+          stdout.puts "Writing lockfile to #{File.expand_path(definition.lockfile_path).gsub(/\\/, "/")}"
+          Lockfile.write(definition.lockfile_path, text, preserve_crlf: preserve_lockfile_crlf?)
+        end
+        return 0
+      end
       # The Bundler dependency API warning for scoped Rubygems sources
       # without one is printed by the reference before resolution.
       scoped_remotes = [] of String
@@ -2027,9 +2102,14 @@ module Celerite
       resolution.normalize_platforms = rest.includes?("--normalize-platforms")
       resolution.added_platforms = add_platforms
       resolution.removed_platforms = remove_platforms
-      # Progress goes to stdout in write mode, stderr in --print mode
-      # (pinned observation from the reference oracle).
+      # Progress goes to stdout in write mode and to stderr in `--print` mode
+      # (pinned oracle: `lock --print` without a lockfile prints the index fetch
+      # on stderr). `--print` and the forcing flags omit the
+      # "Resolving dependencies..." line.
       resolution.progress = print_mode ? stderr : stdout
+      if print_mode || add_checksums || normalize_platforms
+        resolution.show_resolving = false
+      end
 
       unless print_mode
         if rest.includes?("--normalize-platforms") || rest.includes?("--add-checksums")

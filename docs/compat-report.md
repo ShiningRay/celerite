@@ -3230,3 +3230,52 @@ L152/L908）。
 
 未验证：2.7.x 上 `info --verbose` 的回显（未跑该 profile 的 A/B）；`info` 与
 `--gemfile` 组合时的回显顺序。
+
+## 2026-11-17（M7(2)：`lock` 的无操作静默、`check --path` 的移除文案与 `show --paths` 的 bundler 行）
+
+### 参考锚点
+
+- `bundler-4.0.24/lib/bundler/cli/lock.rb`：`--print` 分支打印 `definition.to_lock`，其余分支 `Bundler.ui.info "Writing lockfile to #{...}"` 后再 `definition.lock`；`--add-checksums` 与 `--normalize-platforms` 都会重新解析（因此有 `Fetching source index` + `Writing`，但没有 `Resolving dependencies...`）。
+- `bundler/cli/check.rb:11-36`：`Bundler.definition` → `definition.check!` → 缺失列表；`--path` 走 `print_remembered_flag_deprecation`（`cli.rb:466-497` 的专属 removed 文案）。
+- `bundler/cli/show.rb:44-52`：`--paths` 且未指定 gem 名时先打印运行中 bundler 的 gem 目录，再按 `full_name` 排序打印其余 gem。
+- `Bundler::LockfileParser`/`LockfileGenerator`：`--print` 打印的是**重新序列化**的锁文件，`BUNDLED WITH` 与 `RUBY VERSION` 的缩进由 writer 决定（4.x 两空格、2.x 三空格），与输入文件的缩进无关。
+
+### 修复前实测（同一沙箱，4.0.24 与 2.7.2 同形）
+
+| 命令 | 参考 | 修复前 |
+| --- | --- | --- |
+| `lock`（锁与 Gemfile 一致） | 仅 `Writing lockfile to …` | 多 `Fetching source index from …` + `Resolving dependencies...` |
+| `lock --print`（同上） | 仅锁正文，两流皆空 | 进度行混进 stdout |
+| `lock --print`（无锁文件） | 锁正文在 stdout、`Fetching …` 在 **stderr**、无 `Resolving` | stdout 多 `Resolving dependencies...` |
+| `lock --add-checksums` / `--normalize-platforms` | `Fetching` + `Writing`，无 `Resolving` | 多一行 `Resolving dependencies...` |
+| `check --path vendor/x` | 4.x exit 15 + 移除文案（`bundle config set path 'vendor/x'`）；2.x `[DEPRECATED]` 并持久化 `BUNDLE_PATH` | `Unknown switches "--path"` |
+| `check --no-prune` | `Unknown switches "--no-prune"` + `Did you mean?  "--no-color"` | 建议里带 `--no-deployment` |
+| `show --paths`（无 gem 名） | 第一行是 `gems/bundler-4.0.24` | 缺 bundler 行 |
+
+### 实现
+
+1. `src/celerite/cli/commands.cr` 新增 `CHECK_SWITCH_FLAGS/VALUES`、`CHECK_REMOVED_FLAGS = ["--path"]` 与 `CHECK_SUGGEST_DICTIONARY`；`self.check` 依次做未知开关、位置参数、`removed_flag(rest, "check")` 三关：2.x 打 `[DEPRECATED]` 并 `config.set_local("path", …)` 后继续，4.x 打 80 列折行的移除文案并返回 15。
+2. `removed_flag` 增加 `when "check"` 分支（`--path` 取值缺省为 `"path"`）。
+3. `bundler_gem_dir` 先认 `CELERITE_REFERENCE_BUNDLER_LIB`，否则用桥的 `ruby_environment` + `find_bundler_lib` 定位运行中 bundler 的 gem 目录，供 `show --paths` 的首行使用。
+4. `run_lock` 增加「无操作快路径」：未 `--update`/未命名更新/无 `--add-checksums`/无 `--normalize-platforms`/无平台编辑，且 `lockfile_matches_dependencies?` 为真时，直接打印既有锁（`--print`）或写回并打印 `Writing lockfile to …`，不实例化解析进度；其余场景按 `--print` 走 stderr、`--add-checksums`/`--normalize-platforms` 关掉 `Resolving dependencies...`。
+5. `Definition#lockfile_matches_dependencies?` 除比较 `DEPENDENCIES` 外，还要求每个依赖在锁的 `specs` 里有满足需求的版本——`specs:` 为空的锁文件（`spec/m7_lockfile_regen_spec.cr`）必须重新解析。
+6. `with_profile_indent` 在打印/写回解析得到的锁时把 `BUNDLED WITH`、`RUBY VERSION` 的值行缩进归一为当前 profile 的写法（4.x 两空格、2.x 三空格），复刻参考「重新序列化」的行为。
+
+### 证据
+
+- 11 条 A/B（`lock`、`lock --print`、`lock --add-checksums`、`lock --normalize-platforms`、`lock --update json_pure`、`lock --add-platform java`、`check`、`check --path vendor/x`、`check --no-prune`、`show --paths`、`show --paths json_pure`）在全新沙箱下 **11/11 逐字相同**（stdout+stderr+退出码，沙箱路径归一）。
+- 差分：4.0.24 `lock-noop`/`lock-print`/`check-path-removed`/`lock-file-missing`/`install-fresh` = **5 passed**；2.7.2 = **4 passed + 1 skipped**（`check-path-removed` 已登记 prefix `deferred-2.7.2`）。
+- 负对照：把 `lockfile_matches_dependencies?` 首行改成 `return false` 重建二进制 → `FAIL lock-noop`（多 `Fetching` + `Resolving`）与 `FAIL lock-print`（stderr 多 `Fetching …`），恢复后两夹具复绿。
+- 回归核对：用 HEAD 二进制与工作树二进制分别跑 `lock --add-platform java`，两者都打印 `Writing` → `Fetching` → `Resolving`，确认平台编辑被排除在快路径之外不是回退。
+- 门禁：`crystal tool format --check src spec` 0、`git diff --check` 0、全量 **608 examples, 0 failures, 4 errors**（4 = 既有 `spec/git_source_spec.cr` 的 msys Low-IL）。
+
+### 已声明差异
+
+- 2.7.2 的 `check --path <v>`：参考在报缺失前多打一行 `Resolving dependencies...`，我方 stdout 为空（退出码与 stderr 一致）。
+- `--verbose` 的调试层（`Using a local server…`、`N:  <name> (<version>) from <path>` 等）不复刻。
+
+### 未验证
+
+- 只在两条本机 profile（4.0.24、2.7.2）上比对，未覆盖 4.0.16 等其它版本。
+- 「锁与 Gemfile 一致」的判定只覆盖 `DEPENDENCIES` 与 spec 版本满足性；Bundler 的 `@dependency_changes` 内部状态（如 `Gemfile` 源顺序变化）未逐项比对。
+- `lock --add-platform` 的完整输出仅做了一次人工比对（见证据），未纳入差分装具。
