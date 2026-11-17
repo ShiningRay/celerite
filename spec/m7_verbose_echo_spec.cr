@@ -82,6 +82,15 @@ describe "verbose command echo" do
     verbose_echo(["version", "--verbose"]).should eq("")
   end
 
+  it "echoes info but not show" do
+    # `info` is its own Thor command (bundler/cli.rb:382) and is absent from
+    # `PARSEABLE_COMMANDS`, unlike `show`.
+    verbose_echo(["info", "json_pure", "--verbose"])
+      .should eq("Running `bundle info json_pure --verbose` with bundler 4.0.24\n")
+    verbose_echo(["info", "json_pure", "--path", "--verbose"])
+      .should eq("Running `bundle info json_pure --path --verbose` with bundler 4.0.24\n")
+  end
+
   it "never echoes without --verbose" do
     verbose_echo(["install", "--jobs", "2"]).should eq("")
   end

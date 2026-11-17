@@ -164,10 +164,14 @@ module Celerite
     PARSEABLE_COMMANDS = ["check", "config", "help", "exec", "platform", "show", "version"]
 
     # Commands this CLI implements that the reference echoes before running.
+    # `info` is a Thor command of its own (bundler/cli.rb:382) and is not part of
+    # `PARSEABLE_COMMANDS`, so `bundle info --verbose` echoes while
+    # `bundle show --verbose` does not.
     ECHO_COMMANDS = [
       "install", "update", "lock", "cache", "package", "pack", "clean",
       "add", "remove", "binstubs", "env", "doctor", "licenses", "fund",
       "open", "plugin", "pristine", "init", "outdated", "console", "gem", "issue",
+      "info",
     ]
 
     # Boolean options: Thor renders them as a bare `--name`.

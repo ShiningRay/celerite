@@ -3192,3 +3192,41 @@ L152/L908）。
 
 未验证：`--source` 限定解析下的源变更；2.7.x 上 changed 段的多依赖排序；源
 变更与依赖变更同时发生时的段落顺序（参考按 added→deleted→changed）。
+
+## 2026-11-17（M7(2)：`bundle info` 的 `--verbose` 回显）
+
+`Bundler::CLI::PARSEABLE_COMMANDS`（`bundler/cli.rb:13`）不含 `info`，而 `info`
+是独立 Thor 命令（`cli.rb:382`），所以 `bundle info … --verbose` 会先回显命令行，
+`bundle show … --verbose` 不会。
+
+修复前（`.tmp-scratch/p76`，两侧独立 `HOME`/`GEM_HOME`/`GEM_PATH`/
+`BUNDLE_PATH`，各自先 `install`）：
+
+| 命令 | 参考首行 | 修复前我方首行 |
+| --- | --- | --- |
+| `info --verbose json_pure` | ``Running `bundle info json_pure --verbose` with bundler 4.0.24`` | 直接打印 `  * json_pure (2.6.0)` |
+| `info json_pure --path --verbose` | ``Running `bundle info json_pure --path --verbose` …`` | 直接打印路径 |
+| `show --verbose json_pure` | `Fetching remote specs for outdated check...`（不回显） | 同参考 |
+
+实现：把 `info` 加进 `ECHO_COMMANDS`（`src/celerite/cli/commands.cr`），位置参数
+排在开关之前、开关按名字排序，与 `print_command_echo` 既有规则一致；`show` 仍在
+`PARSEABLE_COMMANDS` 中，保持不回显。
+
+证据：A/B 三例首行逐字相同（`ECHO_SAME=True`）；`spec/m7_verbose_echo_spec.cr`
+**9 examples / 0 failures**（新增 `info` 两种参数顺序，并断言 `show` 不回显）；
+回归差分 `list-json`/`list-json-name`/`show-missing-installed`/`install-fresh`/
+`version-plain`/`env-report` 全 PASS（6 passed / 0 failed / 1 documented SKIP）；
+门禁 `crystal tool format --check src spec` 0、全量 **602 examples, 0 failures,
+4 errors**（4 = 既有 `spec/git_source_spec.cr` msys Low-IL）、`git diff --check` 0。
+
+同轮基线：4.0.24 全量差分 **218 passed, 14 failed, 3 skipped**，14 条失败全部是
+既有环境族（4 条 `add-*` 与 `cache-all-platforms`、`native-ext`、
+`native-ext-target` 是 racc 原生扩展在 msys 下 `Gem::Ext::BuildError`；5 条
+`git-*` 与 2 条 `plugin-git-local*` 是 msys `0xC0000022`），无产品类失败。
+
+已声明差异：`--verbose` 的调试层（含 `info --verbose` 里的
+`Found no changes, using resolution from the lockfile`）仍不复刻，因此该命令只能
+比对首行回显，不能做全量输出差分（装具无「仅比 stdout 首行」的标记，故不加夹具）。
+
+未验证：2.7.x 上 `info --verbose` 的回显（未跑该 profile 的 A/B）；`info` 与
+`--gemfile` 组合时的回显顺序。
