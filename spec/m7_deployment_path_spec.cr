@@ -254,6 +254,60 @@ describe "M7(4) deployment install target" do
     end
   end
 
+  it "reports a scoped source switch as a changed entry" do
+    index = file_source_url(File.expand_path("../fixtures/gem-index", __DIR__))
+    scoped = file_source_url(File.expand_path("../fixtures/gem-index-scoped", __DIR__))
+    files = dep_project_files(index)
+    files["Gemfile"] = "source \"#{index}\"\n\ngem \"json_pure\", \"2.8.1\", source: \"#{scoped}\"\n"
+    with_project(files) do |dir|
+      with_dep_bridge do
+        with_dep_env(dep_isolated_env(dir, {"BUNDLE_FROZEN" => "true"})) do
+          code, _out, err = run_cli(["install"])
+          code.should eq(16), err
+          # definition.rb L906-921 lists the source change before the
+          # dependencies and the CHECKSUMS entry.
+          err.should contain("The list of sources changed, your lockfile has an empty CHECKSUMS entry for")
+          err.should contain("You have changed in the Gemfile:\n* json_pure from `no specified source` to `rubygems repository")
+          err.should contain("gem-index-scoped/`")
+          err.should_not contain("The dependencies in your gemfile changed")
+        end
+      end
+    end
+  end
+
+  it "reports a replaced default source without a changed entry" do
+    index = file_source_url(File.expand_path("../fixtures/gem-index", __DIR__))
+    scoped = file_source_url(File.expand_path("../fixtures/gem-index-scoped", __DIR__))
+    files = dep_project_files(index)
+    files["Gemfile"] = "source \"#{scoped}\"\n\ngem \"json_pure\", \"2.8.1\"\n"
+    with_project(files) do |dir|
+      with_dep_bridge do
+        with_dep_env(dep_isolated_env(dir, {"BUNDLE_FROZEN" => "true"})) do
+          code, _out, err = run_cli(["install"])
+          code.should eq(16), err
+          # The dependency keeps the same label ("no specified source" on both
+          # sides), so only the source-list reason is reported (definition.rb
+          # L152, L908).
+          err.should contain("The list of sources changed, your lockfile has an empty CHECKSUMS entry for")
+          err.should_not contain("You have changed in the Gemfile:")
+        end
+      end
+    end
+  end
+
+  it "keeps the default source quiet when it matches the lockfile" do
+    index = file_source_url(File.expand_path("../fixtures/gem-index", __DIR__))
+    lock = dep_empty_checksums_lock(index, "4.0.24")
+      .sub(/CHECKSUMS\n  json_pure \(2\.8\.1\)\n\n/, "")
+    with_project({"Gemfile" => "source \"#{index}\"\n\ngem \"json_pure\", \"2.8.1\"\n", "Gemfile.lock" => lock}) do |_dir|
+      with_dep_bridge do
+        definition = Celerite::Definition.build
+        evaluation = Celerite::Bridge::Client.new.evaluate_gemfile(definition.gemfile_path)
+        definition.validate_frozen_lockfile!(false, evaluation.dependencies, evaluation.sources)
+      end
+    end
+  end
+
   it "reports a requirement change as one added and one deleted entry" do
     index = file_source_url(File.expand_path("../fixtures/gem-index", __DIR__))
     files = dep_project_files(index)

@@ -3138,3 +3138,57 @@ exec --bogus true                     ref 127   cel 127（参考同样把未知�
 - 4.x `show --verbose` 的 debug 层（`Resolving dependencies because there is no lockfile`、`Using a local server…`、`Writing lockfile to …`）仍不复刻，故该命令在 4.x 下不能做整段输出差分。
 - `No description available.` / `No website available.` 两个缺省串未做端到端取证（fixture  gemspec 都带 summary/homepage）。
 - 版本比较用 `Gem::Version`，与参考一致，但未验证 prerelease 序（如 `1.0.0.pre` vs `1.0.0`）的显示差异。
+
+## 2026-11-17（M7(4)：frozen 模式的源变更理由与 `You have changed in the Gemfile:`）
+
+参考实现：`bundler/definition.rb` 的 `lockfile_changed_reason`（L906-921）把
+`the list of sources changed` 排在所有理由之前，`lockfile_changes_summary`
+（L587-624）为源变更的依赖列出 `* <name> from `<lockfile source>` to `<gemfile
+source>``，段落顺序是 added → deleted → changed；两侧的 source 标签来自
+`Source#to_gemfile`（`source/rubygems.rb:146` 是 `identifier` 的别名，
+`source/git.rb:64`、`source/path.rb:58`），没有 source 时是字面
+`no specified source`。默认源被整体替换也算源变更（`converge_sources`，
+L152/L908）。
+
+修复前（`.tmp-scratch/fr75*`，两侧独立 `HOME`/`GEM_HOME`/`GEM_PATH`/
+`BUNDLE_PATH`，`BUNDLE_FROZEN=true`）：
+
+| 场景 | 参考 | 修复前 |
+| --- | --- | --- |
+| 依赖改挂 scoped 源 | exit 16，`The list of sources changed, …` + `You have changed in the Gemfile:` 段 | exit 16，只有 `Your lockfile has an empty CHECKSUMS entry …`，无源理由与 changed 段 |
+| 默认源整体替换 | exit 16，`The list of sources changed, …`，无 changed 段 | 同上，理由缺失 |
+| 锁缺当前平台 | exit 16，平台文案 | 已逐字相同 |
+
+实现（`src/celerite/definition.cr`）：
+
+1. `validate_frozen_lockfile!` 增加 `gemfile_sources` 参数，`source_diff` 返回
+   `{changed, source_changed}`，源理由插在依赖理由之前；
+2. `source_label` / `locked_source_label` 复刻 `to_gemfile` 的三种形态
+   （rubygems 保留远端尾部斜杠、GIT 带 `branch/tag/ref/glob` 说明、PATH 用
+   `remote`）；锁里挂在默认 `GEM` 段的依赖一律渲染 `no specified source`，
+   与参考把这种依赖视为「Gemfile 侧未指定 source」一致；
+3. `default_source_changed?` 比较 Gemfile 与锁文件的 rubygems 远端集合（桥对
+   rubygems 源同时给出 `name` 与 `remotes`，按名字判断会永远落空）；
+4. `install` 与 `check` 把 Gemfile 求值结果里的 `sources` 一并传入。
+
+证据：
+
+- A/B 三场景（scoped 源切换、默认源替换、平台缺失）剥掉 PowerShell 包装后
+  **stderr 逐字相同**，80 列折行位置也一致；
+- `spec/m7_deployment_path_spec.cr` 12 examples / 0 failures（新增 scoped 源
+  切换、默认源替换、默认源相同时不报三项）；负对照把源理由改成永不触发后
+  **2 examples 失败**（正是两个新用例），还原后复绿；
+- 差分夹具 `install-frozen-source-changed`（Gemfile 用 `@SCOPED_INDEX_DIR@`、
+  锁指向 `@INDEX_DIR@`）4.0.24 与 2.7.2 均 `PASS (exit=16)`，回归
+  `install-frozen-gemfile-added`/`install-deployment-empty-checksums`/
+  `install-fresh`/`check-no-lockfile-missing` 全 PASS；
+- 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen` 0、
+  全量 `crystal spec` **601 examples, 0 failures, 4 errors**（4 = 既有
+  `spec/git_source_spec.cr` 的 msys Low-IL）、`git diff --check` 0。
+
+已声明差异：只建模 `GEM`/`GIT`/`PATH` 三类源；多远端的 rubygems 源按
+`remote, remote` 拼接（参考 `identifier` 同样用 `", "` 连接，未实测多远端）；
+`Metadata` 之类的其它源类型不产生条目。
+
+未验证：`--source` 限定解析下的源变更；2.7.x 上 changed 段的多依赖排序；源
+变更与依赖变更同时发生时的段落顺序（参考按 added→deleted→changed）。

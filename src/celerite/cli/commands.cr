@@ -1104,13 +1104,17 @@ module Celerite
       # The Gemfile diff needs the evaluated dependencies; a bridge that is
       # unavailable only narrows the reason list, never the outcome.
       gemfile_dependencies : Array(Bridge::EvaluatedDependency)? = nil
+      gemfile_sources : Array(Bridge::EvaluatedSource)? = nil
       if config.frozen? && definition.lockfile_exists?
         begin
-          gemfile_dependencies = Bridge::Client.new.evaluate_gemfile(definition.gemfile_path).dependencies
+          evaluation = Bridge::Client.new.evaluate_gemfile(definition.gemfile_path)
+          gemfile_dependencies = evaluation.dependencies
+          gemfile_sources = evaluation.sources
         rescue
         end
       end
-      definition.validate_frozen_lockfile!(gemfile_dependencies: gemfile_dependencies)
+      definition.validate_frozen_lockfile!(gemfile_dependencies: gemfile_dependencies,
+        gemfile_sources: gemfile_sources)
       # `bundler/cli/check.rb:16` runs `validate_runtime!` only after the
       # frozen lockfile check, so the lockfile summary wins over a platform
       # mismatch.

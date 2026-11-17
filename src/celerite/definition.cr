@@ -112,19 +112,24 @@ module Celerite
 
     # `Bundler::Definition#ensure_equivalent_gemfile_and_lockfile`
     # (definition.rb:475-492): frozen mode refuses to update the lockfile.
-    # Implements the dependency-diff reasons plus the CHECKSUMS ones
-    # (definition.rb:906-921 order: dependencies before checksums); source,
-    # platform and path/git gemspec reasons remain open (see
+    # Implements the source-switch and dependency-diff reasons plus the
+    # CHECKSUMS ones (definition.rb:906-921 order: sources, dependencies, then
+    # checksums); platform and path/git gemspec reasons remain open (see
     # docs/compat-report.md).
     def validate_frozen_lockfile!(explicit_flag : Bool = false,
-                                  gemfile_dependencies : Array(Bridge::EvaluatedDependency)? = nil) : Nil
+                                  gemfile_dependencies : Array(Bridge::EvaluatedDependency)? = nil,
+                                  gemfile_sources : Array(Bridge::EvaluatedSource)? = nil) : Nil
       return unless config.frozen?
       raise ProductionError.new("Frozen mode is set, but there's no lockfile") unless lockfile_exists?
 
       reasons = [] of String
       added = [] of String
       deleted = [] of String
+      changed = [] of String
       if deps = gemfile_dependencies
+        sources = source_diff(deps, gemfile_sources)
+        changed = sources[0]
+        reasons << "the list of sources changed" if sources[1]
         diff = dependency_diff(deps)
         reasons << "the dependencies in your gemfile changed" if diff[2]
         added = diff[0]
@@ -133,7 +138,7 @@ module Celerite
       if reason = lockfile_update_reason
         reasons << reason
       end
-      return if reasons.empty? && added.empty? && deleted.empty?
+      return if reasons.empty? && added.empty? && deleted.empty? && changed.empty?
 
       reason = reasons.join(", ")
       lockfile_name = File.basename(lockfile_path)
@@ -142,11 +147,117 @@ module Celerite
       message += "can't be updated because frozen mode is set"
       message += "\n\nYou have added to the Gemfile:\n#{added.join("\n")}" unless added.empty?
       message += "\n\nYou have deleted from the Gemfile:\n#{deleted.join("\n")}" unless deleted.empty?
+      message += "\n\nYou have changed in the Gemfile:\n#{changed.join("\n")}" unless changed.empty?
       message += "\n\nRun `bundle install` elsewhere and add the updated #{lockfile_name} to version control.\n"
       unless explicit_flag || frozen_from_environment?
         message += "\n\nIf this is a development machine, remove the #{lockfile_name} freeze by running `bundle config set frozen false`."
       end
       raise ProductionError.new(message)
+    end
+
+    # `definition.rb:598-612`: every dependency present in both the Gemfile and
+    # the locked `DEPENDENCIES` is compared by source, and a mismatch is listed
+    # as `* name from `lockfile source` to `gemfile source``. The labels come
+    # from `Source#to_gemfile` (rubygems.rb:146 aliases `identifier`, git.rb:64,
+    # path.rb:58); an unset source renders as "no specified source". A change in
+    # the Gemfile's default source also counts, because the reference compares
+    # the whole source list (`definition.rb:152, 908`).
+    private def source_diff(deps : Array(Bridge::EvaluatedDependency),
+                            gemfile_sources : Array(Bridge::EvaluatedSource)?) : Tuple(Array(String), Bool)
+      data = lockfile!
+      changed = [] of String
+      deps.each do |dep|
+        gemfile_label = source_label(dep.source)
+        section = data.sources.find { |candidate| candidate.specs.any? { |spec| spec.name == dep.name } }
+        lock_label = locked_source_label(section)
+        next if lock_label == gemfile_label
+
+        changed << "* #{dep.name} from `#{lock_label}` to `#{gemfile_label}`"
+      end
+      default_changed = default_source_changed?(data, gemfile_sources)
+      {changed, default_changed || !changed.empty?}
+    end
+
+    # `source/rubygems.rb:146` (`to_gemfile` is `identifier`), `source/git.rb:64`,
+    # `source/path.rb:58` (`to_gemfile` is `path`); the Gemfile side of an entry
+    # without an explicit `source:` option has no source at all.
+    private def source_label(source : Bridge::EvaluatedSource?) : String
+      return "no specified source" unless source
+      case source.type
+      when "Git"
+        git_label(source.remote, source.branch, source.tag, source.ref, source.glob)
+      when "Path"
+        source.remote || "no specified source"
+      else
+        remotes = source.remotes
+        remote = source.remote
+        names = remotes && !remotes.empty? ? remotes.join(", ") : (remote || "no specified source")
+        "rubygems repository #{names}"
+      end
+    end
+
+    # The lockfile side: a gem locked in the default `GEM` section has no
+    # source of its own (`LockfileParser` only attaches one for `GIT`/`PATH`
+    # entries), so only a differing `remote:` can be observed there.
+    private def locked_source_label(section : Lockfile::SourceSection?) : String
+      return "no specified source" unless section
+      case section.type
+      when "GIT"
+        git_label(section.remote, option_string(section, "branch"), option_string(section, "tag"),
+          option_string(section, "ref"), option_string(section, "glob"))
+      when "PATH"
+        option_string(section, "remote") || option_string(section, "path") || "no specified source"
+      else
+        # Gems locked in the default `GEM` section have no source of their own
+        # (`LockfileParser` only records one for `GIT`/`PATH` entries), so the
+        # reference compares them against the Gemfile's default source and
+        # reports "no specified source" on the lockfile side.
+        "no specified source"
+      end
+    end
+
+    private def option_string(section : Lockfile::SourceSection, key : String) : String?
+      section.option(key).as?(String)
+    end
+
+    private def git_label(remote : String?, branch : String?, tag : String?, ref : String?, glob : String?) : String
+      label = remote || ""
+      specifiers = {"branch" => branch, "tag" => tag, "ref" => ref, "submodules" => nil, "glob" => glob}
+      parts = [] of String
+      specifiers.each do |name, value|
+        parts << "#{name}: #{value}" if value
+      end
+      parts.empty? ? label : "#{label} (#{parts.join(", ")})"
+    end
+
+    private def trim_remote(value : String) : String
+      value.ends_with?("/") ? value[0...-1] : value
+    end
+
+    # `Definition#converge_sources` (definition.rb:152 and `:908`) compares the
+    # whole source list, so replacing the Gemfile's default source changes the
+    # lockfile even when every dependency keeps the same label. The bridge
+    # serialises each rubygems source with both a `name` and the `remotes` list,
+    # so the comparison has to run over the remote sets rather than the names.
+    private def default_source_changed?(data : Lockfile::Data,
+                                        gemfile_sources : Array(Bridge::EvaluatedSource)?) : Bool
+      return false unless sources = gemfile_sources
+      gemfile_remotes = [] of String
+      sources.each do |candidate|
+        next if candidate.type == "Git" || candidate.type == "Path"
+        remotes = candidate.remotes
+        if remotes && !remotes.empty?
+          remotes.each { |remote| gemfile_remotes << trim_remote(remote) }
+        elsif remote = candidate.remote
+          gemfile_remotes << trim_remote(remote)
+        end
+      end
+      return false if gemfile_remotes.empty?
+      locked_remotes = data.sources
+        .select { |candidate| candidate.type == "GEM" }
+        .flat_map { |candidate| candidate.remotes.map { |remote| trim_remote(remote) } }
+      return false if locked_remotes.empty?
+      gemfile_remotes.uniq.sort != locked_remotes.uniq.sort
     end
 
     # `Definition#lockfile_changes_summary` (definition.rb:1053-1090): the
