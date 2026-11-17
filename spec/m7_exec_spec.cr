@@ -72,12 +72,12 @@ describe "M7(2) bundle exec" do
     end
   end
 
-  it "prints usage for --help instead of treating it as a command" do
+  it "renders the exec manpage for --help instead of treating it as a command" do
     with_exec_bridge do
       with_project({"Gemfile" => %(source "https://rubygems.org"\n)}) do
         code, out, err = run_cli(["exec", "--help"])
         code.should eq(0)
-        out.should contain("Usage:")
+        out.should contain("bundle-exec(1) -- Execute a command in the context of the bundle")
         err.should eq("")
       end
     end

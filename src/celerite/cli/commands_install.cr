@@ -988,7 +988,7 @@ module Celerite
         break unless token.starts_with?("-")
         case token
         when "--help", "-h"
-          return Commands.help(stdout, ["exec"])
+          return Commands.help(stdout, ["exec"], stderr)
         when "--keep-file-descriptors", "--no-keep-file-descriptors"
           # The reference keeps descriptors by default; the switch is accepted
           # for compatibility only.

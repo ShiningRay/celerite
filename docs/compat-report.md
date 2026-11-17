@@ -3553,3 +3553,55 @@ Gemfile = `source "http://127.0.0.1:<port>/"` + `gem "json_pure", "2.6.0"`）：
 - `binstubs --path --force` 在 2.7.2 下的 `--force` 语义未与 `--path` 组合单独验证（只验证了
   取值仍为 `bin`）。
 - `add` 的 gemspec dev 依赖冲突分支（`dsl.rb:265-285` 的 pub_grub 交集）未建模。
+
+## 2026-11-18（M7(3)/M7(2)：`help` / `--help` 渲染 vendored manpage）
+
+**范围**：`bundle help [COMMAND]`、`bundle <cmd> --help`、Thor 的 dash 映射（`-h`/`-?`/`--help`/`-D`）现在都渲染参考自带的 `.ronn` 手册页，而不再打印本仓自制 `Usage:` 横幅。此前 `docs/compat-report.md:1798/1813/1817/1836/1851/2259/2520/2524/2607/2641` 把「无 manpage」列为已声明差异，本条即该差异的关闭记录。
+
+**参考锚点**
+
+- `bundler/cli.rb:155-185 #help(cli = nil)`：先 `all_aliases` 归一别名 → 插件命令委派 `Plugin.exec_command(cli, ["--help"])` → `case` 把 `nil` 映射成 `bundle`、`gemfile` 映射成自己的页、其余成 `bundle-<cli>` → `man_pages` 命中后若 `Bundler.which("man")` 存在则 `Kernel.exec("man", …)`，**否则 `puts File.read("#{man_path}/#{File.basename(man_page)}.ronn")`**；未命中则 `bundler_command_path(cli)` → `Kernel.exec(command_path, "--help")`；再否则 `super`（Thor `command_help`）。
+- `bundler/cli.rb:16-24 / 41-53`：`COMMAND_ALIASES`（`check=>c`、`install=>i`、`plugin=>""`、`list=>ls`、`exec=>e/ex/exe`、`cache=>package/pack`、`version=>-v/--version`）与 `all_aliases`。
+- `bundler/vendor/thor/lib/thor/base.rb:17`：`HELP_MAPPINGS = %w(-h -? --help -D)`；`thor/group.rb:229-232` 在 `dispatch` 首行把 `HELP_MAPPINGS` 首参转成 `help`。
+- `bundler/vendor/thor/lib/thor.rb:252-280 command_help`：无手册页时的正文形状（`Usage:` / `  bundle <usage>` / 空行 / `Options:` 三行 class option / 空行 / 描述）。
+- `bundler/vendor/thor/lib/thor/base.rb:619-626 handle_argument_error`：`ERROR: "bundle help" was called with arguments [...]` + `Usage: "bundle help [COMMAND]"`，**两行、无尾随空行**。
+- `bundler/vendor/thor/lib/thor/error.rb:24-55`：`Could not find command "<name>".` + `DidYouMean` 的 `Did you mean?  "<候选>"`（两空格）。
+
+**实现**
+
+- 新增 `src/celerite/manpages.cr`：`Manpages.page_name` 映射 `bundle` → `bundle.1.ronn`、`gemfile` → `gemfile.5.ronn`、其余 → `bundle-<cmd>.1.ronn`（等价于参考的 `File.basename(man_page)` 拼法）；`search_dirs` 依次为 `CELERITE_MAN_DIR`、可执行文件旁 `assets/man/<profile>` 与 `../assets/man/<profile>`、源码树 `../../assets/man/<profile>`；`render` 在 Windows 上把 LF 折成 CRLF（参考用文本模式 IO 写 stdout，实测 `help install` 去掉 CR 后与 `.ronn` 逐字相等）。
+- 手册页资产随仓入库：`assets/man/4.0.24/`（31 个 `.ronn`，121444 字节）与 `assets/man/2.7.2/`（33 个，121322 字节，多 `bundle-inject.1.ronn`/`bundle-viz.1.ronn`）。两版共 11 个页面相同、20 个不同，因此不能共用一套；入库前逐字节确认无 CR。
+- `Commands.help(stdout, rest, stderr)` 重写：`reject_unknown_switches(SWITCH_FLAGS_CLASS, SWITCH_VALUES_CLASS)` → 位置参数多于 1 个按 `handle_argument_error` 报两行 exit 15 → `COMMAND_ALIASES` 归一 → 非 `gemfile`/非参考命令时先试插件、再 `Could not find command` (+`Suggestions.message` 建议) exit 15 → `Manpages.render` → 无页面时 `THOR_HELP_FALLBACK` 拼 Thor `command_help` 文本 → 兜底仍按未知命令。
+- `dispatch` 的 dash 映射从 `help`/`--help`/`-h` 扩到 `-?`/`-D`；`bundle <cmd> --help`（`exec` 除外，参考把 `--help` 交给子进程）改为带 `stderr` 调 `help`。
+- profile 门控：`reference_commands` 在 2.x 下剔除 `tree`/`install_or_cli_help`（`Bundler::CLI` 反射：2.7.2 为 32 个命令、4.0.24 为 33 个），因此 `help tree`/`help install_or_cli_help` 在 2.7.2 下按未知命令 exit 15 且不给建议；`help viz`/`help inject` 在 2.7.2 下命中自己的页面（4.0.24 无此两页，走 Thor 兜底）。`Suggestions` 的字典与 `REFERENCE_COMMANDS` 同源，故 `lst`→`list`、`get`→`gem` 与参考一致，而 `extra`/`mahcommand`/`bogus-cmd`/`candle` 无建议。
+
+**证据（逐字 A/B，双侧独立沙箱、隔离 HOME/GEM_HOME/TEMP）**
+
+| 命令 | 4.0.24 exit / stdout | 2.7.2 exit / stdout |
+| --- | --- | --- |
+| `help install`（=`install --help`=`help i`=`-h install`=`--help install`） | 0 / 13090 | 0 / 16260 |
+| `help`（=`--help`=`-h`=`-D`=`-?`） | 0 / 3841 | 0 / 3371 |
+| `help gemfile` | 0 / 24173 | 0 / 21919 |
+| `help help` / `help -h` | 0 / 349 | 0 / 349 |
+| `help c` / `help ls` | 0 / 812 / 870 | 0 / 1015 / 767 |
+| `help tree` | 0 / 359（Thor 兜底） | **15** / `Could not find command "tree".` |
+| `help viz` / `help inject` | 0 / 365 / 404（Thor 兜底） | 0 / 1125 / 854（各自页面） |
+| `help cli_help` | 0 / 361 | 0 / 361 |
+| `help install_or_cli_help` | 0 / 363（Thor 兜底） | **15** / `Could not find command "install_or_cli_help".` |
+| `help nosuchcmd` / `help get` / `help lst` | 15 / 36、51、52 字节 stderr（`get` 带 `Did you mean?  "gem"`） | 同形 |
+| `help install extra` | 15 / 99 字节 stderr（`ERROR:` + `Usage:` 两行） | 同形 |
+
+- 22 例 A/B 在 4.0.24 与 2.7.2 上**全 SAME**（`SAME=False` 计数 0）；`-D`、`--help install`、`-h install` 追加两例亦 SAME。
+- 新增 6 个差分夹具（`help-install`、`help-alias-check`、`help-unknown`、`help-gemfile`、`help-extra-args`、`help-tree-fallback`）：4.0.24 `6 passed, 0 failed`；2.7.2 `6 passed, 0 failed`（`help-tree-fallback` 在 2.7.2 下两侧同为 exit 15）。
+- `spec/m7_help_manpage_spec.cr` 12 examples 全绿（含 2.7.2 的 `tree`/`install_or_cli_help` 未知命令与 `viz`/`inject` 页面）；`spec/m7_exec_spec.cr` 的 `--help` 断言随之从 `Usage:` 改为 manpage 首行。
+- 全量 `crystal spec`：**646 examples, 0 failures, 4 errors**（4 为既有 `spec/git_source_spec.cr` 的 msys `0xC0000022` 环境族）。
+
+**已声明差异 / 未覆盖**
+
+- 前缀命令解析（Thor `find_command_possibilities`）未实现：参考 `instal` 解析成 `install`（`instal --help` 打印 Thor 的 `Usage: bundle install [OPTIONS]` 长选项表），我方按未知命令 exit 15；`co` 的 `Ambiguous command co matches [config, console]` 同理未复刻。
+- `[REMOVED]` 命令未复刻：参考 `viz` exit 9 `[REMOVED] The \`viz\` command has been renamed to \`graph\` and moved to a plugin.` + 第二行 URL，`inject` exit 9 `[REMOVED] The \`inject\` command has been replaced by the \`add\` command`；我方仍报未知命令 exit 15。
+- 无参 `bundle` 未复刻 default_command 语义：参考打 5 行（506 字节）`In a future version of Bundler …` 警告块后走 `install`（无 Gemfile 时再打 `cli_help` 全表并 exit 10），我方仍打印 `CLI::USAGE`；同理前置类选项（`bundle --no-color install`）在参考里会被当成 `install` 的位置参数并 exit 15。
+- `-t`/`--tree` 未实现（4.0.24 有 `tree` 命令，输出 2219 字节的 `bundler:c_l_i` 树）。
+- Thor 兜底文本的三行 class option 是硬编码的 4.0.24/2.7.2 共同形状；两版若将来新增 class option 需同步。
+- 手册页资产为 vendored 副本：升级参考版本时必须重新复制并复核两版差异清单。
+- 未验证：`man` 在 PATH 上时的 `Kernel.exec("man", …)` 分支（本机无 `man`，参考恒走 `.ronn` 分支）；`help <plugin-cmd>` 在 2.7.2 下的行为（2.7.2 的 `#help` 没有插件分支）。

@@ -7,6 +7,7 @@ require "../lockfile/parser"
 require "../lockfile/writer"
 require "../definition"
 require "../resolution"
+require "../manpages"
 require "./commands_install"
 require "./commands_surface"
 
@@ -61,11 +62,10 @@ module Celerite
         stdout = IO::Memory.new
       end
 
-      # Thor prints the command's manpage for `--help` before the body runs.
-      # The manpage text itself stays a declared divergence: we print the shared
-      # usage banner instead, but the exit status matches the reference.
+      # Thor prints the command's manpage for `--help` before the body runs
+      # (`bundle install --help` renders bundle-install(1)).
       if command != "exec" && (rest.includes?("--help") || rest.includes?("-h"))
-        return help(stdout, [command])
+        return help(stdout, [command], stderr)
       end
 
       case command
@@ -125,8 +125,10 @@ module Celerite
         issue(stdout, stderr, rest)
       when "config"
         config(stdout, stderr, rest)
-      when "help", "--help", "-h"
-        help(stdout, rest)
+      when "help", "--help", "-h", "-?", "-D"
+        # Thor's dash mappings (`base.rb:17 HELP_MAPPINGS = %w(-h -? --help -D)`)
+        # all land on `help`, so `-D`/`-?` render the top-level page too.
+        help(stdout, rest, stderr)
       else
         if (plugin_exit = dispatch_plugin_command(command, rest))
           return plugin_exit
@@ -2455,17 +2457,132 @@ module Celerite
     # ------------------------------------------------------------------
     # help
     # ------------------------------------------------------------------
-    def self.help(stdout : IO, rest : Array(String)) : Int32
-      # Reference `help <cmd>`: a plugin command that is not a builtin runs
-      # with ["--help"] (cli.rb:155-160); everything else prints usage.
-      target = rest.reject(&.starts_with?("-")).first?
-      if target && !BUILTIN_COMMANDS.includes?(target)
-        if (plugin_exit = dispatch_plugin_command(target, ["--help"]))
-          return plugin_exit
-        end
+    # `bundle help [COMMAND]` (cli.rb:155-185): resolve an alias, hand unknown
+    # names to plugins, otherwise print the vendored `.ronn` page. Names that
+    # have no page fall back to Thor's own `command_help` rendering
+    # (thor.rb:252-280) — that is what the reference does for hidden commands
+    # such as `tree`/`viz`/`inject`/`cli_help`.
+    def self.help(stdout : IO, rest : Array(String), stderr : IO = STDERR) : Int32
+      if (unknown = reject_unknown_switches(stderr, rest, SWITCH_FLAGS_CLASS, SWITCH_VALUES_CLASS))
+        return unknown
       end
-      stdout.puts CLI::USAGE
-      0
+
+      arguments = subcommand_arguments(rest, SWITCH_FLAGS_CLASS, SWITCH_VALUES_CLASS)
+      if arguments.size > 1
+        # Thor `handle_argument_error` (base.rb:619-626): two lines, no trailing
+        # blank line (`shell.error` strips the one it would add).
+        stderr.puts %(ERROR: "bundle help" was called with arguments #{arguments.inspect})
+        stderr.puts %(Usage: "bundle help [COMMAND]")
+        return 15
+      end
+
+      target = arguments.first?
+      if target
+        canonical = COMMAND_ALIASES[target]? || target
+        # `cli.rb:161-165` maps `gemfile` to its own section-5 page even though
+        # it is not a Thor command.
+        unless canonical == "gemfile" || reference_commands.includes?(canonical)
+          if (plugin_exit = dispatch_plugin_command(target, ["--help"]))
+            return plugin_exit
+          end
+          return help_unknown_command(target, stderr)
+        end
+        target = canonical
+      end
+
+      if Manpages.render(target || "bundle", stdout)
+        return 0
+      end
+
+      if (fallback = THOR_HELP_FALLBACK[target || ""]?)
+        stdout.print(Manpages.normalize_newlines(thor_help_text(fallback[0], fallback[1])))
+        return 0
+      end
+
+      # A page-less, Thor-less name behaves like an unknown command.
+      help_unknown_command(target || "", stderr)
+    end
+
+    # Thor `command_help` (thor.rb:252-280): usage banner, the three class
+    # options and the command description. Hidden commands such as `tree`,
+    # `viz`, `inject`, `cli_help` and `install_or_cli_help` have no man page,
+    # so the reference renders this instead.
+    private def self.thor_help_text(usage : String, description : String) : String
+      String.build do |io|
+        io << "Usage:\n"
+        io << "  bundle " << usage << '\n'
+        io << '\n'
+        io << "Options:\n"
+        io << "      [--no-color]                                   # Disable colorization in output\n"
+        io << "  -r, [--retry=NUM]                                  # Specify the number of times you wish to attempt network commands\n"
+        io << "  -V, [--verbose], [--no-verbose], [--skip-verbose]  # Enable verbose output mode\n"
+        io << '\n'
+        io << description << '\n'
+      end
+    end
+
+    # Thor `UndefinedCommandError#message` plus its did_you_mean corrections
+    # (error.rb:24-55); the dictionary is the reference command table, hidden
+    # commands included.
+    private def self.help_unknown_command(target : String, stderr : IO) : Int32
+      stderr.puts %(Could not find command "#{target}".)
+      if message = Suggestions.message(target, reference_commands)
+        stderr.puts message
+      end
+      15
+    end
+
+    # `Bundler::CLI.all_aliases` (cli.rb:16-24, 41-53): every alias maps back to
+    # the canonical command name before `help` looks for a man page. The Thor
+    # dash mappings (`-h`, `-?`, `--help`, `-D` -> help) are handled in
+    # `dispatch`, because they never reach `help` as its own argument.
+    COMMAND_ALIASES = {
+      "c"       => "check",
+      "i"       => "install",
+      "ls"      => "list",
+      "e"       => "exec",
+      "ex"      => "exec",
+      "exe"     => "exec",
+      "package" => "cache",
+      "pack"    => "cache",
+    }
+
+    # The reference command table, hidden commands included
+    # (`Bundler::CLI` reflection: 33 entries). It doubles as the did_you_mean
+    # dictionary, which is why `lst` suggests `list` and `get` suggests `gem`
+    # while arbitrary misspellings get nothing.
+    REFERENCE_COMMANDS = [
+      "add", "binstubs", "cache", "check", "clean", "cli_help", "config",
+      "console", "doctor", "env", "exec", "fund", "gem", "help", "info",
+      "init", "inject", "install", "install_or_cli_help", "issue", "licenses",
+      "list", "lock", "open", "outdated", "platform", "plugin", "pristine",
+      "remove", "show", "tree", "update", "version", "viz",
+    ]
+
+    # Commands that exist in the reference but ship no man page; `help` renders
+    # Thor's `command_help` text for them (usage banner, description), which is
+    # what `cli.rb:155-185` falls through to via `super`.
+    THOR_HELP_FALLBACK = {
+      "tree"                => {"tree", "Print a tree of all available commands"},
+      "viz"                 => {"viz [OPTIONS]", "Generates a visual dependency graph"},
+      "inject"              => {"inject GEM VERSION", "Add the named gem, with version requirements, to the resolved Gemfile"},
+      "cli_help"            => {"cli_help", "Prints a summary of bundler commands"},
+      "install_or_cli_help" => {"install_or_cli_help", "Deprecated alias of install"},
+    }
+
+    # 2.7.2 dropped `tree` and `install_or_cli_help` (`Bundler::CLI` reflection:
+    # 32 commands, 4.0.24 has 33). Asking `help` for them under that profile is
+    # an undefined command in the reference, not a Thor help fallback — and the
+    # did_you_mean dictionary is the same table, so no suggestion is offered
+    # either.
+    LEGACY_ABSENT_COMMANDS = ["tree", "install_or_cli_help"]
+
+    private def self.reference_commands : Array(String)
+      if profile_2_x?
+        REFERENCE_COMMANDS.reject { |name| LEGACY_ABSENT_COMMANDS.includes?(name) }
+      else
+        REFERENCE_COMMANDS
+      end
     end
 
     # Commands handled by the CLI itself; a plugin command never shadows them.
