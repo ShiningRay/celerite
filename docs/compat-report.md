@@ -3395,3 +3395,58 @@ Gemfile = `source "http://127.0.0.1:<port>/"` + `gem "json_pure", "2.6.0"`）：
 - 403 与凭据（userinfo / `BUNDLE_<host>` 环境变量）组合时的分支未测。
 
 - 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen` 0、全量 `crystal spec` **613 examples, 0 failures, 4 errors**（4 = 既有 `spec/git_source_spec.cr` 的 msys Low-IL）、`git diff --check` 0。
+
+## 2026-11-17（M7(5)：gem 下载 403 的重试与失败文案）
+
+参考实现：gem 下载走 RubyGems 自己的下载器（`bundler/rubygems_integration.rb:379` 的
+`download_gem` 用 `Bundler::Retry.new("download gem from #{redacted_uri}")`），因此下载期的
+403 与索引期的 403 走完全不同的路径：`Bundler::Retry#fail_attempt`（`bundler/retry.rb:60-64`）
+在每次失败时先往 stdout 写一个空行、再往 stderr 写
+`Retrying download gem from <source> due to error (n/4): Gem::RemoteFetcher::FetchError bad response Forbidden 403 (<url>)`，
+最后一次抛 `Bundler::HTTPError: Could not download gem from <source> due to underlying error <bad response Forbidden 403 (<url>)>`；
+`installer/gem_installer.rb:38-49` 把它包成安装失败，`parallel_installer.rb:198` 追加依赖树，
+最终 status 5。
+
+修复前（探针：静态服务 gem 索引、`/gems/` 前缀一律 403）：
+
+| 场景 | 参考 4.0.24 | 修复前 |
+| --- | --- | --- |
+| `install`（下载 403） | exit **5**；stdout `Fetching gem metadata from …` / `Resolving dependencies...` / `Fetching json_pure 2.6.0` + 4 个空行；stderr 三行 `Retrying download gem …` + `Bundler::HTTPError: …` + Ruby 回溯 + `An error occurred while installing json_pure (2.6.0), and Bundler cannot continue.` + `In Gemfile:` + `  json_pure` | exit **17**，只报 `Access token could not be authenticated for 127.0.0.1.`（把下载 403 当成索引 403），且没有 `Fetching json_pure` 行 |
+
+实现：
+
+1. `src/celerite/downloader.cr` 新增内嵌 `ForbiddenDownloadError`（status 5、`wrap?` true、
+   `error_class_name` 为 `Bundler::HTTPError`、消息为
+   `Could not download gem from <source> due to underlying error <bad response Forbidden 403 (<url>)>`）；
+   403 分支按 `attempt < max_attempts` 打印重试行并存 `sleep`，最后一次抛该错误。
+2. `src/celerite/installer.cr` 的 `download_failure_message` 把错误拼成
+   `Bundler::HTTPError: <message>` + `An error occurred while installing <gem> (<version>), and Bundler cannot continue.`
+   + `In Gemfile:` 依赖树，并包成 `InstallError`（status 5）。
+3. `src/celerite/cli/commands_install.cr` 把重试空行接回 stdout：参考的
+   `Fetching <gem>` 行先打印、重试空行后打印，而我们的 fetch/install 行是**缓冲后统一 flush**，
+   所以新增 `early_fetch` / `flush_early_fetch`，在第一次重试通知时把该 gem 的 `Fetching` 行
+   提前打印并从缓冲里移除，两侧顺序因此一致。
+
+证据：
+
+- A/B（本地 403 服务，两侧独立 HOME/GEM_HOME/BUNDLE_PATH）：`install` 的 **stdout 逐字相同**，
+  exit 均 5；stderr 去掉参考的 Ruby 回溯（`path:in 'Class#method'` 行）后**逐字相同**。
+- `spec/m7_forbidden_download_spec.cr` 1 例：本地 `HTTP::Server` 服务真实 gem 索引、只对
+  `/gems/` 与 `/quick/` 回 403，断言 exit 5、三行重试、折行后的 `Bundler::HTTPError` 块、
+  `In Gemfile:` 段，以及 `Fetching json_pure 2.6.0` 之后恰好 5 个空行；与既有
+  `spec/m7_forbidden_spec.cr` 联跑 **3 examples, 0 failures**。
+- 负对照：把 `flush_early_fetch` 改成只打空行（不再释放挂起的 `Fetching` 行）→ 该用例
+  **1 failure**（`out` 以空行开头、`end_with` 断言失败），还原后复绿、`negative-control` 计数 0。
+- 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen` 0、全量
+  `crystal spec` **614 examples, 0 failures, 4 errors**（4 = 既有 `spec/git_source_spec.cr` 的
+  msys Low-IL）、`git diff --check` 0。
+
+已声明差异：
+
+- 参考在 `Bundler::HTTPError` 之后打印约 20 行 Ruby 回溯（`rubygems_integration.rb:406` →
+  `source/rubygems.rb` → `gem_installer.rb` → `parallel_installer.rb` → `worker.rb`），我方
+  **不复刻**（Crystal 程序没有 Ruby 帧，伪造即失真）。因此该场景只做「前缀 + 尾部」比对，
+  无法做全量输出差分。
+- 重试间隔按参考的指数退避起点 0.5s 实现，但 `Bundler::Retry` 的 jitter（±0.5）未建模，
+  故三次重试的总耗时与参考不完全一致。
+- `/quick/` 403 与 `/gems/` 403 目前走同一分支，二者在参考里是否同一路径未分别验证。

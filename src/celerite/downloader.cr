@@ -21,6 +21,37 @@ module Celerite
       end
     end
 
+    # A 403 on the gem artifact itself comes from RubyGems' downloader, which
+    # retries the fetch and then reports a `Bundler::HTTPError`-shaped failure
+    # (status 5). The reference's message is
+    # "Could not download gem from <source> due to underlying error <…>"; the
+    # Ruby backtrace it also prints cannot be reproduced here.
+    class ForbiddenDownloadError < Error
+      def initialize(@source : String, @url : String, @name : String? = nil, @version : String? = nil)
+        super(nil)
+      end
+
+      def status_code : Int32
+        5
+      end
+
+      def wrap? : Bool
+        true
+      end
+
+      def message : String
+        # `Bundler::HTTPError` surfaces the source plus the artifact URL
+        # (oracle 4.0.24); the class name is prefixed by the install failure
+        # formatter like every other `BundlerError`.
+        "Could not download gem from #{@source} due to underlying error " \
+        "<bad response Forbidden 403 (#{@url})>"
+      end
+
+      def error_class_name : String
+        "Bundler::HTTPError"
+      end
+    end
+
     getter download_dir : String
     getter retries : Int32
     getter mirror_url : String?
@@ -39,7 +70,7 @@ module Celerite
       @timeout.seconds
     end
 
-    def initialize(@remote : String, cache_root : String, retries : Int32 = 3, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil, @credentials : {String, String}? = nil, timeout : Int32 = 30, max_redirects : Int32 = 5, proxy : Proxy? = nil)
+    def initialize(@remote : String, cache_root : String, retries : Int32 = 3, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil, @credentials : {String, String}? = nil, timeout : Int32 = 30, max_redirects : Int32 = 5, proxy : Proxy? = nil, @warning_io : IO? = nil, @notice : Proc(Nil)? = nil)
       @mirror_url = mirror_url
       @ssl_ca_cert = ssl_ca_cert
       @ssl_client_cert = ssl_client_cert
@@ -232,10 +263,27 @@ module Celerite
           raise AuthenticationRequiredError.new(host) unless @credentials || uri.user || uri.password
           raise BadAuthenticationError.new(host)
         elsif response.status_code == 403
-          # fetcher/downloader.rb:72-73: a 403 rejects the request outright and
-          # the message names only the host (`AuthenticationForbiddenError`
-          # reaches `filter_uri(uri.host)`; the reference does not retry).
-          raise AuthenticationForbiddenError.new(uri.host || uri.to_s)
+          # RubyGems' own downloader (not the metadata fetcher) performs the gem
+          # download, so a 403 here is retried like any other fetch error:
+          # `Retrying download gem from <source> due to error (n/4):
+          # Gem::RemoteFetcher::FetchError bad response Forbidden 403 (<url>)`
+          # (oracle: 4.0.24 gem download 403 → three retry lines then
+          # `Bundler::HTTPError: Could not download gem from …` and exit 5).
+          if attempt < max_attempts
+            if warning = @warning_io
+              # `Bundler::Retry#fail_attempt` prints a blank line on stdout
+              # before the warning (`retry.rb:60-64`), which is why the oracle
+              # stdout ends with several empty lines.
+              @notice.try(&.call)
+              gem_url = "#{@remote.chomp("/")}#{remote_path}"
+              warning.puts "Retrying download gem from #{@remote} due to error (#{attempt + 1}/#{max_attempts}): " \
+                           "Gem::RemoteFetcher::FetchError bad response Forbidden 403 (#{gem_url})"
+            end
+            sleep (0.5 * (2 ** (attempt - 1))).seconds
+            next
+          end
+          @notice.try(&.call)
+          raise ForbiddenDownloadError.new(@remote, "#{@remote.chomp("/")}#{remote_path}", name, version)
         elsif response.status_code == 301 || response.status_code == 302 || response.status_code == 303 || response.status_code == 307 || response.status_code == 308
           # Follow redirect, honoring BUNDLE_REDIRECT max-redirect limit.
           if loc = response.headers["Location"]?

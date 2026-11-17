@@ -72,7 +72,14 @@ module Celerite
       # Callers that already materialized the package (downloaded or from
       # `vendor/cache`) pass it directly; the reference installs app-cache gems
       # without a second fetch.
-      file = gem_file || @downloader.fetch(name, version, platform, checksum)
+      file = gem_file || begin
+        @downloader.fetch(name, version, platform, checksum)
+      rescue ex : Downloader::ForbiddenDownloadError
+        # RubyGems' downloader reports a `Bundler::HTTPError` that the install
+        # failure path then wraps like any other install error
+        # (installer/parallel_installer.rb:198).
+        raise InstallError.new(Installer.download_failure_message(name, version, ex))
+      end
       if @no_install
         # The reference still caches the package under `<bundle_path>/cache`
         # (the downloader writes it there) but never unpacks it.
@@ -259,10 +266,26 @@ module Celerite
       end
     end
 
+    # `installer/gem_installer.rb:44-49` + `parallel_installer.rb:198`: a
+    # download failure is reported like any other `BundlerError` — class name,
+    # message, the install failure line and the `In Gemfile:` tree. RubyGems'
+    # Ruby backtrace cannot be reproduced, so it is omitted.
+    def self.download_failure_message(name : String, version : String,
+                                      error : Downloader::ForbiddenDownloadError,
+                                      tree : Array(NamedTuple(name: String, version: String?))? = nil,
+                                      gemfile_name : String = "Gemfile") : String
+      String.build do |io|
+        io << error.error_class_name << ": " << error.message << "\n\n"
+        io << "An error occurred while installing " << name << " (" << version << "), and Bundler cannot continue."
+        io << "\n\n" << self.failure_tree(name, tree, "Gemfile")
+      end
+    end
+
     # `parallel_installer.rb:256-275`: "In <Gemfile>:" then one indented line
     # per dependency level; non-leaf entries say what they were resolved to.
-    private def require_tree_for(name : String) : String
-      entries = dependency_tree.try(&.call(name)) || [{name: name, version: nil}]
+    def self.failure_tree(name : String, tree : Array(NamedTuple(name: String, version: String?))?,
+                          gemfile_name : String) : String
+      entries = tree || [{name: name, version: nil}]
       String.build do |io|
         io << "In " << gemfile_name << ":"
         entries.each_with_index do |entry, index|
@@ -272,6 +295,12 @@ module Celerite
           end
         end
       end
+    end
+
+    # `parallel_installer.rb:256-275`: `In Gemfile:` tree for this spec.
+    private def require_tree_for(name : String) : String
+      entries = dependency_tree.try(&.call(name)) || [{name: name, version: nil}]
+      Installer.failure_tree(name, entries, gemfile_name)
     end
 
     private def clean_partial(name : String, version : String, platform : String?, full_name : String) : Nil

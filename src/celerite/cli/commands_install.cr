@@ -240,10 +240,32 @@ module Celerite
         resolution.local_only = rest.includes?("--local")
         resolution.prefer_local = rest.includes?("--prefer-local")
 
+        # Fetch/install lines are buffered as events and flushed after the
+        # resolution decision (see the comment above `install_events`'s later
+        # uses), but the reference prints a gem's `Fetching` line *before* its
+        # download retries start: `Bundler::Retry#fail_attempt` writes a blank
+        # line and then the warning (`retry.rb:60-64`), so a 403 download leaves
+        # `Fetching <gem>` followed by one blank line per attempt. `early_fetch`
+        # names the gem whose buffered line must be printed at the first retry
+        # notice, which keeps both orders intact.
+        install_events = [] of NamedTuple(kind: String, name: String, line: String)
+        early_fetch = [] of String
+        flush_early_fetch = -> {
+          unless early_fetch.empty?
+            name = early_fetch.first
+            if index = install_events.index { |event| event[:kind] == "fetch" && event[:name] == name }
+              stdout.puts install_events[index][:line]
+              install_events.delete_at(index)
+            end
+            early_fetch.clear
+          end
+          stdout.puts ""
+        }
+
         install_path = install_path(config)
         abi = ruby_abi(bridge)
         gem_root = InstallPaths.gem_root(config, bridge.ruby_environment.default_gem_dir, abi)
-        downloader = Downloader.new(resolution.primary_remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, resolution.primary_remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(resolution.primary_remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config))
+        downloader = Downloader.new(resolution.primary_remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, resolution.primary_remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(resolution.primary_remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config), warning_io: stderr, notice: flush_early_fetch)
         installer = Installer.new(gem_root, abi, bridge, downloader, stdout)
         installer.config = config
         installer.no_install = no_install
@@ -355,7 +377,8 @@ module Celerite
         # and flush them after the decision. On the 2.7 profile the reference
         # repairs one spec at a time and prints its Fetching/Installing pair
         # together, so the flush reorders the buffered events in that case.
-        install_events = [] of NamedTuple(kind: String, name: String, line: String)
+        # `install_events` itself is declared above so the retry notice can
+        # release one pending `Fetching` line early.
         repaired_edges = false
         begin
           cached_paths = {} of String => String
@@ -365,7 +388,7 @@ module Celerite
           install_spec = ->(spec : Resolution::ResolvedSpec, cached : String?) do
             remote = resolution.remote_for(spec.name)
             spec_installer = installers_by_remote[remote]? || begin
-              remote_downloader = Downloader.new(remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config))
+              remote_downloader = Downloader.new(remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config), warning_io: stderr, notice: flush_early_fetch)
               next_installer = Installer.new(gem_root, abi, bridge, remote_downloader, stdout)
               next_installer.config = config
               next_installer.no_install = no_install
@@ -402,11 +425,22 @@ module Celerite
               name: spec.full_name,
               line: "Fetching #{spec.name} #{spec.version}#{platform_suffix(spec.platform)}#{was_suffix.call(spec)}",
             }
+            # Arm the retry notice so a 403 download prints this buffered
+            # `Fetching` line before the first blank line (see the comment on
+            # `flush_early_fetch`).
+            early_fetch << spec.full_name
             remote = resolution.remote_for(spec.name)
-            spec_downloader = remote == resolution.primary_remote ? downloader : (installers_by_remote[remote]?.try(&.downloader) || Downloader.new(remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config)))
-            cached_paths[spec.full_name] = spec_downloader.fetch(
-              spec.name, spec.version.to_s, spec.platform, spec.checksum
-            )
+            spec_downloader = remote == resolution.primary_remote ? downloader : (installers_by_remote[remote]?.try(&.downloader) || Downloader.new(remote, downloader_cache_root, Commands.retry_count(config), Celerite::Mirror.resolve(config, remote), Commands.ssl_option(config, "ssl_ca_cert"), Commands.ssl_option(config, "ssl_client_cert"), Commands.ssl_option(config, "ssl_verify_mode"), config.credentials_for(remote), timeout: Commands.timeout_seconds(config), proxy: Celerite::Proxy.resolve(config), warning_io: stderr, notice: flush_early_fetch))
+            begin
+              cached_paths[spec.full_name] = spec_downloader.fetch(
+                spec.name, spec.version.to_s, spec.platform, spec.checksum
+              )
+            rescue ex : Downloader::ForbiddenDownloadError
+              # RubyGems' downloader failure surfaces as an install failure
+              # (class name, install line, `In Gemfile:` tree) with exit 5
+              # (`gem_installer.rb:38-49`, `parallel_installer.rb:198`).
+              raise InstallError.new(Installer.download_failure_message(spec.name, spec.version.to_s, ex))
+            end
           end
           pure, ext = pending.partition do |spec|
             cached = cached_paths[spec.full_name]?
@@ -1261,7 +1295,7 @@ module Celerite
       stdout.puts "Bundler #{resolution.bridge_bundler_version} is running, but your lockfile was generated with #{locked}. Installing Bundler #{locked} and restarting using that version."
       stdout.puts "Fetching bundler #{locked}"
 
-      downloader = Downloader.new("https://rubygems.org/", InstallPaths.downloader_cache_root, Commands.retry_count(definition.config), Celerite::Mirror.resolve(definition.config, "https://rubygems.org/"), Commands.ssl_option(definition.config, "ssl_ca_cert"), Commands.ssl_option(definition.config, "ssl_client_cert"), Commands.ssl_option(definition.config, "ssl_verify_mode"), definition.config.credentials_for("https://rubygems.org/"), timeout: Commands.timeout_seconds(definition.config), proxy: Celerite::Proxy.resolve(definition.config))
+      downloader = Downloader.new("https://rubygems.org/", InstallPaths.downloader_cache_root, Commands.retry_count(definition.config), Celerite::Mirror.resolve(definition.config, "https://rubygems.org/"), Commands.ssl_option(definition.config, "ssl_ca_cert"), Commands.ssl_option(definition.config, "ssl_client_cert"), Commands.ssl_option(definition.config, "ssl_verify_mode"), definition.config.credentials_for("https://rubygems.org/"), timeout: Commands.timeout_seconds(definition.config), proxy: Celerite::Proxy.resolve(definition.config), warning_io: stderr, notice: -> { stdout.puts "" })
       cached = downloader.fetch("bundler", locked, nil, nil)
       stdout.puts "Fetching gem metadata from https://rubygems.org/."
 
