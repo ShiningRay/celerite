@@ -3450,3 +3450,106 @@ Gemfile = `source "http://127.0.0.1:<port>/"` + `gem "json_pure", "2.6.0"`）：
 - 重试间隔按参考的指数退避起点 0.5s 实现，但 `Bundler::Retry` 的 jitter（±0.5）未建模，
   故三次重试的总耗时与参考不完全一致。
 - `/quick/` 403 与 `/gems/` 403 目前走同一分支，二者在参考里是否同一路径未分别验证。
+## 2026-11-17（M7(2)/M7(4)：`--quiet` 的抑制面、`lock --print` 的解析行、`add` 的重复声明语义）
+
+本轮四组语义按参考重新对齐，参考锚点均在 `bundler-4.0.24`（2.7.x 差异单独标注）。
+
+### 1. `--quiet` 是 method option，不是类选项
+
+- 参考 `cli/install.rb:11`、`cli/update.rb:12`、`cli/add.rb:15`、`cli/cache.rb:12`、
+  `cli/doctor/diagnose.rb:78` 都是 `Bundler.ui.level = "warn" if options[:quiet]`；
+  `Bundler::CLI.class_options` 只有 `--no-color`/`--retry`/`--verbose`，所以 `--quiet`
+  在 `check`/`lock`/`list`/`show`/`outdated`/`binstubs`/`init`/`pristine`/`clean` 等命令上
+  由 Thor 报 `Unknown switches "--quiet"`（exit 15）。
+- 实现：`--quiet` 从 `SWITCH_FLAGS_CLASS`/`SWITCH_FLAGS_COMMON` 移除，加进
+  `INSTALL_SWITCH_FLAGS`/`UPDATE_SWITCH_FLAGS`/`CACHE_SWITCH_FLAGS`/`ADD_SWITCH_FLAGS`/
+  `DOCTOR_SUBCOMMAND_FLAGS`；`dispatch` 在 `strip_global_flags` 之前取 `quiet_requested`，
+  命中 `QUIET_COMMANDS = ["install", "update", "add", "cache", "package", "pack"]`（或
+  `doctor`）时把 `stdout` 换成 `IO::Memory`，等价于把 UI 阈值降到 `warn`：`info`/`confirm`
+  全部丢弃，`warn`/`error`（stderr）与 80 列折行不变。
+- 回显先于降级：`print_command` 在 Thor 的 dispatch 回调里执行（`cli.rb:34-39`），
+  `ui.level = "warn"` 在命令体里，故 `install --quiet --verbose` 仍打印
+  ``Running `bundle install --quiet --verbose` with bundler 4.0.24``。
+
+### 2. `lock --print` 无锁文件时必须打印 `Resolving dependencies...`
+
+- 参考 `cli/lock.rb:24` 把 `Bundler.ui.output_stream` 切到 `:stderr`（`--print` 的锁正文走
+  stdout），`:70-76` 的 `add_checksums`/`normalize_platforms` 会强制物化进而解析；
+  `resolver.rb:34` 是 `Resolving dependencies...` 的唯一发射点。
+- 原实现只要 `--print`/`--add-checksums`/`--normalize-platforms` 就 `show_resolving = false`，
+  于是无锁文件时缺这一行。改为仅当「参考的 `no_resolve_needed?` 也会短路」时才抑制：
+  进入命令时已有锁文件、且 `lockfile_matches_dependencies?` 为真（锁仍满足 Gemfile）、
+  且没有 unlock（`--update`/`--update NAME`）、没有 `--add-platform`/`--remove-platform`。
+  后三个条件在首版遗漏，导致全量差分里 `lock-normalize`（锁的 `DEPENDENCIES` 为 stale）与
+  `lock-file-update`（`--update --print` 且锁版本落后）少打这一行 —— 这两处即真实回归，
+  收紧条件后双 profile 全量 lock 家族 17 例全 PASS。
+- 实测矩阵（8 例，4.0.24 与 2.7.2 双侧）：无锁 `--print` → stderr `Fetching` +
+  `Resolving`；无锁 `--add-checksums`/`--normalize-platforms` → stdout
+  `Fetching` + `Resolving` + `Writing`；裸 `lock` 无锁 → `Writing` 先于 `Fetching`；
+  有锁 `--print` → stderr 空；有锁 forcing 开关 → `Fetching` + `Writing`（无 `Resolving`）。
+
+### 3. `add` 对已在 Gemfile 的同名 gem
+
+参考 `Injector#inject`（`injector.rb:25-58`）把注入依赖与 `builder.dependencies` 相减
+（`:35`），只有仍有剩余时才写 Gemfile（`:47`），但 `to_definition` → `remotely!` →
+`@definition.lock`（`:40-53`）**无条件**执行。
+
+| Gemfile | 锁 | 命令 | 参考 | 实现前 |
+|---|---|---|---|---|
+| `gem "json_pure"` | 有 | `add json_pure --skip-install` | exit 0、全静默、锁不变 | exit 0、无锁可写 |
+| `gem "json_pure"` | 无 | 同上 | exit 0、`Fetching`+`Resolving`、写出锁 | 全静默、不写锁 |
+| `gem "json_pure"` | 有 | `add racc --skip-install` | exit 0、`Fetching`+`Resolving`、锁新增 racc | 相同 |
+| `gem "json_pure", "~> 2.6"` | 任意 | `add json_pure --version 2.6.0 --skip-install` | exit 4、stdout 空、Gemfile 不变 | exit 4 但先写 Gemfile、stdout 有抓取行 |
+
+- 实现：删掉自造的 `Cannot declare <name> twice in the Gemfile`（参考两版全树无此串），
+  改为求值 Gemfile 后比对 `Gem::Requirement` 语义；需求相同则不写 Gemfile，需求不同则抛
+  `DSLError`（新增 `GemfileError`(4)/`DSLError`），描述里带 `injected gems` 文件名与
+  `update_prompt`（`. Gem already added` / `. If you want to update the gem version, run
+  bundle update <name>.` 加 `You may also need to change the version requirement…`，末句自带
+  句号，故与参考一样出现两个句号）。
+- 追加行改用 `File.open(path, "a")`（`Injector#append_to` 的 `f.puts; f.puts lines`），
+  原文件行尾字节不动、新增行按平台 CRLF。
+- `--skip-install` 路径新增 `persist_add_lockfile`：用同一桥复解析一次，无锁文件时打
+  `Fetching source index from <remote>/` + `Resolving dependencies...` 并写锁，有锁且内容
+  相同则静默（对齐 `definition.rb:401-419` 的 `lockfiles_equal?` 只 touch）。
+
+### 4. 2.7.2 的 `binstubs --path` 与 `DSLError` 帧
+
+- `cli/binstubs.rb:15`（2.7.x）：`set_command_option :bin, path_option if options["path"]`；
+  `bin` 属 `REMEMBERED_KEYS`（`settings.rb:46-52`），故把值写进 `.bundle/config`
+  （`BUNDLE_BIN`）。4.0.24 改为 removed flag（exit 15，文案带 `config set bin '<value>'`）。
+  实现按 profile 分支：2.x 打 `[DEPRECATED]` 后 `definition.config.set_local("bin", value)`
+  并继续，4.x 打 removed 文案并返回 15；`--path` 的 `lazy_default: "bin"` 用
+  `Commands.flag_value` 复刻（下一个 token 是开关时仍取 `"bin"`）。
+- `bin/` 目录的创建时机改到「已找到 spec 且有 executables」之后（`bundler.rb:120-126` 的
+  首次 `bin_path` 调用 / 4.0.24 `installer.rb:130`），因此 `binstubs json_pure` 在 gem 缺失时
+  不再残留 `bin/`。
+- `dsl.rb:611`（2.7.x）用 `trace_line.split(":")[1].to_i - 1` 取帧行号；Windows 路径
+  `C:/…/injected gems:1` 会被切成 `C:`、`/…/injected gems`、`1`，于是行号算成 `-1`，
+  `lines[-1]` 与 `lines[0]` 同一行被渲染两次（且 `first_line` 为假，上一行渲染成裸缩进）。
+  4.0.24 改用正则 `[:(\d+)(?::in\b|\z)]` 故无此现象。实现按 profile 复刻两版形态，
+  并用 `ruby_line_at` 处理 Ruby 负索引（Crystal `lines[-2]` 越界抛错）。
+
+### 证据
+
+- `spec/m7_quiet_and_add_spec.cr` **20 examples, 0 failures**（`--quiet` 4 例、lock 进度 3 例、
+  binstubs 开关面 3 例、2.7.2 profile 3 例、cooldown 门控 1 例、add 6 例）。
+- 差分新夹具 6 条，双 profile 全 PASS：`quiet-install`(0)、`quiet-unknown`(15)、
+  `lock-print-nolock`(0)、`binstubs-path-removed`（4.0.24=15、2.7.2=7）、`add-existing-same`(0)、
+  `add-existing-conflict`(4)。
+- 2.7.2 回归子集 21 例：`binstubs`/`binstubs-flags`/`binstubs-shebang`/`binstubs-shebang-line`/
+  `add-path`/`add-require`/`add-skip-install`/`add-source`/`add-strict`/`add-strict-optimistic`/
+  `add-version-plain`/`lock-print`/`lock-add-unknown-platform` 等全 PASS；5 条失败与 1 条 SKIP
+  全为既有环境族（racc 原生扩展 `Gem::Ext::BuildError`、msys `0xC0000022` 的 `git clone`、
+  `add-group` 的 2.7.2 联网装 bundler deferral）。
+- 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen` 0、
+  `git diff --check` 0、全量 `crystal spec` **634 examples, 0 failures, 4 errors**（4 = 既有
+  `spec/git_source_spec.cr` msys Low-IL）。
+
+已声明差异：
+
+- `--quiet` 用「丢弃 stdout」近似 `ui.level = "warn"`，未建 `info`/`confirm`/`warn` 分级；
+  若某命令把警告写到 stdout 会与本实现不同（当前无此路径）。
+- `binstubs --path --force` 在 2.7.2 下的 `--force` 语义未与 `--path` 组合单独验证（只验证了
+  取值仍为 `bin`）。
+- `add` 的 gemspec dev 依赖冲突分支（`dsl.rb:265-285` 的 pub_grub 交集）未建模。

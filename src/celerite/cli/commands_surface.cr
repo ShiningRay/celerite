@@ -245,7 +245,7 @@ module Celerite
     # are accepted but not implemented yet (--github/--glob/--cooldown) stay
     # here so the switch check matches the reference; their semantics are
     # recorded as a declared gap instead.
-    ADD_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--skip-install", "--optimistic", "--strict"]
+    ADD_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--skip-install", "--optimistic", "--strict", "--quiet"]
     ADD_SWITCH_VALUES = SWITCH_VALUES_COMMON + [
       "--version", "-v", "--group", "-g", "--source", "-s", "--require", "-r",
       "--path", "--git", "--github", "--branch", "--ref", "--glob", "--cooldown",
@@ -265,37 +265,64 @@ module Celerite
         return 1
       end
 
-      # Pinned by `add-git`: the reference announces the git fetch before the
-      # requirement probe's index fetch/resolve lines.
-      if git = flag_value(rest, "--git")
-        stdout.puts "Fetching #{git}"
-      end
-
       definition = Definition.build
       gemfile_path = definition.gemfile_path
-      gemfile = File.read(gemfile_path)
 
-      if gemfile.matches?(/^\s*gem\s+["']#{Regex.escape(name)}["']/)
-        stderr.puts "Cannot declare #{name} twice in the Gemfile"
-        return 1
+      # `Bundler::Injector#inject` (injector.rb:25-58) evaluates the Gemfile and
+      # then drops every requested dependency the Gemfile already declares
+      # (`@deps -= builder.dependencies`, which compares name+requirement+type).
+      # The remaining set gates both `append_to` and the injected-gems
+      # evaluation, so a repeated `add` with the same requirement is a no-op
+      # (the Gemfile keeps its bytes) while a different requirement surfaces as
+      # a conflict inside the synthetic `injected gems` file — before any index
+      # fetch line or Gemfile write.
+      bridge = Bridge::Client.new
+      begin
+        evaluation = bridge.evaluate_gemfile(gemfile_path)
+        explicit_version = flag_value(rest, "--version") || flag_value(rest, "-v")
+        desired = explicit_version ? ["= #{explicit_version}"] : [">= 0"]
+        current = evaluation.dependencies.find { |dep| dep.name == name }
+        if current && !same_requirement?(current.requirements, desired)
+          raise injected_gem_conflict(name, current.requirements, desired, gemfile_path)
+        end
+        already_declared = !current.nil?
+
+        probe_printed = false
+        unless already_declared
+          # Pinned by `add-git`: the reference announces the git fetch while
+          # evaluating the injected dependency, i.e. after the conflict check
+          # and before the requirement probe's index fetch/resolve lines.
+          if git = flag_value(rest, "--git")
+            stdout.puts "Fetching #{git}"
+          end
+
+          # Requirement semantics pinned by add-version/add-strict/
+          # add-optimistic probes: explicit `--version` is exact; otherwise
+          # strict (`= major.minor`), optimistic (`>= major.minor`) or the
+          # default pessimistic (`~> major.minor`) form.
+          probe = latest_requirement_for(definition, name, stdout, rest, bridge)
+          version_requirement = probe[:requirement]
+          gem_line = "gem \"#{name}\"#{version_requirement}#{add_group_option(rest)}#{add_option_suffix(rest)}"
+          append_gemfile(gemfile_path, gem_line)
+          probe_printed = probe[:printed]
+        end
+
+        # `Injector#inject` (injector.rb:25-58) relocks the definition even when
+        # every requested gem was already declared (`@definition.lock` runs
+        # unconditionally, only `append_to` is gated on `@deps.any?`). The plain
+        # install path below writes that lockfile itself, but `--skip-install`
+        # stops before the installer, so the relock has to happen here: with an
+        # existing lockfile the regenerated contents equal the old ones and
+        # nothing is printed (`add json_pure` on a locked project is silent),
+        # while a project without a lockfile gets the resolver's fetch/resolve
+        # announcement and the new lockfile (`add-skip-install`,
+        # `add-existing-same` fixtures).
+        if rest.includes?("--skip-install")
+          persist_add_lockfile(definition, bridge, stdout, probe_printed)
+        end
+      ensure
+        bridge.close
       end
-
-      # Requirement semantics pinned by add-version/add-strict/
-      # add-optimistic probes: explicit `--version` is exact; otherwise
-      # strict (`= major.minor`), optimistic (`>= major.minor`) or the
-      # default pessimistic (`~> major.minor`) form.
-      version_requirement = latest_requirement_for(definition, name, stdout, rest)
-      groups = (flag_value(rest, "--group") || flag_value(rest, "-g") || "").split(",").map(&.strip).reject(&.empty?)
-      group_line = groups.empty? ? "" : ", group: #{groups.size == 1 && !rest.join(" ").includes?(",") ? ":#{groups.first}" : groups.map { |g| ":#{g}" }.join(", ")}"
-      gem_line = "gem \"#{name}\"#{version_requirement}#{group_line}#{add_option_suffix(rest)}"
-
-      # Ruby's text mode on Windows rewrites the Gemfile with CRLF (reference
-      # parity: the file is normalized, not preserved).
-      lines = gemfile.gsub(/\r\n/, "\n").chomp.split("\n")
-      insert_at = lines.rindex { |l| l.strip.starts_with?("gem ") } || (lines.size - 1)
-      lines.insert(insert_at + 1, gem_line)
-      eol = {{ flag?(:windows) }} ? "\r\n" : "\n"
-      File.write(gemfile_path, lines.join(eol) + eol)
 
       if rest.includes?("--skip-install")
         # Pinned by `add-skip-install`: write the Gemfile line (after the
@@ -305,10 +332,73 @@ module Celerite
 
       # Reference add prints two fetches (requirement probing + shared
       # resolution); install() repeats the second fetch when the lockfile
-      # is (re)written.
-      code = install(stdout, stderr, install_args_from_add(rest, name),
-        summary: false, no_reuse: true)
-      code
+      # is (re)written. An unchanged Gemfile still runs the installer, which
+      # reuses the lockfile resolution and therefore prints nothing.
+      install(stdout, stderr, install_args_from_add(rest, name),
+        summary: false, no_reuse: !already_declared)
+    end
+
+    # `Gem::Requirement#==` compares the sorted `as_list`; the Gemfile text
+    # `"2.6.0"` and `--version 2.6.0` both normalize to `= 2.6.0`.
+    private def self.same_requirement?(current : Array(String), desired : Array(String)) : Bool
+      current.sort == desired.sort
+    end
+
+    # `Bundler::Dsl#add_dependency` raises `GemfileError` when the requested
+    # requirement differs from the one already declared, but only when the
+    # conflicting file is the injector's synthetic `injected gems` (dsl.rb:289-303);
+    # the wrapper in `eval_gemfile` (dsl.rb:46-61) prefixes it and `DSLError#to_s`
+    # renders the offending line.
+    private def self.injected_gem_conflict(name : String, current : Array(String), desired : Array(String),
+                                           gemfile_path : String) : DSLError
+      current_open = current.includes?(">= 0")
+      prompt = if desired.includes?(">= 0") && !current_open
+                 ". Gem already added"
+               else
+                 update = ". If you want to update the gem version, run `bundle update #{name}`"
+                 unless current_open
+                   update += ". You may also need to change the version requirement specified in the Gemfile if it's too restrictive."
+                 end
+                 update
+               end
+      description = "There was an error parsing `injected gems`: You cannot specify the same gem twice with different version requirements.\n" \
+                    "You specified: #{name} (#{current.join(", ")}) and #{name} (#{desired.join(", ")})#{prompt}"
+      # `Injector#build_gem_lines` joins with "\n" and appends none (injector.rb:99-124),
+      # so the synthetic file's single line carries no terminator — that is why
+      # the 2.7.x frame (which resolves its index to `-1`) renders the same line
+      # twice on one output line instead of splitting it.
+      contents = "gem \"#{name}\", #{desired.map(&.inspect).join(", ")}"
+      # Ruby builds the injector's synthetic path with `File.join` over the
+      # already-normalized Bundler root, so the frame renders forward slashes
+      # even on Windows (`<root>/injected gems:1`).
+      injected_path = "#{File.dirname(gemfile_path).gsub('\\', '/')}/injected gems"
+      DSLError.new(description, injected_path, contents, 0)
+    end
+
+    # `Injector#append_to` (injector.rb:126-131): `f.puts; f.puts new_gem_lines`
+    # appends in Ruby's text mode, so the existing bytes stay untouched and the
+    # new block is written with CRLF on Windows.
+    private def self.append_gemfile(gemfile_path : String, gem_line : String) : Nil
+      eol = {{ flag?(:windows) }} ? "\r\n" : "\n"
+      File.open(gemfile_path, "a") do |file|
+        file.print(eol)
+        file.print(gem_line)
+        file.print(eol)
+      end
+    end
+
+    # `Injector#build_gem_lines` (injector.rb:109-111): one group renders as
+    # `group: :dev`, several as `groups: [:dev, :test]`.
+    private def self.add_group_option(rest : Array(String)) : String
+      raw = flag_value(rest, "--group") || flag_value(rest, "-g")
+      return "" unless raw
+      groups = raw.split(",").map(&.strip).reject(&.empty?)
+      return "" if groups.empty?
+      if groups.size == 1
+        ", group: :#{groups.first}"
+      else
+        ", groups: [#{groups.map { |group| ":#{group}" }.join(", ")}]"
+      end
     end
 
     # `run_install` validates its arguments with INSTALL_SWITCH_*, which does
@@ -365,8 +455,12 @@ module Celerite
       parts.map { |part| ", #{part}" }.join
     end
 
-    private def self.latest_requirement_for(definition : Definition, name : String, stdout : IO, rest : Array(String)) : String
-      bridge = Bridge::Client.new
+    # Returns the Gemfile requirement suffix plus whether the probe already
+    # printed its source-index/resolve lines, so the injector's relock can stay
+    # silent instead of announcing the same fetch twice.
+    private def self.latest_requirement_for(definition : Definition, name : String, stdout : IO, rest : Array(String),
+                                            bridge : Bridge::Client) : NamedTuple(requirement: String, printed: Bool)
+      printed = false
       begin
         resolution = Resolution.new(definition, false, bridge)
         if flag_value(rest, "--path").nil? && flag_value(rest, "--git").nil?
@@ -378,14 +472,16 @@ module Celerite
           remote = resolution.primary_remote
           stdout.puts "Fetching source index from #{remote.chomp("/")}/" unless remote.empty?
           stdout.puts "Resolving dependencies..."
+          printed = true
         else
           resolution.progress = stdout # path/git probes use the local gemspec
           resolution.show_resolving = true
           resolution.resolve!
+          printed = true
         end
 
         if explicit = flag_value(rest, "--version") || flag_value(rest, "-v")
-          return ", \"= #{explicit}\""
+          return {requirement: ", \"= #{explicit}\"", printed: printed}
         end
 
         versions = if local_spec_dir = flag_value(rest, "--path") || flag_value(rest, "--git")
@@ -406,7 +502,7 @@ module Celerite
                      entries = client.info(name)
                      entries.map { |e| Gem::Version.new(e.version) }.reject(&.prerelease?)
                    end
-        return "" if versions.empty?
+        return {requirement: "", printed: printed} if versions.empty?
         latest = versions.max
         # Pinned `Injector#conservative_version`: versions < 1.0 keep three
         # segments (0.1.0), versions >= 1.0 keep major.minor (1.8).
@@ -420,11 +516,38 @@ module Celerite
                    else
                      "~> "
                    end
-        ", \"#{operator}#{segs.join(".")}\""
+        {requirement: ", \"#{operator}#{segs.join(".")}\"", printed: printed}
       rescue
-        ""
+        {requirement: "", printed: printed}
+      end
+    end
+
+    # `Injector#inject` relocks the definition even when nothing was appended
+    # (`@definition.lock` at injector.rb:53 runs unconditionally), and
+    # `Definition#write_lock` (definition.rb:401-419) rewrites the file only when
+    # the regenerated contents differ from the existing ones. `--skip-install`
+    # returns before the installer writes the lockfile, so the relock happens
+    # here instead: a locked project whose Gemfile still matches resolves
+    # through the lockfile and prints nothing (`add json_pure` is silent), while
+    # a stale or missing lockfile makes the resolver announce
+    # `Fetching source index from <remote>/` + `Resolving dependencies...` and
+    # the new lockfile lands (`add-skip-install`, `add-existing-same` fixtures).
+    private def self.persist_add_lockfile(definition : Definition, bridge : Bridge::Client, stdout : IO,
+                                          probe_printed : Bool) : Nil
+      resolution = Resolution.new(definition, false, bridge)
+      begin
+        # A newly appended gem already made the requirement probe fetch and
+        # resolve; repeating those lines would duplicate them.
+        resolution.progress = probe_printed ? IO::Memory.new : stdout
+        resolution.show_resolving = !probe_printed
+        resolution.resolve!(true)
+        text = resolution.generated_lockfile.to_lock
+        existing = File.file?(definition.lockfile_path) ? File.read(definition.lockfile_path) : nil
+        if existing.nil? || semantic_content(existing) != semantic_content(text)
+          Lockfile.write(definition.lockfile_path, text, preserve_crlf: preserve_lockfile_crlf?)
+        end
       ensure
-        bridge.close
+        resolution.close
       end
     end
 

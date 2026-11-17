@@ -28,6 +28,12 @@ module Celerite
       # `--verbose` echo (reference `CLI#print_command`) must be reconstructed
       # from the raw invocation.
       verbose_requested = args.includes?("--verbose")
+      # `--quiet` raises the UI level to `warn` (bundler/cli/install.rb:11 and
+      # friends), so every `info`/`confirm` line disappears while warnings and
+      # errors stay on stderr. It is captured before `strip_global_flags` for
+      # symmetry with `--verbose`, even though it is a method option and
+      # therefore already sits inside `rest`.
+      quiet_requested = args.includes?("--quiet")
       cli_retry = extract_retry_switch(args)
       # Thor parses the class option `--retry` before dispatch, so a
       # non-numeric value fails before any command output.
@@ -45,6 +51,15 @@ module Celerite
       command = args[0]
       rest = args[1..]
       print_command_echo(command, rest, verbose_requested, cli_retry, stdout)
+
+      # `--quiet` is honoured by install/update/add/cache (and `doctor`, whose
+      # Thor subcommand declares the same option): the reference raises the UI
+      # level to `warn`, which silences every `info`/`confirm` line while
+      # warnings and errors keep flowing to stderr. The echo above runs before
+      # that level change in the reference too, so it survives `--verbose`.
+      if quiet_requested && (QUIET_COMMANDS.includes?(command) || command == "doctor")
+        stdout = IO::Memory.new
+      end
 
       # Thor prints the command's manpage for `--help` before the body runs.
       # The manpage text itself stays a declared divergence: we print the shared
@@ -162,6 +177,11 @@ module Celerite
     # Commands whose `--verbose` echo is suppressed (reference
     # `Bundler::CLI::PARSEABLE_COMMANDS`).
     PARSEABLE_COMMANDS = ["check", "config", "help", "exec", "platform", "show", "version"]
+
+    # `--quiet` is a `method_option` of these commands only
+    # (bundler/cli.rb:281 install, :328 update, :418 add, :474 cache);
+    # every other command reports `Unknown switches "--quiet"`.
+    QUIET_COMMANDS = ["install", "update", "add", "cache", "package", "pack"]
 
     # Commands this CLI implements that the reference echoes before running.
     # `info` is a Thor command of its own (bundler/cli.rb:382) and is not part of
@@ -506,9 +526,27 @@ module Celerite
       nil
     end
 
-    private def self.reject_unknown_switches(stderr : IO, rest : Array(String), allowed_flags : Array(String),
-                                             allowed_values : Array(String),
-                                             dictionary : Array(String)? = nil) : Int32?
+    # The profile selects the reference implementation we mirror
+    # (`CELERITE_PROFILE_BUNDLER_VERSION`, defaulting to 4.0.24).
+    def self.bundle_profile_version : String
+      ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+    end
+
+    def self.profile_2_x? : Bool
+      bundle_profile_version.starts_with?("2.")
+    end
+
+    def self.reject_unknown_switches(stderr : IO, rest : Array(String), allowed_flags : Array(String),
+                                     allowed_values : Array(String),
+                                     dictionary : Array(String)? = nil) : Int32?
+      # `--cooldown` only exists on 4.x: 2.7.2 rejects it on every command with
+      # `Unknown switches "--cooldown"` (measured on lock/update/cache/install/
+      # add/outdated), so it leaves the value surface for the 2.x profile.
+      if Commands.profile_2_x?
+        allowed_values = allowed_values.reject { |value| value == "--cooldown" }
+        dict = dictionary.try(&.reject { |entry| entry == "--cooldown" })
+        dictionary = dict
+      end
       unknown = unknown_switch_tokens(rest, allowed_flags, allowed_values)
       return nil if unknown.empty?
       stderr.puts "Unknown switches " + unknown.map { |token| "\"#{token}\"" }.join(", ")
@@ -518,8 +556,11 @@ module Celerite
       15
     end
 
-    # Thor's class options are accepted by every subcommand.
-    SWITCH_FLAGS_CLASS  = ["--help", "-h", "--no-color", "--quiet", "--verbose", "-V"]
+    # Thor's class options are accepted by every subcommand. Measured on
+    # `Bundler::CLI.class_options`: only `no-color`, `retry` and `verbose`
+    # exist, so `--quiet` is a *method* option of install/update/add/cache and
+    # every other command reports `Unknown switches "--quiet"`.
+    SWITCH_FLAGS_CLASS  = ["--help", "-h", "--no-color", "--verbose", "-V"]
     SWITCH_VALUES_CLASS = ["--retry", "-r"]
 
     # Option surfaces of commands that used to accept anything, transcribed
@@ -535,6 +576,11 @@ module Celerite
     OPEN_SWITCH_VALUES   = BARE_SWITCH_VALUES + ["--path"]
     REMOVE_SWITCH_FLAGS  = BARE_SWITCH_FLAGS + ["--install"]
     REMOVE_SWITCH_VALUES = BARE_SWITCH_VALUES
+    # `cli.rb` binstubs: force, path, shebang, standalone, all, all-platforms.
+    # No `quiet` line, so `bundle binstubs --quiet` is an unknown switch and
+    # Thor reports it before the command body validates the runtime.
+    BINSTUBS_SWITCH_FLAGS  = BARE_SWITCH_FLAGS + ["--force", "--standalone", "--all", "--all-platforms"]
+    BINSTUBS_SWITCH_VALUES = BARE_SWITCH_VALUES + ["--path", "--shebang"]
 
     # Options that take a value but live in the matching `*_SWITCH_FLAGS` array
     # (the command code reads those flags directly). Positional-argument
@@ -557,7 +603,7 @@ module Celerite
     GEM_SWITCH_VALUES = BARE_SWITCH_VALUES + [
       "--ci", "--edit", "-e", "--ext", "--github-username", "--linter", "--test",
     ]
-    DOCTOR_SUBCOMMAND_FLAGS  = BARE_SWITCH_FLAGS + ["--ssl"]
+    DOCTOR_SUBCOMMAND_FLAGS  = BARE_SWITCH_FLAGS + ["--ssl", "--quiet"]
     DOCTOR_SUBCOMMAND_VALUES = BARE_SWITCH_VALUES + ["--gemfile", "--tls-version", "--verify-mode"]
 
     # `doctor`/`plugin` route through Thor subcommands, which report unknown
@@ -665,17 +711,17 @@ module Celerite
     # oracles. Global Thor flags are accepted everywhere; `--path`, `--without`
     # and `--with` are accepted because this port implements their semantics
     # even though 4.x removed them (declared deviation, see compat-report).
-    SWITCH_FLAGS_COMMON  = ["-h", "--help", "--verbose", "--no-color", "--quiet"]
+    SWITCH_FLAGS_COMMON  = ["-h", "--help", "--verbose", "--no-color"]
     SWITCH_VALUES_COMMON = ["--retry", "--jobs", "-j", "--gemfile"]
 
-    INSTALL_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--local", "--prefer-local", "--full-index", "--standalone", "--no-cache", "--no-lock", "--force", "--redownload", "--path", "--without", "--with"]
+    INSTALL_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--local", "--prefer-local", "--full-index", "--standalone", "--no-cache", "--no-lock", "--force", "--redownload", "--path", "--without", "--with", "--quiet"]
     INSTALL_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--target-rbconfig", "--cooldown", "--trust-policy", "-P", "--lockfile"]
 
     # `update` and `lock` switch surface, taken from the declared Thor options
     # (`Bundler::CLI.commands[name].options`, identical in 2.7.2 and 4.0.24
     # except `--cooldown`). Anything else must be rejected as an unknown switch
     # instead of being accepted and ignored.
-    UPDATE_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--all", "--local", "--full-index", "--force", "--patch", "--minor", "--major", "--pre", "--strict", "--conservative", "--ruby"]
+    UPDATE_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--all", "--local", "--full-index", "--force", "--patch", "--minor", "--major", "--pre", "--strict", "--conservative", "--ruby", "--quiet"]
     UPDATE_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--group", "-g", "--source", "--bundler", "--cooldown"]
 
     LOCK_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--local", "--full-index", "--print", "--normalize-platforms", "--add-checksums", "--patch", "--minor", "--major", "--pre", "--strict", "--conservative", "--update"]
@@ -685,7 +731,7 @@ module Celerite
     # no-install/no-prune/path/quiet (`bundler/cli.rb:466-497`). `--force`,
     # `--redownload`, `--no-cache`, `--local`, `--without` and `--with` are
     # install switches: Thor rejects them here instead of ignoring them.
-    CACHE_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--no-install", "--all-platforms", "--path"]
+    CACHE_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--no-install", "--all-platforms", "--path", "--quiet"]
     CACHE_SWITCH_VALUES = ["--retry", "-r", "--gemfile", "--cache-path", "--cooldown"]
 
     # Thor's `Unknown switches` suggestion dictionary is `switches`, i.e. every
@@ -2054,6 +2100,16 @@ module Celerite
       add_checksums = rest.includes?("--add-checksums")
       normalize_platforms = rest.includes?("--normalize-platforms")
 
+      # The reference only skips the "Resolving dependencies..." line when a
+      # lockfile already covers the Gemfile and nothing forces a re-resolution:
+      # `--print` and the forcing flags then short-circuit through the locked
+      # resolution (`definition.rb:342-363 no_resolve_needed?`). An unlock
+      # (`--update` / `--update NAME`), a platform edit, or a lockfile that
+      # disagrees with the Gemfile always starts the resolver, which announces
+      # the line -- on stderr in `--print` mode (measured on 4.0.24 and 2.7.2:
+      # `lock --update --print` and a stale lock both print it).
+      lockfile_exists_at_start = definition.lockfile_exists?
+
       resolution = Resolution.new(definition, unlock)
       # Nothing to unlock and `DEPENDENCIES` already matches the Gemfile: the
       # reference resolves nothing, so plain `lock` prints only "Writing
@@ -2107,7 +2163,17 @@ module Celerite
       # on stderr). `--print` and the forcing flags omit the
       # "Resolving dependencies..." line.
       resolution.progress = print_mode ? stderr : stdout
-      if print_mode || add_checksums || normalize_platforms
+      # `no_resolve_needed?` is the only path that skips the announcement: it
+      # requires a lockfile that still satisfies the Gemfile and no unlock,
+      # platform edit or checksum/normalize forcing flag. `--normalize-platforms`
+      # and `--add-checksums` only short-circuit when the lockfile is already
+      # current (`lock-normalize` and `lock-add-checksums` fixtures: the resolver
+      # prints nothing there but does print when the lockfile is stale).
+      lockfile_current = lockfile_exists_at_start &&
+                         !update && update_names.empty? &&
+                         !rest.includes?("--add-platform") && !rest.includes?("--remove-platform") &&
+                         definition.lockfile_matches_dependencies?(resolution.evaluation.dependencies)
+      if lockfile_current && (print_mode || add_checksums || normalize_platforms)
         resolution.show_resolving = false
       end
 

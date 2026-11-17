@@ -1347,6 +1347,32 @@ module Celerite
       end
     end
 
+    # `remembered_flag_deprecation("path", option_name: "bin")`: Thor parses
+    # `--path` with `lazy_default: "bin"`, so a bare `--path` still carries the
+    # value `'bin'`.  4.x raises InvalidOption (15); 2.7.x warns
+    # (`[DEPRECATED] ...`) and keeps going, which is why the same helper serves
+    # both profiles.
+    private def self.binstubs_path_value(rest : Array(String)) : String?
+      return nil unless rest.any? { |arg| arg == "--path" || arg.starts_with?("--path=") }
+      # Thor's `lazy_default: "bin"` applies whenever no value follows, including
+      # when the next token is another switch (`--path --force` -> "bin").
+      value = flag_value(rest, "--path") || "bin"
+      # cli/binstubs.rb:13-14 (2.7.x): `path_option = nil if path_option&.empty?`.
+      value.empty? ? nil : value
+    end
+
+    private def self.binstubs_path_flag(value : String?, stderr : IO) : Int32?
+      return nil if value.nil?
+      flag = RemovedFlag.new("--path", "bin", "'#{value}'")
+      if profile_2_x?
+        stderr.puts removed_flag_deprecation(flag)
+        nil
+      else
+        stderr.puts word_wrap(removed_flag_message(flag), 80)
+        15
+      end
+    end
+
     # ------------------------------------------------------------------
     # binstubs
     # ------------------------------------------------------------------
@@ -1362,12 +1388,34 @@ module Celerite
     end
 
     def self.binstubs(stdout : IO, stderr : IO, rest : Array(String)) : Int32
-      names = rest.reject(&.starts_with?("--"))
+      # Thor parses the option surface before the command body runs, so an
+      # unknown switch (`--quiet` is not declared for binstubs) outranks both
+      # the ruby validation and the "needs at least one gem" check. Measured:
+      # bad Gemfile ruby + `binstubs --quiet` still reports the switch (15).
+      if code = reject_unknown_switches(stderr, rest, BINSTUBS_SWITCH_FLAGS, BINSTUBS_SWITCH_VALUES)
+        return code
+      end
+      # Reference `cli.rb` binstubs body: `remembered_flag_deprecation("path",
+      # option_name: "bin")` runs before `Bundler.definition.validate_runtime!`,
+      # so 4.x reports the removed `--path` (15) ahead of a bad Gemfile ruby
+      # (18).  Thor declares `--path` with `lazy_default: "bin"`, hence a bare
+      # `--path` (or `--path --force`) still reads as `'bin'`.
+      path_value = binstubs_path_value(rest)
+      if path_code = binstubs_path_flag(path_value, stderr)
+        return path_code
+      end
+      names = subcommand_arguments(rest, BINSTUBS_SWITCH_FLAGS, BINSTUBS_SWITCH_VALUES)
       binstubs_remember_shebang(rest, stderr)
       # Reference `cli/binstubs.rb:12`: the runtime is validated before the
       # argument checks, so a mismatched Gemfile ruby wins over "pass a gem name".
       definition = Definition.build
       Commands.validate_runtime!(definition)
+      # cli/binstubs.rb:15 (2.7.x): `set_command_option :bin, path_option` writes
+      # the remembered value into `.bundle/config` right after the runtime check
+      # and before the installer runs; `bin` is a REMEMBERED_KEY (settings.rb:46-52).
+      if profile_2_x? && !path_value.nil?
+        definition.config.set_local("bin", path_value)
+      end
       if rest.includes?("--all") && !names.empty?
         stderr.puts "Cannot specify --all with specific gems"
         return 15
@@ -1385,8 +1433,10 @@ module Celerite
         install_root = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi))
         bin_dir = File.join(install_root, "bin")
         config_bin = definition.config["bin"].to_s
-        target = config_bin.empty? ? File.join(Dir.current, "bin") : File.expand_path(config_bin, Dir.current)
-        Dir.mkdir_p(target)
+        # `Bundler.bin_path` (bundler.rb:120-126) expands a relative `bin`
+        # against `Bundler.root` (the Gemfile's directory), not the process cwd.
+        root = File.dirname(definition.gemfile_path)
+        target = config_bin.empty? ? File.join(root, "bin") : File.expand_path(config_bin, root)
 
         all = rest.includes?("--all")
         force = rest.includes?("--force")
@@ -1437,6 +1487,10 @@ module Celerite
           end
           gem_dir = File.join(install_root, "gems", spec.full_name)
           bindir = info.bindir.empty? ? "bin" : info.bindir
+          # `Bundler.bin_path` memoizes and mkdir_p's on first use (bundler.rb:120-126),
+          # which the installer reaches only once a spec with executables is at
+          # hand (installer.rb:121-130) — so a missing gem never leaves `bin/` behind.
+          Dir.mkdir_p(target)
           exists = [] of String
           info.executables.each do |executable|
             source = File.join(gem_dir, bindir, executable)

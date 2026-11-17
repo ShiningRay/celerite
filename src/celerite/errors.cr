@@ -43,6 +43,110 @@ module Celerite
   class UnsupportedCommandError < Error
   end
 
+  # bundler/errors.rb:20 (`GemfileError < BundlerError`, `status_code(4)`).
+  class GemfileError < Error
+    def status_code : Int32
+      4
+    end
+  end
+
+  # bundler/dsl.rb:542-640 (`DSLError < GemfileError`). The reference frames the
+  # offending DSL line between `#  from <path>:<line>` markers and subtracts one
+  # from the trace line number, so the marker quotes line `n+1` while the
+  # enclosing context is rendered around index `n`. `message` is rstripped
+  # because Thor's `say` rstrips before writing the single trailing newline
+  # (`bundler/vendor/thor/lib/thor/shell/basic.rb`), and friendly-errors prints
+  # DSLErrors unwrapped (`bundler/friendly_errors.rb:26-27`).
+  class DSLError < GemfileError
+    getter description : String
+    getter dsl_path : String
+    getter contents : String
+    getter line_number : Int32
+
+    def initialize(@description : String, @dsl_path : String, @contents : String, @line_number : Int32)
+      super(nil)
+    end
+
+    def message : String
+      indent = " #  "
+      indicator = " >  "
+      build = String::Builder.new
+      build << "\n[!] " << @description << ". Bundler cannot continue.\n"
+
+      lines = @contents.lines(chomp: false)
+      return build.to_s.rstrip if @line_number < 0 || lines.empty?
+
+      # The reference derives the frame's array index from the rendered trace
+      # line (`"<dsl_path>:<n>"`), and the two profiles derive it differently:
+      # 4.x regex-scans for the trailing `:<digits>` (`dsl.rb:611`), while 2.7.x
+      # uses `trace_line.split(":")[1].to_i - 1` (`dsl.rb:611` of that tree).
+      # On Windows every absolute path starts with a drive colon, so the 2.7.x
+      # split picks the path segment instead of the line number: `to_i` yields
+      # 0 and the index becomes -1, which Ruby then resolves as the *last*
+      # line.  Reproducing that (rather than the 4.x form) is what makes the
+      # 2.7.2 profile frame a single duplicated line, e.g.
+      # ` #   >  gem "x", "= 1.0" #  gem "x", "= 1.0"`.
+      trace_line = "#{@dsl_path}:#{@line_number + 1}"
+      frame_index = if profile_2_x?
+                      parts = trace_line.split(":")
+                      ((parts.size > 1 ? (parts[1].to_i? || 0) : 0) - 1)
+                    else
+                      @line_number
+                    end
+      first_line = frame_index.zero?
+      last_line = frame_index == lines.size - 1
+
+      build << "\n"
+      build << "#{indent}from #{trace_line}\n"
+      build << "#{indent}-------------------------------------------\n"
+      # `lines(chomp: false)` keeps each line's terminator, so the trailing-newline
+      # bookkeeping mirrors `m << "\n" unless m.end_with?("\n")` without re-reading
+      # the builder (String::Builder#to_s may only be called once).
+      ends_with_newline = true
+      unless first_line
+        if previous = ruby_line_at(lines, frame_index - 1)
+          build << "#{indent}#{previous}"
+          ends_with_newline = previous.ends_with?('\n')
+        else
+          # Ruby interpolates `nil` into the indented marker, leaving the
+          # indent alone (dsl.rb:623 `unless first_line`).
+          build << indent
+          ends_with_newline = false
+        end
+      end
+      if line = ruby_line_at(lines, frame_index)
+        build << "#{indicator}#{line}"
+        ends_with_newline = line.ends_with?('\n')
+      end
+      unless last_line
+        if following = ruby_line_at(lines, frame_index + 1)
+          build << "#{indent}#{following}"
+          ends_with_newline = following.ends_with?('\n')
+        else
+          build << indent
+          ends_with_newline = false
+        end
+      end
+      build << "\n" unless ends_with_newline
+      build << "#{indent}-------------------------------------------\n"
+      build.to_s.rstrip
+    end
+
+    # Ruby's `Array#[]`: a negative index counts from the end and out-of-range
+    # reads yield nil instead of raising.
+    private def ruby_line_at(lines : Array(String), index : Int32) : String?
+      actual = index < 0 ? index + lines.size : index
+      return nil if actual < 0 || actual >= lines.size
+      lines[actual]
+    end
+
+    # `CELERITE_PROFILE_BUNDLER_VERSION` selects the emulated reference tree
+    # (default 4.0.24, matching Commands.bundle_profile_version).
+    private def profile_2_x? : Bool
+      (ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")
+    end
+  end
+
   # Raised when input violates the RubyGems version grammar (mirrors Ruby's
   # ArgumentError from Gem::Version.new).
   class VersionError < Error
