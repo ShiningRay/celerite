@@ -63,7 +63,7 @@ module Celerite
       when "list"
         list(stdout, stderr, rest)
       when "show", "info"
-        show_info(command, stdout, stderr, rest)
+        show_info(command, stdout, stderr, rest, verbose_requested)
       when "lock"
         # Purist: bundler version `--bundler <ver>` expects a lockfile and
         # forces a re-resolve regardless of flags (implementation path).
@@ -1364,7 +1364,8 @@ module Celerite
     # ------------------------------------------------------------------
     # show / info
     # ------------------------------------------------------------------
-    def self.show_info(command : String, stdout : IO, stderr : IO, rest : Array(String)) : Int32
+    def self.show_info(command : String, stdout : IO, stderr : IO, rest : Array(String),
+                       verbose : Bool = false) : Int32
       # `show` and `info` expose different switches in the reference: show
       # takes --paths only, info takes --path/--version. Unknown switches are
       # rejected before the definition is built, like Thor.
@@ -1379,11 +1380,18 @@ module Celerite
         if profile_bundler_version.starts_with?("2.")
           stderr.puts "[DEPRECATED] the `--outdated` flag to `bundle show` will be removed in favor of `bundle show --verbose`"
           rest = rest.reject { |arg| arg == "--outdated" }
+          outdated_deprecated = true
         else
           stderr.puts word_wrap("the `--outdated` flag to `bundle show` has been removed in favor of `bundle show --verbose`", CLI.terminal_width)
           return 15
         end
       end
+      # `cli/show.rb:11-12,41-48`: `--verbose` (and 2.7.x's deprecated
+      # `--outdated`) fetches the unlocked remote resolution while the command
+      # object is constructed, so the header and index lines come first.
+      # `--verbose` is a class option: `dispatch` strips it from `rest` before
+      # the command runs, so the flag arrives through the `verbose` argument.
+      verbose_listing = command == "show" && (verbose || outdated_deprecated)
 
       names = rest.reject { |a| a.starts_with?("-") }
       if command == "info" && names.empty?
@@ -1393,6 +1401,20 @@ module Celerite
       end
 
       definition = Definition.build
+      # Reference order: `Show.new` fetches the latest remote specs before
+      # `run` validates the runtime, so the fetch output precedes any error.
+      latest_versions = {} of String => Gem::Version
+      if verbose_listing
+        stdout.puts "Fetching remote specs for outdated check..."
+        stdout.puts ""
+        remote = Resolution.new(definition, true)
+        begin
+          remote.progress = stdout
+          remote.resolve!.each { |resolved| latest_versions[resolved.name] = resolved.version }
+        ensure
+          remote.close
+        end
+      end
       validate_runtime!(definition)
       # Reference `Bundler.load` resolves the Gemfile when no lockfile exists yet,
       # so `show`/`info` work before the first `bundle install`; asking for the
@@ -1469,8 +1491,40 @@ module Celerite
           # (`Bundler.definition.specs` includes the bundler spec), which is the
           # compatibility profile version here rather than the locked one.
           stdout.puts "Gems included by the bundle:"
-          stdout.puts "  * bundler (#{profile_bundler_version})"
-          locked_specs.each { |spec| stdout.puts "  * #{spec_display_name(spec, lockfile)}" }
+          if verbose_listing
+            # `cli/show.rb:60-74`: the verbose form drops the two-space indent
+            # (`desc.lstrip`) and adds Summary/Homepage/Status rows.
+            bundler_dir = bundler_gem_dir
+            bsummary : String? = nil
+            bhomepage : String? = nil
+            if bundler_dir
+              bundler_info = read_gemspec_info(bundler_dir, "bundler-#{profile_bundler_version}")
+              bsummary = bundler_info[0]
+              bhomepage = bundler_info[1]
+            end
+            print_show_verbose_entry(stdout, "* bundler (#{profile_bundler_version})",
+              bsummary || "The best way to manage your application's dependencies",
+              bhomepage || "https://bundler.io",
+              Gem::Version.new(profile_bundler_version), latest_versions["bundler"]?)
+            locked_specs.each do |spec|
+              gem_dir = installed_gem_dir(definition, spec, lockfile)
+              summary : String? = nil
+              homepage : String? = nil
+              if gem_dir
+                spec_info = read_gemspec_info(gem_dir, spec.full_name)
+                summary = spec_info[0]
+                homepage = spec_info[1]
+              end
+              print_show_verbose_entry(stdout, "* #{spec_display_name(spec, lockfile)}",
+                summary, homepage, Gem::Version.new(spec.version), latest_versions[spec.name]?)
+            end
+          else
+            # Reference `bundle show` lists the running Bundler itself first
+            # (`Bundler.definition.specs` includes the bundler spec), which is the
+            # compatibility profile version here rather than the locked one.
+            stdout.puts "  * bundler (#{profile_bundler_version})"
+            locked_specs.each { |spec| stdout.puts "  * #{spec_display_name(spec, lockfile)}" }
+          end
         end
         return 0
       end
@@ -1562,6 +1616,24 @@ module Celerite
       short.empty? ? nil : short
     end
 
+    # `cli/show.rb:60-74`: the verbose listing drops the two-space indent
+    # (`desc.lstrip`) and adds Summary/Homepage/Status rows, where the status is
+    # `Outdated - <current> < <latest>` only when the remote resolution has a
+    # newer version of that gem.
+    private def self.print_show_verbose_entry(stdout : IO, desc : String, summary : String?,
+                                              homepage : String?, current : Gem::Version,
+                                              latest : Gem::Version?) : Nil
+      status = if latest && current < latest
+                 "Outdated - #{current} < #{latest}"
+               else
+                 "Up to date"
+               end
+      stdout.puts desc
+      stdout.puts "\tSummary:  #{summary || "No description available."}"
+      stdout.puts "\tHomepage: #{homepage || "No website available."}"
+      stdout.puts "\tStatus:   #{status}"
+    end
+
     private def self.display_path(path : String) : String
       path.gsub('\\', '/')
     end
@@ -1626,8 +1698,13 @@ module Celerite
       end
       return {nil, nil, {} of String => String} unless text
 
-      summary = text.match(/\.summary\s*=\s*["']([^"']*)["']/).try(&.[1])
-      homepage = text.match(/\.homepage\s*=\s*["']([^"']*)["']/).try(&.[1])
+      # Match the quotes, not `[^"']`, so an apostrophe inside a double-quoted
+      # summary (`The best way to manage your application's dependencies`) does
+      # not truncate it.
+      summary = text.match(/\.summary\s*=\s*"([^"]*)"/).try(&.[1]) ||
+                text.match(/\.summary\s*=\s*'([^']*)'/).try(&.[1])
+      homepage = text.match(/\.homepage\s*=\s*"([^"]*)"/).try(&.[1]) ||
+                 text.match(/\.homepage\s*=\s*'([^']*)'/).try(&.[1])
       metadata = {} of String => String
       text.scan(/\.metadata\s*=\s*\{(.*?)\}/m) do |match|
         match[1].scan(/["']([^"']+)["']\s*=>\s*["']([^"']*)["']/) do |pair|

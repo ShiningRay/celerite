@@ -1,0 +1,1 @@
+bundler 4 removed `--outdated` (exit 15, covered by show-outdated-removed), and 4.x `show --verbose` adds the debug layer that stays a declared divergence in docs/compat-report.md.

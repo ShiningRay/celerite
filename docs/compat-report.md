@@ -3111,3 +3111,30 @@ exec --bogus true                     ref 127   cel 127（参考同样把未知�
 - `--jobs`/`--retry` 的极值（负数、超大整数）在两侧的后续行为（本轮只比较到 Thor 解析错误这一层）。
 - 通过 `THOR_COLUMNS` 改变终端宽度时 `--outdated` 文案的折行位置。
 - `install extra` 在「Gemfile 里恰好有名为 extra 的 gem」时的参考行为（本轮只覆盖无该 gem 的情形）。
+
+## 2026-11-17（M7(2)：`show --verbose` 的 outdated 检查与 Summary/Homepage/Status 块）
+
+参考锚点：`bundler-4.0.24/lib/bundler/cli/show.rb:11-12`（`@verbose = options[:verbose]`、`@latest_specs = fetch_latest_specs if @verbose`）、`:34-47`（`fetch_latest_specs` 先 `Bundler.definition(true)` 再 `ui.info "Fetching remote specs for outdated check...\n\n"`、`ui.silence { definition.remotely! }`，故 header 与索引行在 bundle 加载之前打印）、`:60-74`（每个 spec 在 verbose 下用 `desc.lstrip` 加 `\tSummary:`、`\tHomepage:`、`\tStatus:` 三行，`outdated?` 为 `latest && current < latest`）。2.7.2 同构，但 `@verbose = options[:verbose] || options[:outdated]`：`--outdated` 只警告 `[DEPRECATED] the `--outdated` flag to `bundle show` will be removed in favor of `bundle show --verbose`` 后继续走同一分支。
+
+修复前：
+- `show --verbose` 只打印 `Gems included by the bundle:` + 每 gem 一行 `  * name (version)`，既没有 `Fetching remote specs for outdated check...` 头，也没有 `Summary`/`Homepage`/`Status`；
+- `read_gemspec_info` 的 summary/homepage 正则用 `["']` 同时允许单双引号并停在第一个同类引号上，遇到 `The best way to manage your application's dependencies` 这样的撇号就截断，我方打印成 `The best way to manage your application`；
+- 2.7.x 的 `show --outdated` 虽然已实现弃用警告，但之后仍落在简表分支上。
+
+实现（`src/celerite/cli/commands.cr` 的 `show_info`）：
+- `--verbose` 是类选项，`dispatch` 在命令运行前用 `strip_global_flags` 把它从 `rest` 里摘掉（只留 `ENV["CELERITE_VERBOSE"]`），因此 `show_info` 增加 `verbose : Bool = false` 形参，`dispatch` 传入已算好的 `verbose_requested`；`verbose_listing = command == "show" && (verbose || outdated_deprecated)`。
+- `Definition.build` 之后、`validate_runtime!` 之前按参考顺序输出：`Fetching remote specs for outdated check...`、空行、`Resolution.new(definition, true)`（全解锁）解析并把 `name => version` 收进 `latest_versions`，解析用 `stdout` 作进度流，`ensure remote.close`。
+- 列表分支拆成 verbose/非 verbose 两支：verbose 用 `desc.lstrip`（`* name (version)` 不缩进）、bundler 自身也走同一格式，摘要/主页取自 `read_gemspec_info`，取不到时回退参考的 `The best way to manage your application's dependencies` / `https://bundler.io`；新增 `print_show_verbose_entry` 打印 `\tSummary:  `、`\tHomepage: `、`\tStatus:   `（`Outdated - <current> < <latest>` 或 `Up to date`）。
+- 修掉正则截断：summary/homepage 先匹配双引号形式、再匹配单引号形式（各用 `[^"]*` / `[^']*`），并加注释说明器 gemspec 摘要含撇号。
+
+证据：
+- A/B（2.7.2 profile，`.tmp-scratch/shv74*`，两侧独立 HOME/GEM_HOME/GEM_PATH/BUNDLE_PATH/TEMP，先 install 得到 2.6.0 的锁，再把 Gemfile 改成无约束触发 `Outdated - 2.6.0 < 2.8.1`）：`show --outdated` 的 stdout 与参考**逐字相同**（含 header、`Fetching source index from …`、`Resolving dependencies...`、两 gem 的 Summary/Homepage/Status）；`show --outdated --paths`、`show --outdated json_pure`、`show --outdated json_pure --paths` 三例仅差沙箱路径，header 与抓取行都在。
+- `spec/m7_show_verbose_spec.cr`（新增 4 例）：verbose 头部与三行块、锁定版本下 `Up to date`、命名 gem 只打路径且无 `Summary:`、4.x `show --outdated` 仍为 15。
+- 负对照：把 `verbose_listing` 硬置 `false` 重建 → `4 examples, 3 failures`（缺 header 与 Status 行），恢复后 4/0、`negative-control` 残留计数 0。
+- 差分：新夹具 `show-outdated-verbose-272`（`Gemfile` 无约束 + `Gemfile.lock` 锁 2.6.0 + `bundle-preset` 预装 2.6.0 桩）在 2.7.2 下 `PASS (exit=0)`；同时把旧夹具 `show-outdated-removed` 的 `deferred-2.7.2` 标记删掉（此前因该分支未实现而 defer，现 2.7.2 也 `PASS (exit=7)`）。4.0.24 下新夹具按 `deferred-4.0.24` 跳过（4.x 的 `--outdated` 已是移除错误，由 `show-outdated-removed` 覆盖 exit=15）。
+- 门禁：`crystal tool format --check src spec` 0、`git diff --check` 0、全量 `crystal spec` **598 examples, 0 failures, 4 errors**（4 = 既有 `spec/git_source_spec.cr` msys Low-IL）。
+
+已声明差异：
+- 4.x `show --verbose` 的 debug 层（`Resolving dependencies because there is no lockfile`、`Using a local server…`、`Writing lockfile to …`）仍不复刻，故该命令在 4.x 下不能做整段输出差分。
+- `No description available.` / `No website available.` 两个缺省串未做端到端取证（fixture  gemspec 都带 summary/homepage）。
+- 版本比较用 `Gem::Version`，与参考一致，但未验证 prerelease 序（如 `1.0.0.pre` vs `1.0.0`）的显示差异。
