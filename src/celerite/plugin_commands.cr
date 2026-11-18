@@ -81,10 +81,14 @@ module Celerite
     # `Bundler::Plugin::API.command` and hook events registered through
     # `Bundler::Plugin.add_hook` (reference: bundler-4.0.24/lib/bundler/plugin.rb:207-220
     # and plugin/index.rb:54-74, where both key sets are copied into the index).
-    # Empty arrays when the file cannot be loaded.
-    def self.declared(plugins_rb_path : String, load_paths : Array(String) = [] of String) : NamedTuple(commands: Array(String), hooks: Array(String))
-      empty = {commands: [] of String, hooks: [] of String}
-      return empty unless File.file?(plugins_rb_path)
+    # `error` carries the load failure reported by the probe (`{"error": ...}`),
+    # e.g. an undefined hook event that the reference raises for in plugin.rb:213-220;
+    # both arrays are empty in that case and callers must not treat it as success.
+    alias Declared = NamedTuple(commands: Array(String), hooks: Array(String), error: String?)
+
+    def self.declared(plugins_rb_path : String, load_paths : Array(String) = [] of String) : Declared
+      none = {commands: [] of String, hooks: [] of String, error: nil.as(String?)}
+      return none unless File.file?(plugins_rb_path)
 
       begin
         ruby = ENV["CELERITE_RUBY"]? || "ruby"
@@ -95,21 +99,25 @@ module Celerite
           output: output,
           error: IO::Memory.new,
         )
-        return empty unless process.success?
 
         line = output.to_s.lines.first?.try(&.strip) || ""
-        return empty if line.empty?
+        return none if line.empty?
 
         parsed = begin
           JSON.parse(line)
         rescue
-          return empty
+          return none
         end
-        return empty if parsed["error"]?
+        # A malformed plugin makes the probe exit non-zero after printing the
+        # error object; surface it instead of silently dropping the declarations.
+        if failure = parsed["error"]?
+          return {commands: [] of String, hooks: [] of String, error: failure.to_s.as(String?)}
+        end
+        return none unless process.success?
 
-        {commands: string_array(parsed, "commands"), hooks: string_array(parsed, "hooks")}
+        {commands: string_array(parsed, "commands"), hooks: string_array(parsed, "hooks"), error: nil.as(String?)}
       rescue
-        empty
+        none
       end
     end
 

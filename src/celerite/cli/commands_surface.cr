@@ -1463,7 +1463,6 @@ module Celerite
         end
 
         index_dir = plugin_tree_root
-        Dir.mkdir_p(index_dir)
         index_path = File.join(index_dir, "index")
         index = File.file?(index_path) ? (YAML.parse(File.read(index_path)) || YAML.parse("{}")) : YAML.parse("{}")
 
@@ -1484,6 +1483,14 @@ module Celerite
 
         registered = PluginCommands.commands(index_path)
         declared = PluginCommands.declared(File.join(root_dir, "plugins.rb"), [lib_dir])
+        if error = declared[:error]
+          # Reference plugin.rb:213-220 raises ArgumentError for an undefined
+          # hook event; save_plugin wraps it as MalformattedPlugin (exit 29) and
+          # leaves no index entry behind.
+          stderr.puts "Failed to install plugin `#{info.name}`, due to Bundler::Plugin::MalformattedPlugin"
+          stderr.puts "(#{error})"
+          return 29
+        end
         conflict_command = declared[:commands].find do |command|
           owner = registered[command]?
           !owner.nil? && owner != info.name
@@ -1527,6 +1534,10 @@ module Celerite
           plugin_path_map.each { |key, value| y.puts "  #{key}: #{value.inspect}" }
           y.puts "sources:"
         end
+        # The plugin tree is created only once the plugin is known to load; a
+        # malformed plugin (undefined hook event) therefore leaves the project
+        # without `.bundle/plugin`, matching the reference.
+        Dir.mkdir_p(index_dir)
         File.write(index_path, yaml)
         # Reference re-install of an installed plugin prints nothing beyond
         # "Resolving dependencies..." (no second "Installed plugin" line).
@@ -1725,6 +1736,25 @@ module Celerite
             return 29
           end
           index_path = File.join(plugin_root, "index")
+          gem_dir = if git_remote
+                      File.join(plugin_root, "bundler", "gems", "#{GitSource.base_name(git_remote)}-#{spec.version}").gsub(/\\/, "/")
+                    else
+                      # Installed plugin gems live in the plugin tree
+                      # (`<project>/.bundle/plugin/gems/<full>`), not in the
+                      # application bundle directory (Bundler::Plugin.root).
+                      File.join(plugin_root, "gems", spec.full_name).gsub(/\\/, "/")
+                    end
+          lib_dir = File.join(gem_dir, "lib").gsub(/\\/, "/")
+          registered = PluginCommands.commands(index_path)
+          declared = PluginCommands.declared(File.join(gem_dir, "plugins.rb"), [lib_dir])
+          if error = declared[:error]
+            # Same mapping as the local branch: undefined hook events surface as
+            # MalformattedPlugin with exit 29 and no index entry (the index file
+            # is only created after this check).
+            stderr.puts "Failed to install plugin `#{spec.name}`, due to Bundler::Plugin::MalformattedPlugin"
+            stderr.puts "(#{error})"
+            return 29
+          end
           unless File.file?(index_path)
             File.write(index_path, "---\ncommands:\nhooks:\nload_paths:\nplugin_paths:\nsources:\n")
           end
@@ -1741,17 +1771,6 @@ module Celerite
           (index["hooks"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any).each do |key, value|
             hooks_map[key.as_s] = value.as_a?.try(&.map(&.as_s)) || [] of String
           end
-          gem_dir = if git_remote
-                      File.join(plugin_root, "bundler", "gems", "#{GitSource.base_name(git_remote)}-#{spec.version}").gsub(/\\/, "/")
-                    else
-                      # Installed plugin gems live in the plugin tree
-                      # (`<project>/.bundle/plugin/gems/<full>`), not in the
-                      # application bundle directory (Bundler::Plugin.root).
-                      File.join(plugin_root, "gems", spec.full_name).gsub(/\\/, "/")
-                    end
-          lib_dir = File.join(gem_dir, "lib").gsub(/\\/, "/")
-          registered = PluginCommands.commands(index_path)
-          declared = PluginCommands.declared(File.join(gem_dir, "plugins.rb"), [lib_dir])
           conflict_command = declared[:commands].find do |command|
             owner = registered[command]?
             !owner.nil? && owner != spec.name
