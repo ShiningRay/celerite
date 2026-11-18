@@ -412,6 +412,23 @@ end
 # Execute a plugin lifecycle hook through the reference Bundler::Plugin API
 # (architecture §2.2: plugin hooks are Ruby code, executed by the bridge).
 # payload: event, plugins_root (dir holding the plugins index), context (hash).
+# Hook argument for `after-install`. The reference passes the
+# `Bundler::ParallelInstaller::SpecInstallation` whose install just finished,
+# so plugin blocks can read `#name`, `#full_name` and `#state`
+# (`parallel_installer.rb:8-59`). Only those readers are reproduced.
+class PluginHookSpec
+  attr_reader :name, :full_name
+
+  def initialize(name, full_name)
+    @name = name
+    @full_name = full_name
+  end
+
+  def state
+    :installed
+  end
+end
+
 def op_exec_plugin_hook(payload)
   require "bundler"
   require "bundler/plugin"
@@ -455,9 +472,18 @@ def op_exec_plugin_hook(payload)
   # Bundler::Plugin::API (global registry). Bundler::Plugin.hook gates on
   # its global index; for project-local plugins we invoke the registered
   # blocks directly (same objects the reference would call).
+  # Mirror of `Bundler::ParallelInstaller::SpecInstallation` for the parts
+  # plugin hooks read (`parallel_installer.rb:8-59` exposes :name, :full_name,
+  # :state and :spec). The full reference object also carries the resolved
+  # specification and dependency edges, which plugins may inspect; that part
+  # is not reproduced (declared difference).
   hooks = Bundler::Plugin.instance_variable_get(:@hooks_by_event) || {}
   blocks = hooks[event] || []
-  context = payload["context"] || {}
+  context = if payload["spec_name"]
+    PluginHookSpec.new(payload["spec_name"].to_s, payload["spec_full_name"].to_s)
+  else
+    payload["context"] || {}
+  end
   begin
     blocks.each { |blk| blk.call(context) }
   rescue StandardError => e

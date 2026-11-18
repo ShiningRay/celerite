@@ -69,8 +69,13 @@ module Celerite
       File.join(File.dirname(definition.gemfile_path), ".bundle", "plugin", "index")
     end
 
-    def self.call(bridge : Bridge::Client, definition : Definition, event : String) : HookResult
-      result = bridge.exec_plugin_hook(event, index_path(definition))
+    # The reference fires `gem_after_install` once per installed spec from
+    # inside the installer (`parallel_installer.rb:217`), handing over the
+    # `SpecInstallation` (`name`/`full_name`/`state`). `spec_name` carries that
+    # identity so plugin blocks that read `ctx.name` see the same value.
+    def self.call(bridge : Bridge::Client, definition : Definition, event : String,
+                  spec_name : String? = nil, spec_full_name : String? = nil) : HookResult
+      result = bridge.exec_plugin_hook(event, index_path(definition), spec_name, spec_full_name)
       status = result["status"]?.try(&.as_s?) || "skipped"
       message = result["message"]?.try(&.as_s?)
       plugin = result["plugin"]?.try(&.as_s?)

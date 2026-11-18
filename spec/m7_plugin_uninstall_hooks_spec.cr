@@ -164,14 +164,17 @@ describe "M7 task-9 plugin hook uninstall" do
         code, _out, err = run_install_in_project(dir)
         code.should eq(0)
         err.should_not contain("Plugin hook")
-        uninstall_hooks_log_lines(log).should eq(1)
+        # The reference fires `after-install` once per spec in the install set,
+        # and the running Bundler's own spec leads it: `bundler` + the plugin's
+        # probe gem (oracle11b).
+        uninstall_hooks_log_lines(log).should eq(2)
 
         run_cli(["plugin", "uninstall", "hook_plugin"])[0].should eq(0)
         code, out, err = run_install_in_project(dir)
         code.should eq(0)
         err.should_not contain("Plugin hook")
         out.should contain("Bundle complete!")
-        uninstall_hooks_log_lines(log).should eq(1)
+        uninstall_hooks_log_lines(log).should eq(2)
       end
     end
   end
@@ -186,16 +189,16 @@ describe "M7 task-9 plugin hook uninstall" do
 
         run_cli(["plugin", "install", "hook_plugin", "--path", source])[0].should eq(0)
         run_install_in_project(dir)[0].should eq(0)
-        uninstall_hooks_log_lines(log).should eq(1)
+        uninstall_hooks_log_lines(log).should eq(2)
 
         run_cli(["plugin", "uninstall", "hook_plugin"])[0].should eq(0)
         run_install_in_project(dir)[0].should eq(0)
-        uninstall_hooks_log_lines(log).should eq(1)
+        uninstall_hooks_log_lines(log).should eq(2)
 
         run_cli(["plugin", "install", "hook_plugin", "--path", source])[0].should eq(0)
         uninstall_hooks_section(dir).should contain(%(  after-install:\n  - "hook_plugin"))
         run_install_in_project(dir)[0].should eq(0)
-        uninstall_hooks_log_lines(log).should eq(2)
+        uninstall_hooks_log_lines(log).should eq(4)
       end
     end
   end

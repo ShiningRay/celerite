@@ -245,10 +245,18 @@ module Celerite
         request("write_installed_spec", {"gem_path" => gem_path, "destination" => destination, "gem_dir" => gem_dir})
       end
 
-      def exec_plugin_hook(event : String, index_path : String) : JSON::Any
+      # `spec_name`/`spec_full_name` mirror the reference hook argument: the
+      # `Bundler::ParallelInstaller::SpecInstallation` of the spec whose install
+      # just finished (`parallel_installer.rb:217`). The bridge hands the hook
+      # block an object exposing `#name`/`#full_name`.
+      def exec_plugin_hook(event : String, index_path : String,
+                           spec_name : String? = nil, spec_full_name : String? = nil) : JSON::Any
+        payload = {"event" => event, "index_path" => index_path} of String => String?
+        payload["spec_name"] = spec_name
+        payload["spec_full_name"] = spec_full_name
         # Hooks run arbitrary plugin code, exactly like the reference, so they
         # are not cut off by the RPC deadline used for fast metadata calls.
-        request("exec_plugin_hook", {"event" => event, "index_path" => index_path}, limit: nil)
+        request("exec_plugin_hook", payload, limit: nil)
       end
 
       # Plugin pre-install pass (`Bundler::Plugin.gemfile_install`): names the
