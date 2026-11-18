@@ -3765,7 +3765,7 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 **实现**：
 
 1. `assets/bridge/plugin_command.rb` 的 `--commands` 模式改为 `--commands <plugins.rb> [<load path>...]`：先 `load_plugin_api`，把调用方给的插件 lib 目录 `$LOAD_PATH.unshift`（参考 `register_plugin` 同样先 `load_paths.each { |p| $LOAD_PATH.unshift(p) }` 再 `load plugins.rb`；夹具 plugins.rb 首行 `require "hook_plugin"`，不补 load path 时 `LoadError` 会让声明的命令/事件全部丢失——首跑差分即此形态 FAIL），`load` 后一次输出 `JSON.generate({"commands"=>…keys, "hooks"=>…keys.map(&:to_s)})`，hooks 取 `Bundler::Plugin.instance_variable_get(:@hooks_by_event)`。
-2. `src/celerite/plugin_commands.cr:85` 新增 `declared(plugins_rb_path : String, load_paths : Array(String) = [] of String) : NamedTuple(commands: Array(String), hooks: Array(String))`，单次 ruby 调用解析两键（缺键/类型错 → 空数组，`error` 分支仍回空）；`declared_commands` 保留为 `declared(...)[:commands]` 委托，兼容既有引用。
+2. `src/celerite/plugin_commands.cr:85` 新增 `declared(plugins_rb_path : String, load_paths : Array(String) = [] of String) : NamedTuple(commands: Array(String), hooks: Array(String))`，单次 ruby 调用解析两键（缺键/类型错 → 空数组，`error` 分支仍回空）；`declared_commands` 保留为 `declared(...)[:commands]` 委托（现仅 `spec/m7_plugin_hooks_registration_spec.cr:147` 引用）。
 3. `src/celerite/cli/commands_surface.cr` 两处安装路径（本地 `--path` ~1500 行区、remote/`--source` ~1770 行区）改调 `declared(..., [lib_dir])`：冲突检测/合并用 `declared[:commands]`；`declared[:hooks].each` 把当前插件名追加到对应事件数组（`unless includes?` 去重保序，对齐 register_plugin）。`write_plugin_index`（~1900 行区，uninstall 唯一调用点）hooks 段改为遍历事件→插件名数组，`reject removed`、空数组 `next`（对齐 unregister_plugin）。
 4. `spec/m7_plugin_hooks_registration_spec.cr` 4 例：索引写入 `after-install` + 命令仍在；探针一次取回 commands/hooks（含 load path）；install 端到端触发 hook（marker 文件写 `after-install`）；无 hook 声明的插件 `hooks:` 段为空。
 5. 新差分夹具 `fixtures/differential/plugin-install-hooks/`：`command` 两行（`plugin install hook_plugin --path ./hook_plugin`、`plugin list`，末字节 LF）；`extra/hook_plugin/plugins.rb` 同时 `API.command("hookprobe", …)` 与 `add_hook("after-install") { |_ctx| }`；`file-contains` 断言 `.bundle/plugin/index` 含 `after-install`、`hook_plugin`。
@@ -3782,6 +3782,6 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 **已声明差异 / 未验证**：
 
 - 参考在 hook 执行时按索引重新加载插件再 `blk.call(*args, &blk)`；我方沿用既有 `exec_plugin_hook` 桥（先 `require` 插件再取 `@hooks_by_event`）。本节只宣称「声明写入索引」与「install 端触发」对齐。
-- 参考 `add_hook` 对未定义事件抛 `Bundler::Plugin::UnknownEvent`（`Events.defined_event?`）；我方探针只读取键、不校验事件名，该错误路径未对齐（未验证）。
+- 参考 `add_hook` 对未定义事件抛 `ArgumentError, "Event '<event>' not defined in Bundler::Plugin::Events"`（`bundler-4.0.24/lib/bundler/plugin.rb:216-217`，事件未定义时 `Events.defined_event?` 校验失败）；我方探针只读取键、不校验事件名，该错误路径未对齐（未验证）。
 - 无 Gemfile / 全局 `~/.bundle/plugin` 安装路径的 hooks 落盘未做差分夹具（未验证）；`plugin uninstall` 的 hooks 清理只有实现、无专例/夹具（未验证）。
 - 索引字节不逐字一致：参考 CRLF、我方 LF（见上 12 字节差），归一化后才比对语义内容。
