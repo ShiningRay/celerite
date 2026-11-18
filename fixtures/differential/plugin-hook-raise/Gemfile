@@ -1,0 +1,3 @@
+source "file:///@INDEX_DIR@"
+
+gem "boom_plugin", path: "./boom_plugin"

@@ -1,0 +1,2 @@
+plugin install boom_plugin --path ./boom_plugin
+install

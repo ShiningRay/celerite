@@ -3785,3 +3785,36 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 - 参考 `add_hook` 对未定义事件抛 `ArgumentError, "Event '<event>' not defined in Bundler::Plugin::Events"`（`bundler-4.0.24/lib/bundler/plugin.rb:216-217`，事件未定义时 `Events.defined_event?` 校验失败）；我方探针只读取键、不校验事件名，该错误路径未对齐（未验证）。
 - 无 Gemfile / 全局 `~/.bundle/plugin` 安装路径的 hooks 落盘未做差分夹具（未验证）；`plugin uninstall` 的 hooks 清理只有实现、无专例/夹具（未验证）。
 - 索引字节不逐字一致：参考 CRLF、我方 LF（见上 12 字节差），归一化后才比对语义内容。
+
+## 2026-11-19（M7(6) task-7：hook 失败时序与差分断言通道）
+
+**范围**：① `bundle install` 的 `after-install` 从「摘要与锁文件之后」移到「摘要与写锁之前」，使失败时的可观察面与参考一致（不留 `Gemfile.lock`、不打印 `Bundle complete!`）；② `script/differential` 新增两条夹具级断言通道 `file-absent` / `stderr-contains`（N10）并配自测夹具；③ 新差分夹具 `plugin-hook-raise`。
+
+**参考锚点**：
+
+- `bundler-4.0.24/lib/bundler/installer/parallel_installer.rb:217`：`do_install` 在 `gem_installer.install_from_spec` 之后 `Plugin.hook(Plugin::Events::GEM_AFTER_INSTALL, spec_install)`——每个实际安装的 spec 触发一次；`:187` 是 `before-install`。
+- `bundler-4.0.24/lib/bundler/installer.rb:16-19`：`before-install-all` / `after-install-all` 包裹整轮安装。锁文件在安装后由 `definition.to_lock` 写，`Bundle complete!` 由 `cli/install.rb` 在 installer 返回后打印，因此 hook 抛异常时两者都不出现（本轮实测参考 stderr 为 `--- ERROR REPORT TEMPLATE` + `RuntimeError: boom`，stdout 停在 `Resolving dependencies...`）。
+- 2.7.2 同结构（`parallel_installer.rb` 同位置的 `Plugin.hook`）。
+
+**实现**：
+
+1. `src/celerite/cli/commands_install.cr`：`PluginHooks.call(..., "after-install")` 块整体前移到 `if summary` 与 `unless rest.includes?("--no-lock") … Lockfile.write` 之前（代码注释记录参考顺序）；失败仍一行 `Plugin hook after-install failed: <msg>` + `return 1`，`load_failed` 同理。成功路径两处 hook 本就无输出，输出顺序不变。
+2. `script/differential`：新增 `file-absent`（每行一个 project 相对路径，两侧都必须不存在；违例输出 `file-absent violated (<path>): ref_exists=<yes|no> cel_exists=<yes|no>`）与 `stderr-contains`（每行一个 needle，两侧 stderr 都须 `grep -Fq` 命中；命中即跳过该夹具的逐字 stderr 比较并打印 `stderr compared by contains only (declared normalization N10)`）；只有显式提供对应标记文件的夹具生效。
+3. `fixtures/differential/harness-assert-selftest/`：`command` = `install`（无 Gemfile，两侧 exit 10）、`stderr-contains` = `Could not locate Gemfile`、`file-absent` = `Gemfile.lock`。
+4. `fixtures/differential/plugin-hook-raise/`：`command` 两行（`plugin install boom_plugin --path ./boom_plugin`、`install`，末字节 LF）；根 `Gemfile` = `source "file:///@INDEX_DIR@"` + `gem "boom_plugin", path: "./boom_plugin"`；`extra/boom_plugin/plugins.rb` 声明 `API.command("boomprobe", …)` 与 `add_hook("after-install") { |_ctx| raise "boom" }`；`stderr-contains` = `boom`；`file-absent` = `Gemfile.lock`。用 path gem 而非 rubygems gem：真装 gem 时参考在 `do_install` 抛错前已进入安装，`Installing …` 行在崩溃路径上可能未刷出，stdout 无法稳定对齐；path gem 两侧都不打印安装行。
+5. `docs/differential-normalization.md`：表内新增 N10 行，并在「What is *not* normalized」与新增小节记录两条通道与自测/负对照。
+
+**证据（双 profile 差分 + spec）**：
+
+- `crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `src/celerite/cli/commands_install.cr:1089:43`、`:1153:20` 的 `Deprecated File.executable?` 警告）；`git diff --check` EXIT 0。
+- `crystal spec spec/m7_plugin_hook_failure_spec.cr spec/m7_plugin_hooks_registration_spec.cr spec/m7_console_spec.cr spec/m7_cli_dispatch_spec.cr` → **27 examples, 0 failures**。hook 抛异常例新增断言：exit 1、stderr 含 `boom from plugin hook`、`Gemfile.lock` 不存在、stdout 不含 `Bundle complete!`。
+- 差分 `plugin-hook-raise`：4.0.24 `PASS plugin-hook-raise (exit=1)`（1 passed, 0 failed, 0 skipped，EXIT 0）；2.7.2 同 PASS（1/0/0）。保留产物 4.0.24 `.d/I9YtAz`、2.7.2 `.d/AbP62v`：两侧 stdout 均三行（`Resolving dependencies...` / `Installed plugin boom_plugin` / `Resolving dependencies...`）逐字相同；两侧 `project/Gemfile.lock` 均不存在；我方 stderr 仅 `Plugin hook after-install failed: boom`，参考 stderr 为 `RuntimeError: boom` 错误报告；两侧索引均含 `boomprobe: "boom_plugin"`、`after-install:`、`- "boom_plugin"`。
+- 自测夹具：4.0.24 与 2.7.2 均 `PASS harness-assert-selftest (exit=10)`（1/0/0），输出含 N10 注记。负对照（现场改标记后恢复，文件保持 LF 无 BOM）：`stderr-contains` 追加 `definitely-not-in-stderr` → FAIL 且 `stderr-contains differs: needle=definitely-not-in-stderr`（exit 1）；在 `extra/` 放 `probe-marker.txt` 并把该路径写进 `file-absent` → FAIL 且 `file-absent violated (probe-marker.txt): ref_exists=yes cel_exists=yes`（exit 1）。
+- 回归差分（双 profile 各 6 个）：`plugin-install`、`plugin-uninstall`、`install-fresh`、`tree-command`、`console-group`、`plugin-install-hooks` 全部 PASS（4.0.24 6/0/0；2.7.2 6/0/0，其中 `tree-command` 两侧 exit=15）。
+
+**已声明差异 / 未验证**：
+
+- 参考 `after-install` 是**每个实际安装的 spec 触发一次**（parallel installer 的 `do_install` 内），我方是整轮安装完成后触发一次；单插件单 gem 场景可观察面一致，多 gem 场景下「每 gem 一次」的粒度与顺序未实现（未验证）。
+- hook 抛异常时 stderr 不逐字一致：参考打印完整 `--- ERROR REPORT TEMPLATE`（含机器路径），我方一行 `Plugin hook after-install failed: boom`；因此该夹具用 `stderr-contains`（N10）只比较关键词，stdout / exit / 项目树仍是精确比较，且归一化只对被显式标记的夹具生效。
+- 若将来要断言「hook 崩溃时两侧 stdout 逐字一致」且使用 rubygems gem，需要参考的 `Installing …` 行在崩溃路径稳定刷出；本轮以 path gem 绕开，rubygems gem 场景未验证。
+- 全量 `crystal spec` 与全量差分未重跑（沿用既有记录）。

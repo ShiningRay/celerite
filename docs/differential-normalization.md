@@ -81,6 +81,11 @@ ruby/*/bin
   （含机器路径，N6 只剥 `   from ...` 帧，异常后的上下文仍在），逐字比较不可能
   稳定；stdout、exit code、project tree 仍是精确比较。
 
+使用约束（N10）：只有参考侧输出是**不可逐字复现的 crash report** 时才允许启用
+`stderr-contains`，且该夹具必须同时精确断言 exit code、stdout 与受影响文件
+状态（本切片：exit 1、stdout 三行逐字、`file-absent Gemfile.lock`）；当前仓库
+唯一使用点是 `fixtures/differential/plugin-hook-raise/`。
+
 自测夹具 `fixtures/differential/harness-assert-selftest/`：`command` 为
 `install`（项目无 Gemfile，两侧 exit 10），`stderr-contains` 为
 `Could not locate Gemfile`，`file-absent` 为 `Gemfile.lock`。实跑（4.0.24）：
