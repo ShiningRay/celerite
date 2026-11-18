@@ -3986,3 +3986,54 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 - 远端 `--source` + bad-event 用**规范形式** `file:///C:/…` 验证：我方 exit 29、stdout 与参考同为 `Fetching source index from …` / `Resolving dependencies...` / `Fetching bad 0.1.0` / `Installing bad 0.1.0`、stderr 同两行。但非规范形式 `file://C:/…`（`file://` 后直接跟盘符）我方解析失败并报 `Could not find gem 'bad' in rubygems repository`（exit 7），参考可正常解析（exit 29）——**该 file URL 归一化差异未修复、未验证根因**，不入本轮夹具。
 - 差分 harness 不设置 `THOR_COLUMNS`，故夹具只覆盖默认 80 列；`THOR_COLUMNS=40/120` 的折行仅由 `.d/oracle17c.sh` 与参考对照（未入 CI 断言）。
 - 全量 `crystal spec` 与全量差分未重跑（沿用既有记录）。
+
+## 2026-11-19（M7(6) task-19：非规范 `file://C:/…` file URL 归一化对齐）
+
+**范围**：`plugin install <gem> --source file://C:/…`（`file://` 后直接跟盘符）。修复前我方把它折成 `/C/Users/…` → `C:\C\Users\…`，报 `Could not find gem '<name>' in rubygems repository` exit 7；参考 4.0.24 / 2.7.2 均可解析（本机 exit 0）。规范形式 `file:///C:/…` 不回归。本轮统一 `compact_index/cache.cr` 与 `downloader.cr` 的 file URL 归一，HTTP/mirror/凭据路径未动。
+
+**oracle（Ruby 4.0.6 URI + Bundler CLI，本机仅 C: 盘）**：
+
+| 输入 | Ruby `URI#path` | 参考取用路径（`correct_for_windows_path`） | 4.0.24 CLI | 2.7.2 CLI |
+| --- | --- | --- | --- | --- |
+| `file://C:/x` | `/x`（host `C`） | `/x` | exit 0 | exit 0 |
+| `file:///C:/x` | `/C:/x` | `C:/x` | exit 0 | exit 0 |
+| `file:/C:/x` | 归一为 `file:///C:/x` | `C:/x` | exit 0 | exit 0 |
+| `file://host/x` | `/x`（host 被忽略） | `/x` | exit 0 | exit 0 |
+| `file:////server/share` | `//server/share` | `//server/share`（UNC） | 未实测 | 未实测 |
+| `file:C:/x` | `nil` | `nil` | exit 1 `NoMethodError` | exit 1 `NoMethodError` |
+
+要点：参考**完全忽略 URI host，只用 path**；盘符前导斜杠按 `Gem::Util.correct_for_windows_path` 去掉（仅 `/`+字母+`:` 三个字符）；`//` 前缀保留（UNC 语义）；`file://C:/x` 丢弃盘符后为 `/x`，只有当前盘恰为源盘时才命中，stdout 亦显示丢冒号的 `file://C/Users/…`。`file:C:/x`（opaque 形式）path 为 `nil`，两版参考均以 `NoMethodError: undefined method '[]' for nil` 崩在 `rubygems/util.rb:90`，属参考自身缺陷。
+
+**代码锚点**：
+
+- `.upstream-specs/v4.0.24/bundler/lib/bundler/source/rubygems.rb:369-376`（remote 末尾补 `/` 后交 `Gem::URI`）；`uri_normalizer.rb:15-21`。
+- `.upstream-specs/v4.0.24/bundler/lib/bundler/fetcher.rb:151-155`（拼 `…/Marshal.4.8/…gemspec.rz` 后 file scheme 走 `correct_for_windows_path(uri.path)`）；`:274-276`（file scheme 强制 Index fetcher）；`fetcher/index.rb:9`；`rubygems_integration.rb:360-366`（`fetch_path(remote.uri.to_s + name…gz)`）。
+- 2.7.2（`.upstream-specs/v2.7.2/bundler` 目录为空，锚点取本机安装 gem）：`C:/Ruby40-x64/lib/ruby/gems/4.0.0/gems/bundler-2.7.2/lib/bundler/fetcher.rb:152-154`、`:261`；`rubygems_integration.rb:360-363`。
+- RubyGems：`C:/Ruby40-x64/lib/ruby/4.0.0/rubygems/remote_fetcher.rb:164-176`、`:205-207`（`fetch_file` 直接读 `uri.path`）；`util.rb:89-95`（盘符前导斜杠剥离）。
+
+**实现**：
+
+1. 新增 `src/celerite/file_url.cr`：`Celerite::FileURL.local_path`（取 `URI#path`、忽略 host、反斜杠转 `/`、`/^\/([A-Za-z]:)/` 去盘符前导斜杠、保留 `//`），`Celerite::FileURL.directory`（先补末尾 `/` 再 `File.expand_path`，避免 Crystal 对裸 UNC 基址错误追加 cwd）。
+2. `src/celerite/compact_index/cache.cr:604-612` `make_fetcher` 的 file 分支改为 `FileFetcher.new(FileURL.directory(remote))`，删除旧 host 折叠、`%r{^/{2,}}` 折叠与重复盘符正则。
+3. `src/celerite/downloader.cr:193-199` 同用 `FileURL.directory(@remote)`；删除 L205-206 重复的 `root.sub(/^\/[A-Za-z]:\//)`。
+4. `src/celerite.cr:22` 加 require。`Resolution#normalize_remote`（`src/celerite/resolution.cr:897-900`，仅锁 source 比对）未改。
+
+**测试与夹具**：
+
+- `spec/m7_file_url_spec.cr`：4 examples——六形式 `local_path` 矩阵、盘符前导斜杠边界（`/c:/tmp`、`/C:`、`/tmp/x`）、末尾分隔符/反斜杠；Windows 下 `directory`（`C:\x\`、`\\server\share\`）与 `Downloader` 从 `file://C:/…/fixtures/gem-index` 下载 `json_pure 2.8.1` 各 1 例。独立文件因跨形式矩阵与既有 downloader spec 关注点不同。
+- `fixtures/differential/plugin-install-source-noncanonical/`：`command` 为 `install` / `plugin install candle_plug --source file://@PLUGIN_INDEX_DIR@` / `plugin list` / `candle x y`（末字节 LF）；`Gemfile` 仍用规范 `file:///@INDEX_DIR@`。harness 按夹具名取目录。
+
+**证据**：
+
+- 复现（修复前）：cel-noncan `file://C:/…` exit 7，stdout `Fetching source index from file://C/Users/…`，stderr 单条 `Could not find gem 'candle_plug' in rubygems repository` + URL + `or installed locally.`；参考 4.0.24/2.7.2 exit 0。修复后我方 exit 0，stdout 与参考逐字一致（含 `file://C/Users/…` 展示），cel-canon 仍 exit 0 且逐字不变。
+- 差分：4.0.24 `plugin-install-source` + `plugin-install-source-noncanonical` → **2 passed, 0 failed, 0 skipped**，EXIT 0；`BUNDLER_REF_VERSION=2.7.2` 同 **2/0/0**，EXIT 0。
+- 门禁：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告，`commands_install.cr:1112:43`、`:1176:20`）；`crystal spec spec/m7_file_url_spec.cr spec/downloader_spec.cr spec/m7_plugin_commands_spec.cr` → 18 examples, 0 failures, 0 errors, 0 pending；`git diff --check` EXIT 0；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0。
+- 全量 `crystal spec` 与全量差分本轮未重跑（沿用既有记录）。
+
+**已声明差异 / 未验证**：
+
+1. `file://C:/x` 的参考语义是“丢盘符、按当前盘解析”，仅当源盘 == 当前盘时可用；本机只有 C:，跨盘场景**未验证**。我方按参考实现，未自创“保留盘符”语义。
+2. `file:////server/share` 的 `//` 在助手中保留，Crystal 下 `\\server\share\` 展开正确（`.d/t19_expand*.cr` 实测）；但本机无可达 UNC 共享，端到端**未实测**。
+3. `file:C:/x`（opaque）参考 4.0.24/2.7.2 均 exit 1（`NoMethodError`），我方按 `C:/x` 接受（exit 0）。这是本轮之前就存在的分歧，未随本次改动引入，也未为对齐参考而人为制造崩溃——保留并在本节声明。
+4. `file://host/x` 的 host 现被忽略（与参考一致）；旧实现会折成 `/host/x`，已删除。
+5. `Resolution#normalize_remote` 仍是旧式 `lchop("file:").lstrip('/')` 展开，host/UNC 形式在锁 source 比对中的行为未随本轮变更（不在本任务范围）。
