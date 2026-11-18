@@ -3924,7 +3924,7 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 | `plugin install bad --path ./bad`（`plugins.rb` 只有 `add_hook("post-install")`） | exit **29**；stdout 仅 `Resolving dependencies...`；stderr 两行：`Failed to install plugin \`bad\`, due to Bundler::Plugin::MalformattedPlugin` / `(ArgumentError: Event 'post-install' not defined in Bundler::Plugin::Events)`；无 `Gemfile.lock`、无 `.bundle/plugin/index`、**源目录 `./bad` 被删除** | 逐字、逐码相同（29 / 两行 / 无 lock / 无 index / 源目录被删） |
 | 对照：`add_hook("after-install")` | exit 0；stdout `Resolving dependencies...` + `Installed plugin bad`；stderr 空；index 存在；源目录保留 | 同 |
 
-参考锚点：`bundler-4.0.24/lib/bundler/plugin.rb:215-217` 在事件名校验失败时 `raise ArgumentError, "Event '<event>' not defined in Bundler::Plugin::Events"`；`lib/bundler/cli/plugin.rb` 把插件注册异常包成 `Failed to install plugin \`<name>\`, due to <class>` + `(<class>: <message>)` 两行并 exit 29。两个 profile 文案与退出码一致，故不做 `deferred-<version>` 分治。
+参考锚点：`bundler-4.0.24/lib/bundler/plugin.rb:215-217` 在事件名校验失败时 `raise ArgumentError, "Event '<event>' not defined in Bundler::Plugin::Events"`；`lib/bundler/plugin.rb:292-298`（`save_plugin` 的 `rescue PluginError`）把它包成**单条**消息 `Failed to install plugin \`<name>\`, due to <class> (<cause>)`；`lib/bundler/errors.rb:49` 的 `PluginError < BundlerError; status_code(29)` 给出 exit 29；消息的换行不是参考硬编码的，而是 `lib/bundler/friendly_errors.rb:31-36` 的 `ui.error message, wrap: true` 经 `lib/bundler/ui/shell.rb:167-171` 的 thor `word_wrap(text, terminal_width)` 折行产生（宽度见 task-17 节）。两个 profile 文案与退出码一致，故不做 `deferred-<version>` 分治。
 
 **实现**：
 
@@ -3944,6 +3944,45 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 **已声明差异 / 未验证**：
 
 - 参考在注册失败时会删除 `--path` 源目录（`./bad`）；我方按 lead 裁断不做破坏性删除，保留源目录。夹具把源目录放在 `bundle-preset`（比较树之外）以免把该差异写成树差异，差异本身未复刻。
-- 远端/`--source` 分支的同类失败行为（exit 29、文案）未做端到端断言，仅复用同一 `declared` error 路径（未验证）；失败时已物化的插件树是否应回滚未验证。
+- 远端/`--source` 分支的同类失败行为在 task-17 用**规范形式**的 `file:///…` 源验证（exit 29、文案逐字一致，见下节）；非规范形式 `file://C:/…`（少一条斜杠）我方仍报 `Could not find gem` exit 7，参考可解析——该 URL 归一化差异未在本轮修复（未验证，见 task-17 节）。
 - `--local_git` 插件源与「空 `plugin uninstall`」切片不在本轮范围（未做）。
+- 全量 `crystal spec` 与全量差分未重跑（沿用既有记录）。
+
+## 2026-11-19（M7(6) task-17：`plugin install` 失败消息的折行宽度与锚点订正）
+
+**范围**：把 task-15 的 malformed-plugin 失败消息从「我方硬编码两行」改为参考语义——**单条消息 + 按终端宽度折行**；顺带订正上一节把折行归因于 `cli/plugin.rb` 的错误锚点，并核实远端 `--source` 的同类失败路径。本地 `--path`、远端缺 `plugins.rb`、远端 `--source` 三条分支共用同一输出助手。
+
+**参考 oracle（`.d/oracle17.sh`；每 profile × 插件名 × 环境变量独立沙箱 `.d/oracle17/<ver>-<name>-<env>`，HOME/GEM_HOME/BUNDLE_USER_HOME/BUNDLE_PATH/TMP/TEMP/TMPDIR 全隔离）**：
+
+| 场景 | 4.0.24 | 2.7.2 |
+| --- | --- | --- |
+| `bad`（默认） | exit 29；stderr 154B 两行：L1 len=74 ``Failed to install plugin `bad`, due to Bundler::Plugin::MalformattedPlugin``、L2 len=76 `(ArgumentError: Event 'post-install' not defined in Bundler::Plugin::Events)` | 逐字相同（含字节数） |
+| `bad` + `COLUMNS=40` / `COLUMNS=120` | 与默认**完全一致**（154B 两行） | 同 |
+| `bad` + `THOR_COLUMNS=40` | 156B 四行：38/35/40/35 | 同 |
+| `bad` + `THOR_COLUMNS=120` | 154B 两行：115/35 | 同 |
+| `candle_plug`（默认） | 163B 三行：46/76/35 | 同 |
+| `candle_plug` + `THOR_COLUMNS=40/120` | 165B 五行（39/6/35/40/35）/ 162B 两行（119/39） | 同 |
+
+宽度来源：`bundler-4.0.24/lib/bundler/ui/shell.rb:167-171` 的 `word_wrap(text, line_width = Thor::Terminal.terminal_width)`，规则为 `line.gsub(/(.{1,#{width}})(\s+|$)/, "\\1\n").strip`（长单词不硬切）；`vendor/thor/lib/thor/shell/terminal.rb:4-18` 的 `terminal_width` 只读 `THOR_COLUMNS`（`to_i`，<10 忽略），非 unix（Windows `x64-mingw-ucrt`）恒 80。**`COLUMNS` 完全无效**，参考在 `friendly_errors.rb:31-36` 以 `wrap: true` 触发折行。
+
+**实现**：
+
+1. `src/celerite/cli/commands_surface.cr` 新增私有助手 `put_plugin_install_failure(stderr, name, cause)`：拼单串 ``Failed to install plugin `#{name}`, due to Bundler::Plugin::MalformattedPlugin (#{cause})`` 后 `stderr.puts Commands.word_wrap(message, CLI.terminal_width)`。`Commands.word_wrap`（`src/celerite/cli/commands.cr:1068-1078`）与 `CLI.terminal_width`（`src/celerite/cli.cr:43-49`，`THOR_COLUMNS` ≥10 优先，否则 80）是既有实现，未新增第二套折行逻辑。
+2. 三条分支改为调用该助手：本地 `--path`（原 `.cr:1490-1491`）、远端缺 `plugins.rb`（原 `:1734-1735`，cause 为 `plugins.rb was not found in the plugin.`）、远端 `--source`（原 `:1754-1755`）。
+3. 新夹具 `fixtures/differential/plugin-install-bad-event-long/`：`command` 单行 `plugin install candle_plug --path ../bundle/plugin-src`（55B，末字节 LF）；根 `Gemfile`（46B）；`bundle-preset/plugin-src/{candle_plug.gemspec 248B, plugins.rb 75B, lib/candle_plug.rb 42B}`；`file-absent` = `.bundle/plugin/index`（21B）。与 task-15 的短名夹具并存，短名夹具断言未改。
+4. `spec/m7_plugin_bad_event_spec.cr` 增第 4 例：`candle_plug` 的 stderr 恰为三行 `Failed to install plugin \`candle_plug\`, due to` / `Bundler::Plugin::MalformattedPlugin (ArgumentError: Event 'post-install' not` / `defined in Bundler::Plugin::Events)`。
+
+**证据**：
+
+- 我方 oracle `.d/oracle17c.sh`（同沙箱隔离、跑 `bin/celerite.exe`）：`bad` 默认 2 行 74/76；`THOR_COLUMNS=40` 4 行 38/35/40/35；`THOR_COLUMNS=120` 2 行 115/35；`candle_plug` 默认 3 行 46/76/35、`THOR_COLUMNS=40` 5 行 39/6/35/40/35、`THOR_COLUMNS=120` 2 行 119/39 —— 行文本与参考逐字一致（字节差仅为参考的 CRLF：如 `bad` 参考 154B vs 我方 152B；`candle_plug` 163B vs 160B）。
+- 差分 `plugin-install-bad-event-long`：4.0.24 `PASS (exit=29)`、`BUNDLER_REF_VERSION=2.7.2` 同 PASS（各 1 passed, 0 failed, 0 skipped，EXIT 0）。
+- 回归差分双 profile（9 夹具）：`plugin-install-bad-event-long`、`plugin-install-bad-event`、`plugin-install`、`plugin-install-hooks`、`plugin-hook-raise`、`plugin-hook-per-gem`、`plugin-hook-uninstall`、`plugin-install-source`、`install-fresh` → 4.0.24 与 2.7.2 均 `9 passed, 0 failed, 0 skipped`。
+- `crystal spec`（`m7_plugin_bad_event_spec` + `m7_plugin_hook_per_gem_spec` + `m7_plugin_hooks_registration_spec` + `m7_plugin_hook_failure_spec` + `m7_plugin_uninstall_hooks_spec` + `m7_console_spec` + `m7_cli_dispatch_spec`）→ **39 examples, 0 failures, 0 errors, 0 pending**。
+- `crystal tool format --check src spec` EXIT 0；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告：`src/celerite/cli/commands_install.cr:1112:43`、`:1176:20`）。
+
+**已声明差异 / 未验证**：
+
+- 上节（task-15）把折行归因到 `cli/plugin.rb` 的锚点已订正为本节的 `friendly_errors.rb:31-36` + `ui/shell.rb:167-171`，exit 29 来自 `errors.rb:49`。
+- 远端 `--source` + bad-event 用**规范形式** `file:///C:/…` 验证：我方 exit 29、stdout 与参考同为 `Fetching source index from …` / `Resolving dependencies...` / `Fetching bad 0.1.0` / `Installing bad 0.1.0`、stderr 同两行。但非规范形式 `file://C:/…`（`file://` 后直接跟盘符）我方解析失败并报 `Could not find gem 'bad' in rubygems repository`（exit 7），参考可正常解析（exit 29）——**该 file URL 归一化差异未修复、未验证根因**，不入本轮夹具。
+- 差分 harness 不设置 `THOR_COLUMNS`，故夹具只覆盖默认 80 列；`THOR_COLUMNS=40/120` 的折行仅由 `.d/oracle17c.sh` 与参考对照（未入 CI 断言）。
 - 全量 `crystal spec` 与全量差分未重跑（沿用既有记录）。
