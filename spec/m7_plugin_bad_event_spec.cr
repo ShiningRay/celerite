@@ -125,4 +125,27 @@ describe "M7 task-15 undefined plugin hook events" do
       end
     end
   end
+
+  # The failure message is one reference string; friendly_errors prints it with
+  # `wrap: true`, so thor word_wraps at the terminal width (80 on Windows unless
+  # THOR_COLUMNS says otherwise). A longer plugin name therefore breaks the
+  # message differently — this is the M7 task-17 D1 alignment, checked against
+  # `.d` oracle for bundler-4.0.24/2.7.2 (both wrap identically).
+  it "wraps a long plugin name at the terminal width like the reference" do
+    pending! "ruby not available" unless ruby_available?
+    with_bad_event_bridge do
+      with_project({"Gemfile" => bad_event_gemfile}) do |dir|
+        source = File.join(dir, "candle_plug")
+        bad_event_write_source(source, "candle_plug", "post-install")
+        code, _out, err = run_cli(["plugin", "install", "candle_plug", "--path", source])
+        code.should eq(29)
+        lines = err.lines.map(&.chomp).reject(&.empty?)
+        lines.should eq([
+          "Failed to install plugin `candle_plug`, due to",
+          "Bundler::Plugin::MalformattedPlugin (ArgumentError: Event 'post-install' not",
+          "defined in Bundler::Plugin::Events)",
+        ])
+      end
+    end
+  end
 end
