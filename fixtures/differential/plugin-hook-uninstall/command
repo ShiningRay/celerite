@@ -1,0 +1,7 @@
+plugin install hook_plugin --path ./hook_plugin
+install
+plugin uninstall hook_plugin
+install
+plugin list
+plugin install hook_plugin --path ./hook_plugin
+plugin list
