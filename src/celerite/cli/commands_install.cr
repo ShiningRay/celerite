@@ -124,8 +124,19 @@ module Celerite
       # Thor parses `--jobs`/`--retry` as numeric values and rejects positional
       # arguments before `install` runs; internal callers (add/remove/cache/clean)
       # pass gem names through this entry, so they opt out of that check.
-      with_gemfile_overrides(rest) do
-        run_install(stdout, stderr, rest, summary, show_resolving, no_reuse, no_install, cli_arguments)
+      begin
+        with_gemfile_overrides(rest) do
+          run_install(stdout, stderr, rest, summary, show_resolving, no_reuse, no_install, cli_arguments)
+        end
+      rescue ex : GemfileNotFound
+        # `cli.rb:290-313`: `bundle install` rescues a missing Gemfile, renders
+        # `cli_help` and re-raises so the exit status still reports the missing
+        # Gemfile (measured: exit 10, the table on stdout, `Could not locate
+        # Gemfile` on stderr). 2.7.2 has no such rescue, so it stays silent.
+        unless (ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")
+          Commands.cli_help(stdout, stderr, [] of String)
+        end
+        raise ex
       end
     end
 

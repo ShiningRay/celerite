@@ -1,0 +1,2 @@
+config set default_cli_command cli_help --global
+--no-color lock

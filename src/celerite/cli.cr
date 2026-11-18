@@ -17,18 +17,8 @@ module Celerite
 
     DEFAULT_TERMINAL_WIDTH = 80
 
-    USAGE = <<-TEXT
-    Usage:
-      celerite COMMAND [OPTIONS]
-
-    Celerite is a Bundler-compatible dependency manager written in Crystal.
-
-    Implemented:
-      locked path (M1): check, list, show, info, platform, version, config get
-      resolution (M2): lock [--print] [--update]
-
-    Run `celerite help COMMAND` for command help.
-    TEXT
+    # A bare `bundle` runs the default command (`cli.rb:133-148`), so there is
+    # no Celerite-specific usage screen left to print.
 
     def self.run(args : Array(String), stdout : IO, stderr : IO) : Int32
       Commands.dispatch(args, stdout, stderr)

@@ -3600,8 +3600,60 @@ Gemfile = `source "http://127.0.0.1:<port>/"` + `gem "json_pure", "2.6.0"`）：
 
 - 前缀命令解析（Thor `find_command_possibilities`）未实现：参考 `instal` 解析成 `install`（`instal --help` 打印 Thor 的 `Usage: bundle install [OPTIONS]` 长选项表），我方按未知命令 exit 15；`co` 的 `Ambiguous command co matches [config, console]` 同理未复刻。
 - `[REMOVED]` 命令未复刻：参考 `viz` exit 9 `[REMOVED] The \`viz\` command has been renamed to \`graph\` and moved to a plugin.` + 第二行 URL，`inject` exit 9 `[REMOVED] The \`inject\` command has been replaced by the \`add\` command`；我方仍报未知命令 exit 15。
-- 无参 `bundle` 未复刻 default_command 语义：参考打 5 行（506 字节）`In a future version of Bundler …` 警告块后走 `install`（无 Gemfile 时再打 `cli_help` 全表并 exit 10），我方仍打印 `CLI::USAGE`；同理前置类选项（`bundle --no-color install`）在参考里会被当成 `install` 的位置参数并 exit 15。
+- 无参 `bundle` 的 default_command 语义已实现（2026-11-18，见本文末节「`cli_help` 与无参 `bundle` 的 default_command 语义」）：4.0.24 打 5 行警告块后走 `install`（无 Gemfile 时再打 `cli_help` 全表并 exit 10），前置类选项（`bundle --no-color install`）同样被当成 `install` 的位置参数并 exit 15；该节的「已声明差异」列出剩余未复刻项。
 - `-t`/`--tree` 未实现（4.0.24 有 `tree` 命令，输出 2219 字节的 `bundler:c_l_i` 树）。
 - Thor 兜底文本的三行 class option 是硬编码的 4.0.24/2.7.2 共同形状；两版若将来新增 class option 需同步。
 - 手册页资产为 vendored 副本：升级参考版本时必须重新复制并复核两版差异清单。
 - 未验证：`man` 在 PATH 上时的 `Kernel.exec("man", …)` 分支（本机无 `man`，参考恒走 `.ronn` 分支）；`help <plugin-cmd>` 在 2.7.2 下的行为（2.7.2 的 `#help` 没有插件分支）。
+
+## 2026-11-18（M7(2)/M7(3)：`cli_help` 与无参 `bundle` 的 default_command 语义）
+
+**参考锚点**
+
+- `bundler/cli.rb:99-121` `cli_help`：`version` → `Bundler.ui.info "\n"` → `primary_commands = ["install","update","cache","exec","config","help"]` → `list = self.class.printable_commands(true)` → `by_name = list.group_by { |name, _message| name.match(/^bundler? (\w+)/)[1] }` → `utilities = by_name.keys.sort - primary_commands` → `shell.say "Bundler commands:\n\n"` / `shell.say "  Primary commands:\n"` / `shell.print_table(primary_commands, indent: 4, truncate: true)` / `shell.say` / `shell.say "  Utilities:\n"` / `shell.print_table(utilities, indent: 4, truncate: true)` / `shell.say` / `self.class.send(:class_options_help, shell)`。两组都按**名字列表**顺序渲染（`primary_commands.map! { |name| by_name[name].first }`），不是声明顺序。
+- `bundler/cli.rb:133-148` `self.default_command(meth = nil)`：`return super if meth`；`unless Bundler.settings[:default_cli_command]` 时打 5 行警告块（末尾空行）；返回 `Bundler.settings[:default_cli_command] || "install"`。
+- `bundler/cli.rb:290-313` `install` 的 `rescue GemfileNotFound` → `invoke_other_command("cli_help")` + `raise error`（re-raise 以保留失败退出码）。
+- `bundler/vendor/thor/lib/thor.rb:591-595` `retrieve_command_name`：`args.shift if meth && (map[meth] || meth !~ /^\-/)` —— 首 token 以 `-` 开头且不是 dash 映射时**不 shift**；`:605-620` `normalize_command_name(nil)` → `default_command.to_s.tr("-","_")`（警告块在此触发）。
+- `bundler/vendor/thor/lib/thor/shell/table_printer.rb`：`@truncate = options[:truncate] == true ? Terminal.terminal_width : options[:truncate]`；首列 `"%-#{maxima + 2}s"`、末列 `"%-s"`；`truncate` = `chars[0, @truncate - 3 - @indent].join + "..."`；`indentation = " " * @indent`。`thor/shell/terminal.rb` 的 `unix?` 不匹配 mingw，故 Windows 恒 80 列。
+- `bundler/vendor/thor/lib/thor/base.rb:639-675` `class_options_help`/`print_options`：`padding = options.map { |o| o.aliases_for_usage.size }.max.to_i`，`shell.say "Options:"` + `shell.print_table(list, indent: 2)` + `shell.say ""`。
+- `bundler/settings/validator.rb:78-81`：`rule %w[default_cli_command], "default_cli_command must be either 'install' or 'cli_help'"`，非法值 `fail!` 出三行文案；`bundler/settings.rb:401-423` 的 `set_key` 在写盘**之前**调用 `Validator.validate!`。
+- `bundler-2.7.2/lib/bundler/cli.rb:110` 用 `default_task(Bundler.feature_flag.default_cli_command)` 在类定义时固定默认命令，`self.default_command` 覆盖从不执行 → **2.7.2 没有 5 行警告块**；`feature_flag.rb:38` 在该版默认 `install`。
+
+**实现**
+
+1. `src/celerite/cli/commands.cr` 新增常量：`CLASS_OPTION_LINES`（三行 class option，描述列偏移 53）、`DEFAULT_CLI_COMMAND_NOTICE`（5 行警告块）、`CLI_HELP_PRIMARY`、`PRINTABLE_COMMANDS`（4.0.24 的 30 条 `printable_commands(true)`，banner 前缀 `bundle `）、`PRINTABLE_COMMANDS_HIDDEN_2_X = ["tree","clean"]`、`DASH_MAPPED_COMMANDS = ["--help","-h","-?","-D","-t","--tree","--version","-v"]`、`DEFAULT_CLI_COMMAND_VALUES = ["install","cli_help"]`。
+2. `render_command_table(stdout, rows, indent, truncate_at)` 复刻 `TablePrinter`：首列 `ljust(maxima + 2)`、末列原样、超长 `sentence[0, truncate_at - 3 - indent] + "..."`、每行 `" " * indent` 前缀。
+3. `Commands.cli_help(stdout, stderr, rest)`：`reject_unknown_switches` → 位置参数报 `ERROR: "bundle cli_help" was called with arguments [...]` + `Usage: "bundle cli_help"`（无 `[OPTIONS]`）→ 15；否则 version banner + `Bundler commands:` + primary 6 行 + `Utilities:` N 行 + `Options:` 三行 + 收尾空行。
+4. `dispatch`：`raw_args.empty? || (raw_args[0].starts_with?("-") && !DASH_MAPPED_COMMANDS.includes?(raw_args[0]))` 时走 `default_cli_command(stdout)`，并把 `strip_global_flags` 之**后**的 `args` 作为该命令的 rest（前置类开关因此成为默认命令的开关、其余 token 成为位置参数 → 15）。`cli_help` 进 `ECHO_COMMANDS`，故 `--verbose` 会回显 ``Running `bundle cli_help --verbose` with bundler …``。
+5. `config_store` 在写盘前按 4.x 校验 `default_cli_command`（2.7.2 静默通过）。
+6. `commands_install.cr` 的 `install` 在 4.x 下 `rescue GemfileNotFound` → 先 `Commands.cli_help(stdout, stderr, [] of String)` 再 `raise`（exit 10 + 表）；2.7.2 直接 re-raise（out 为空）。
+7. 删除 `src/celerite/cli.cr` 的 `USAGE`（裸 `bundle` 不再打印 Celerite 自有 usage 屏）。
+
+**证据**
+
+| 检查 | 结果 |
+| --- | --- |
+| `cli_help` 全文（4.0.24） | A/B SAME，2718 字符 / 44 行；primary `#` 在列 32，utilities 24 行 `#` 在列 35，`Options:` 三行 `#` 在列 53，末尾 2 个换行 |
+| `cli_help` 全文（2.7.2） | A/B SAME，2560 字符 / 42 行；utilities 22 行（无 `clean`、无 `tree`） |
+| `cli_help extra` / `cli_help --bogus` | 双 profile 均 SAME（15 + 两行 usage / 15 + `Unknown switches "--bogus"`） |
+| `cli_help --verbose` | SAME（2774 = 2718 + 56 的回显行） |
+| `cli_help --help` / `help cli_help` | SAME（361 字节 Thor 兜底页） |
+| 裸 `bundle`（4.0.24，已 install） | SAME（629 字节 = 警告块 + 空行 + 两行 install 结论）；`--no-color` 637；`--quiet` 506 |
+| 裸 `bundle`（2.7.2） | SAME（无警告块；`--verbose` 560） |
+| 无 Gemfile 裸 `bundle` | 4.0.24 SAME（exit 10 / out 3218 = 警告块 + 全表 / er `Could not locate Gemfile`）；2.7.2 SAME（exit 10 / out 0） |
+| `config set default_cli_command bogus --global` | 4.0.24 SAME（15 + er 148 三行）；2.7.2 SAME（exit 0 静默） |
+| `default_cli_command = cli_help` 后裸跑 / `--verbose` / `--no-color lock` | 双 profile SAME（2718 / 2774 / 15 + `ERROR: "bundle cli_help" was called with arguments ["lock"]`） |
+| 新差分夹具 `cli-help`、`cli-help-extra-arg`、`cli-help-unknown-switch`、`default-cli-command-invalid`、`default-cli-command-clihelp`、`bare-leading-flag` | 4.0.24 `6 passed, 0 failed`；2.7.2 `6 passed, 0 failed` |
+| 回归集 | 4.0.24 14 夹具 `14 passed, 0 failed`；删除 `USAGE` 后复跑 6 夹具 `6 passed, 0 failed` |
+| `spec/m7_cli_help_spec.cr` | 10 examples, 0 failures |
+| 全量 `crystal spec` | **656 examples, 0 failures, 4 errors**（4 为既有 `spec/git_source_spec.cr` 的 msys `0xC0000022`） |
+| `crystal tool format --check src spec` / `crystal build --no-codegen` / `git diff --check` | 0 / 0 / 0 |
+
+A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考额外打印 `Found no changes, using resolution from the lockfile` / `Using …` / `N:  …` 的调试图层，我方不回显该类调试行，属既有已声明差异）。
+
+**已声明差异 / 未验证**
+
+- `--verbose` 的调试图层（`Found no changes, using resolution from the lockfile`、`Using <gem>`、`N:  <gem> (<ver>) from <path>`、`Writing lockfile to …`）仍不复刻；因此裸 `bundle --verbose` 这类「只有调试行不同」的场景只做前缀/末段比对，不宣称全量逐字一致。
+- `install_or_cli_help`（4.0.24 的三行弃用告警 + 转发 `install`）未实现：`default_cli_command` 被外部配置成该值时，我方按 `install` 处理但不打那三行 warn。
+- Thor 的前缀命令解析与歧义报错（`instal` → `install`、`co` → `Ambiguous command co matches [config, console]`）仍未复刻（沿用上一节声明）。
+- 未验证：2.7.2 下把 `default_cli_command` 设为非法值后再裸跑 `bundle` 的实际走向（该版无校验，参考会直接用该字符串查命令表；我方 `configured.is_a?(String)` 直接返回，两边在「非法值」这一路径上未做 A/B）。

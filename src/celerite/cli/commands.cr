@@ -42,15 +42,30 @@ module Celerite
         stderr.puts message
         return 15
       end
+      raw_args = args
       args = strip_global_flags(args)
 
-      if args.empty?
-        stdout.puts CLI::USAGE
-        return 0
-      end
+      # Thor only shifts a leading token when it resolves a command
+      # (`thor.rb:591-595`): a switch that is not one of the dash mappings
+      # (`base.rb:17-18` for help/tree, `cli.rb:41-53` for version) stays on the
+      # argument list, so the method name is unresolved and
+      # `normalize_command_name` (thor.rb:605-620) falls back to
+      # `default_command` (cli.rb:133-148). A bare `bundle` takes the same path,
+      # which is why it runs the default command instead of printing usage.
+      defaulted = raw_args.empty? ||
+                  (raw_args[0].starts_with?("-") && !DASH_MAPPED_COMMANDS.includes?(raw_args[0]))
 
-      command = args[0]
-      rest = args[1..]
+      if defaulted
+        # The unresolved tokens all become the default command's arguments
+        # (`Thor::Options.split` pulls the switches back out later). Global
+        # switches were already consumed by `strip_global_flags`, which is why
+        # the echo below does not repeat `--verbose`.
+        command = default_cli_command(stdout)
+        rest = args
+      else
+        command = args[0]
+        rest = args[1..]
+      end
       print_command_echo(command, rest, verbose_requested, cli_retry, stdout)
 
       # `--quiet` is honoured by install/update/add/cache (and `doctor`, whose
@@ -125,6 +140,8 @@ module Celerite
         issue(stdout, stderr, rest)
       when "config"
         config(stdout, stderr, rest)
+      when "cli_help"
+        cli_help(stdout, stderr, rest)
       when "help", "--help", "-h", "-?", "-D"
         # Thor's dash mappings (`base.rb:17 HELP_MAPPINGS = %w(-h -? --help -D)`)
         # all land on `help`, so `-D`/`-?` render the top-level page too.
@@ -180,10 +197,81 @@ module Celerite
     # `Bundler::CLI::PARSEABLE_COMMANDS`).
     PARSEABLE_COMMANDS = ["check", "config", "help", "exec", "platform", "show", "version"]
 
+    # The three class options of `Bundler::CLI` as Thor renders them
+    # (`base.rb:657-675 print_options`, indent 2, padding 3 because `-V,` is
+    # the longest alias list): description column starts at offset 53.
+    CLASS_OPTION_LINES = "      [--no-color]                                   # Disable colorization in output\n" \
+                         "  -r, [--retry=NUM]                                  # Specify the number of times you wish to attempt network commands\n" \
+                         "  -V, [--verbose], [--no-verbose], [--skip-verbose]  # Enable verbose output mode\n"
+
+    # `bundle` without a subcommand prints this block unless
+    # `default_cli_command` is configured (cli.rb:133-148).
+    DEFAULT_CLI_COMMAND_NOTICE = "In a future version of Bundler, running `bundle` without argument will no longer run `bundle install`.\n" \
+                                 "Instead, the `cli_help` command will be displayed. Please use `bundle install` explicitly for scripts like CI/CD.\n" \
+                                 "You can use the future behavior now with `bundle config set default_cli_command cli_help --global`,\n" \
+                                 "or you can continue to use the current behavior with `bundle config set default_cli_command install --global`.\n" \
+                                 "This message will be removed after a default_cli_command value is set.\n"
+
     # `--quiet` is a `method_option` of these commands only
     # (bundler/cli.rb:281 install, :328 update, :418 add, :474 cache);
     # every other command reports `Unknown switches "--quiet"`.
     QUIET_COMMANDS = ["install", "update", "add", "cache", "package", "pack"]
+
+    # Commands `cli_help` lists first, in this exact order (cli.rb:104).
+    CLI_HELP_PRIMARY = ["install", "update", "cache", "exec", "config", "help"]
+
+    # `Bundler::CLI.printable_commands(true)` (thor.rb:309-315) in declaration
+    # order, with the reference executable name prefixed by `banner`
+    # (thor.rb:546-550). Hidden commands are absent: 4.0.24 hides `cli_help`,
+    # `install_or_cli_help`, `viz` and `inject`, which leaves 30 rows.
+    PRINTABLE_COMMANDS = [
+      {"bundle help [COMMAND]", "Describe available commands or one specific command"},
+      {"bundle tree", "Print a tree of all available commands"},
+      {"bundle init [OPTIONS]", "Generates a Gemfile into the current working directory"},
+      {"bundle check [OPTIONS]", "Checks if the dependencies listed in Gemfile are satisfied by currently installed gems"},
+      {"bundle remove [GEM [GEM ...]]", "Removes gems from the Gemfile"},
+      {"bundle install [OPTIONS]", "Install the current environment to the system"},
+      {"bundle update [OPTIONS]", "Update the current environment"},
+      {"bundle show GEM [OPTIONS]", "Shows all gems that are part of the bundle, or the path to a given gem"},
+      {"bundle list", "List all gems in the bundle"},
+      {"bundle info GEM [OPTIONS]", "Show information for the given gem"},
+      {"bundle binstubs GEM [OPTIONS]", "Install the binstubs of the listed gem"},
+      {"bundle add GEM VERSION", "Add gem to Gemfile and run bundle install"},
+      {"bundle outdated GEM [OPTIONS]", "List installed gems with newer versions available"},
+      {"bundle fund [OPTIONS]", "Lists information about gems seeking funding assistance"},
+      {"bundle cache [OPTIONS]", "Locks and then caches all of the gems into vendor/cache"},
+      {"bundle exec [OPTIONS]", "Run the command in context of the bundle"},
+      {"bundle config NAME [VALUE]", "Retrieve or set a configuration value"},
+      {"bundle open GEM", "Opens the source directory of the given bundled gem"},
+      {"bundle console [GROUP]", "Opens an IRB session with the bundle pre-loaded"},
+      {"bundle version", "Prints Bundler version information"},
+      {"bundle licenses", "Prints the license of all gems in the bundle"},
+      {"bundle gem NAME [OPTIONS]", "Creates a skeleton for creating a rubygem"},
+      {"bundle clean [OPTIONS]", "Cleans up unused gems in your bundler directory"},
+      {"bundle platform [OPTIONS]", "Displays platform compatibility information"},
+      {"bundle lock", "Creates a lockfile without installing"},
+      {"bundle env", "Print information about the environment Bundler is running under"},
+      {"bundle doctor [OPTIONS]", "Checks the bundle for common problems"},
+      {"bundle issue", "Learn how to report an issue in Bundler"},
+      {"bundle pristine [GEMS...]", "Restores installed gems to pristine condition"},
+      {"bundle plugin", "Manage the bundler plugins"},
+    ] of Tuple(String, String)
+
+    # 2.7.2 dropped `tree` outright and marks `clean` as `hide: true`
+    # (`Bundler::CLI` reflection: 28 printable rows), so `cli_help` shows 21
+    # utilities there instead of 24.
+    PRINTABLE_COMMANDS_HIDDEN_2_X = ["tree", "clean"]
+
+    # Thor's dash mappings: `base.rb:17-18` maps `-h -? --help -D` onto `help`
+    # and `-t --tree` onto `tree`, while `cli.rb:41-53` maps `--version`/`-v`
+    # onto `version`. Any *other* leading switch is never shifted off the
+    # argument list, so the command stays unresolved and the default command
+    # runs instead (thor.rb:591-595, cli.rb:133-148).
+    DASH_MAPPED_COMMANDS = ["--help", "-h", "-?", "-D", "-t", "--tree", "--version", "-v"]
+
+    # Values accepted for `default_cli_command`
+    # (`settings/validator.rb:78-81`); 2.7.2 has no such rule.
+    DEFAULT_CLI_COMMAND_VALUES = ["install", "cli_help"]
 
     # Commands this CLI implements that the reference echoes before running.
     # `info` is a Thor command of its own (bundler/cli.rb:382) and is not part of
@@ -193,7 +281,7 @@ module Celerite
       "install", "update", "lock", "cache", "package", "pack", "clean",
       "add", "remove", "binstubs", "env", "doctor", "licenses", "fund",
       "open", "plugin", "pristine", "init", "outdated", "console", "gem", "issue",
-      "info",
+      "info", "cli_help",
     ]
 
     # Boolean options: Thor renders them as a bare `--name`.
@@ -2391,6 +2479,16 @@ module Celerite
     # `message`/`new_value` helpers (cli/config.rb:134-162).
     private def self.config_store(stdout : IO, stderr : IO, name : String, value : String, scope : String, parseable : Bool) : Int32
       config = config_for_command
+      # `Bundler::Settings::Validator.validate!` runs inside `set_key`
+      # (settings.rb:401-423), i.e. before the value is written, and raises
+      # `InvalidOption` for a bad `default_cli_command`
+      # (settings/validator.rb:78-81). 2.7.2 has no such rule.
+      if !profile_2_x? && name == "default_cli_command" && !DEFAULT_CLI_COMMAND_VALUES.includes?(value)
+        stderr.puts "Setting `default_cli_command` to #{value.inspect} failed:"
+        stderr.puts " - default_cli_command must be either 'install' or 'cli_help'"
+        stderr.puts " - must be one of: #{DEFAULT_CLI_COMMAND_VALUES.join(", ")}"
+        return 15
+      end
       new_value = value
       # Reference `new_value`: `local.<gem>` values that are directories are
       # stored expanded.
@@ -2455,6 +2553,121 @@ module Celerite
     end
 
     # ------------------------------------------------------------------
+    # cli_help
+    # ------------------------------------------------------------------
+    # `bundle cli_help` (cli.rb:99-121): version banner, the primary commands,
+    # the sorted remainder and the three class options. It is hidden from
+    # `help`, so the only way to reach it is by name or as `default_cli_command`.
+    def self.cli_help(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      # Thor `check_unknown_options!` runs before the body (base.rb:619-626),
+      # and this command takes no arguments at all.
+      if (unknown = reject_unknown_switches(stderr, rest, SWITCH_FLAGS_CLASS, SWITCH_VALUES_CLASS))
+        return unknown
+      end
+
+      arguments = subcommand_arguments(rest, SWITCH_FLAGS_CLASS, SWITCH_VALUES_CLASS)
+      unless arguments.empty?
+        stderr.puts %(ERROR: "bundle cli_help" was called with arguments #{arguments.inspect})
+        stderr.puts %(Usage: "bundle cli_help")
+        return 15
+      end
+
+      # cli.rb:102-108: the `version` banner, then the two tables. `by_name`
+      # keeps the printable rows keyed by their command word; `primary` renders
+      # in the fixed CLI_HELP_PRIMARY order and `utilities` in sorted order
+      # (both `map!` over the name lists in the reference, so neither keeps the
+      # declaration order of `printable_commands`).
+      printable = printable_rows
+      by_name = {} of String => Tuple(String, String)
+      printable.each { |row| by_name[command_word(row[0])] = row }
+      stdout.puts version_banner
+      stdout.puts ""
+      stdout.puts "Bundler commands:"
+      stdout.puts ""
+      stdout.puts "  Primary commands:"
+      render_command_table(stdout, CLI_HELP_PRIMARY.compact_map { |name| by_name[name]? }, indent: 4, truncate_at: 80)
+      stdout.puts ""
+      stdout.puts "  Utilities:"
+      utilities = printable.map { |row| command_word(row[0]) }.sort - CLI_HELP_PRIMARY
+      render_command_table(stdout, utilities.compact_map { |name| by_name[name]? }, indent: 4, truncate_at: 80)
+      stdout.puts ""
+      # base.rb:657-675 `print_options` with indent 2; the three class options
+      # share one fixed padding, so CLASS_OPTION_LINES is used verbatim.
+      stdout.puts "Options:"
+      stdout.print CLASS_OPTION_LINES
+      stdout.puts ""
+      0
+    end
+
+    # The banner `cli_help` prints first (cli.rb:110 + cli.rb:554-566): the
+    # full version with build metadata, unlike `bundle version`.
+    private def self.version_banner : String
+      profile = bundle_profile_version
+      if meta = Celerite::ReleaseMetadata.for(profile)
+        "Bundler version #{profile} (#{meta[0]} commit #{meta[1]})"
+      else
+        "Bundler version #{profile}"
+      end
+    end
+
+    # `Bundler::CLI.printable_commands(true)`, minus the two rows 2.7.2 hides.
+    private def self.printable_rows : Array(Tuple(String, String))
+      if profile_2_x?
+        PRINTABLE_COMMANDS.reject { |row| PRINTABLE_COMMANDS_HIDDEN_2_X.includes?(command_word(row[0])) }
+      else
+        PRINTABLE_COMMANDS
+      end
+    end
+
+    # `name.match(/^bundler? (\w+)/)[1]` (cli.rb:105-106) — the command word of
+    # a printable banner such as `bundle help [COMMAND]`.
+    private def self.command_word(banner : String) : String
+      words = banner.split(' ')
+      words.size > 1 ? words[1] : banner
+    end
+
+    # Thor `TablePrinter` (shell/table_printer.rb), two columns only: the last
+    # column is `%-s` and every earlier one is `%-#{maxima + 2}s`
+    # (`:59-65`). Rows over `truncate_at` are cut to
+    # `chars[0, truncate_at - 3 - indent]` plus `"..."` (`:103-111`), which is
+    # what makes a truncated row exactly `truncate_at` columns wide.
+    private def self.render_command_table(stdout : IO, rows : Array(Tuple(String, String)), indent : Int32, truncate_at : Int32) : Nil
+      return if rows.empty?
+
+      widths = rows.map { |row| row[0].size }
+      prefix_width = widths.max.not_nil! + 2
+      rows.each do |row|
+        sentence = row[0].ljust(prefix_width) + "# #{row[1]}"
+        if sentence.size > truncate_at
+          sentence = sentence[0, truncate_at - 3 - indent] + "..."
+        end
+        stdout.puts (" " * indent) + sentence
+      end
+    end
+
+    # `Bundler::CLI.default_command` (cli.rb:133-148): print the five-line
+    # notice unless `default_cli_command` is configured, then return the
+    # command the invocation should run. 2.7.2 wires the default with
+    # `default_task(Bundler.feature_flag.default_cli_command)` instead, so it
+    # never reaches this override: there is no notice and the fallback is
+    # already `install` (feature_flag.rb:38), never nil.
+    private def self.default_cli_command(stdout : IO) : String
+      config = config_for_command
+      configured = config["default_cli_command"]
+      # `Bundler.settings[:default_cli_command]` is nil until it is set, and
+      # that nil is exactly what gates the notice.
+      if configured.is_a?(String)
+        configured
+      elsif profile_2_x?
+        "install"
+      else
+        stdout.print DEFAULT_CLI_COMMAND_NOTICE
+        stdout.puts ""
+        "install"
+      end
+    end
+
+    # ------------------------------------------------------------------
     # help
     # ------------------------------------------------------------------
     # `bundle help [COMMAND]` (cli.rb:155-185): resolve an alias, hand unknown
@@ -2513,9 +2726,7 @@ module Celerite
         io << "  bundle " << usage << '\n'
         io << '\n'
         io << "Options:\n"
-        io << "      [--no-color]                                   # Disable colorization in output\n"
-        io << "  -r, [--retry=NUM]                                  # Specify the number of times you wish to attempt network commands\n"
-        io << "  -V, [--verbose], [--no-verbose], [--skip-verbose]  # Enable verbose output mode\n"
+        io << CLASS_OPTION_LINES
         io << '\n'
         io << description << '\n'
       end

@@ -1,0 +1,1 @@
+config set default_cli_command bogus --global

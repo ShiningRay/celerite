@@ -11,11 +11,19 @@ describe Celerite::CLI do
     err.should be_empty
   end
 
-  it "prints help without arguments" do
-    code, out, err = run_cli([] of String)
-    code.should eq(0)
-    out.should contain("Usage:")
-    err.should be_empty
+  it "runs the default command without arguments (cli.rb:133-148)" do
+    # A bare `bundle` resolves to `default_command`, which here is still
+    # `install`: the reference prints the five-line migration notice first, then
+    # runs install. With no Gemfile that install rescues `GemfileNotFound`,
+    # renders `cli_help` and re-raises, so the exit status is still 10.
+    with_project({} of String => String) do
+      code, out, err = run_cli([] of String)
+      code.should eq(10)
+      out.should contain("In a future version of Bundler, running `bundle` without argument will no longer run `bundle install`.")
+      out.should contain("Bundler commands:")
+      out.should contain("  Primary commands:")
+      err.should contain("Could not locate Gemfile")
+    end
   end
 
   it "runs install (M3) through the full path" do
