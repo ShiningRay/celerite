@@ -1,0 +1,2 @@
+.bundle/plugin/index	after-install
+.bundle/plugin/index	hook_plugin
