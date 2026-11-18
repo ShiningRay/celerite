@@ -1,0 +1,3 @@
+hook-log-alpha	after-install:alpha
+hook-log-beta	after-install:beta
+hook-log-gamma	after-install:gamma
