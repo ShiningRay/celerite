@@ -442,7 +442,25 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
   if ! diff -q "$work/ref.out.n" "$work/cel.out.n" >/dev/null; then
     ok=0; detail+="  stdout differs:"$'\n'"$(diff "$work/ref.out.n" "$work/cel.out.n" | head -15)"$'\n'
   fi
-  if ! diff -q "$work/ref.err.n" "$work/cel.err.n" >/dev/null; then
+  # Optional `stderr-contains` marker: each TSV line is a needle that must
+  # appear verbatim on both sides. When the marker is present the stderr
+  # comparison is contains-only (declared normalization N10); it exists for
+  # reference crash reports whose backtrace embeds machine paths that cannot
+  # be reproduced verbatim. Only fixtures that opt in are affected.
+  local stderr_contains=0
+  if [ -f "$fixture_dir/stderr-contains" ]; then
+    stderr_contains=1
+    while IFS= read -r needle; do
+      needle="$(printf '%s' "$needle" | tr -d '\r' | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@PLUGIN_INDEX_DIR@|$plugin_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+      [ -z "$needle" ] && continue
+      if ! grep -Fq -- "$needle" "$work/ref.err" 2>/dev/null || \
+         ! grep -Fq -- "$needle" "$work/cel.err" 2>/dev/null; then
+        ok=0; detail+="  stderr-contains differs: needle=$needle"$'\n'
+      fi
+    done < "$fixture_dir/stderr-contains"
+    printf '    stderr compared by contains only (declared normalization N10)\n'
+  fi
+  if [ "$stderr_contains" = 0 ] && ! diff -q "$work/ref.err.n" "$work/cel.err.n" >/dev/null; then
     ok=0; detail+="  stderr differs:"$'\n'"$(diff "$work/ref.err.n" "$work/cel.err.n" | head -15)"$'\n'
   fi
   # Tree comparison: path-only differences (per-sandbox paths inside
@@ -488,6 +506,24 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
         ok=0; detail+="  file-contains differs ($rel): needle=$needle"$'\n'
       fi
     done < "$fixture_dir/file-contains"
+  fi
+
+  # Optional `file-absent` marker: each line names a project-relative path
+  # that must be absent on BOTH sides (e.g. no Gemfile.lock after a failed
+  # install). Path-only tree comparison cannot express "this file must not
+  # exist"; it would match two sides that both created it.
+  if [ -f "$fixture_dir/file-absent" ]; then
+    while IFS= read -r rel; do
+      rel="$(printf '%s' "$rel" | tr -d '\r')"
+      [ -z "$rel" ] && continue
+      ref_exists=no
+      cel_exists=no
+      [ -e "$ref_sandbox/project/$rel" ] && ref_exists=yes
+      [ -e "$cel_sandbox/project/$rel" ] && cel_exists=yes
+      if [ "$ref_exists" != "no" ] || [ "$cel_exists" != "no" ]; then
+        ok=0; detail+="  file-absent violated ($rel): ref_exists=$ref_exists cel_exists=$cel_exists"$'\n'
+      fi
+    done < "$fixture_dir/file-absent"
   fi
 
   # Optional `file-crlf` marker: each line names a project file that must keep

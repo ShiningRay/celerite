@@ -16,6 +16,7 @@ pinned profiles.
 | N6 | Ruby backtrace frames (`   from ...`) are dropped | Frame paths are machine-specific; the exception line itself is kept. |
 | N7 | Runs of consecutive `Fetching ` lines are sorted | Concurrent downloads complete in arbitrary order; no other line order is changed. |
 | N9 | Installed-tree binary artifacts (`.so`/`.dll`/`.bundle`/`.o`/`.a`) compare presence + non-empty size + optional `ruby` loadability, not bytes | Native builds are non-deterministic (compiler revision, debug info, timestamps); Bundler's observable contract is "extension compiled and loadable", not identical bytes. |
+| N10 | Fixtures that ship a `stderr-contains` marker compare stderr by `grep -Fq` needles instead of line-by-line | A plugin hook raising from user code makes the reference print a full Ruby backtrace with machine paths (outside N1/N6 scope); only the fixture-opted contract — "the failure names the raised message" — is compared. stdout, exit codes and project trees stay exact, so the crash cannot hide behind it. |
 
 ## What is *not* normalized
 
@@ -25,6 +26,13 @@ pinned profiles.
 - Project file contents: a file reported as differing by `diff -r` must be
   identical after N1–N7 normalization, otherwise the fixture fails.
 - `first-line` and `file-contains` probes are byte-exact.
+- `stderr-contains` (N10) is opt-in per fixture and *widens* stderr matching
+  only for that fixture: every needle must appear verbatim on both sides, and
+  the run prints `stderr compared by contains only (declared normalization
+  N10)`. Fixtures without the marker keep the exact comparison.
+- `file-absent` is opt-in per fixture and *tightens* the tree comparison: each
+  listed project-relative path must be absent on both sides, with
+  `file-absent violated (<path>): ref_exists=<..> cel_exists=<..>` otherwise.
 
 ## 安装树比较内容（`installed-tree` marker）
 
@@ -57,6 +65,39 @@ ruby/*/bin
 **5 类判定**（安装树 `compare_installed_tree`）：① 路径集合（matched dirs / relative path set，missing/extra）；② 类型（symlink vs regular file，输出 `entry type differs: ref=<file|symlink> cel=<file|symlink>`）；③ 链接目标（`readlink` 不一致，输出 `symlink target differs: ref=<x> cel=<y>`；仅单侧存在时 `symlink missing on celerite side` / `unexpected symlink on celerite side`）；④ 内容（非 symlink 文件经 N1–N7 normalize 后一致，否则 `content differs after normalization`）；⑤ 可执行位（仅非 Windows，executable bit differs）。消息文本与上述输出字面一致。
 
 **覆盖范围**：带 `installed-tree` marker 的 fixture 列表随仓库演进变化，权威来源为 `ls fixtures/differential/*/installed-tree`（历史：HEAD=206d749 时 20 个）。回归时应至少对可运行的请求 fixture 在双 profile 下记录命令/exit/计数。
+## 2026-11-19 断言通道：`file-absent` 与 `stderr-contains`
+
+对比通道此前只有 exit / stdout / stderr / tree / `first-line` / `file-contains`
+/ `file-crlf`。本轮补两条夹具级标记（仅显式提供标记文件的夹具生效）：
+
+- `file-absent`：每行一个 project 相对路径，两侧都必须不存在；违例时
+  `file-absent violated (<path>): ref_exists=<yes|no> cel_exists=<yes|no>`。
+  用途：`plugin-hook-raise` 断言 hook 失败后**不留 `Gemfile.lock`**——纯树
+  路径比较无法表达「不得存在」，两侧都写出该文件反而会 PASS。
+- `stderr-contains`：每行一个 needle（与 `file-contains` 相同的 `@PLACEHOLDER@`
+  替换），两侧 stderr 都必须 `grep -Fq` 命中；命中时**跳过该夹具的逐字 stderr
+  比较**并在输出里注明 `stderr compared by contains only (declared
+  normalization N10)`。用途：参考在 hook 抛异常时打印完整 Ruby backtrace
+  （含机器路径，N6 只剥 `   from ...` 帧，异常后的上下文仍在），逐字比较不可能
+  稳定；stdout、exit code、project tree 仍是精确比较。
+
+自测夹具 `fixtures/differential/harness-assert-selftest/`：`command` 为
+`install`（项目无 Gemfile，两侧 exit 10），`stderr-contains` 为
+`Could not locate Gemfile`，`file-absent` 为 `Gemfile.lock`。实跑（4.0.24）：
+
+```
+    stderr compared by contains only (declared normalization N10)
+PASS harness-assert-selftest (exit=10)
+differential (4.0.24): 1 passed, 0 failed, 0 skipped
+```
+
+负对照（现场改标记后恢复）：`stderr-contains` 追加
+`definitely-not-in-stderr` → FAIL 且
+`stderr-contains differs: needle=definitely-not-in-stderr`（exit 1）；在
+`extra/` 放 `probe-marker.txt` 并把该路径写进 `file-absent` → FAIL 且
+`file-absent violated (probe-marker.txt): ref_exists=yes cel_exists=yes`
+（exit 1，两行均逐字见输出）。
+
 ## Known limits
 
 - Binary artifacts inside `.gem` payloads are compared through normalized
