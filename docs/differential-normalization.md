@@ -16,7 +16,7 @@ pinned profiles.
 | N6 | Ruby backtrace frames (`   from ...`) are dropped | Frame paths are machine-specific; the exception line itself is kept. |
 | N7 | Runs of consecutive `Fetching ` lines are sorted | Concurrent downloads complete in arbitrary order; no other line order is changed. |
 | N9 | Installed-tree binary artifacts (`.so`/`.dll`/`.bundle`/`.o`/`.a`) compare presence + non-empty size + optional `ruby` loadability, not bytes | Native builds are non-deterministic (compiler revision, debug info, timestamps); Bundler's observable contract is "extension compiled and loadable", not identical bytes. |
-| N10 | Fixtures that ship a `stderr-contains` marker compare stderr by `grep -Fq` needles instead of line-by-line | A plugin hook raising from user code makes the reference print a full Ruby backtrace with machine paths (outside N1/N6 scope); only the fixture-opted contract — "the failure names the raised message" — is compared. stdout, exit codes and project trees stay exact, so the crash cannot hide behind it. |
+| N10 | Fixtures that ship a `stderr-contains` marker compare stderr by `grep -Fq` needles (one whole-line needle per line, no tab splitting) instead of line-by-line; an empty marker file equals "no marker" | A plugin hook raising from user code makes the reference print a full Ruby backtrace with machine paths (outside N1/N6 scope); only the fixture-opted contract — "the failure names the raised message" — is compared. stdout, exit codes and project trees stay exact, so the crash cannot hide behind it. |
 
 ## What is *not* normalized
 
@@ -70,16 +70,21 @@ ruby/*/bin
 对比通道此前只有 exit / stdout / stderr / tree / `first-line` / `file-contains`
 / `file-crlf`。本轮补两条夹具级标记（仅显式提供标记文件的夹具生效）：
 
-- `file-absent`：每行一个 project 相对路径，两侧都必须不存在；违例时
+- `file-absent`：每行一个 project 相对路径（整行即路径，不做 tab 拆分），
+  两侧都必须不存在；违例时
   `file-absent violated (<path>): ref_exists=<yes|no> cel_exists=<yes|no>`。
   用途：`plugin-hook-raise` 断言 hook 失败后**不留 `Gemfile.lock`**——纯树
   路径比较无法表达「不得存在」，两侧都写出该文件反而会 PASS。
-- `stderr-contains`：每行一个 needle（与 `file-contains` 相同的 `@PLACEHOLDER@`
-  替换），两侧 stderr 都必须 `grep -Fq` 命中；命中时**跳过该夹具的逐字 stderr
-  比较**并在输出里注明 `stderr compared by contains only (declared
-  normalization N10)`。用途：参考在 hook 抛异常时打印完整 Ruby backtrace
-  （含机器路径，N6 只剥 `   from ...` 帧，异常后的上下文仍在），逐字比较不可能
-  稳定；stdout、exit code、project tree 仍是精确比较。
+- `stderr-contains`：每行一个 needle 整体（整行即 needle，**不做 tab 拆分**；
+  与 `file-contains` 共享同一套 `@PLACEHOLDER@` 替换），两侧 stderr 都必须
+  `grep -Fq` 命中；命中时**跳过该夹具的逐字 stderr 比较**并在输出里注明
+  `stderr compared by contains only (declared normalization N10)`。用途：参考
+  在 hook 抛异常时打印完整 Ruby backtrace（含机器路径，N6 只剥 `   from ...`
+  帧，异常后的上下文仍在），逐字比较不可能稳定；stdout、exit code、project
+  tree 仍是精确比较。
+- 退化语义：**空的标记文件（或只含空行）等同「未提供该标记」**——不产生断言、
+  不打印 N10 提示行、stderr 回到逐字比较（`file-absent` 同样不做检查）。需要
+  「断言 stderr 为空」时应改用逐字比较路径，不能靠空的 `stderr-contains`。
 
 使用约束（N10）：只有参考侧输出是**不可逐字复现的 crash report** 时才允许启用
 `stderr-contains`，且该夹具必须同时精确断言 exit code、stdout 与受影响文件
