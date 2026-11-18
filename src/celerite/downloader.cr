@@ -1,4 +1,5 @@
 require "./compact_index/cache"
+require "./file_url"
 require "./tls"
 require "./proxy"
 require "./http_transport"
@@ -191,20 +192,9 @@ module Celerite
       end
 
       if @remote.starts_with?("file:")
-        # URI parsing keeps absolute POSIX paths intact (file:///home/...)
-        # and folds Windows drive paths (file:///C:/...)
-        uri = URI.parse(@remote)
-        root = uri.path || ""
-        if (h = uri.host) && !h.empty? && !h.includes?(".") && !root.includes?(":")
-          root = "/#{h}#{root}"
-        end
-        # collapse a doubled leading slash (file:////abs) before expand:
-        # POSIX expand keeps "//" (UNC on Windows)
-        root = root.gsub(/\\/, "/").sub(%r{^/{2,}}, "/")
-        # file:///C:/... leaves a leading slash before the drive letter
-        root = root.sub(/^\/[A-Za-z]:\//) { |m| m[1..] }
-        root = root.sub(/^\/[A-Za-z]:\//) { |m| m[1..] }
-        root = File.expand_path(root)
+        # Same rules as the compact-index file fetcher: ignore the URI host,
+        # drop a slash before a drive letter, keep a UNC "//" prefix.
+        root = FileURL.directory(@remote)
         source = File.expand_path(remote_path.lstrip('/'), root)
         raise Error.new("gem file not found: #{full_name}.gem") unless File.file?(source)
         File.write(path, File.read(source))

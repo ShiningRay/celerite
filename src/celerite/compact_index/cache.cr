@@ -1,4 +1,5 @@
 require "./cache_file"
+require "../file_url"
 require "../tls"
 require "../proxy"
 require "../http_transport"
@@ -603,23 +604,10 @@ module Celerite
 
       private def make_fetcher(remote : String, credentials : {String, String}?, retries : Int32, mirror_url : String? = nil, ssl_ca_cert : String? = nil, ssl_client_cert : String? = nil, ssl_verify_mode : String? = nil, timeout : Int32 = 30, proxy : Proxy? = nil) : Fetcher
         if remote.starts_with?("file:")
-          # Use URI parsing so file:///C:/..., file:///home/... and
-          # file:/C:/... all resolve to an absolute local path.
-          uri = URI.parse(remote)
-          path = uri.path || ""
-          if (h = uri.host) && !h.empty? && !path.includes?(":")
-            # file://host/path with a non-drive host — fold host into path
-            path = "/#{h}#{path}"
-          end
-          path = path.gsub(/\\/, "/")
-          # collapse a doubled leading slash (file:////abs) before expand:
-          # POSIX expand keeps "//" (UNC on Windows)
-          path = path.sub(%r{^/{2,}}, "/")
-          # file:///C:/... leaves a leading slash before the drive letter
-          path = path.sub(/^\/[A-Za-z]:\//) { |m| m[1..] }
-          path = File.expand_path(path)
-          path += "/" unless path.ends_with?("/")
-          FileFetcher.new(path)
+          # file:///C:/..., file://C:/... and file:/C:/... all resolve with
+          # the reference fetcher's rules (host ignored, drive slash
+          # stripped, UNC prefix kept).
+          FileFetcher.new(FileURL.directory(remote))
         else
           HttpFetcher.for(remote, credentials, retries, mirror_url, ssl_ca_cert: ssl_ca_cert, ssl_client_cert: ssl_client_cert, ssl_verify_mode: ssl_verify_mode, timeout: timeout, proxy: proxy)
         end

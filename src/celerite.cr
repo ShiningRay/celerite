@@ -19,6 +19,7 @@ require "./celerite/resolver/ranges"
 require "./celerite/resolver/solver"
 require "./celerite/resolver/source"
 require "./celerite/bridge/client"
+require "./celerite/file_url"
 require "./celerite/compact_index/cache"
 require "./celerite/resolution"
 
