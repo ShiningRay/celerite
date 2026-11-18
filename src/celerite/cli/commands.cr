@@ -94,7 +94,11 @@ module Celerite
 
       case command
       when "version", "--version", "-v"
-        version(command, stdout, stderr, rest)
+        # The dash mappings fold `-v`/`--version` onto `version` (cli.rb:41-53),
+        # so the original tokens are gone by now — the reference decides on the
+        # literal `ARGV.include?("version")` (cli.rb:557), not on the resolved
+        # command name.
+        version(raw_args.includes?("version"), stdout, stderr, rest)
       when "platform"
         platform(stdout, stderr, rest)
       when "check"
@@ -1076,7 +1080,7 @@ module Celerite
     # ------------------------------------------------------------------
     # version
     # ------------------------------------------------------------------
-    def self.version(command : String, stdout : IO, stderr : IO, rest : Array(String)) : Int32
+    def self.version(worded : Bool, stdout : IO, stderr : IO, rest : Array(String)) : Int32
       unless rest.empty?
         # Thor's `UnknownArgumentError` rendering (error.rb:65-89): the command
         # rejects positional arguments, and the reference exits 15.
@@ -1090,8 +1094,8 @@ module Celerite
       # 4.x prints the bare version (cli.rb#version).
       text = profile.starts_with?("2.") ? "Bundler version #{profile}" : profile
       # Only `bundle version` appends build metadata; `-v`/`--version` print the
-      # version alone (cli.rb#version vs. `Bundler.verbose_version`).
-      if command == "version"
+      # version alone (cli.rb:557 — `ARGV.include?("version")`).
+      if worded
         if meta = Celerite::ReleaseMetadata.for(profile)
           text += " (#{meta[0]} commit #{meta[1]})"
         end
