@@ -3655,5 +3655,62 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 
 - `--verbose` 的调试图层（`Found no changes, using resolution from the lockfile`、`Using <gem>`、`N:  <gem> (<ver>) from <path>`、`Writing lockfile to …`）仍不复刻；因此裸 `bundle --verbose` 这类「只有调试行不同」的场景只做前缀/末段比对，不宣称全量逐字一致。
 - `install_or_cli_help`（4.0.24 的三行弃用告警 + 转发 `install`）未实现：`default_cli_command` 被外部配置成该值时，我方按 `install` 处理但不打那三行 warn。
-- Thor 的前缀命令解析与歧义报错（`instal` → `install`、`co` → `Ambiguous command co matches [config, console]`）仍未复刻（沿用上一节声明）。
+- Thor 的前缀命令解析与歧义报错（`instal` → `install`、`co` → `Ambiguous command co matches [config, console]`）：已于 2026-11-18 关闭，见文末「命令名解析 / tree / [REMOVED]」节。
 - 未验证：2.7.2 下把 `default_cli_command` 设为非法值后再裸跑 `bundle` 的实际走向（该版无校验，参考会直接用该字符串查命令表；我方 `configured.is_a?(String)` 直接返回，两边在「非法值」这一路径上未做 A/B）。
+
+## 2026-11-18（M7(2)/M7(3)：命令名解析 / `tree` / `[REMOVED]`）
+
+**范围**：Thor 的前缀命令解析（`instal` → `install`、`cl` 在 4.0.24 解析为 `clean` 而在 2.7.2 报歧义）、歧义报错（`Ambiguous command co matches [config, console]`，exit 15）、`tree` 命令与其 dash 映射（`-t`/`--tree`）、4.0.24 的 `viz`/`inject` `[REMOVED]` 出口（exit 9）、`install_or_cli_help` 的 4.x 弃用告警转发。本条关闭了不少于三处此前声明：上一节的 `install_or_cli_help` 未实现、更早节的「前缀命令解析未复刻」与「`[REMOVED]` 命令未复刻」（`docs/compat-report.md:3601-3602`、`:3657`）。
+
+**参考锚点**
+
+- `bundler/vendor/thor/lib/thor.rb:675-706` 的 `tree`：namespace 蓝色一行（`klass.namespace || 'default'`，root 类除外）→ 子命令缩进 +2 空格 → `klass.commands` 去掉 `hidden?` 与 `name == "help"` → 按命令名排序 → 描述取 `description.split("\n").first`，非空则 ` (<desc>)`；行首图标末项 `└─`、其余 `├─`（`thor.rb:696`），命令名绿色。
+- `bundler/vendor/thor/lib/thor/base.rb:17-18`：`HELP_MAPPINGS = %w(-h -? --help -D)`、`TREE_MAPPINGS = %w(-t --tree)`；2.7.2 的 vendored thor 无 `tree`，即无 `TREE_MAPPINGS`。
+- `bundler-4.0.24/lib/bundler/cli.rb:585-587` `def viz` → `SharedHelpers.feature_removed! "The \`viz\` command has been renamed to \`graph\` and moved to a plugin. See https://github.com/rubygems/bundler-graph"`。
+- `bundler-4.0.24/lib/bundler/cli.rb:635-638` `def inject(*)` → `feature_removed! "The \`inject\` command has been replaced by the \`add\` command"`。
+- `bundler-4.0.24/lib/bundler/shared_helpers.rb:135-138` `def feature_removed!(message)` → `require_relative "errors"; raise RemovedError, "[REMOVED] #{message}"`；`bundler-4.0.24/lib/bundler/errors.rb:28` `class RemovedError < BundlerError; status_code(9); end` ⇒ 退出码 9，消息带 `[REMOVED] ` 前缀。
+- `bundler-4.0.24/lib/bundler/cli.rb:55` `def self.aliases_for(command_name)`、`:100` `def cli_help`、`:124` `def install_or_cli_help`（三行 warn 后 `invoke_other_command("install")`）、`:557` `if cli_help || ARGV.include?("version")`。
+- `bundler-2.7.2/lib/bundler/cli.rb:531-532` `viz` → `major_deprecation 2, "…renamed to \`graph\`…"`（exit 0 的弃用告警，不 exit 9）；`:583-584` `inject(name, version)` → `major_deprecation 2, "…replaced by the \`add\` command"`。
+
+**实现**
+
+1. `src/celerite/cli/commands.cr` 新增 `command_possibilities(word)`（L239-252）：候选 = `reference_commands` + `COMMAND_ALIASES` 的键 + `dash_command_map` 的键；**精确命中直接返回 `[word]`**；唯一别名目标则折叠成该目标；否则返回排序后的可能性列表 —— 复刻 Thor `find_command_possibilities` 的折叠顺序。
+2. `resolve_command_name(word, stderr)`（L258-266）：多候选时打印 `Ambiguous command <word> matches [<a>, <b>]` 并返回 `nil`，`dispatch` 转 exit 15。
+3. `dash_command_map`（L55-56、常量 `DASH_COMMAND_MAP_4_X` L367-376）：4.x 把 `-t`/`--tree` 映射到 `tree`；2.7.2 的映射表不含这两项，故 `bundle -t` 走 `Unknown switches "-t"`（15），`bundle tree` 报 `Could not find command "tree".`（15）。
+4. `expand_deprecated_alias`（L272-280）：仅 4.x 对 `install_or_cli_help` 打三行告警后改派 `install`；2.7.2 原样返回 → 未知命令 15。
+5. `Commands.tree`（L2772-2857）：常量 `TREE_ROOT_NAMESPACE = "bundler:c_l_i"`、`TREE_HIDDEN_COMMANDS = ["help","tree"]`、`TREE_SUBCOMMANDS`（config 4 条 / doctor 2 条 / plugin 3 条，`Tuple(String,String)`）；2.7.2 直接报未知命令 15；4.x 先 `reject_unknown_switches`，位置参数报 `ERROR: "bundle tree" was called with arguments [...]` + `Usage: "bundle tree"`，否则 `render_tree_rows` 用 `├─`/`└─` + 空格 + ` (<desc>)` 渲染，root 行 `bundler:c_l_i`、子节行 `  bundler:c_l_i:<name>` 后 4 空格缩进。
+6. `removed_command`（L2859-2957）：4.x 的 `removed_command_4_x` 先 `reject_unknown_switches`（故 `inject --bogus` 先报 `Unknown switches "--bogus"` 15），`viz` 带位置参数时报 `Usage: "bundle viz [OPTIONS]"` 15，否则 `raise RemovedError.new("[REMOVED] …")`（viz 两行含 URL，inject 单行）；2.7.2 的 `legacy_removed_command` 走 `[DEPRECATED]` 告警路径。
+7. `src/celerite/errors.cr:28-44` 新增 `InvalidOptionError < UsageError`（`wrap?` 开，friendly-errors 折行，exit 15）与 `RemovedError < Error`（`status_code : Int32 = 9`）；`src/celerite/cli.cr:23-32` 的 `rescue Error` 直接取 `ex.status_code`，故 `RemovedError` 自然 exit 9。
+8. `version` 的 build-metadata 判定改为按原始 token：`dispatch` L96-101 传 `raw_args.includes?("version")`（`strip_global_flags` **之前**的参数），签名 `Commands.version(worded : Bool, stdout, stderr, rest)`。这修掉了 `-v` 经 dash 映射折叠成 `version` 后误加 build metadata 的回归，语义对齐参考 `cli.rb:557` 的 `ARGV.include?("version")`。
+
+**证据（逐字 A/B，双侧独立沙箱、隔离 HOME/TMPDIR）**
+
+参考侧为 Ruby 4.0.24 / 2.7.2 的 `bundle`，我方为本仓 `celerite.exe`；两侧均 `cmd.exe /c` 重定向到文件后读码、CRLF→LF 归一化再逐字比对。
+
+| 用例 | 参考 exit | 我方 exit | stdout | stderr |
+| --- | --- | --- | --- | --- |
+| 4.0.24 `instal`（前缀 → `install`） | 10 | 10 | 2718 = 2718 | 25 = 25 `Could not locate Gemfile` |
+| 4.0.24 `co` | 15 | 15 | 0 | 47 = 47 `Ambiguous command co matches [config, console]` |
+| 4.0.24 `tree` | 0 | 0 | 2178 = 2178（41 行） | 0 |
+| 4.0.24 `-t` | 0 | 0 | 同 `tree` | 0 |
+| 4.0.24 `viz` | 9 | 9 | 0 | 125 = 125 |
+| 4.0.24 `inject` | 9 | 9 | 0 | 70 = 70 |
+| 4.0.24 `lst` | 15 | 15 | 0 | 52 = 52 `Could not find command "lst".` + `Did you mean?  "list"`（两空格） |
+| 4.0.24 `install_or_cli_help` | 10 | 10 | 2718 = 2718 | 269 = 269（三行弃用告警 + `Could not locate Gemfile`） |
+| 2.7.2 `cl` | 15 | 15 | 0 | 47 = 47 `Ambiguous command cl matches [clean, cli_help]` |
+| 2.7.2 `tree` | 15 | 15 | 0 | 31 = 31 `Could not find command "tree".` |
+| 2.7.2 `-t` | 15 | 15 | 0 | 22 = 22 `Unknown switches "-t"` |
+
+- 11 组全部逐字相等（stdout/stderr 逐字一致，非仅退出码）。
+- `tree` 输出：41 行、**2178 字符**（`out.size`，Crystal 侧按字符计）/ **2326 字节**（UTF-8，`├─`/`└─` 的 U+2500/U+251C/U+2514 各占 3 字节）；末尾一个换行。`spec/m7_cli_dispatch_spec.cr` 的 `TREE_4_X` 常量把 41 行逐行写死。
+- `viz` 125 字节 = `[REMOVED] The \`viz\` command has been renamed to \`graph\` and moved to a plugin.` + 第二行 `See https://github.com/rubygems/bundler-graph`；`inject` 70 字节 = `[REMOVED] The \`inject\` command has been replaced by the \`add\` command`。
+- 新增 4 个差分夹具（`ambiguous-command-prefix`=`co`、`removed-viz`=`viz`、`removed-inject`=`inject`、`tree-command`=`tree`，每个仅含 `command` 与 `Gemfile` 两文件，无绝对路径）：4.0.24 `4 passed, 0 failed, 0 skipped`；`BUNDLER_REF_VERSION=2.7.2` 同样 `4 passed, 0 failed, 0 skipped`。
+- `spec/m7_cli_dispatch_spec.cr` 9 examples 全绿；`spec/m7_version_spec.cr` + 该文件合计 13 examples 全绿；相邻四文件（`m7_cli_help_spec` + `m7_cli_dispatch_spec` + `m7_command_switch_surface_spec` + `m7_plugin_commands_spec`）35 examples 0 failures。
+- `crystal build --no-codegen src/cli.cr` exit 0（仅 `src/celerite/cli/commands_install.cr:1089:43` 与 `:1153:20` 两条既有 `Deprecated File.executable?` warning）；`crystal tool format --check src spec` exit 0。
+- 全量 `crystal spec`：**665 examples, 12 failures, 0 errors, 1 pending**（5:22）。这 12 条已用 `git checkout d3cd04e -- src/celerite/cli/commands.cr src/celerite/errors.cr` 在改动前基线上复跑验证**同样失败**，属本机环境族（`spec/config_spec.cr:97/:146`、`spec/m7_deployment_path_spec.cr:105`、`spec/m7_list_groups_plain_env_spec.cr:54`、`spec/m7_path_system_spec.cr:53/:67/:81/:108`、`spec/m7_plugin_install_source_spec.cr:67/:98`、`spec/m7_show_no_lockfile_spec.cr:135/:182`），非本切片引入。
+
+**已声明差异 / 未验证**
+
+- `clean` 的 `--force` 守卫位置不同：4.0.24 在**无 Gemfile** 时也先校验危险提示，`bundle cl`（解析为 `clean`）与显式 `bundle clean` 均为 exit 15 + `Cleaning all the gems on your system is dangerous! …run \`bundle clean --force\`.` 双行；我方先撞 `Could not locate Gemfile`（exit 10）。故 `spec/m7_cli_dispatch_spec.cr` 的 4.x `cl` 用例改断言 `cl --force`（只校验 exit ≠ 15 且 stderr 不含 `Ambiguous command cl`），不宣称该路径逐字一致。
+- 2.7.2 的 `tree` / `-t` 按未知命令与未知开关处理（31 / 22 字节），已 A/B 一致；但 2.7.2 的 `viz` / `inject` 走 `[DEPRECATED]` 告警路径（`cli.rb:531-532`、`:583-584`），本轮**未做逐字 A/B**，仅在 spec 里覆盖了 4.x 的 `[REMOVED]` 出口。
+- 未验证：全量差分（`script/differential` 不带夹具名跑全部目录）未在本轮执行，只跑了上述 4 个新夹具 × 2 profile；`man` 在 PATH 上的 `Kernel.exec("man", …)` 分支仍未验证（沿用上一节声明）。
