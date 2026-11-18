@@ -3912,3 +3912,38 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 - 缺失插件的 stderr 警告我方每命令打印一次（参考按每次 `Plugin.hook` 重复打印），为保持既有 pinned stderr 未对齐。
 - path gem 的重复 install 在我方仍需访问索引（`Fetching gem metadata from https://rubygems.org/` 后 SSL 失败，exit 17），与本轮改动无关；spec 例②因此改用本地索引 gem。该缺口未修（未验证）。
 - 全量 `crystal spec` 与全量差分未重跑（沿用既有记录）。
+
+## 2026-11-19（M7(6) task-15：未定义 hook 事件时 `plugin install` 报错退出）
+
+**范围**：插件 `plugins.rb` 声明了 Bundler 未定义的事件（如 `post-install`）时，`plugin install <name> --path <dir>` 的退出码、stdout/stderr 文案，以及索引是否落盘。此前本实现静默 `exit 0`：探针 `assets/bridge/plugin_command.rb` 的 `add_hook` 调用发生在参考 `Bundler::Plugin.add_hook` 之外，未定义事件不抛错，声明被丢弃后安装照常成功。
+
+**参考 oracle（`.d/oracle15.sh`，每 profile 每 case 独立沙箱 `.d/oracle15-<ver>-<case>`，HOME/GEM_HOME/BUNDLE_USER_HOME/BUNDLE_PATH/TMP/TEMP/TMPDIR 全隔离）**：
+
+| case | 4.0.24 | 2.7.2 |
+| --- | --- | --- |
+| `plugin install bad --path ./bad`（`plugins.rb` 只有 `add_hook("post-install")`） | exit **29**；stdout 仅 `Resolving dependencies...`；stderr 两行：`Failed to install plugin \`bad\`, due to Bundler::Plugin::MalformattedPlugin` / `(ArgumentError: Event 'post-install' not defined in Bundler::Plugin::Events)`；无 `Gemfile.lock`、无 `.bundle/plugin/index`、**源目录 `./bad` 被删除** | 逐字、逐码相同（29 / 两行 / 无 lock / 无 index / 源目录被删） |
+| 对照：`add_hook("after-install")` | exit 0；stdout `Resolving dependencies...` + `Installed plugin bad`；stderr 空；index 存在；源目录保留 | 同 |
+
+参考锚点：`bundler-4.0.24/lib/bundler/plugin.rb:215-217` 在事件名校验失败时 `raise ArgumentError, "Event '<event>' not defined in Bundler::Plugin::Events"`；`lib/bundler/cli/plugin.rb` 把插件注册异常包成 `Failed to install plugin \`<name>\`, due to <class>` + `(<class>: <message>)` 两行并 exit 29。两个 profile 文案与退出码一致，故不做 `deferred-<version>` 分治。
+
+**实现**：
+
+1. `src/celerite/plugin_commands.cr`：`declared` 的返回类型改为 `alias Declared = NamedTuple(commands: Array(String), hooks: Array(String), error: String?)`；探针首行 JSON 带 `error` 键时把它透传（`commands`/`hooks` 为空数组），否则沿用原解析。保留 `declared_commands` 作为 `declared(...)[:commands]` 委托（`spec/m7_plugin_hooks_registration_spec.cr:145-147` 仍用 `[:commands]`/`[:hooks]`）。
+2. `src/celerite/cli/commands_surface.cr` 本地 `--path` 分支：`declared` 之后若 `[:error]` 非空，打印两行（`` Failed to install plugin `#{name}`, due to Bundler::Plugin::MalformattedPlugin `` + `(#{error})`）并 `return 29`；`Dir.mkdir_p(index_dir)` 由取索引前移到 `File.write(index_path, yaml)` 前，失败路径因此不留 `.bundle/plugin`。
+3. 同文件远端/`--source` 分支：`index_path` 提前定义；error 检查放在 `declared` 之后；原「写空索引骨架 + 解析 index + 取三张 map」整块移到 error 检查之后，避免失败时先落骨架。
+4. `fixtures/differential/plugin-install-bad-event/`：`command` 单行 `plugin install bad --path ../bundle/plugin-src`；根 `Gemfile`（`source "file:///@INDEX_DIR@"` + `gem "json_pure"`）；`bundle-preset/plugin-src/{bad.gemspec,plugins.rb,lib/bad.rb}`；`file-absent` = `.bundle/plugin/index`。**源目录放 `bundle-preset` 而非 `extra/`**：harness 把 `bundle-preset` 复制到 `$sandbox/bundle`（两侧各自的 `BUNDLE_PATH`），不在被比较的 `project/` 树内；参考失败会删除源目录，若放 `project/` 内就会出现 `Only in cel/project: bad` 的树差异而误判。
+5. `spec/m7_plugin_bad_event_spec.cr` 3 例：①`PluginCommands.declared` 透传 `ArgumentError: Event 'post-install' not defined in Bundler::Plugin::Events`；②`plugin install` exit 29、stdout 只有 `Resolving dependencies...`、stderr 恰两行且首行逐字、无 index、无 `Gemfile.lock`；③合法 `after-install` 插件仍 exit 0、索引含 `badeventprobe: "good"` 与 `after-install:`。
+
+**证据**：
+
+- 差分 `plugin-install-bad-event`：4.0.24 `PASS plugin-install-bad-event (exit=29)`（1 passed, 0 failed, 0 skipped，EXIT 0）；`BUNDLER_REF_VERSION=2.7.2` 同 PASS（1/0/0，EXIT 0）。
+- `KEEP_DIFFERENTIAL=1` 保留产物 `.d/LPWg60`：两侧 `project/` 都只有 `Gemfile`；参考侧 `bundle/plugin-src` 已被删除（源目录副作用），我方保留（见已声明差异）。
+- `crystal spec`（新 spec + `m7_plugin_hook_per_gem_spec.cr` + `m7_plugin_hook_failure_spec.cr` + `m7_plugin_hooks_registration_spec.cr` + `m7_plugin_uninstall_hooks_spec.cr` + `m7_console_spec.cr` + `m7_cli_dispatch_spec.cr`）→ **38 examples, 0 failures, 0 errors, 0 pending**。
+- `crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告：`src/celerite/cli/commands_install.cr:1112:43`、`:1176:20`）；`git diff --check` EXIT 0。
+
+**已声明差异 / 未验证**：
+
+- 参考在注册失败时会删除 `--path` 源目录（`./bad`）；我方按 lead 裁断不做破坏性删除，保留源目录。夹具把源目录放在 `bundle-preset`（比较树之外）以免把该差异写成树差异，差异本身未复刻。
+- 远端/`--source` 分支的同类失败行为（exit 29、文案）未做端到端断言，仅复用同一 `declared` error 路径（未验证）；失败时已物化的插件树是否应回滚未验证。
+- `--local_git` 插件源与「空 `plugin uninstall`」切片不在本轮范围（未做）。
+- 全量 `crystal spec` 与全量差分未重跑（沿用既有记录）。
