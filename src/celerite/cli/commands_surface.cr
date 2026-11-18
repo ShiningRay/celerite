@@ -1486,9 +1486,10 @@ module Celerite
         if error = declared[:error]
           # Reference plugin.rb:213-220 raises ArgumentError for an undefined
           # hook event; save_plugin wraps it as MalformattedPlugin (exit 29) and
-          # leaves no index entry behind.
-          stderr.puts "Failed to install plugin `#{info.name}`, due to Bundler::Plugin::MalformattedPlugin"
-          stderr.puts "(#{error})"
+          # leaves no index entry behind. The message is a single string that
+          # friendly_errors wraps to the terminal width (friendly_errors.rb:31-35
+          # passes `wrap: true`).
+          put_plugin_install_failure(stderr, info.name, error)
           return 29
         end
         conflict_command = declared[:commands].find do |command|
@@ -1594,6 +1595,16 @@ module Celerite
       Dir.children(source).each do |child|
         copy_tree(File.join(source, child), File.join(destination, child))
       end
+    end
+
+    # Reference `save_plugin` (plugin.rb:292-298) raises a single message
+    # ("Failed to install plugin `x`, due to <Class> (<cause>)") and
+    # friendly_errors prints it with `wrap: true`, so the line breaks come from
+    # thor's `word_wrap` at the terminal width (THOR_COLUMNS on Windows, else
+    # 80). Every plugin-install failure path prints through this helper.
+    private def self.put_plugin_install_failure(stderr : IO, name : String, cause : String) : Nil
+      message = "Failed to install plugin `#{name}`, due to Bundler::Plugin::MalformattedPlugin (#{cause})"
+      stderr.puts Commands.word_wrap(message, CLI.terminal_width)
     end
 
     def self.plugin_install_remote(names : Array(String), rest : Array(String), stdout : IO, stderr : IO) : Int32
@@ -1731,8 +1742,7 @@ module Celerite
           end
           unless File.file?(File.join(plugin_dir.to_s, "plugins.rb"))
             Dir.mkdir_p(plugin_root)
-            stderr.puts "Failed to install plugin `#{spec.name}`, due to Bundler::Plugin::MalformattedPlugin"
-            stderr.puts "(plugins.rb was not found in the plugin.)"
+            put_plugin_install_failure(stderr, spec.name, "plugins.rb was not found in the plugin.")
             return 29
           end
           index_path = File.join(plugin_root, "index")
@@ -1751,8 +1761,7 @@ module Celerite
             # Same mapping as the local branch: undefined hook events surface as
             # MalformattedPlugin with exit 29 and no index entry (the index file
             # is only created after this check).
-            stderr.puts "Failed to install plugin `#{spec.name}`, due to Bundler::Plugin::MalformattedPlugin"
-            stderr.puts "(#{error})"
+            put_plugin_install_failure(stderr, spec.name, error)
             return 29
           end
           unless File.file?(index_path)
