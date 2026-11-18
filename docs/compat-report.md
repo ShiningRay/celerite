@@ -3751,3 +3751,37 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 - 交互式会话（真实 TTY 下 IRB/pry 提示符与 `ARGV` 清空后行为）未逐字 A/B，只用打印后 `exit 0` 的探针控制台取证。
 - `add-group` 夹具（`add racc --group dev`）在 4.0.24 下失败于 `Gem::Ext::BuildError: ERROR: Failed to build gem native extension`（racc 原生扩展，环境族，与本节无关）；2.7.2 侧该夹具为既有 documented deferral。
 - 本轮未重跑全量 `crystal spec` 与全量差分（沿用上一节 665 examples / 12 条本机环境族失败的记录）。
+
+## 2026-11-19（M7(6) G1：插件 hook 事件写入索引）
+
+**范围**：`plugin install` 写 `.bundle/plugin/index` 时，把 `plugins.rb` 中的 `Bundler::Plugin.add_hook("<event>")` 声明落到 `hooks:` 段（G1 缺口：此前 `hooks:` 只从既有索引读出再原样回写，新装插件的 hook 事件从不写入，参考插件声明的 `after-install` 装后永不触发）；同时让卸载时清除指向被删插件的 hook 名。
+
+**参考锚点**：
+
+- `bundler-4.0.24/lib/bundler/plugin.rb:207-220`：`add_hook` 校验 `Events.defined_event?` 后把 block 追加进 `@hooks_by_event[event]`；`register_plugin` 暂存该 hash，`load "plugins.rb"` 后取 `.keys`。
+- `bundler-4.0.24/lib/bundler/plugin/index.rb:54-74`：`register_plugin(name, path, load_paths, commands, sources, hooks)` 对每个事件 `(@hooks[event] ||= []) << name; uniq!`；`save_index` 依次 dump `commands`/`hooks`/`load_paths`/`plugin_paths`/`sources`。
+- `bundler-4.0.24/lib/bundler/plugin/index.rb:77-87`：`unregister_plugin` 从每个事件数组删除插件名，数组空则删事件键。
+
+**实现**：
+
+1. `assets/bridge/plugin_command.rb` 的 `--commands` 模式改为 `--commands <plugins.rb> [<load path>...]`：先 `load_plugin_api`，把调用方给的插件 lib 目录 `$LOAD_PATH.unshift`（参考 `register_plugin` 同样先 `load_paths.each { |p| $LOAD_PATH.unshift(p) }` 再 `load plugins.rb`；夹具 plugins.rb 首行 `require "hook_plugin"`，不补 load path 时 `LoadError` 会让声明的命令/事件全部丢失——首跑差分即此形态 FAIL），`load` 后一次输出 `JSON.generate({"commands"=>…keys, "hooks"=>…keys.map(&:to_s)})`，hooks 取 `Bundler::Plugin.instance_variable_get(:@hooks_by_event)`。
+2. `src/celerite/plugin_commands.cr:85` 新增 `declared(plugins_rb_path : String, load_paths : Array(String) = [] of String) : NamedTuple(commands: Array(String), hooks: Array(String))`，单次 ruby 调用解析两键（缺键/类型错 → 空数组，`error` 分支仍回空）；`declared_commands` 保留为 `declared(...)[:commands]` 委托，兼容既有引用。
+3. `src/celerite/cli/commands_surface.cr` 两处安装路径（本地 `--path` ~1500 行区、remote/`--source` ~1770 行区）改调 `declared(..., [lib_dir])`：冲突检测/合并用 `declared[:commands]`；`declared[:hooks].each` 把当前插件名追加到对应事件数组（`unless includes?` 去重保序，对齐 register_plugin）。`write_plugin_index`（~1900 行区，uninstall 唯一调用点）hooks 段改为遍历事件→插件名数组，`reject removed`、空数组 `next`（对齐 unregister_plugin）。
+4. `spec/m7_plugin_hooks_registration_spec.cr` 4 例：索引写入 `after-install` + 命令仍在；探针一次取回 commands/hooks（含 load path）；install 端到端触发 hook（marker 文件写 `after-install`）；无 hook 声明的插件 `hooks:` 段为空。
+5. 新差分夹具 `fixtures/differential/plugin-install-hooks/`：`command` 两行（`plugin install hook_plugin --path ./hook_plugin`、`plugin list`，末字节 LF）；`extra/hook_plugin/plugins.rb` 同时 `API.command("hookprobe", …)` 与 `add_hook("after-install") { |_ctx| }`；`file-contains` 断言 `.bundle/plugin/index` 含 `after-install`、`hook_plugin`。
+
+**证据（双 profile 差分 + spec）**：
+
+- `crystal spec spec/m7_plugin_hooks_registration_spec.cr spec/m7_plugin_commands_spec.cr` → **11 examples, 0 failures**；再加 hook 异常 6 例的联跑 **17/0**。
+- `KEEP_DIFFERENTIAL=1 bash script/differential plugin-install-hooks`：4.0.24 `PASS plugin-install-hooks (exit=0)`（1 passed, 0 failed, 0 skipped，EXIT 0）；`BUNDLER_REF_VERSION=2.7.2` 同 PASS（1/0/0）。
+- 保留产物：4.0.24 `.d/M1A934`、2.7.2 `.d/f3wXgL`。两侧 `.bundle/plugin/index` 均 **12 行**；参考 **338 字节**、我方 **326 字节**（差 12 字节 = 参考在本机按文本模式写 CRLF，每行 1 字节）。逐行读取核对：两侧都含 `  hookprobe: "hook_plugin"`、`  after-install:`、`  - "hook_plugin"`，以及 load_paths/plugin_paths 的 hook_plugin 项，非空。
+- 回归：`plugin-install` 夹具双 profile 均 `PASS plugin-install (exit=1)`（`exit=1` 为末条 `exec ruby -e …` 两侧一致），1/0/0。
+- `crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `src/celerite/cli/commands_install.cr:1089:43`、`:1153:20` 的 `Deprecated File.executable?` 警告）。
+- 相邻用例 `spec/m7_plugin_install_source_spec.cr` 2 例（:67/:98）失败为**既有本机环境问题**：stash 掉本轮改动、用旧二进制复跑同样 2 例以相同 `Expected: 0 got: 1` 失败，与 compat-report 既有环境失败记录同族，已 `git stash pop` 复原。
+
+**已声明差异 / 未验证**：
+
+- 参考在 hook 执行时按索引重新加载插件再 `blk.call(*args, &blk)`；我方沿用既有 `exec_plugin_hook` 桥（先 `require` 插件再取 `@hooks_by_event`）。本节只宣称「声明写入索引」与「install 端触发」对齐。
+- 参考 `add_hook` 对未定义事件抛 `Bundler::Plugin::UnknownEvent`（`Events.defined_event?`）；我方探针只读取键、不校验事件名，该错误路径未对齐（未验证）。
+- 无 Gemfile / 全局 `~/.bundle/plugin` 安装路径的 hooks 落盘未做差分夹具（未验证）；`plugin uninstall` 的 hooks 清理只有实现、无专例/夹具（未验证）。
+- 索引字节不逐字一致：参考 CRLF、我方 LF（见上 12 字节差），归一化后才比对语义内容。
