@@ -3846,7 +3846,7 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 **实现与夹具**：
 
 1. `src/celerite/cli/commands_surface.cr` 的 `write_plugin_index`（约 L1900-1913）：hooks 段遍历 `index["hooks"]` 的 `as_h`，按 `removed` 过滤数组内插件名，`next if owners.empty?` 删空事件——与 `index.rb:77-87` 一致，本轮只核对不改动。
-2. `fixtures/differential/plugin-hook-uninstall/`：`command` 7 行（`plugin install hook_plugin --path ./hook_plugin` / `install` / `plugin uninstall hook_plugin` / `install` / `plugin list` / 重装 / `plugin list`，末字节 LF）；根 `Gemfile` 用 `@INDEX_DIR@` 占位；`extra/hook_plugin/plugins.rb` 的 hook 用 sentinel 区分路径——若 `hook-log` 与 `Gemfile.lock` 同时存在（即「卸载后仍触发了 hook」），写 `hook-after-uninstall`（内容 `hook ran after uninstall`），否则向 `hook-log` 追加 `after-install`。`file-absent` = `hook-after-uninstall`（13 字节）；`file-contains` 三行（91 字节）：`.bundle/plugin/index⇥after-install`、`.bundle/plugin/index⇥hook_plugin`、`hook-log⇥after-install`。
+2. `fixtures/differential/plugin-hook-uninstall/`：`command` 7 行（`plugin install hook_plugin --path ./hook_plugin` / `install` / `plugin uninstall hook_plugin` / `install` / `plugin list` / 重装 / `plugin list`，末字节 LF）；根 `Gemfile` 用 `@INDEX_DIR@` 占位；`extra/hook_plugin/plugins.rb` 的 hook 用 sentinel 区分路径——若 `hook-log` 与 `Gemfile.lock` 同时存在（即「卸载后仍触发了 hook」），写 `hook-after-uninstall`（内容 `hook ran after uninstall`），否则向 `hook-log` 追加 `after-install`。`file-absent` = `hook-after-uninstall`（21 字节：20 字符 + LF）；`file-contains` 三行（91 字节）：`.bundle/plugin/index⇥after-install`、`.bundle/plugin/index⇥hook_plugin`、`hook-log⇥after-install`。
 3. `spec/m7_plugin_uninstall_hooks_spec.cr` 4 例：①卸载后索引 hooks 段为空且不再含 `hookprobe`；②卸载后 `install` 不追加 hook 行（行数保持 1）且 stdout 仍含 `Bundle complete!`；③重装后 hook 恢复（行数 1→2）；④`plugin list` 卸载后 `No plugins installed`、重装后含 `hook_plugin`。
 
 **证据**：
@@ -3859,7 +3859,7 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 
 **已声明差异 / 未验证**：
 
-- 触发次数：参考在一次 `install` 内触发 **2 次**（两 profile 一致，1 个 gem 却 2 次；`Plugin.hook(GEM_AFTER_INSTALL)` 仅 `parallel_installer.rb:217` 一处，重复机制未定位），我方整轮 1 次。夹具因此只断言行数「不增/增加」与 `hook-log` 的存在性，不比较行数与内容；我方次数由 spec 例②③固定。
+- 触发次数：差分环境下观察到参考在一次 `install` 内触发 **2 次**（两 profile 一致）；次数随本次实际安装的 spec 数变化——同步骤手工 fresh install 实测 3 行/45 字节，warm install（依赖已满足）仅 1 行。重复机制未定位（`Plugin.hook(GEM_AFTER_INSTALL)` 仅 `parallel_installer.rb:217` 一处），我方整轮固定 1 次，粒度差异仍未收口。夹具因此只断言行数「不增/增加」与 `hook-log` 的存在性，不比较行数与内容；我方次数由 spec 例②③固定。
 - 项目树内容差异被 harness 的 `diff -r --brief | grep -v "differ$"` 过滤，`hook-log` 行内容只靠 `file-contains` 命中，不做逐字比较（N10 同源的已知限制）。
 - 未覆盖：`plugin uninstall` 的 `--version`/`--local` 变体、手工损坏索引后的清理、卸载 git 源插件时的 hooks 清理（均未验证）。
 - 全量 `crystal spec` 与全量差分未重跑（沿用既有记录）。
