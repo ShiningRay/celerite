@@ -3814,7 +3814,7 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 
 **已声明差异 / 未验证**：
 
-- 参考 `after-install` 是**每个实际安装的 spec 触发一次**（parallel installer 的 `do_install` 内），我方是整轮安装完成后触发一次；单插件单 gem 场景可观察面一致，多 gem 场景下「每 gem 一次」的粒度与顺序未实现（未验证）。
+- 参考 `after-install` 是**每个实际安装的 spec 触发一次**（parallel installer 的 `do_install` 内），我方是整轮安装完成后触发一次；单插件单 gem 场景可观察面一致，多 gem 场景下「每 gem 一次」的粒度与顺序未实现（未验证；M7(6) task-11 已改为逐 spec 触发并新增 `plugin-hook-per-gem` 夹具，见文末 2026-11-19 节）。
 - hook 抛异常时 stderr 不逐字一致：参考打印完整 `--- ERROR REPORT TEMPLATE`（含机器路径），我方一行 `Plugin hook after-install failed: boom`；因此该夹具用 `stderr-contains`（N10）只比较关键词，stdout / exit / 项目树仍是精确比较，且归一化只对被显式标记的夹具生效。
 - 若将来要断言「hook 崩溃时两侧 stdout 逐字一致」且使用 rubygems gem，需要参考的 `Installing …` 行在崩溃路径稳定刷出；本轮以 path gem 绕开，rubygems gem 场景未验证。
 - 全量 `crystal spec` 与全量差分未重跑（沿用既有记录）。
@@ -3862,4 +3862,53 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 - 触发次数：差分环境下观察到参考在一次 `install` 内触发 **2 次**（两 profile 一致）；次数随本次实际安装的 spec 数变化——同步骤手工 fresh install 实测 3 行/45 字节，warm install（依赖已满足）仅 1 行。重复机制未定位（`Plugin.hook(GEM_AFTER_INSTALL)` 仅 `parallel_installer.rb:217` 一处），我方整轮固定 1 次，粒度差异仍未收口。夹具因此只断言行数「不增/增加」与 `hook-log` 的存在性，不比较行数与内容；我方次数由 spec 例②③固定。
 - 项目树内容差异被 harness 的 `diff -r --brief | grep -v "differ$"` 过滤，`hook-log` 行内容只靠 `file-contains` 命中，不做逐字比较（N10 同源的已知限制）。
 - 未覆盖：`plugin uninstall` 的 `--version`/`--local` 变体、手工损坏索引后的清理、卸载 git 源插件时的 hooks 清理（均未验证）。
+- 全量 `crystal spec` 与全量差分未重跑（沿用既有记录）。
+
+## 2026-11-19（M7(6) task-11：`after-install` 按安装 spec 逐个触发）
+
+**范围**：收口上文「参考每 spec 触发一次、我方整轮一次」的粒度差异。用双 profile oracle 定位参考语义，把 `install` 的 hook 调用改成遍历本次安装集（running Bundler 的伪 spec 最先），并把 spec 身份通过 bridge 载荷交给 hook（`ctx.name`）。新增差分夹具 `plugin-hook-per-gem` 与 `spec/m7_plugin_hook_per_gem_spec.cr` 4 例。
+
+**参考锚点**：
+
+- `bundler-4.0.24/lib/bundler/installer/parallel_installer.rb:205-219`：`do_install(spec_install, worker_num)` 在 `install_from_spec` 之后**无条件**调用 `Plugin.hook(Plugin::Events::GEM_AFTER_INSTALL, spec_install)`——hook 与「是否本次新装」无关，已安装但仍在安装集里的 spec 也会触发。
+- 同文件 `:8-59`：`SpecInstallation` 暴露 `:name`/`:full_name`/`:state` 等；hook 的第二实参就是它，块里读 `ctx.name`。
+- `bundler-4.0.24/lib/bundler/plugin.rb:228-240`：`Plugin.hook` 先对索引里登记的插件逐个 `load_plugin`，再 `@hooks_by_event[event].each { |blk| blk.call(*args, &arg_blk) }`，不 rescue（raise 直接冒泡）。
+- `bundler-4.0.24/lib/bundler/installer.rb:16-19` 另有整轮聚合事件 `GEM_BEFORE_INSTALL_ALL`/`GEM_AFTER_INSTALL_ALL`（实参 `definition.dependencies`），本轮不实现。
+
+**参考 oracle（`.d/oracle11b.sh`，每场景独立 HOME/GEM_HOME/BUNDLE_PATH/BUNDLE_USER_HOME；hook 记录 `after-install:<name> state=<state> oid=<object_id> blocks=<size>`）**：
+
+| 场景 | 4.0.24 | 2.7.2 |
+| --- | --- | --- |
+| P：两个 path gem `alpha`/`beta`，fresh `install` | exit 0，`Bundle complete! 2 Gemfile dependencies, 2 gems now installed.`，hook 3 行：`bundler`/`alpha`/`beta`，blocks=1 | exit 0，`3 gems now installed`（计数含 running Bundler），hook 3 行同序 |
+| P：再跑一次 `install`（无变化） | exit 0，hook 又 3 行（新 oid） | exit 0，hook 又 3 行 |
+| G：`thor`+`racc`（file:// 索引），fresh / 再跑 | 各 3 行 `bundler`/`thor`/`racc` | 各 3 行同序 |
+| G：新增 `json_pure` 后 `install` | 新增 8 行，全部 blocks=2（同进程重复注册 block），每 spec 触发 2 次 | 新增 10 行，blocks 在 2/3 间跳 |
+| R：hook `raise "boom"`（thor+racc） | **exit 1、无 `Gemfile.lock`、gems 目录为空**（首个 hook 即 `bundler`，装任何 gem 之前中止） | exit 1、无 lock，但 thor/racc 已装上（2.7.2 串行安装，装完才触发） |
+
+结论：安装集 = running Bundler 的 spec（恒在且最先）+ 本次解析出的全部 spec；hook 每轮触发，与是否新装无关。
+
+**实现**：
+
+1. `src/celerite/cli/commands_install.cr`（约 L555-600）：`PluginHooks.enabled?` 为真时构造 `hook_specs`（先 `{"bundler", "bundler-<profile 版本>"}`，再 `specs` 的 `{name, full_name}`），逐个调用 `PluginHooks.call(bridge, definition, "after-install", name, full_name)`；位置仍 G2：在 `if summary` 与 `Lockfile.write` 之前。首个 `load_failed`/`hook_failed` 仍只打印一行并 `return 1`（`Plugin hook after-install failed: <msg>`），后续 spec 不再触发。
+2. `assets/bridge/server.rb`：`op_exec_plugin_hook` 的 context 改为 `PluginHookSpec.new(spec_name, spec_full_name)`（新增类，`attr_reader :name, :full_name`，`state` 恒 `:installed`）；未带 `spec_name` 时退回 `payload["context"] || {}`（旧调用方兼容）。
+3. `src/celerite/plugin_hooks.cr` + `src/celerite/bridge/client.cr`：`call`/`exec_plugin_hook` 增可选 `spec_name`/`spec_full_name`，载荷字段 `spec_name`/`spec_full_name`。
+4. `fixtures/differential/plugin-hook-per-gem/`：`command` 2 行（`plugin install hook_plugin --path ./hook_plugin` / `install`，56 字节、末字节 LF）；根 `Gemfile` 85 字节（`gem "alpha"/"beta"/"gamma", path: "./<name>"`，末字节 LF）；`extra/hook_plugin/plugins.rb` 558 字节，hook 按 spec 名写**独立文件** `hook-log-<name>`（内容 `after-install:<name>\n`）——参考在安装 worker 线程里并发触发 hook，写同一个文件会丢行/插空行（见下），按 spec 分文件才可稳定断言；`extra/{alpha,beta,gamma}` 各含 gemspec + `lib/<name>.rb`；`file-contains` 103 字节三行（tab 分隔）：`hook-log-alpha⇥after-install:alpha`、`hook-log-beta⇥after-install:beta`、`hook-log-gamma⇥after-install:gamma`。
+5. `spec/m7_plugin_hook_per_gem_spec.cr` 4 例：①三 path gem fresh install → `hook-log` 恰 4 行且 `bundler` 在首位、其余按 alpha/beta/gamma；②本地索引 `json_pure`+`thor` 上重复 install → hook 再次全量触发（3→6 行）；③首个 hook raise → exit 1、stderr `Plugin hook after-install failed: boom per-gem`、无 `Gemfile.lock`；④bridge 载荷携带 spec 名（`after-install:bundler`/`alpha` 可见且行前缀统一）。`spec/m7_plugin_uninstall_hooks_spec.cr` 的行数断言同步为逐 spec 语义（单 gem + bundler = 2 行）。
+6. 文档：本新节 + roadmap 注记（复选框保持 `[ ]`）。
+
+**证据**：
+
+- 差分 `plugin-hook-per-gem`：4.0.24 `PASS plugin-hook-per-gem (exit=0)`（1 passed, 0 failed, 0 skipped，EXIT 0）；2.7.2 同 PASS（1/0/0，EXIT 0）。`KEEP_DIFFERENTIAL=1` 保留产物 `.d/q13dXK`（4.0.24；2.7.2 同形）：两侧 `project/` 均生成 `hook-log-alpha` 21 字节、`hook-log-beta` 20 字节、`hook-log-bundler` 23 字节、`hook-log-gamma` 21 字节（字节数含 CRLF），内容逐字一致 `after-install:<name>`；索引参考 338 字节、我方 326 字节（差 12 = CRLF）。
+- 稳定性：单夹具在 4.0.24 连跑 4 次、2.7.2 连跑 8 次全 PASS；8 夹具批量在 4.0.24 与 2.7.2 各连跑 2 次均 `8 passed, 0 failed`（合计 4 次批量、每 profile 2 次）。
+- 并发写入：参考的 hook 在 `parallel_installer.rb:173-184` 的 worker 线程里调用，多个 spec 同时激活时对同一文件的追加会互相覆盖——首版夹具用单一 `hook-log`，2.7.2 上约 40% 的运行出现丢行（实测一次 `hook-log` 为 `bundler`/`beta`/空行/`gamma`，`alpha` 整行丢失），因此夹具改为每个 spec 写独立文件。钩子顺序在参考侧同样不确定（4.0.24 与 2.7.2 都会乱序），我方按解析顺序串行触发，顺序差异不在断言范围。
+- spec：`crystal spec spec/m7_plugin_hook_per_gem_spec.cr` → **4 examples, 0 failures**；与 `spec/m7_plugin_hook_failure_spec.cr spec/m7_plugin_hooks_registration_spec.cr spec/m7_plugin_uninstall_hooks_spec.cr spec/m7_console_spec.cr spec/m7_cli_dispatch_spec.cr` 合跑 → **35 examples, 0 failures**。
+- `crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告）；`git diff --check` EXIT 0。
+
+**已声明差异 / 未验证**：
+
+- 参考在 G-add 路径会把 `plugins.rb` 在同一进程里加载两次，导致同一 block 注册两遍、每 spec 触发两次（blocks=2）；我方每次 install 只加载一次，hook-log 行数因此是参考的一半（`plugin-hook-uninstall` 旧夹具同源）。夹具只断言「按 spec 名字命中」与行数递增，不比较行数绝对值。
+- `bundler` 伪 spec 只复刻 `name`（`full_name` 用 `<profile 版本>` 拼），`state` 恒 `:installed`；参考对象上的 `spec`/依赖边等 API 不复刻。
+- `GEM_AFTER_INSTALL_ALL`（整轮聚合事件）未实现（未验证）。
+- 缺失插件的 stderr 警告我方每命令打印一次（参考按每次 `Plugin.hook` 重复打印），为保持既有 pinned stderr 未对齐。
+- path gem 的重复 install 在我方仍需访问索引（`Fetching gem metadata from https://rubygems.org/` 后 SSL 失败，exit 17），与本轮改动无关；spec 例②因此改用本地索引 gem。该缺口未修（未验证）。
 - 全量 `crystal spec` 与全量差分未重跑（沿用既有记录）。
