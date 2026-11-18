@@ -2,7 +2,9 @@
 # One-shot helper for Celerite's plugin command support.
 #
 # Modes:
-#   plugin_command.rb --commands <plugins.rb>           -> {"commands":["cmd", ...]}
+#   plugin_command.rb --commands <plugins.rb> [<load path>...]
+#                                                       -> {"commands":["cmd", ...],
+#                                                           "hooks":["event", ...]}
 #   plugin_command.rb <index> <command> <args...>       -> exec the plugin command
 #
 # Kept as a separate process so the long-lived bridge's JSON-RPC stdout stays
@@ -20,11 +22,17 @@ mode = ARGV[0].to_s
 
 if mode == "--commands"
   plugins_rb = ARGV[1].to_s
+  load_paths = ARGV[2..] || []
   begin
     load_plugin_api
+    # The reference loads plugins.rb with the plugin's own require paths on
+    # $LOAD_PATH (plugin.rb register_plugin); mirror that so `require "<gem>"`
+    # at the top of plugins.rb resolves.
+    load_paths.each { |path| $LOAD_PATH.unshift(path) unless $LOAD_PATH.include?(path) }
     load plugins_rb
     commands = Bundler::Plugin.instance_variable_get(:@commands) || {}
-    puts JSON.generate({ "commands" => commands.keys })
+    hooks = Bundler::Plugin.instance_variable_get(:@hooks_by_event) || {}
+    puts JSON.generate({ "commands" => commands.keys, "hooks" => hooks.keys.map(&:to_s) })
   rescue Exception => e # rubocop:disable Lint/RescueException
     puts JSON.generate({ "error" => "#{e.class}: #{e.message}" })
     exit 1

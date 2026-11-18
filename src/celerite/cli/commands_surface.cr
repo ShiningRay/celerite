@@ -1483,8 +1483,8 @@ module Celerite
         end
 
         registered = PluginCommands.commands(index_path)
-        declared = PluginCommands.declared_commands(File.join(root_dir, "plugins.rb"))
-        conflict_command = declared.find do |command|
+        declared = PluginCommands.declared(File.join(root_dir, "plugins.rb"), [lib_dir])
+        conflict_command = declared[:commands].find do |command|
           owner = registered[command]?
           !owner.nil? && owner != info.name
         end
@@ -1495,10 +1495,16 @@ module Celerite
           return 29
         end
         merged_commands = registered.dup
-        declared.each { |command| merged_commands[command] = info.name }
+        declared[:commands].each { |command| merged_commands[command] = info.name }
         first_install = !plugin_path_map.has_key?(info.name)
         load_path_map[info.name] = [lib_dir]
         plugin_path_map[info.name] = root_dir
+        # Hooks are recorded like the reference index: one ordered, deduped
+        # plugin list per event (plugin/index.rb register_plugin).
+        declared[:hooks].each do |event|
+          owners = (hooks_map[event] ||= [] of String)
+          owners << info.name unless owners.includes?(info.name)
+        end
 
         # Reference index layout: bare keys for empty collections, quoted
         # string values, "---" document start. Commands keep their existing
@@ -1745,8 +1751,8 @@ module Celerite
                     end
           lib_dir = File.join(gem_dir, "lib").gsub(/\\/, "/")
           registered = PluginCommands.commands(index_path)
-          declared = PluginCommands.declared_commands(File.join(gem_dir, "plugins.rb"))
-          conflict_command = declared.find do |command|
+          declared = PluginCommands.declared(File.join(gem_dir, "plugins.rb"), [lib_dir])
+          conflict_command = declared[:commands].find do |command|
             owner = registered[command]?
             !owner.nil? && owner != spec.name
           end
@@ -1757,10 +1763,16 @@ module Celerite
             return 29
           end
           merged_commands = registered.dup
-          declared.each { |command| merged_commands[command] = spec.name }
+          declared[:commands].each { |command| merged_commands[command] = spec.name }
           first_install = !plugin_path_map.has_key?(spec.name)
           load_path_map[spec.name] = [lib_dir]
           plugin_path_map[spec.name] = gem_dir
+          # Hooks are recorded like the reference index: one ordered, deduped
+          # plugin list per event (plugin/index.rb register_plugin).
+          declared[:hooks].each do |event|
+            owners = (hooks_map[event] ||= [] of String)
+            owners << spec.name unless owners.includes?(spec.name)
+          end
           yaml = String.build do |y|
             y.puts "---"
             y.puts "commands:"
@@ -1889,7 +1901,16 @@ module Celerite
           y.puts "  #{key.to_s}: #{owner.inspect}"
         end
         y.puts "hooks:"
-        render.call(index["hooks"]? || YAML.parse("{}"), y)
+        # Hook events map to plugin-name arrays; uninstalling a plugin drops it
+        # from every list and removes events that end up empty, matching
+        # plugin/index.rb unregister_plugin.
+        hooks_map = index["hooks"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any
+        hooks_map.each do |event, names|
+          owners = (names.as_a?.try(&.map(&.to_s)) || [] of String).reject { |name| removed.includes?(name) }
+          next if owners.empty?
+          y.puts "  #{event.to_s}:"
+          owners.each { |name| y.puts "  - #{name.inspect}" }
+        end
         y.puts "load_paths:"
         render.call(index["load_paths"]? || YAML.parse("{}"), y)
         y.puts "plugin_paths:"

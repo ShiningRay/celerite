@@ -77,31 +77,54 @@ module Celerite
       {} of String => String
     end
 
+    # Declarations made by a plugin's `plugins.rb`: commands registered through
+    # `Bundler::Plugin::API.command` and hook events registered through
+    # `Bundler::Plugin.add_hook` (reference: bundler-4.0.24/lib/bundler/plugin.rb:207-220
+    # and plugin/index.rb:54-74, where both key sets are copied into the index).
+    # Empty arrays when the file cannot be loaded.
+    def self.declared(plugins_rb_path : String, load_paths : Array(String) = [] of String) : NamedTuple(commands: Array(String), hooks: Array(String))
+      empty = {commands: [] of String, hooks: [] of String}
+      return empty unless File.file?(plugins_rb_path)
+
+      begin
+        ruby = ENV["CELERITE_RUBY"]? || "ruby"
+        output = IO::Memory.new
+        process = Process.run(
+          ruby,
+          [script_path, "--commands", plugins_rb_path] + load_paths,
+          output: output,
+          error: IO::Memory.new,
+        )
+        return empty unless process.success?
+
+        line = output.to_s.lines.first?.try(&.strip) || ""
+        return empty if line.empty?
+
+        parsed = begin
+          JSON.parse(line)
+        rescue
+          return empty
+        end
+        return empty if parsed["error"]?
+
+        {commands: string_array(parsed, "commands"), hooks: string_array(parsed, "hooks")}
+      rescue
+        empty
+      end
+    end
+
     # Commands declared by a plugin's `plugins.rb` (empty when the plugin has
     # no commands or the file cannot be loaded).
-    def self.declared_commands(plugins_rb_path : String) : Array(String)
-      return [] of String unless File.file?(plugins_rb_path)
+    def self.declared_commands(plugins_rb_path : String, load_paths : Array(String) = [] of String) : Array(String)
+      declared(plugins_rb_path, load_paths)[:commands]
+    end
 
-      ruby = ENV["CELERITE_RUBY"]? || "ruby"
-      output = IO::Memory.new
-      process = Process.run(
-        ruby,
-        [script_path, "--commands", plugins_rb_path],
-        output: output,
-        error: IO::Memory.new,
-      )
-      return [] of String unless process.success?
-
-      line = output.to_s.lines.first?.try(&.strip) || ""
-      return [] of String if line.empty?
-
-      parsed = begin
-        JSON.parse(line)
-      rescue
-        return [] of String
-      end
-      return [] of String if parsed["error"]?
-      (parsed["commands"]?.try(&.as_a) || [] of JSON::Any).map(&.as_s)
+    private def self.string_array(parsed : JSON::Any, key : String) : Array(String)
+      value = parsed[key]?
+      return [] of String unless value
+      value.as_a.map(&.as_s)
+    rescue
+      [] of String
     end
 
     # Runs a registered plugin command in a child Ruby process with inherited
