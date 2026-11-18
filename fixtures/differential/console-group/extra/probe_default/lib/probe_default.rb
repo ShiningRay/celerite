@@ -1,0 +1,2 @@
+module ProbeDefault
+end

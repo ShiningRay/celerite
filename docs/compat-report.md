@@ -3717,3 +3717,36 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 - `clean` 的 `--force` 守卫位置不同：4.0.24 在**无 Gemfile** 时也先校验危险提示，`bundle cl`（解析为 `clean`）与显式 `bundle clean` 均为 exit 15 + `Cleaning all the gems on your system is dangerous! …run \`bundle clean --force\`.` 双行；我方先撞 `Could not locate Gemfile`（exit 10）。故 `spec/m7_cli_dispatch_spec.cr` 的 4.x `cl` 用例改断言 `cl --force`（只校验 exit ≠ 15 且 stderr 不含 `Ambiguous command cl`），不宣称该路径逐字一致。
 - 2.7.2 的 `viz` 已 A/B 且确认差异：参考在 `[DEPRECATED]` 行后多打印 `#<Gem::MissingSpecError: …among 47 total gem(s)…GEM_PATH=…>`（宿主 gem 计数与路径内嵌，不可复现），我方只打 `[DEPRECATED]` + 两行安装指引（`src/celerite/cli/commands.cr:2925-2929`），因此该夹具在 2.7.2 下记为 documented deferral。2.7.2 的 `inject`（无位置参数 → 两行 usage exit 15）已 A/B 一致并进入夹具。
 - 未验证：全量差分（`script/differential` 不带夹具名跑全部目录）未在本轮执行，只跑了上述 4 个新夹具 × 2 profile；`man` 在 PATH 上的 `Kernel.exec("man", …)` 分支仍未验证（沿用上一节声明）。
+
+## 2026-11-19（M7(3)：`console` 的进程内引导与组 require 语义）
+
+**范围**：`bundle console [GROUP]` 从「exec 控制台可执行文件 + `RUBYOPT=-rbundler/setup`」改为「用 bridge 引导脚本在 bundle 语境里 require 依赖后启动控制台」，并让 `GROUP` 真正参与 `Bundler.require`。
+
+**参考锚点**
+
+- `bundler-4.0.24/lib/bundler/cli/console.rb:11-17` `run`：`group ? Bundler.require(:default, *group.split(" ").map!(&:to_sym)) : Bundler.require`；`ARGV.clear`；`console = get_console(Bundler.settings[:console] || "irb")`；`console.start`。
+- 同文件 `:19-36` `get_console(name)`：`require name` + `get_constant(name)`；`rescue LoadError` → 非 `irb` 时 `Bundler.ui.error "Couldn't load console #{name}, falling back to irb"` 后 `name = "irb"; retry`；`irb` 自身缺失时 `Bundler.ui.error "#{name} is not available"; exit 1`（4.0.24 在此之前多一段 `Gem::BUNDLED_GEMS.force_activate "irb"` 重试）。
+- 同文件 `:38-45` `get_constant(name)`：`{"pry"=>:Pry, "ripl"=>:Ripl, "irb"=>:IRB"}[name]` → `Object.const_get`。
+- `bundler-2.7.2/lib/bundler/cli/console.rb`: `:11-17` `run` 与 `:33-40` `get_constant` 同上；`:22-30` **无** `Gem::BUNDLED_GEMS.force_activate` 分支。两侧都读 `Bundler.settings[:console]`（即 `BUNDLE_CONSOLE` 键在 4.0.24 与 2.7.2 均存在）。
+
+**实现**
+
+1. 新增 `assets/bridge/console_boot.rb`：`require "bundler/setup"` → 依 `ENV["CELERITE_CONSOLE_GROUPS"]` 决定 `Bundler.require(:default, *groups.map!(&:to_sym))` 或无参 `Bundler.require` → `ARGV.clear` → 按同一常量映射 `require` 控制台 gem 并取其常量 → `console.start`；`LoadError` 时按参考文案 `Couldn't load console <name>, falling back to irb` 回退、`irb` 缺失打 `irb is not available` 并 exit 1。
+2. `src/celerite/cli/commands_surface.cr` 的 `console` 删除 `find_console_executable` 与 `RUBYOPT` 拼接，改为带 `BUNDLE_GEMFILE` / `CELERITE_CONSOLE` / `CELERITE_CONSOLE_GROUPS` 环境跑 `ruby <boot>`（`.bat`/`.cmd` 走 `cmd /c`），stdio 继承；新增 `console_boot_path`（`CELERITE_CONSOLE_BOOT` 覆盖 → 源树相对路径 → exe 目录候选）。Thor 位置参数拒绝（`ERROR: "bundle console" was called with arguments [...]` / `Usage: "bundle console [GROUP]"`，exit 15）保持不变。
+3. `spec/m7_console_spec.cr` 重写为 8 例：`console foo` → `PROBE_START default=1 foo=1 argv=[]`、无 GROUP → `default=1 foo=0 argv=[]`、`BUNDLE_CONSOLE=ripl` → `RIPL_START …`、PATH 上放伪 `pry.bat` 仍用 bundle 内控制台（钉住旧 PATH-exec 偏差已移除）、退出码透传、fallback 首行 + `irb is not available`、无控制台时末行 `irb is not available`、两个位置参数 → 15。因 console 子进程继承 stdio，断言改为经 `bin/celerite.exe` 子进程捕获 stdout/stderr。
+
+**证据（参考实测 + 双 profile 差分）**
+
+- 探针工程（`C:\temp\con\proj`，3 个 path gem：默认组 `probe_default`、`group :foo` 的 `probe_foo`、打印后 `exit 0` 的 `pry`；`.bundle/config` 设 `BUNDLE_CONSOLE: "pry"`）：4.0.24 与 2.7.2 参考均 `console foo` → `PROBE_START default=1 foo=1` exit 0、无 GROUP `console` → `PROBE_START default=1 foo=0` exit 0（**无参 `Bundler.require` 只 require 默认组**）；配置的控制台不在 bundle 内时两 profile 均 exit 1 且首行 `Couldn't load console pry, falling back to irb`（4.0.24 随后因本机 irb/reline/fiddle 链崩出 error report，属环境，不镜像；2.7.2 末行 `irb is not available`）。我方 `bin/celerite.exe` 在上述工程上逐字一致。
+- 差分夹具 `fixtures/differential/console-group/`（`command` = `install` + `console foo`，`extra/` 放 3 个 path gem 与 `.bundle/config`）：4.0.24 `1 passed, 0 failed, 0 skipped`、2.7.2 `1 passed, 0 failed, 0 skipped`，harness EXIT 0。`KEEP_DIFFERENTIAL=1` 抽查两侧 `console foo` 输出均为 37 字节 `PROBE_START default=1 foo=1 argv=[]`、stderr 为空，install 段的唯一差异是沙箱 `Bundled gems are installed into` 路径 ⇒ 非假绿。
+- 负对照：把 `console_boot.rb` 临时改回仅 `require "bundler/setup"`（不做组 require）后 `crystal spec spec/m7_console_spec.cr` EXIT 1、4 条组断言全部 `Expected: "… default=1 …" got: "… default=0 foo=0 …"`；复原后文件 SHA256 `0576BA51…1FBE12` 前后一致。
+- `spec/m7_console_spec.cr` 8 examples 0 failures（9.12s）；既有夹具回归 4.0.24 `10 passed, 0 failed, 0 skipped`（`install-fresh`、`cli-help`、`tree-command`、`ambiguous-command-prefix`、`removed-viz`、`removed-inject`、`version-plain`、`list-json`、`help-alias-check`、`bare-leading-flag`），2.7.2 `8 passed, 0 failed, 2 skipped`（`add-group`、`removed-viz` 为既有 documented deferral）。
+- `crystal build --no-codegen src/cli.cr` exit 0（仅 `src/celerite/cli/commands_install.cr:1089:43` / `:1153:20` 两条既有 `Deprecated File.executable?` warning）。
+
+**已声明差异 / 未验证**
+
+- 控制台仍在**独立 ruby 子进程**中运行（`ruby console_boot.rb`），不是参考的进程内 `console.start`；对外可观测面（requires、`ARGV.clear`、常量、退出码、文案）已对齐，但进程内行为（如控制台读取调用方 binding、`at_exit` 顺序）不宣称一致。
+- 不镜像 4.0.24 的 `Gem::BUNDLED_GEMS.force_activate "irb"` 重试分支；本机 irb/reline/fiddle 链本身不可用，该分支无法逐字验证。
+- 交互式会话（真实 TTY 下 IRB/pry 提示符与 `ARGV` 清空后行为）未逐字 A/B，只用打印后 `exit 0` 的探针控制台取证。
+- `add-group` 夹具（`add racc --group dev`）在 4.0.24 下失败于 `Gem::Ext::BuildError: ERROR: Failed to build gem native extension`（racc 原生扩展，环境族，与本节无关）；2.7.2 侧该夹具为既有 documented deferral。
+- 本轮未重跑全量 `crystal spec` 与全量差分（沿用上一节 665 examples / 12 条本机环境族失败的记录）。

@@ -2556,56 +2556,63 @@ module Celerite
         return 15
       end
 
-      # cli/console.rb:16: the console name comes from `console`
+      # cli/console.rb:15: the console name comes from `console`
       # (BUNDLE_CONSOLE) and defaults to irb.
       name = definition.config["console"].to_s
       name = "irb" if name.empty?
+      group = positional.first? || ""
 
-      executable = find_console_executable(name)
-      if executable.nil?
-        if name == "irb"
-          stderr.puts "irb is not available"
-          return 1
-        end
-        # cli/console.rb:24-33: any other missing console falls back to irb.
-        stderr.puts "Couldn't load console #{name}, falling back to irb"
-        executable = find_console_executable("irb")
-        if executable.nil?
-          stderr.puts "irb is not available"
-          return 1
-        end
-      end
-
-      # DECLARED DEVIATION: the reference runs Bundler.require and
-      # `console.start` in-process, so gem `require`/group semantics apply
-      # inside the session. Celerite execs the console executable with
-      # RUBYOPT=-rbundler/setup: only the load path is prepared, and the GROUP
-      # argument is accepted but not required (the reference clears ARGV, so no
-      # arguments are forwarded either).
+      # cli/console.rb:11-17 runs `Bundler.require` (group aware), clears ARGV
+      # and calls `console.start` in-process. Celerite keeps the separate
+      # process, but hands the whole boot sequence to assets/bridge/console_boot.rb
+      # so the bundle's gems are really required and the GROUP argument takes
+      # effect (declared deviation: the console object is built in a child
+      # process, not inside the CLI process).
       process_env = ENV.to_h
-      setup = "-rbundler/setup"
-      rubyopt = (process_env["RUBYOPT"]? || "").split(" ").reject(&.empty?)
-      rubyopt.unshift(setup) unless rubyopt.includes?(setup)
-      process_env["RUBYOPT"] = rubyopt.join(" ")
       process_env["BUNDLE_GEMFILE"] = File.expand_path(definition.gemfile_path).gsub(/\\/, "/")
+      process_env["CELERITE_CONSOLE"] = name
+      process_env["CELERITE_CONSOLE_GROUPS"] = group
 
+      ruby = ENV["CELERITE_RUBY"]? || "ruby"
+      boot = console_boot_path
       # Windows .bat/.cmd wrappers need the command processor; direct spawn
       # would fail with "not a valid application".
-      if executable.ends_with?(".bat") || executable.ends_with?(".cmd")
-        Process.run("cmd", ["/c", executable], env: process_env,
+      if ruby.ends_with?(".bat") || ruby.ends_with?(".cmd")
+        Process.run("cmd", ["/c", ruby, boot], env: process_env,
           output: :inherit, error: :inherit, input: :inherit).exit_code
       else
-        Process.run(executable, [] of String, env: process_env,
+        Process.run(ruby, [boot], env: process_env,
           output: :inherit, error: :inherit, input: :inherit).exit_code
       end
     end
 
-    # PATHEXT wrappers are not expanded by find_executable, so the Windows
-    # variants are probed explicitly.
-    private def self.find_console_executable(name : String) : String?
-      Process.find_executable(name) ||
-        Process.find_executable("#{name}.bat") ||
-        Process.find_executable("#{name}.cmd")
+    # Console boot helper (assets/bridge/console_boot.rb), resolved like
+    # PluginCommands.script_path: explicit override, then source-relative, then
+    # next to the executable.
+    private def self.console_boot_path : String
+      if path = ENV["CELERITE_CONSOLE_BOOT"]?
+        return path unless path.empty?
+      end
+      source_relative = File.expand_path("../../../assets/bridge/console_boot.rb", __DIR__)
+      return source_relative if File.file?(source_relative)
+
+      exe_dir = begin
+        File.dirname(Process.executable_path || "")
+      rescue
+        ""
+      end
+      unless exe_dir.empty?
+        candidates = [
+          File.join(exe_dir, "assets", "bridge", "console_boot.rb"),
+          File.join(exe_dir, "..", "assets", "bridge", "console_boot.rb"),
+          File.join(exe_dir, "..", "..", "assets", "bridge", "console_boot.rb"),
+        ]
+        candidates.each do |candidate|
+          expanded = File.expand_path(candidate)
+          return expanded if File.file?(expanded)
+        end
+      end
+      source_relative
     end
 
     # ------------------------------------------------------------------

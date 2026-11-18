@@ -1,0 +1,5 @@
+source "file:///@INDEX_DIR@/"
+
+gem "probe_default", :path => "./probe_default"
+gem "probe_foo", :path => "./probe_foo", :group => :foo
+gem "pry", :path => "./pry"
