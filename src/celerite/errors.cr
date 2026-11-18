@@ -25,6 +25,23 @@ module Celerite
     end
   end
 
+  # `Bundler::InvalidOption` (raised by `CLI::Clean#require_path_or_force` and
+  # friends): friendly-errors prints the message word-wrapped at the terminal
+  # width and exits 15.
+  class InvalidOptionError < UsageError
+    def wrap? : Bool
+      true
+    end
+  end
+
+  # `Bundler::RemovedError` (`shared_helpers.rb#feature_removed!`): the message
+  # already carries the `[REMOVED] ` prefix and the status code is 9.
+  class RemovedError < Error
+    def status_code : Int32
+      9
+    end
+  end
+
   # `Bundler::Settings::Path#validate!` (settings.rb L287-297): a custom `path`
   # cannot be combined with system gems. The reference raises `InvalidOption`,
   # which friendly-errors prints word-wrapped at the terminal width.

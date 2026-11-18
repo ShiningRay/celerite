@@ -53,7 +53,7 @@ module Celerite
       # `default_command` (cli.rb:133-148). A bare `bundle` takes the same path,
       # which is why it runs the default command instead of printing usage.
       defaulted = raw_args.empty? ||
-                  (raw_args[0].starts_with?("-") && !DASH_MAPPED_COMMANDS.includes?(raw_args[0]))
+                  (raw_args[0].starts_with?("-") && !dash_command_map.has_key?(raw_args[0]))
 
       if defaulted
         # The unresolved tokens all become the default command's arguments
@@ -63,9 +63,18 @@ module Celerite
         command = default_cli_command(stdout)
         rest = args
       else
-        command = args[0]
-        rest = args[1..]
+        # Thor resolves the leading token through `normalize_command_name`
+        # (thor.rb:605-620): an unambiguous prefix selects the command, an
+        # ambiguous prefix raises `Ambiguous command <w> matches [a, b]`, and an
+        # unknown token falls through to the did_you_mean path below.
+        if (resolved = resolve_command_name(args[0], stderr))
+          command = resolved
+          rest = args[1..]
+        else
+          return 15
+        end
       end
+      command = expand_deprecated_alias(command, stderr)
       print_command_echo(command, rest, verbose_requested, cli_retry, stdout)
 
       # `--quiet` is honoured by install/update/add/cache (and `doctor`, whose
@@ -142,6 +151,13 @@ module Celerite
         config(stdout, stderr, rest)
       when "cli_help"
         cli_help(stdout, stderr, rest)
+      when "tree"
+        tree(stdout, stderr, rest)
+      when "viz", "inject"
+        # 4.0.24 raises `RemovedError` through `feature_removed!`
+        # (shared_helpers.rb:129-138, status 9); 2.7.2 still ships both behind
+        # `major_deprecation`, so the profile selects the behaviour.
+        removed_command(command, rest, stderr)
       when "help", "--help", "-h", "-?", "-D"
         # Thor's dash mappings (`base.rb:17 HELP_MAPPINGS = %w(-h -? --help -D)`)
         # all land on `help`, so `-D`/`-?` render the top-level page too.
@@ -158,7 +174,14 @@ module Celerite
           stderr.puts "The '#{command}' command is not implemented yet."
           1
         else
+          # Thor's `UndefinedCommandError` carries the command table as its
+          # did_you_mean dictionary (`base.rb:614-615`,
+          # `error.rb:37 SpellChecker.new(dictionary: error.all_commands)`), so
+          # `lst` suggests `list` while an arbitrary token gets no hint.
           stderr.puts "Could not find command \"#{command}\"."
+          if message = Suggestions.message(command, reference_commands)
+            stderr.puts message
+          end
           15
         end
       end
@@ -191,6 +214,69 @@ module Celerite
         result << arg
       end
       result
+    end
+
+    # Thor's dash mappings, minus the entries the profile does not have: 2.7.2
+    # ships no `tree`, so `-t`/`--tree` never map there and stay on the argument
+    # list as unknown switches of the default command (measured: 15 with
+    # `Unknown switches "-t"`).
+    private def self.dash_command_map : Hash(String, String)
+      return DASH_COMMAND_MAP_4_X unless profile_2_x?
+
+      DASH_COMMAND_MAP_4_X.reject { |key, _| key == "-t" || key == "--tree" }
+    end
+
+    # `Bundler::CLI.all_aliases` (cli.rb:41-53) resolves an alias back to its
+    # command; the dash mappings are the same thing keyed by switch.
+    private def self.command_alias_target(name : String) : String?
+      COMMAND_ALIASES[name]? || dash_command_map[name]?
+    end
+
+    # Thor's `find_command_possibilities` (thor.rb:626-638): the candidates are
+    # the command table merged with `map` (aliases and dash mappings), filtered
+    # by prefix and sorted. An exact hit wins over the longer commands sharing
+    # the prefix, and a single mapped candidate resolves directly.
+    private def self.command_possibilities(word : String) : Array(String)
+      candidates = reference_commands + COMMAND_ALIASES.keys + dash_command_map.keys
+      if profile_2_x?
+        # 2.7.2's thor.rb:628 is `all_commands.merge(map)` — no hidden-command
+        # reject — so `clean`/`cli_help`/`inject`/`viz` all take part there.
+      else
+        candidates = candidates.reject { |name| HIDDEN_COMMANDS_4_X.includes?(name) }
+      end
+      possibilities = candidates.select { |name| name.starts_with?(word) }.sort
+      return [word] if possibilities.includes?(word)
+
+      unique = possibilities.map { |name| command_alias_target(name) || name }.uniq
+      unique.size == 1 ? unique : possibilities
+    end
+
+    # Thor's `normalize_command_name` (thor.rb:605-620). An ambiguous prefix is
+    # reported before any command output; a word without candidates is handed
+    # back untouched so the caller reports `Could not find command` with the
+    # did_you_mean corrections.
+    private def self.resolve_command_name(word : String, stderr : IO) : String?
+      possibilities = command_possibilities(word)
+      if possibilities.size > 1
+        stderr.puts "Ambiguous command #{word} matches [#{possibilities.join(", ")}]"
+        return nil
+      end
+      resolved = possibilities.first? || word
+      command_alias_target(resolved) || resolved
+    end
+
+    # `Bundler::CLI#install_or_cli_help` (cli.rb:123-131): the deprecated alias
+    # still ships in 4.x, warns on stderr and then runs `install`. 2.7.2 has no
+    # such command (measured: 15, `Could not find command
+    # "install_or_cli_help".`), so the name is never expanded there.
+    private def self.expand_deprecated_alias(command : String, stderr : IO) : String
+      return command unless command == "install_or_cli_help"
+      return command if profile_2_x?
+
+      stderr.puts "`bundle install_or_cli_help` is a deprecated alias of `bundle install`."
+      stderr.puts "It might be called due to the 'default_cli_command' being set to 'install_or_cli_help',"
+      stderr.puts "if so fix that by running `bundle config set default_cli_command install --global`."
+      "install"
     end
 
     # Commands whose `--verbose` echo is suppressed (reference
@@ -262,16 +348,32 @@ module Celerite
     # utilities there instead of 24.
     PRINTABLE_COMMANDS_HIDDEN_2_X = ["tree", "clean"]
 
-    # Thor's dash mappings: `base.rb:17-18` maps `-h -? --help -D` onto `help`
-    # and `-t --tree` onto `tree`, while `cli.rb:41-53` maps `--version`/`-v`
-    # onto `version`. Any *other* leading switch is never shifted off the
-    # argument list, so the command stays unresolved and the default command
-    # runs instead (thor.rb:591-595, cli.rb:133-148).
-    DASH_MAPPED_COMMANDS = ["--help", "-h", "-?", "-D", "-t", "--tree", "--version", "-v"]
-
     # Values accepted for `default_cli_command`
     # (`settings/validator.rb:78-81`); 2.7.2 has no such rule.
     DEFAULT_CLI_COMMAND_VALUES = ["install", "cli_help"]
+
+    # `Bundler::CLI.all_commands` hides these four in 4.0.24. Thor's
+    # `find_command_possibilities` rejects hidden commands there
+    # (thor.rb:628), so they never take part in prefix matching. 2.7.2 has no
+    # such reject (its thor.rb:628 reads `all_commands.merge(map)`), which is
+    # why `bundle cl` is ambiguous there (`[clean, cli_help]`) while 4.0.24
+    # resolves it to `clean`.
+    HIDDEN_COMMANDS_4_X = ["cli_help", "install_or_cli_help", "viz", "inject"]
+
+    # Commands 2.7.2 lacks outright — `LEGACY_ABSENT_COMMANDS` below.
+    # Thor's dash mappings for help/tree (`base.rb:17-18`) and version
+    # (`cli.rb:41-53`). 2.7.2 has no `tree`, so `-t`/`--tree` stay on the
+    # argument list there and end up as unknown switches of the default command.
+    DASH_COMMAND_MAP_4_X = {
+      "--help"    => "help",
+      "-h"        => "help",
+      "-?"        => "help",
+      "-D"        => "help",
+      "-t"        => "tree",
+      "--tree"    => "tree",
+      "--version" => "version",
+      "-v"        => "version",
+    }
 
     # Commands this CLI implements that the reference echoes before running.
     # `info` is a Thor command of its own (bundler/cli.rb:382) and is not part of
@@ -281,7 +383,7 @@ module Celerite
       "install", "update", "lock", "cache", "package", "pack", "clean",
       "add", "remove", "binstubs", "env", "doctor", "licenses", "fund",
       "open", "plugin", "pristine", "init", "outdated", "console", "gem", "issue",
-      "info", "cli_help",
+      "info", "cli_help", "tree",
     ]
 
     # Boolean options: Thor renders them as a bare `--name`.
@@ -2668,6 +2770,193 @@ module Celerite
     end
 
     # ------------------------------------------------------------------
+    # tree
+    # ------------------------------------------------------------------
+    # `bundle tree` is Thor's own command, not a `Bundler::CLI` method
+    # (thor.rb:675-707): `TREE_MAPPINGS` (`-t`, `--tree`; base.rb:18) map onto
+    # it and the body renders `build_command_tree(self.class, "")`. 2.7.2 ships
+    # no `tree`, so the name never resolves there (measured: 15,
+    # `Could not find command "tree".`).
+    TREE_ROOT_NAMESPACE = "bundler:c_l_i"
+
+    # `build_command_tree` skips `hidden?` commands and `help` (thor.rb:689).
+    # `tree` itself lives on `Bundler::Thor`, so it is not a `CLI` command
+    # either; every other printable row shows up.
+    TREE_HIDDEN_COMMANDS = ["help", "tree"]
+
+    # `klass.subcommand_classes` (thor.rb:702) in declaration order, each with
+    # its visible commands sorted by name. `config`'s `base` subcommand is
+    # `hide: true` (cli/config.rb), so it never appears.
+    TREE_SUBCOMMANDS = [
+      {"config", [
+        {"get", "Returns the value for the given key"},
+        {"list", "List out all configured settings"},
+        {"set", "Sets the given value for the given key"},
+        {"unset", "Unsets the value for the given key"},
+      ]},
+      {"doctor", [
+        {"diagnose", "Checks the bundle for common problems"},
+        {"ssl", "Diagnose SSL problems"},
+      ]},
+      {"plugin", [
+        {"install", "Install the plugin from the source"},
+        {"list", "List the installed plugins and available commands"},
+        {"uninstall", "Uninstall the plugins"},
+      ]},
+    ]
+
+    def self.tree(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      if profile_2_x?
+        # Thor's command table has no `tree` under 2.7.2, so the token stays
+        # unresolved (thor.rb:605-620) and the reference reports it there.
+        stderr.puts %(Could not find command "tree".)
+        return 15
+      end
+
+      # Thor `check_unknown_options!` (base.rb:619-626) runs before the body;
+      # `tree` declares no method options, so only the class options are known.
+      if (unknown = reject_unknown_switches(stderr, rest, SWITCH_FLAGS_CLASS, SWITCH_VALUES_CLASS))
+        return unknown
+      end
+
+      arguments = subcommand_arguments(rest, SWITCH_FLAGS_CLASS, SWITCH_VALUES_CLASS)
+      unless arguments.empty?
+        stderr.puts %(ERROR: "bundle tree" was called with arguments #{arguments.inspect})
+        stderr.puts %(Usage: "bundle tree")
+        return 15
+      end
+
+      stdout.print command_tree
+      0
+    end
+
+    # `build_command_tree` (thor.rb:684-706). The reference `say` calls carry
+    # `:blue`/`:green`, but Thor's shell only emits ANSI codes when stdout is a
+    # TTY, which is exactly the non-colored text reproduced here.
+    private def self.command_tree : String
+      rows = PRINTABLE_COMMANDS
+        .reject { |row| TREE_HIDDEN_COMMANDS.includes?(command_word(row[0])) }
+        .map { |row| {command_word(row[0]), row[1]} }
+        .sort_by { |row| row[0] }
+
+      String.build do |io|
+        io << TREE_ROOT_NAMESPACE << '\n'
+        render_tree_rows(io, rows, "  ")
+        TREE_SUBCOMMANDS.each do |section|
+          io << "  " << TREE_ROOT_NAMESPACE << ':' << section[0] << '\n'
+          render_tree_rows(io, section[1], "    ")
+        end
+      end
+    end
+
+    private def self.render_tree_rows(io : IO, rows : Array(Tuple(String, String)), indent : String) : Nil
+      rows.each_with_index do |row, index|
+        icon = index == rows.size - 1 ? "└─" : "├─"
+        io << indent << icon << ' ' << row[0] << " (" << row[1] << ")\n"
+      end
+    end
+
+    # ------------------------------------------------------------------
+    # viz / inject
+    # ------------------------------------------------------------------
+    # 4.0.24 hides both commands and routes them through
+    # `SharedHelpers.feature_removed!` (shared_helpers.rb:129-138), which raises
+    # `RemovedError` with the `[REMOVED] ` prefix and status 9
+    # (cli.rb:583-587, cli.rb:635-638). 2.7.2 still implements both behind
+    # `SharedHelpers.major_deprecation 2` (cli.rb:520-535, cli.rb:580-587).
+    def self.removed_command(command : String, rest : Array(String), stderr : IO) : Int32
+      profile_2_x? ? legacy_removed_command(command, rest, stderr) : removed_command_4_x(command, rest, stderr)
+    end
+
+    private def self.removed_command_4_x(command : String, rest : Array(String), stderr : IO) : Int32
+      if (unknown = reject_unknown_switches(stderr, rest, SWITCH_FLAGS_CLASS, SWITCH_VALUES_CLASS))
+        return unknown
+      end
+
+      if command == "viz"
+        # `desc "viz [OPTIONS]"` + `def viz` (cli.rb:583-587): Thor rejects
+        # positional arguments before the body raises RemovedError.
+        arguments = subcommand_arguments(rest, SWITCH_FLAGS_CLASS, SWITCH_VALUES_CLASS)
+        unless arguments.empty?
+          stderr.puts %(ERROR: "bundle viz" was called with arguments #{arguments.inspect})
+          stderr.puts %(Usage: "bundle viz [OPTIONS]")
+          return 15
+        end
+
+        # The reference message spans two lines; `RemovedError` is rendered
+        # verbatim (friendly errors only wrap, and there is nothing to wrap).
+        raise RemovedError.new("[REMOVED] The `viz` command has been renamed to `graph` and moved to a plugin.\n" \
+                               "See https://github.com/rubygems/bundler-graph")
+      end
+
+      # `def inject(*)` (cli.rb:635-638) accepts any arguments, so the body
+      # runs (and raises) regardless of the positionals.
+      raise RemovedError.new("[REMOVED] The `inject` command has been replaced by the `add` command")
+    end
+
+    # 2.7.2 `viz` still declares its options (cli.rb:526-530) even though the
+    # implementation only reports the missing ruby-graphviz gem.
+    LEGACY_VIZ_FLAGS     = SWITCH_FLAGS_CLASS + ["--requirements", "-R", "--version", "-v"]
+    LEGACY_VIZ_VALUES    = SWITCH_VALUES_CLASS + ["--file", "-f", "--format", "-F", "--without", "-W"]
+    LEGACY_INJECT_VALUES = SWITCH_VALUES_CLASS + ["--source", "--group"]
+
+    private def self.legacy_removed_command(command : String, rest : Array(String), stderr : IO) : Int32
+      if command == "viz"
+        if (unknown = reject_unknown_switches(stderr, rest, LEGACY_VIZ_FLAGS, LEGACY_VIZ_VALUES))
+          return unknown
+        end
+
+        arguments = subcommand_arguments(rest, LEGACY_VIZ_FLAGS, LEGACY_VIZ_VALUES, ["--without", "-W"])
+        unless arguments.empty?
+          stderr.puts %(ERROR: "bundle viz" was called with arguments #{arguments.inspect})
+          stderr.puts %(Usage: "bundle viz [OPTIONS]")
+          return 15
+        end
+
+        # `cli/viz.rb:10-29` (2.7.2): `major_deprecation`, then
+        # `gem "ruby-graphviz"` / `require "graphviz"`; a missing gem prints the
+        # exception, the install guidance, and still exits 0. The exception
+        # line names the host's gem count and GEM_PATH, so it cannot be
+        # reproduced — see docs/compat-report.md (declared difference).
+        stderr.puts "[DEPRECATED] The `viz` command has been renamed to `graph` and moved to a plugin. " \
+                    "See https://github.com/rubygems/bundler-graph"
+        stderr.puts "Make sure you have the graphviz ruby gem. You can install it with:"
+        stderr.puts "`gem install ruby-graphviz`"
+        return 0
+      end
+
+      # `def inject(name, version)` (cli.rb:583): Thor reports a missing or
+      # surplus positional before the body's deprecation notice.
+      if (unknown = reject_unknown_switches(stderr, rest, SWITCH_FLAGS_CLASS, LEGACY_INJECT_VALUES))
+        return unknown
+      end
+
+      arguments = subcommand_arguments(rest, SWITCH_FLAGS_CLASS, LEGACY_INJECT_VALUES)
+      if arguments.empty?
+        stderr.puts %(ERROR: "bundle inject" was called with no arguments)
+        stderr.puts %(Usage: "bundle inject GEM VERSION")
+        return 15
+      end
+      unless arguments.size == 2
+        stderr.puts %(ERROR: "bundle inject" was called with arguments #{arguments.inspect})
+        stderr.puts %(Usage: "bundle inject GEM VERSION")
+        return 15
+      end
+
+      stderr.puts "[DEPRECATED] The `inject` command has been replaced by the `add` command"
+      # `Inject#run` resolves the Gemfile first; without one the reference exits
+      # 10 (measured) before touching anything. Rewriting a present Gemfile is
+      # out of scope for this slice (declared difference).
+      gemfile = begin
+        Definition.find_gemfile
+      rescue GemfileNotFound
+        nil
+      end
+      raise GemfileNotFound.new("Could not locate Gemfile") unless gemfile
+      raise UnsupportedCommandError.new("The 'inject' command is not implemented yet.")
+    end
+
+    # ------------------------------------------------------------------
     # help
     # ------------------------------------------------------------------
     # `bundle help [COMMAND]` (cli.rb:155-185): resolve an alias, hand unknown
@@ -2690,30 +2979,43 @@ module Celerite
       end
 
       target = arguments.first?
-      if target
-        canonical = COMMAND_ALIASES[target]? || target
-        # `cli.rb:161-165` maps `gemfile` to its own section-5 page even though
-        # it is not a Thor command.
-        unless canonical == "gemfile" || reference_commands.includes?(canonical)
-          if (plugin_exit = dispatch_plugin_command(target, ["--help"]))
-            return plugin_exit
-          end
-          return help_unknown_command(target, stderr)
+      unless target
+        Manpages.render("bundle", stdout)
+        return 0
+      end
+
+      # `cli.rb:156` maps an alias back to its command before the page lookup;
+      # `cli.rb:162-166` gives `gemfile` its own section-5 page. Both happen on
+      # the *raw* token, which is why `help v` renders Thor's help text for
+      # `version` instead of the `bundle-version` page.
+      canonical = COMMAND_ALIASES[target]? || target
+      if Manpages.render(canonical, stdout)
+        return 0
+      end
+
+      # No page: the reference falls through to `super`, i.e. Thor's
+      # `command_help`, which resolves the name through `normalize_command_name`
+      # (thor.rb:605-620) and renders it.
+      possibilities = command_possibilities(canonical)
+      if possibilities.size > 1
+        stderr.puts "Ambiguous command #{canonical} matches [#{possibilities.join(", ")}]"
+        return 15
+      end
+      resolved = possibilities.first? || canonical
+      resolved = command_alias_target(resolved) || resolved
+
+      if reference_commands.includes?(resolved)
+        if entry = thor_help_entry(resolved)
+          stdout.print(Manpages.normalize_newlines(thor_help_text(entry[0], entry[1])))
+          return 0
         end
-        target = canonical
       end
 
-      if Manpages.render(target || "bundle", stdout)
-        return 0
+      if (plugin_exit = dispatch_plugin_command(target, ["--help"]))
+        return plugin_exit
       end
 
-      if (fallback = THOR_HELP_FALLBACK[target || ""]?)
-        stdout.print(Manpages.normalize_newlines(thor_help_text(fallback[0], fallback[1])))
-        return 0
-      end
-
-      # A page-less, Thor-less name behaves like an unknown command.
-      help_unknown_command(target || "", stderr)
+      help_unknown_command(canonical, stderr)
     end
 
     # Thor `command_help` (thor.rb:252-280): usage banner, the three class
@@ -2730,6 +3032,23 @@ module Celerite
         io << '\n'
         io << description << '\n'
       end
+    end
+
+    # Thor `command_help` also prints the command's own option table
+    # (thor.rb:258-262). Reproducing that table needs per-option banners and
+    # defaults the CLI does not carry, so this port renders the usage banner,
+    # the class options and the description only — see docs/compat-report.md
+    # for the declared difference.
+    private def self.thor_help_entry(name : String) : Tuple(String, String)?
+      if entry = THOR_HELP_FALLBACK[name]?
+        return {entry[0], entry[1]}
+      end
+
+      PRINTABLE_COMMANDS.each do |banner, description|
+        next unless banner == "bundle #{name}" || banner.starts_with?("bundle #{name} ")
+        return {banner.lchop("bundle "), description}
+      end
+      nil
     end
 
     # Thor `UndefinedCommandError#message` plus its did_you_mean corrections
