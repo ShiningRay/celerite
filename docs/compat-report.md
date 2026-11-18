@@ -3882,10 +3882,10 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 | P：两个 path gem `alpha`/`beta`，fresh `install` | exit 0，`Bundle complete! 2 Gemfile dependencies, 2 gems now installed.`，hook 3 行：`bundler`/`alpha`/`beta`，blocks=1 | exit 0，`3 gems now installed`（计数含 running Bundler），hook 3 行同序 |
 | P：再跑一次 `install`（无变化） | exit 0，hook 又 3 行（新 oid） | exit 0，hook 又 3 行 |
 | G：`thor`+`racc`（file:// 索引），fresh / 再跑 | 各 3 行 `bundler`/`thor`/`racc` | 各 3 行同序 |
-| G：新增 `json_pure` 后 `install` | 新增 8 行，全部 blocks=2（同进程重复注册 block），每 spec 触发 2 次 | 新增 10 行，blocks 在 2/3 间跳 |
+| G：新增 `json_pure` 后 `install` | 新增 8 行：首行 `bundler` 为 `blocks=1`，其余 7 行 `blocks=2`（同进程重复注册 block），故除该首个 `bundler` 外每 spec 触发 2 次 | 新增 10 行，blocks 在 2/3 间跳 |
 | R：hook `raise "boom"`（thor+racc） | **exit 1、无 `Gemfile.lock`、gems 目录为空**（首个 hook 即 `bundler`，装任何 gem 之前中止） | exit 1、无 lock，但 thor/racc 已装上（2.7.2 串行安装，装完才触发） |
 
-结论：安装集 = running Bundler 的 spec（恒在且最先）+ 本次解析出的全部 spec；hook 每轮触发，与是否新装无关。
+结论：安装集 = running Bundler 的 spec（始终在集合内）+ 本次解析出的全部 spec；hook 每轮触发，与是否新装无关。**触发顺序**：我方固定先发 `bundler` 伪 spec；参考的 hook 在并行安装 worker 中触发，顺序不保证——`.d/oracle11b-4.0.24/proj-path/hook-log` 第 4-6 行重跑记录为 `alpha`/`beta`/`bundler`，故夹具与 spec 均不断言参考侧顺序。
 
 **实现**：
 

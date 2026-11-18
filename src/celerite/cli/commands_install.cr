@@ -556,9 +556,10 @@ module Celerite
         # The reference runs `gem_after_install` from inside the installer once
         # per spec whose install just finished (`parallel_installer.rb:217`),
         # including specs that were already installed and the running Bundler's
-        # own spec, which is always part of the install set and observed first
-        # (`oracle11b`: `bundle install` with two path gems fires
-        # `bundler`/`alpha`/`beta`). It runs before the lockfile write and
+        # own spec, which is always part of the install set. We emit that
+        # `bundler` pseudo-spec first; the reference's order is not guaranteed
+        # because its hooks fire from parallel install workers (`.d/oracle11b-4.0.24/`
+        # `proj-path/hook-log` records `alpha`/`beta`/`bundler` on the rerun). It runs before the lockfile write and
         # before `cli/install.rb` prints the "Bundle complete!" summary
         # (`installer.rb` hook call, then `definition.to_lock`); a raising hook
         # must therefore leave no `Gemfile.lock` and no summary line behind (G2).
