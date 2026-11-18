@@ -3818,3 +3818,48 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 - hook 抛异常时 stderr 不逐字一致：参考打印完整 `--- ERROR REPORT TEMPLATE`（含机器路径），我方一行 `Plugin hook after-install failed: boom`；因此该夹具用 `stderr-contains`（N10）只比较关键词，stdout / exit / 项目树仍是精确比较，且归一化只对被显式标记的夹具生效。
 - 若将来要断言「hook 崩溃时两侧 stdout 逐字一致」且使用 rubygems gem，需要参考的 `Installing …` 行在崩溃路径稳定刷出；本轮以 path gem 绕开，rubygems gem 场景未验证。
 - 全量 `crystal spec` 与全量差分未重跑（沿用既有记录）。
+
+## 2026-11-19（M7(6) task-9：`plugin uninstall` 之后的 hook 收口）
+
+**范围**：收口上文「`plugin uninstall` 的 hooks 清理只有实现、无专例/夹具」。用双 profile oracle 走 a→g 七步（装插件 → 内部 `install` → 卸载 → 再 `install` → `plugin list` → 重装 → 再 `install`），确认卸载后①索引 hooks 段不再列该插件、②内部 `install` 不再触发 hook、③重装后恢复；新增差分夹具 `plugin-hook-uninstall` 与 `spec/m7_plugin_uninstall_hooks_spec.cr` 4 例。**本轮未改 src**：`write_plugin_index` 的清理逻辑经核对已与参考一致，只补证据。
+
+**参考锚点**：
+
+- `bundler-4.0.24/lib/bundler/plugin/index.rb:77-87`：`unregister_plugin` 遍历 `@hooks`，`names.delete(name)` 后 `@hooks.delete(hook) if names.empty?`——卸载即从所有事件下移除，事件本身也随之消失。
+- `bundler-4.0.24/lib/bundler/plugin/index.rb:54-74`：`register_plugin` 把 `@hooks_by_event.keys` 写回 `@hooks[event] << name` 并 `uniq!`——重装后事件与插件重新登记。
+- `bundler-4.0.24/lib/bundler/plugin.rb:228-240`：hook 执行受 `Bundler.settings[:plugins]` 与 `index.hook_plugins(event)` 双重门控，索引里没有该插件即不加载、不调用。
+
+**参考 oracle（两侧独立 HOME/GEM_HOME/BUNDLE_PATH，同一 Gemfile `source "file://<fixtures/gem-index>"` + `gem "json_pure"`）**：
+
+| 步骤 | 参考 exit | 参考 stdout | 参考 index 字节 | 参考 `hook-log` 行数 |
+| --- | --- | --- | --- | --- |
+| a `plugin install hook_plugin --path ./hook_plugin` | 0 | `Resolving dependencies...` + `Installed plugin hook_plugin` | 322（含 `hookprobe: "hook_plugin"`、`after-install:`、`- "hook_plugin"`、load_paths/plugin_paths） | 0（文件不存在） |
+| b `install` | 0 | `Bundle complete! 1 Gemfile dependency, 1 gem now installed.` + `Bundled gems are installed into ...` | 322 | 2 |
+| c `plugin uninstall hook_plugin` | 0 | `Uninstalled plugin hook_plugin` | 62（commands/hooks/load_paths/plugin_paths/sources 全空骨架） | 2 |
+| d `install` | 0 | 仅 `Bundle complete!`/`installed into`，无 hook 痕迹 | 62 | 2（不增） |
+| e `plugin list` | 0 | `No plugins installed` | 62 | 2 |
+| f `plugin install hook_plugin --path ./hook_plugin` | 0 | `Installed plugin hook_plugin` | 322 | 2 |
+| g `install` | 0 | `Bundle complete! ...` | 322 | 4 |
+
+2.7.2 同形：索引 320 字节（CRLF 差 2），b/g 的 stdout 为 `2 gems now installed`；其余步骤逐行一致。两侧 `hook-log` 内容均只有 `after-install` 行。
+
+**实现与夹具**：
+
+1. `src/celerite/cli/commands_surface.cr` 的 `write_plugin_index`（约 L1900-1913）：hooks 段遍历 `index["hooks"]` 的 `as_h`，按 `removed` 过滤数组内插件名，`next if owners.empty?` 删空事件——与 `index.rb:77-87` 一致，本轮只核对不改动。
+2. `fixtures/differential/plugin-hook-uninstall/`：`command` 7 行（`plugin install hook_plugin --path ./hook_plugin` / `install` / `plugin uninstall hook_plugin` / `install` / `plugin list` / 重装 / `plugin list`，末字节 LF）；根 `Gemfile` 用 `@INDEX_DIR@` 占位；`extra/hook_plugin/plugins.rb` 的 hook 用 sentinel 区分路径——若 `hook-log` 与 `Gemfile.lock` 同时存在（即「卸载后仍触发了 hook」），写 `hook-after-uninstall`（内容 `hook ran after uninstall`），否则向 `hook-log` 追加 `after-install`。`file-absent` = `hook-after-uninstall`（13 字节）；`file-contains` 三行（91 字节）：`.bundle/plugin/index⇥after-install`、`.bundle/plugin/index⇥hook_plugin`、`hook-log⇥after-install`。
+3. `spec/m7_plugin_uninstall_hooks_spec.cr` 4 例：①卸载后索引 hooks 段为空且不再含 `hookprobe`；②卸载后 `install` 不追加 hook 行（行数保持 1）且 stdout 仍含 `Bundle complete!`；③重装后 hook 恢复（行数 1→2）；④`plugin list` 卸载后 `No plugins installed`、重装后含 `hook_plugin`。
+
+**证据**：
+
+- 差分 `plugin-hook-uninstall`：4.0.24 `PASS plugin-hook-uninstall (exit=0)`（1 passed, 0 failed, 0 skipped，EXIT 0）；2.7.2 同 PASS（1/0/0，EXIT 0）。`KEEP_DIFFERENTIAL=1` 保留产物 `.d/fDXzKj`（及 2.7.2 的 `bKcqqh`/`FW3u1T`/`zrtEm8`）：两侧 `project/hook-after-uninstall` 均不存在；`hook-log` 参考 30 字节/2 行、我方 15 字节/1 行（粒度差异见下）；两侧索引均含 `after-install`/`hook_plugin`（参考 338 字节、我方 326 字节，差 12 = CRLF）。
+- 负对照：把 `command` 改成删掉 uninstall 三步的 4 行版本并临时复制为 `plugin-hook-uninstall-neg` → `FAIL ... file-absent violated (hook-after-uninstall): ref_exists=yes cel_exists=yes`，EXIT 1；保留产物 `.d/oLTXor` 两侧 sentinel 均存在，证明该通道确实能抓到「卸载后仍触发」。
+- `crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告）；`git diff --check` EXIT 0。
+- spec：`crystal spec spec/m7_plugin_uninstall_hooks_spec.cr spec/m7_plugin_hooks_registration_spec.cr spec/m7_plugin_hook_failure_spec.cr spec/m7_console_spec.cr spec/m7_cli_dispatch_spec.cr` → **31 examples, 0 failures**。
+- 回归差分（双 profile 各 6 个）：`plugin-hook-uninstall`、`plugin-install`、`plugin-uninstall`、`plugin-install-hooks`、`plugin-hook-raise`、`install-fresh` 全 PASS（4.0.24 6/0/0 EXIT 0；2.7.2 6/0/0 EXIT 0，`plugin-hook-raise` 打印 N10 注记）。
+
+**已声明差异 / 未验证**：
+
+- 触发次数：参考在一次 `install` 内触发 **2 次**（两 profile 一致，1 个 gem 却 2 次；`Plugin.hook(GEM_AFTER_INSTALL)` 仅 `parallel_installer.rb:217` 一处，重复机制未定位），我方整轮 1 次。夹具因此只断言行数「不增/增加」与 `hook-log` 的存在性，不比较行数与内容；我方次数由 spec 例②③固定。
+- 项目树内容差异被 harness 的 `diff -r --brief | grep -v "differ$"` 过滤，`hook-log` 行内容只靠 `file-contains` 命中，不做逐字比较（N10 同源的已知限制）。
+- 未覆盖：`plugin uninstall` 的 `--version`/`--local` 变体、手工损坏索引后的清理、卸载 git 源插件时的 hooks 清理（均未验证）。
+- 全量 `crystal spec` 与全量差分未重跑（沿用既有记录）。
