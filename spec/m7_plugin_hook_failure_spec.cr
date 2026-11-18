@@ -157,10 +157,14 @@ describe "M7(6) plugin hook failure semantics" do
         plugin_hook_index(dir, "raising_hook_plugin", root)
         with_plugin_hook_home(dir) do
           with_plugins_setting(nil) do
-            code, _out, err = run_cli(["install"])
+            code, out, err = run_cli(["install"])
             code.should eq(1)
             err.should contain("Plugin hook after-install failed:")
             err.should contain("boom from plugin hook")
+            # The reference runs hooks inside the installer, before it writes
+            # the lockfile and before `bundle install` prints its summary.
+            File.exists?(File.join(dir, "Gemfile.lock")).should be_false
+            out.should_not contain("Bundle complete!")
           end
         end
       end

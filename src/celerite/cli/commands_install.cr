@@ -552,6 +552,36 @@ module Celerite
           end
         end
 
+        # Plugin lifecycle hook (architecture §2.2); no-op without plugins.
+        # The reference runs `after-install` from inside the installer, i.e.
+        # before it writes the lockfile and before `cli/install.rb` prints the
+        # "Bundle complete!" summary (`installer.rb` hook call, then
+        # `definition.to_lock`). A raising hook must therefore leave no
+        # `Gemfile.lock` and no summary line behind; running it after the
+        # summary/lock silently masked that (G2).
+        if PluginHooks.enabled?(config)
+          result = PluginHooks.call(bridge, definition, "after-install")
+          result.missing.each do |entry|
+            stderr.puts "The following plugin paths don't exist: #{entry.paths.join(", ")}."
+            stderr.puts
+            stderr.puts "This can happen if the plugin was installed with a different version of Ruby that has since been uninstalled."
+            stderr.puts
+            stderr.puts "If you would like to reinstall the plugin, run:"
+            stderr.puts
+            stderr.puts "bundler plugin uninstall #{entry.plugin} && bundler plugin install #{entry.plugin}"
+            stderr.puts
+            stderr.puts "Continuing without installing plugin #{entry.plugin}."
+          end
+          case result.status
+          when "load_failed"
+            stderr.puts "Failed loading plugin #{result.plugin}: #{result.message}"
+            return 1
+          when "hook_failed"
+            stderr.puts "Plugin hook after-install failed: #{result.message}"
+            return 1
+          end
+        end
+
         if summary
           deps_count = resolution.evaluation.dependencies.count { |d| !d.gemspec_dev_dep }
           gems_count = specs.size
@@ -594,29 +624,6 @@ module Celerite
           end
         end
 
-        # Plugin lifecycle hook (architecture §2.2); no-op without plugins
-        if PluginHooks.enabled?(config)
-          result = PluginHooks.call(bridge, definition, "after-install")
-          result.missing.each do |entry|
-            stderr.puts "The following plugin paths don't exist: #{entry.paths.join(", ")}."
-            stderr.puts
-            stderr.puts "This can happen if the plugin was installed with a different version of Ruby that has since been uninstalled."
-            stderr.puts
-            stderr.puts "If you would like to reinstall the plugin, run:"
-            stderr.puts
-            stderr.puts "bundler plugin uninstall #{entry.plugin} && bundler plugin install #{entry.plugin}"
-            stderr.puts
-            stderr.puts "Continuing without installing plugin #{entry.plugin}."
-          end
-          case result.status
-          when "load_failed"
-            stderr.puts "Failed loading plugin #{result.plugin}: #{result.message}"
-            return 1
-          when "hook_failed"
-            stderr.puts "Plugin hook after-install failed: #{result.message}"
-            return 1
-          end
-        end
         0
       ensure
         lock.try(&.close)
