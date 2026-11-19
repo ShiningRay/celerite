@@ -1,0 +1,23 @@
+Gemfile.lock
+PLUGIN SOURCE
+  remote: ./stub-path-gem
+  type: mpath
+  specs:
+    stub-gem (1.0.0)
+
+GEM
+  remote: file:///@INDEX_DIR@/
+  specs:
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  stub-gem!
+
+CHECKSUMS
+  bundler (@BUNDLER_VERSION@) sha256=16ca64e20816a0cf151a948fb141d788602996d2b4d73577b74388fe84fa98bc
+  stub-gem (1.0.0)
+
+BUNDLED WITH
+  @BUNDLER_VERSION@
