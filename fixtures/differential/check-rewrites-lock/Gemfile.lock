@@ -1,0 +1,13 @@
+GEM
+  remote: file:///@INDEX_DIR@/
+  specs:
+    json_pure (2.8.1)
+
+PLATFORMS
+  java
+
+DEPENDENCIES
+  json_pure
+
+BUNDLED WITH
+  4.0.20
