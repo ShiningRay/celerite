@@ -48,20 +48,35 @@ private def with_frozen_env(value : String?, &) : Nil
 end
 
 describe "platform validation" do
-  it "raises ProductionError when the lockfile omits the local platform" do
+  # `validate_platforms!` is only reachable in frozen mode: `definition.rb:150`
+  # adds the current platform to a non-frozen definition before the check runs.
+  it "raises ProductionError in frozen mode when the lockfile omits the local platform" do
     local = local_platform
     other = local == "x86_64-linux" ? "x64-mingw-ucrt" : "x86_64-linux"
     with_project({
       "Gemfile"      => platform_validation_gemfile,
       "Gemfile.lock" => platform_validation_lockfile([other]),
     }) do |_dir|
-      error = expect_raises(Celerite::ProductionError) do
-        Celerite::Definition.build.validate_platforms!(local)
+      with_frozen_env("true") do
+        error = expect_raises(Celerite::ProductionError) do
+          Celerite::Definition.build.validate_platforms!(local)
+        end
+        error.status_code.should eq(16)
+        message = error.message || ""
+        message.should contain("Your bundle only supports platforms [\"#{other}\"] but your local platform is #{local}")
+        message.should contain("`bundle lock --add-platform #{local}` and try again.")
       end
-      error.status_code.should eq(16)
-      message = error.message || ""
-      message.should contain("Your bundle only supports platforms [\"#{other}\"] but your local platform is #{local}")
-      message.should contain("`bundle lock --add-platform #{local}` and try again.")
+    end
+  end
+
+  it "does not raise in non-frozen mode when the lockfile omits the local platform" do
+    local = local_platform
+    other = local == "x86_64-linux" ? "x64-mingw-ucrt" : "x86_64-linux"
+    with_project({
+      "Gemfile"      => platform_validation_gemfile,
+      "Gemfile.lock" => platform_validation_lockfile([other]),
+    }) do |_dir|
+      Celerite::Definition.build.validate_platforms!(local)
     end
   end
 
