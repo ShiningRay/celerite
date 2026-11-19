@@ -4255,3 +4255,36 @@ installed locally.
 **门禁**：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告）；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0；`git diff --check` EXIT 0。
 
 **已声明差异/未验证**：本切片只修失败面；若 `bundler-source-<type>` 可从本地索引解析，仍会进入既有的“自定义 source 成功路径未支持”分支（`commands_install.cr:113-116`，exit 1），参考则继续安装插件并进入主 install。插件已安装时 `installed_plugin?` 仍直接跳过（沿用既有行为）。未覆盖 `plugin "x"` 声明的 typed 组合；`BUNDLE_PLUGINS=false` 下 2.7.2 的片段格式未单独对我方取 oracle（4.0.24 已逐字对齐）。全量 spec 与全量差分未重跑。checkbox 保持 `[ ]`。
+
+## 2026-11-19（M7(8) task-25：空 CHECKSUMS 触发重解析与 sha256 回填）
+
+**参考语义**
+- 4.0.24 `lib/bundler/definition.rb:630-659` `something_changed?` 把 `@locked_spec_with_missing_checksums` 视为永远需要重解析；空条目只在 `empty_checksums_actionable?` 为真时触发，该谓词为 `Bundler.frozen_bundle? || !sources.local_mode?`（`:651-659`）。`setup_domain!`（`:190-203`）在 `add_checksums` 或非 local 且（需要安装或有空 CHECKSUMS）时 `sources.remote!`。
+- `definition.rb:973-1015 check_lockfile` 用 `checksum_store.missing?/empty?` 记录两类状态（`:988-992`、`:1002`）；`lockfile_generator.rb:69-76` 仅在 `definition.locked_checksums` 为真时写 `CHECKSUMS`，内容为 `checksums + bundler_checksum`；单条格式见 `checksum.rb:85-87`（`algo=hexdigest`），API 校验和入口见 `endpoint_specification.rb:175 Checksum.from_api`。2.7.2 对应 `bundler-2.7.2/lib/bundler/definition.rb` 同段逻辑，但默认不写 bundler 自身校验和。
+- 参考 4.0.24 `install` 重解析时只打印 `Fetching gem metadata from …`（不打印 `Resolving dependencies...`），`lock` 两者都打印；2.7.2 的 `install` 两者都打印。`BUNDLED WITH` 缩进 4.0.24 为 2 空格、2.7.2 为 3 空格。
+
+**oracle（预置两条空 CHECKSUMS：`bundler (<ver>)` 与 `json_pure (2.8.1)`；http index 127.0.0.1:8765 服务 `fixtures/gem-index`）**
+
+| 场景 | 4.0.24 | 2.7.2 |
+| --- | --- | --- |
+| `install`（bundle-preset 预装 stub） | exit 0；stdout `Fetching gem metadata from http://127.0.0.1:8765/.`、`Bundle complete! 1 Gemfile dependency, 1 gem now installed.`、`Bundled gems are installed into …`（无 `Resolving dependencies...`）；CHECKSUMS 回填 `bundler (4.0.24) sha256=16ca64e20816a0cf151a948fb141d788602996d2b4d73577b74388fe84fa98bc` 与 `json_pure (2.8.1) sha256=6a877929ba9d4fa0808ccc38656d1b15d138b2aa0aa32037ee05abea13427ace` | exit 0；stdout 含 Fetching、`Resolving dependencies...`、`Bundle complete! 1 Gemfile dependency, 2 gems now installed.`、Bundled gems 行；CHECKSUMS 只回填 json_pure，bundler 条目被移除 |
+| `lock` | exit 0；stdout `Writing lockfile to …/Gemfile.lock`、Fetching、`Resolving dependencies...`；CHECKSUMS 同 install（bundler + json_pure） | exit 0；stdout 同形状；CHECKSUMS 只回填 json_pure |
+
+- 我方修复前：复用锁解析直接写回空条目，无 Fetching 行；修复后两个场景的完整 `Gemfile.lock` 与 stdout 均与参考一致（含各 profile 的 `BUNDLED WITH` 缩进与 bundler 行差异）。
+- `--local`：参考 `empty_checksums_actionable?` 为假，保持锁定解析、不联网；我方按同一谓词实现，但该分支只有 spec 断言，未单独跑参考 CLI oracle。
+
+**实现**
+- `src/celerite/definition.cr:362` 新增 `checksums_need_refresh?(local_only : Bool = false)`：无锁/无 CHECKSUMS 段返回 false；遍历 GEM 源，缺少条目记 `missing`，条目无摘要记 `empty`；返回 `missing || (empty && (config.frozen? || !local_only))`，与 `definition.rb:630-659` 同形。
+- `src/celerite/cli/commands_install.cr:307`：`checksum_refresh = reuse && definition.checksums_need_refresh?(rest.includes?("--local"))`；为真时关闭复用；再按 bridge bundler 主版本抑制 `Resolving dependencies...`，对齐 4.0.24 与 2.7.2 的 install 差异。
+- `src/celerite/cli/commands.cr:2324`：`lock` 在既有的 no-op 快速返回前计算 `checksum_refresh`，为真时不提前返回，走正常解析并重写锁文件。
+- `script/differential`：新增 `file-equals` 断言块（首行为工程内相对路径，其余为期望全文；支持 `file-equals-<BUNDLER_VERSION>` 覆盖），用于逐字比较两 profile 的 `Gemfile.lock`。
+- 未动：CHECKSUMS 解析器、compact-index/下载器、`file:` 源清空校验和的既有行为（`resolution.cr:733-736`）。
+
+**测试/夹具**
+- 新增 `spec/m7_checksums_trigger_spec.cr`（3 例）：预装 stub 下 `install` 回填并打印 Fetching；`lock` 回填；`--local` 不触发刷新（`checksums_need_refresh?(true)` 为假、`(false)` 为真）且不打印 Fetching。3 examples / 0 failures / 0 errors / 0 pending。
+- 新增差分 `fixtures/differential/checksums-empty-install/` 与 `checksums-empty-lock/`：`http-index` 标记服务 `fixtures/gem-index`，`bundle-preset/` 提供已安装 stub，`Gemfile.lock` 预置两条空 CHECKSUMS，`file-equals-4.0.24`/`file-equals-2.7.2` 分别断言完整锁文件。
+- 差分结果：4.0.24 `PASS checksums-empty-install (exit=0)`、`PASS checksums-empty-lock (exit=0)`；2.7.2 同两项 `PASS`；均 2 passed / 0 failed / 0 skipped。既有回归集未受影响（本切片未改解析器/下载器）。
+
+**门禁**：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告）；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0；`git diff --check` EXIT 0。
+
+**已声明差异/未验证**：`lock --local` 的参考 CLI 行为未单独取 oracle（仅按 `empty_checksums_actionable?` 与 spec 断言）；frozen 模式下空条目的措辞/时序未实测；4.0.24 的 bundler 自身校验和来自本机 gem 缓存，若缓存缺失则无法生成该行（参考同样依赖本地 bundler gem）；差分只覆盖一个依赖与 `json_pure`/`bundler` 两条空条目，多平台/多 gem 组合未单独覆盖；全量 spec 与全量差分未重跑。checkbox 保持 `[ ]`。
