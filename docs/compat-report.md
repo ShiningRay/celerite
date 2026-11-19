@@ -4798,3 +4798,38 @@ oracle（4.0.24 与 2.7.2 语义一致；`file:///C:/…` 完整 legacy index，
 - `git diff --check` EXIT 0；`git diff --cached --check` EXIT 0；修改后未勾选任何复选框。
 - 未重跑全量 `crystal spec`、全量差分与 `script/gen-cli-baseline`；上游基线未在 33–40 后复采。
 - 本清理首个提交 `3af2f5b docs(L163): correct stale capability, baseline and anchor references`；本节随第二个 docs 提交落盘。
+
+## 2026-11-19（M7(3) task-41：default gem 参与解析、`info` 回退与未知 gem 文案）
+
+范围：L155 的 B1「Default Gem」——当声明源里**没有**同名候选时，允许解释器自带的 default gem 参与解析；`info` 打印解释器路径与 `Default Gem: yes`；未知 gem 的 `info`/`show` 文案对齐参考。参考实现分三处：`cli/common.rb:68-101`（`select_spec` → `default_gem_spec`）、`cli/info.rb:41-44`（`spec.default_gem?` 时补一行）、`source/rubygems.rb:122-136`（未知 gem 文案）。参考 `default_gem_spec` 用 `Gem::Specification.find_all_by_name(name).last`；本机 Ruby 4.0.6 同名非 default 版本有 6 个（`json 3.1.0` 等），长驻 bridge 里 `.last` 会命中非 default 版本，因此我方改为显式筛 `default_gem?` 后按版本取最大。
+
+参考 oracle（`file:///…/fixtures/gem-index-legacy`，隔离 HOME/BUNDLE_PATH，4.0.24 与 2.7.2 语义一致）：
+
+| 场景 | exit | 关键输出 |
+| --- | --- | --- |
+| `gem "json"` + `lock` | 0 | 锁写入普通 `GEM` 段的 `json (2.18.0)`，remote 为声明的索引；4.0.24 有 `CHECKSUMS`（bundler sha + `json (2.18.0)`），2.7.2 无 `CHECKSUMS`、`BUNDLED WITH` 三空格 |
+| 同上 + `install` | 0 | stdout `Bundle complete! 1 Gemfile dependency, 1 gem now installed.`（2.7.2 为 `2 gems`）+ `Bundled gems are installed into \`./bundle\``；stderr `json-2.18.0 is built in to Ruby, and can't be cached because your Gemfile doesn't have any sources that contain it.`；bundle 内**不落**该 gem |
+| 同上 + `check` | 0 | `The Gemfile's dependencies are satisfied` |
+| 同上 + `info json` | 0 | 9 行块：`* json (2.18.0)`、Summary/Homepage/Documentation/Source Code/Changelog/Bug Tracker、`Path: C:/Ruby40-x64/lib/ruby/gems/4.0.0/gems/json-2.18.0`、`Default Gem: yes` |
+| `gem "json", "9.9"` + `lock` | 7 | `Could not find gem 'json (= 9.9)' in rubygems repository … or installed locally.` 后接 `The source contains the following gems matching 'json':` `* json-2.18.0` |
+| 已锁默认 gem 后 `info nosuchgem` / `show nosuchgem` | 7 | `Could not find gem 'nosuchgem'.` |
+
+实现（均为最小改动，未触碰 GEM/PATH/GIT/PLUGIN 既有分支语义）：
+
+- `assets/bridge/server.rb` `op_default_gem_spec`：筛选 `default_gem?` 后 `max_by(&:version)`，返回 name/version/platform/dependencies/required_ruby_version/required_rubygems_version/full_gem_path。
+- `src/celerite/resolution.cr:752-789`：`index_specs_for` 在远端候选为空时才调用 `default_gem_index_spec`（`src/celerite/resolution.cr:756`），缓存于 `@default_gem_specs_cache`（`:266`）；`src/celerite/resolution.cr:1072` 让已锁定的默认 gem 跳过索引查询（避免多余 `Fetching source index`）。
+- `src/celerite/resolver/source.cr:19-24`：`IndexSpec` 增加可选 `default_gem_path`。
+- `src/celerite/cli/commands_install.cr:406-417`：默认 gem 从下载/安装工作集剔除并打印上述 stderr 警告，但保留在 `specs` 中以维持计数；`src/celerite/cli/commands.cr:2057` 读取 `specifications/default/<full>.gemspec` 作为元数据回退，`src/celerite/cli/commands.cr:1940`/`:2102` 的 `default_gem?` 改为按 `default_gem_spec` 的 `full_gem_path` 比对（不再依赖 `GEM_HOME`，否则本机 `GEM_HOME` 会让比较失败），`src/celerite/cli/commands.cr:1882` 未知 gem 文案改为 `Could not find gem '<name>'.`。
+
+测试与差分：
+
+- 新增 `spec/m7_default_gem_spec.cr`（4 例：默认 gem 回退命中、`info` 的 `Default Gem: yes`、约束排除时不回退并带源内列表、未知 gem 文案），与受影响家族成组运行 **128 examples, 0 failures, 0 errors, 0 pending**。
+- 新增夹具 `fixtures/differential/lock-default-gem`（`lock`，`file-contains` 断言 `json (` 与 `DEPENDENCIES`）与 `fixtures/differential/info-default-gem`（`lock` 后 `info json`）；双 profile **各 2 passed 0 failed 0 skipped**。夹具用 `file-contains` 而非 `file-equals`，避免把本机默认 gem 版本（`json 2.18.0`）写死进基线。
+- 反假绿：`git worktree add C:/temp/celerite-pre41 f97d61d` 编译旧二进制后两个夹具 4.0.24 下 **0 passed 2 failed**（旧侧 `Could not find gem 'json' …` 且无锁文件），当前二进制 PASS，证明夹具具区分力。
+- 回归（双 profile 各 6 passed 0 failed）：`install-locked-ruby-incompatible`(6)、`install-fresh`、`install-local`(7)、`lock-noop`、`install-check`、`check-installed-spec-without-gemdir`。
+
+已声明差异/未验证：
+
+- 默认 gem 的锁段沿用声明源的 remote（与参考一致），但参考在 `install` 时的“不可缓存”警告只在“源内确实无同名 gem”时出现；我方按 `default_gem_spec` 版本相等判断，源内存在同名同版本时行为未单独取 oracle。
+- 交互式/多 ABI 组合未覆盖；本机仅 Ruby 4.0.6（47 个 default gem），其他解释器版本下默认 gem 名称/版本组合未实测。
+- 全量 `crystal spec`、全量差分与上游 64 例套件未重跑（沿用既有记录）。
