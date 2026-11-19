@@ -433,13 +433,33 @@ def op_load_gemspec_dir_specs(payload)
 end
 
 # Load the gemspec of a directory source (path gems, git checkouts).
+# payload: dir, glob (optional), name (optional).
+#
+# With `name`, this mirrors `Source::Path#specs` (`source/path.rb:159-179`):
+# the glob is enumerated in full and the spec whose own name matches is
+# returned, with the shallowest gemspec winning. A source that does not
+# expose that name must not fabricate one from a sibling gemspec, so a miss
+# raises instead of falling back to another spec.
 def op_load_gemspec_dir(payload)
   require "rubygems/specification"
   dir = payload["dir"].tr("\\", "/")
   glob = payload["glob"] || SOURCE_DEFAULT_GLOB
-  candidates = Dir.glob(File.join(dir, glob)).sort
-  raise "no gemspec in #{dir}" if candidates.empty?
-  spec = Gem::Specification.load(candidates.first)
+  wanted = payload["name"]
+  if wanted
+    candidates = Dir.glob(File.join(dir, glob)).sort_by { |p| -p.split(File::SEPARATOR).size }
+    spec = nil
+    candidates.each do |file|
+      loaded = Gem::Specification.load(file)
+      next unless loaded && loaded.name == wanted
+      # Later (shallower) entries override deeper ones, matching load_spec_files.
+      spec = loaded
+    end
+    raise "gem '#{wanted}' not found in #{dir}" unless spec
+  else
+    candidates = Dir.glob(File.join(dir, glob)).sort
+    raise "no gemspec in #{dir}" if candidates.empty?
+    spec = Gem::Specification.load(candidates.first)
+  end
   raise "invalid gemspec in #{dir}" unless spec
   {
     "name" => spec.name,

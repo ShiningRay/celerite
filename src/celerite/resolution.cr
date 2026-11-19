@@ -508,11 +508,17 @@ module Celerite
     end
 
     # Loads the spec of a path/git source gem (gemspec in the given dir).
+    #
+    # The bridge enumerates the whole glob and matches on the gemspec's own
+    # name (`source/path.rb:159-179`); a directory that only holds a sibling
+    # gem must not yield a spec for `name`. Reference `resolver/base.rb:113-118`
+    # then reports `Could not find gem '<name>' in <source>`.
     def load_source_gem_spec(name : String, dir : String, glob : String?) : Resolver::IndexSpec?
       # Reference source/path.rb:19 and source/git.rb:15 default the glob to
       # DEFAULT_GLOB; pass it explicitly so the bridge never falls back to a
       # different shallow pattern.
-      info = @bridge.not_nil!.load_gemspec_dir(dir, glob || DEFAULT_GLOB)
+      info = @bridge.not_nil!.load_gemspec_dir(dir, glob || DEFAULT_GLOB, name)
+      return nil unless info.name == name
       version = Gem::Version.new(info.version)
       platform = info.platform == "ruby" ? Gem::Platform::RUBY : Gem::Platform.new(info.platform)
       deps = (info.dependencies || [] of JSON::Any).map do |d|
@@ -1317,13 +1323,18 @@ module Celerite
                       "rubygems repository #{primary_remote} or installed locally"
                     end
       # Reference `Source::Path#to_s` = "source at `<path>`" and
-      # `Resolver#raise_not_found!` prints the dependency's own source. Map only
-      # PATH dependencies here; GIT/PLUGIN attribution stays on the legacy
-      # rubygems wording (declared compatibility gap).
+      # `Source::Plugin#to_s` = "plugin source for <type> with uri <uri>"
+      # (plugin/api/source.rb:293-296); `Resolver#raise_not_found!` prints the
+      # dependency's own source. GIT attribution stays on the legacy rubygems
+      # wording (declared compatibility gap).
       source_descriptions = {} of String => String
       non_gem_sources.each do |name, info|
-        next unless info.type == "Path"
-        source_descriptions[name] = "source at `#{info.remote}`"
+        case info.type
+        when "Path"
+          source_descriptions[name] = "source at `#{info.remote}`"
+        when "Plugin"
+          source_descriptions[name] = "plugin source for #{info.plugin_type} with uri #{info.remote}"
+        end
       end
       source = Resolver::ResolutionSource.new(
         File.basename(@definition.gemfile_path),

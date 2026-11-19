@@ -342,9 +342,10 @@ module Celerite
         request("generate_bin_stubs", {"gem_path" => gem_path, "destination" => destination, "gem_dir" => gem_dir})
       end
 
-      def load_gemspec_dir(dir : String, glob : String? = nil) : GemSpecInfo
+      def load_gemspec_dir(dir : String, glob : String? = nil, name : String? = nil) : GemSpecInfo
         payload = {"dir" => dir} of String => String
         payload["glob"] = glob if glob
+        payload["name"] = name if name
         GemSpecInfo.from_json(request("load_gemspec_dir", payload).to_json)
       end
 
