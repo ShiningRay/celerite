@@ -102,11 +102,20 @@ module Celerite
       end
       return nil if names.empty?
 
-      remote = PluginGemfile.primary_source(gemfile_path) || "https://rubygems.org/"
+      remote = PluginGemfile.primary_source(gemfile_path)
       index_path = PluginCommands.index_path(gemfile_path)
       names.each do |name|
         next if PluginCommands.installed_plugin?(index_path, name)
-        code = plugin_install_remote([name], ["--source", remote], stdout, stderr)
+        # A Gemfile that only declares `source ..., type: :t` has no primary
+        # remote: the reference resolves the inferred plugin against installed
+        # gems only (`Plugin::Installer#install_definition` builds an empty
+        # source list), so a missing `bundler-source-t` is a local GemNotFound
+        # (exit 7), not a network attempt against rubygems.org.
+        if remote
+          code = plugin_install_remote([name], ["--source", remote], stdout, stderr)
+        else
+          code = plugin_install_remote([name], [] of String, stdout, stderr, local_only: true)
+        end
         return code unless code == 0
         # Declared deviation: the success path for custom plugin sources needs
         # the plugin loaded in the bridge process, which is out of scope here.

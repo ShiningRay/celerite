@@ -1638,7 +1638,12 @@ module Celerite
       stderr.puts Commands.word_wrap(message, CLI.terminal_width)
     end
 
-    def self.plugin_install_remote(names : Array(String), rest : Array(String), stdout : IO, stderr : IO) : Int32
+    # `local_only` mirrors `Plugin::Installer#install_definition` for a typed
+    # source without a primary remote: the reference builds its plugin
+    # definition with an empty source list, so resolution only sees installed
+    # gems and a missing inferred plugin raises GemNotFoundError (exit 7,
+    # "Could not find gem 'bundler-source-<type>' in locally installed gems.").
+    def self.plugin_install_remote(names : Array(String), rest : Array(String), stdout : IO, stderr : IO, local_only : Bool = false) : Int32
       version = flag_value(rest, "--version") || ">= 0"
       git_remote = flag_value(rest, "--git")
       source_remote = flag_value(rest, "--source")
@@ -1687,6 +1692,7 @@ module Celerite
         begin
           definition = Definition.build
           resolution = Resolution.new(definition, false, bridge)
+          resolution.local_only = local_only
           resolution.progress = stdout
           stdin_specs = resolution.resolve!
         rescue ex : Error
