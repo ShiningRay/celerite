@@ -13,4 +13,12 @@ class MPath < Bundler::Plugin::API
   def fetch_gemspec_files
     @spec_files ||= Dir["#{path}/{,*,*/*}.gemspec"]
   end
+
+  # `check` calls `source_list.local_only!`; a plugin that does not implement
+  # the hook raises through `Plugin::API#method_missing` (source.rb API).
+  def local_only!
+  end
+
+  def remote!
+  end
 end
