@@ -1,0 +1,13 @@
+GEM
+  remote: file:///@INDEX_DIR@/
+  specs:
+    json_pure (2.8.1)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  json_pure
+
+BUNDLED WITH
+  @BUNDLER_VERSION@

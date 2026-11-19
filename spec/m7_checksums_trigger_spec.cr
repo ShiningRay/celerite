@@ -59,6 +59,24 @@ private def checksums_lock(url : String) : String
   LOCK
 end
 
+private def no_checksums_lock(url : String) : String
+  <<-LOCK
+  GEM
+    remote: #{url}/
+    specs:
+      json_pure (2.8.1)
+
+  PLATFORMS
+    x64-mingw-ucrt
+
+  DEPENDENCIES
+    json_pure
+
+  BUNDLED WITH
+     4.0.24
+  LOCK
+end
+
 private def with_bundle_path(path : String, & : ->) : Nil
   previous = ENV["BUNDLE_PATH"]?
   ENV["BUNDLE_PATH"] = path
@@ -138,6 +156,58 @@ describe "M7 empty CHECKSUMS entries" do
         code.should eq(0)
         stdout.should_not contain("Fetching gem metadata")
         File.read(File.join(dir, "Gemfile.lock")).should contain("  json_pure (2.8.1)\n")
+      end
+    end
+  end
+
+  it "computes checksums for a file source with --add-checksums" do
+    pending! "ruby not available" unless ruby_available?
+    url = file_source_url(File.expand_path("../fixtures/gem-index", __DIR__))
+    preset = File.expand_path("../fixtures/differential/check-no-lockfile-installed/bundle-preset", __DIR__)
+    with_project({
+      "Gemfile"      => %(source "#{url}"\n\ngem "json_pure"\n),
+      "Gemfile.lock" => no_checksums_lock(url),
+    }) do |dir|
+      bundle = File.join(dir, "bundle")
+      FileUtils.cp_r(preset, bundle)
+      with_bundle_path(bundle) do
+        code, stdout, _stderr = run_cli(["lock", "--add-checksums"])
+        code.should eq(0)
+        stdout.should contain("Fetching source index from #{url}/")
+        stdout.should contain("Fetching json_pure 2.8.1")
+        lock = File.read(File.join(dir, "Gemfile.lock"))
+        lock.should contain(json_pure_sha)
+        lock.should contain("bundler (4.0.24) sha256=")
+      end
+    end
+  end
+
+  it "rejects an empty CHECKSUMS entry in frozen mode" do
+    pending! "ruby not available" unless ruby_available?
+    url = file_source_url(File.expand_path("../fixtures/gem-index", __DIR__))
+    with_project({
+      "Gemfile"      => %(source "#{url}"\n\ngem "json_pure"\n),
+      "Gemfile.lock" => checksums_lock(url),
+    }) do |dir|
+      previous = ENV["BUNDLE_FROZEN"]?
+      ENV["BUNDLE_FROZEN"] = "true"
+      begin
+        code, _stdout, stderr = run_cli(["install"])
+        code.should eq(16)
+        stderr.chomp.should eq(<<-ERR.chomp)
+        Your lockfile has an empty CHECKSUMS entry for "json_pure", but can't be updated
+        because frozen mode is set
+
+        Run `bundle install` elsewhere and add the updated Gemfile.lock to version
+        control.
+        ERR
+        File.read(File.join(dir, "Gemfile.lock")).should eq(checksums_lock(url))
+      ensure
+        if previous
+          ENV["BUNDLE_FROZEN"] = previous
+        else
+          ENV.delete("BUNDLE_FROZEN")
+        end
       end
     end
   end
