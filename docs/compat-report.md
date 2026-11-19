@@ -4711,3 +4711,35 @@ oracle（4.0.24 与 2.7.2 逐字相同；预置态 = `bundle-preset/ruby/4.0.0/s
 - 未 oracle `info --version` 在目录缺失时的行为（参考不检查目录，直接打印版本；本次未改）。
 - 未覆盖“已安装目录存在时的 info”差分（既有 spec 覆盖，未纳入差分）。
 - 全量 `crystal spec` / 全量差分未重跑；非 Windows/非 Low-IL 宿主未验证。
+
+## 2026-11-19（M7(3) task-38：锁内 ruby/rubygems 约束的解析证据）
+
+结论：参考在解析阶段同时过滤 `required_ruby_version` 与 `required_rubygems_version`；锁内不兼容版本会被排除并重解，未观察到本轮假设的 install 期拒绝路径。任务书 (d) 的“install 期消息”未复现；参考表现为 SolveFailure（exit 6）或重解。
+
+oracle（4.0.24 与 2.7.2 语义一致；`file:///C:/…` 完整 legacy index，预置锁）：
+
+| 场景 | 参考 exit | 参考结果 | celerite |
+|---|---|---|---|
+| 锁 `rc_gem (1.0.0)`（`required_ruby_version >= 99.0`），索引另有 0.9.0 | 0 | `Resolving dependencies...`，重解到 `rc_gem (0.9.0)`，锁 0.9.0 | 相同（逐字锁） |
+| 锁 `rg_gem (1.0.0)`（`required_rubygems_version >= 99.0`），索引另有 0.9.0 | 0 | 重解到 `rg_gem (0.9.0)`，stdout `Fetching rg_gem 0.9.0 (was 1.0.0)` | 相同 |
+| 锁 `only_future (1.0.0)`（ruby >= 99.0） | 6 | `Because every version of only_future depends on Ruby >= 99.0 … version solving has failed.` | 相同 |
+| 锁 `only_rg (1.0.0)`（rubygems >= 99.0） | 6 | `Because every version of only_rg depends on RubyGems >= 99.0 …` | 相同 |
+| 无锁、双版本 `rc_gem`/`rg_gem` | 0 | 选 0.9.0；`file://` 场景参考 stdout 出现两次 `Resolving dependencies...` | 一次（未纳入夹具） |
+
+参考锚点：`installer.rb:234-245`（`ensure_specs_are_compatible!` 的 install 期检查）、`definition.rb:190-203`（`setup_domain!` 仅在 `install_needed?` 等条件为真时才进入该检查）；本轮构造下参考在解析阶段已排除不兼容版本，故 install 期检查不可达。`source/rubygems.rb` 的候选过滤由解析器完成；现有 celerite 复用排除（`resolution.cr:801` `resolve!` + `incompatible_locked_spec_names`）与之结果一致。
+
+实现：**无产品改动**。非canonical `file://C:/…` 首轮出现的 celerite exit 5 是索引定位伪差；改用 `file:///C:/…` 后旧二进制（`beb46b8`）与新二进制在四个锁内场景均与参考一致，临时 `resolve!` 改动已回退。
+
+测试与证据：
+
+- 新增 `fixtures/gem-index-ruby-versions/`（30 文件，legacy full index：rc_gem 0.9.0/1.0.0、rg_gem 0.9.0/1.0.0、only_rg 1.0.0 等）；`script/differential` 新增 `ruby_versions_index_dir` 与 `@RUBY_VERSIONS_INDEX_DIR@` 替换（7 处 sed + file-equals）。
+- 新夹具 `install-ruby-constraint-locked-resolve`、`install-rubygems-constraint-locked-resolve`（`file-equals` 双 profile 锁）、`install-rubygems-constraint-solve-failure`（exit 6、锁不变、`stderr-contains`）。双 profile 各 **3 passed / 0 failed / 0 skipped**。
+- 回归双 profile 各 **6 passed / 0 failed / 0 skipped**：`install-locked-ruby-incompatible`(6)、`install-fresh`、`install-local`(7)、`lock-noop`、`install-check`、`check-installed-spec-without-gemdir`。
+- 旧二进制（`C:/temp/celerite-pre38`，`beb46b8`）跑新夹具同样 3/0/0 ⇒ 本轮无修复证明，新夹具定位为**回归网**。
+- 成组 spec：`m7_ruby_constraints_spec`、`m7_resolver_ruby_constraints_spec`、`m7_ruby_runtime_enforcement_spec`、`m7_install_ruby_compat_spec`、`ruby_version_spec` 共 **40 examples / 0 failures / 0 errors / 0 pending**。
+
+已声明差异 / 未验证：
+
+- 无锁 `file://` 双版本场景参考打印两次 `Resolving dependencies...`，celerite 一次；未纳入夹具。
+- install 期 `ensure_specs_are_compatible!` 在本轮构造下不可达，未构造出参考 exit 5；该路径仍仅有 unit 级覆盖。
+- 多 ABI/多 Ruby 宿主矩阵未验证（本机仅 Ruby 4.0.6）；全量 spec/全量差分未重跑。
