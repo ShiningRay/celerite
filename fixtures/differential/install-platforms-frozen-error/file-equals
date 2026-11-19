@@ -1,0 +1,14 @@
+Gemfile.lock
+GEM
+  remote: file:///@LEGACY_INDEX_DIR@/
+  specs:
+    json_pure (2.8.1)
+
+PLATFORMS
+  java
+
+DEPENDENCIES
+  json_pure
+
+BUNDLED WITH
+  @BUNDLER_VERSION@

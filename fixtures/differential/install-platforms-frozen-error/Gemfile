@@ -1,0 +1,3 @@
+source "file:///@LEGACY_INDEX_DIR@"
+
+gem "json_pure"

@@ -196,6 +196,7 @@ plugin_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-plugin" 2>/dev/nul
 ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-constraints" 2>/dev/null || echo "$repo_root/fixtures/gem-index-ruby-constraints")"
   locked_ruby_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-locked-ruby" 2>/dev/null || echo "$repo_root/fixtures/gem-index-locked-ruby")"
   plugin_source_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-plugin-source" 2>/dev/null || echo "$repo_root/fixtures/gem-index-plugin-source")"
+  legacy_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-legacy" 2>/dev/null || echo "$repo_root/fixtures/gem-index-legacy")"
   index_url="file://$index_dir"
   # Copy Gemfile/Gemfile.lock with placeholder substitution but keep the
   # fixture's line-ending style: sed re-emits lines with plain LF, so when the
@@ -204,7 +205,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
   copy_fixture_text() {
     local src="$1" dst="$2" tmp
     tmp="$(dirname "$dst")/.celerite-copy.$$"
-    sed -e "s|@INDEX_DIR@|$index_dir|" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|" -e "s|@PLUGIN_INDEX_DIR@|$plugin_index_dir|" -e "s|@LOCKED_RUBY_INDEX_DIR@|$locked_ruby_index_dir|" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|" -e "s|@BUNDLER_VERSION@|$bundler_version|" "$src" > "$tmp"
+    sed -e "s|@INDEX_DIR@|$index_dir|" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|" -e "s|@PLUGIN_INDEX_DIR@|$plugin_index_dir|" -e "s|@LOCKED_RUBY_INDEX_DIR@|$locked_ruby_index_dir|" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|" -e "s|@LEGACY_INDEX_DIR@|$legacy_index_dir|" -e "s|@BUNDLER_VERSION@|$bundler_version|" "$src" > "$tmp"
     # MSYS grep auto-strips CRLF before matching, so `grep -q $'\r'` cannot
     # see it; inspect the hex dump instead (0d0a = CRLF byte pair).
     if od -An -tx1 "$src" | tr -d ' \n' | grep -q '0d0a'; then
@@ -233,7 +234,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
     for side in ref cel; do
       sandbox="$ref_sandbox"; [ "$side" = "cel" ] && sandbox="$cel_sandbox"
       while IFS= read -r ef; do
-        sed -i -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@PLUGIN_INDEX_DIR@|$plugin_index_dir|g" -e "s|@LOCKED_RUBY_INDEX_DIR@|$locked_ruby_index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g" "$ef"
+        sed -i -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@PLUGIN_INDEX_DIR@|$plugin_index_dir|g" -e "s|@LOCKED_RUBY_INDEX_DIR@|$locked_ruby_index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@LEGACY_INDEX_DIR@|$legacy_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g" "$ef"
       done < <(find "$sandbox/project" -type f \( -name "*.rb" -o -name "*.txt" -o -name "*.gemfile" \) 2>/dev/null)
     done
   fi
@@ -373,7 +374,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
   : > "$work/ref.out"; : > "$work/ref.err"; ref_code=0; ref_n=0
   while IFS= read -r cmd <&3; do
     [ -z "$cmd" ] && continue
-    cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@PLUGIN_INDEX_DIR@|$plugin_index_dir|g" -e "s|@LOCKED_RUBY_INDEX_DIR@|$locked_ruby_index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+    cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@PLUGIN_INDEX_DIR@|$plugin_index_dir|g" -e "s|@LOCKED_RUBY_INDEX_DIR@|$locked_ruby_index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@LEGACY_INDEX_DIR@|$legacy_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
     ref_n=$((ref_n + 1))
     (
       cd "$ref_sandbox/project" || exit 99
@@ -396,7 +397,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
   : > "$work/cel.out"; : > "$work/cel.err"; cel_code=0; cel_n=0
   while IFS= read -r cmd <&4; do
     [ -z "$cmd" ] && continue
-    cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@PLUGIN_INDEX_DIR@|$plugin_index_dir|g" -e "s|@LOCKED_RUBY_INDEX_DIR@|$locked_ruby_index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+    cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@PLUGIN_INDEX_DIR@|$plugin_index_dir|g" -e "s|@LOCKED_RUBY_INDEX_DIR@|$locked_ruby_index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@LEGACY_INDEX_DIR@|$legacy_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
     cel_n=$((cel_n + 1))
     (
       cd "$cel_sandbox/project" || exit 99
@@ -458,7 +459,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
   local -a stderr_needles=()
   if [ -f "$fixture_dir/stderr-contains" ]; then
     while IFS= read -r needle; do
-      needle="$(printf '%s' "$needle" | tr -d '\r' | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@PLUGIN_INDEX_DIR@|$plugin_index_dir|g" -e "s|@LOCKED_RUBY_INDEX_DIR@|$locked_ruby_index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+      needle="$(printf '%s' "$needle" | tr -d '\r' | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@PLUGIN_INDEX_DIR@|$plugin_index_dir|g" -e "s|@LOCKED_RUBY_INDEX_DIR@|$locked_ruby_index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@LEGACY_INDEX_DIR@|$legacy_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
       [ -z "$needle" ] && continue
       stderr_needles+=("$needle")
     done < "$fixture_dir/stderr-contains"
@@ -521,7 +522,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
     local rel expected_file side actual_file
     rel="$(head -1 "$equals_marker" | tr -d '\r')"
     expected_file="$work/file-equals.expected"
-    tail -n +2 "$equals_marker" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g" > "$expected_file"
+    tail -n +2 "$equals_marker" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@LEGACY_INDEX_DIR@|$legacy_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g" > "$expected_file"
     for side in ref cel; do
       if [ "$side" = "ref" ]; then actual_file="$ref_sandbox/project/$rel"; else actual_file="$cel_sandbox/project/$rel"; fi
       if ! diff -q "$expected_file" "$actual_file" >/dev/null 2>&1; then
@@ -536,7 +537,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
   if [ -f "$fixture_dir/file-contains" ]; then
     while IFS=$'\t' read -r rel needle; do
       [ -z "$rel" ] && continue
-      needle="$(printf '%s' "$needle" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@PLUGIN_INDEX_DIR@|$plugin_index_dir|g" -e "s|@LOCKED_RUBY_INDEX_DIR@|$locked_ruby_index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+      needle="$(printf '%s' "$needle" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@PLUGIN_INDEX_DIR@|$plugin_index_dir|g" -e "s|@LOCKED_RUBY_INDEX_DIR@|$locked_ruby_index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@LEGACY_INDEX_DIR@|$legacy_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
       if ! grep -Fq -- "$needle" "$ref_sandbox/project/$rel" 2>/dev/null || \
          ! grep -Fq -- "$needle" "$cel_sandbox/project/$rel" 2>/dev/null; then
         ok=0; detail+="  file-contains differs ($rel): needle=$needle"$'\n'
