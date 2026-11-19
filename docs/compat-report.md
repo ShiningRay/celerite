@@ -4833,3 +4833,41 @@ oracle（4.0.24 与 2.7.2 语义一致；`file:///C:/…` 完整 legacy index，
 - 默认 gem 的锁段沿用声明源的 remote（与参考一致），但参考在 `install` 时的“不可缓存”警告只在“源内确实无同名 gem”时出现；我方按 `default_gem_spec` 版本相等判断，源内存在同名同版本时行为未单独取 oracle。
 - 交互式/多 ABI 组合未覆盖；本机仅 Ruby 4.0.6（47 个 default gem），其他解释器版本下默认 gem 名称/版本组合未实测。
 - 全量 `crystal spec`、全量差分与上游 64 例套件未重跑（沿用既有记录）。
+
+## 2026-11-19（M7(8) task-42：`install`/`update` 收尾的 funding 汇总）
+
+范围：L156 `fund` 的真实 metadata 面——`install`/`update` 结束时打印参考 `cli/common.rb:34-47` 的 funding 汇总；只统计 Gemfile 直接依赖、按 requested groups 过滤；0 个命中或 `ignore_funding_requests` 置真时静默。参考调用点 `cli/install.rb:74`、`cli/update.rb:123`。
+
+参考 oracle（隔离 HOME/BUNDLE_PATH；funded PATH gem `alpha`/`beta` + `json_pure` 来自 `fixtures/gem-index`；4.0.24 与 2.7.2 逐字一致）：
+
+| 场景 | exit | 收尾输出 |
+| --- | --- | --- |
+| `install`，1 个 funded 直接依赖 | 0 | `1 installed gem you directly depend on is looking for funding.` + `  Run \`bundle fund\` for details` |
+| `install`，2 个 funded 直接依赖 | 0 | `2 installed gems you directly depend on are looking for funding.` + 同上第二行 |
+| `install`，无 funded 依赖 | 0 | 不打印 |
+| `.bundle/config` 设 `BUNDLE_IGNORE_FUNDING_REQUESTS: "true"` | 0 | 不打印 |
+| `install` 后 `update --all` | 0 | `Bundle updated!` 之后打印 singular 文案 |
+| `--quiet` | 0 | 不打印（stdout 被重定向到内存） |
+
+位置：`install` 在 `Bundle complete!` → bundle 路径行 → 插件 post-install message → cooldown 之后；`update` 在 `Bundle updated!`（及 cooldown）之后。
+
+实现：
+
+- `src/celerite/cli/commands_surface.cr:1205-1229` 新增 `Commands.print_fund_summary`：`ignore_funding_requests` 的 `Array(String)` 值非空即视为真（`Config.to_bool` 不接受数组）；用 `fund_requested_groups` 取 requested groups；对每个直接依赖在锁里找 spec，`read_funding_uri` 非空计数；0 则返回；按 1/≥2 选 `is`/`are`，打印两行。
+- `src/celerite/cli/commands_install.cr:765-770`：`print_cooldown_summary` 之后、`if summary` 内调用，传 `resolution.generated_lockfile`（锁文件在 summary 块之后才落盘）。
+- `src/celerite/cli/commands_surface.cr:232-236`：`update` 在 `Bundle updated!`/cooldown 之后同样调用。
+
+测试与差分：
+
+- 新增 `spec/m7_funding_summary_spec.cr`（5 例：singular、plural、ignored、无命中、`update --all`），**5 examples, 0 failures, 0 errors, 0 pending**；与 `m7_fund_spec.cr`、`m7_fund_group_spec.cr` 成组 **17 examples, 0 failures**。
+- 新增夹具 `install-fund-summary`、`install-fund-summary-two`、`install-fund-summary-ignored`、`update-fund-summary`；双 profile 各 **4 passed 0 failed 0 skipped**。
+- 反假绿：`git worktree add C:/temp/celerite-pre42 52b8f15` 旧二进制在 4.0.24 下三个含汇总夹具 **0 passed 3 failed**（缺两行汇总）；`install-fund-summary-ignored` 是回归夹具，旧侧同样 PASS，不参与区分力计数。
+- 回归（双 profile 各 9 passed 0 failed）：`install-fresh`、`install-rerun`、`install-check`、`install-local`(7)、`lock-noop`、`install-platforms-add-local`、`plugin-source-install`、`install-deployment-empty-checksums`(16)、`fund-groups`。
+
+门禁：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅 2 条既有 `Deprecated File.executable?` 警告）；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0；`git diff --check`、`git diff --cached --check`、`git diff 52b8f15..HEAD --check` EXIT 0。
+
+已声明差异/未验证：
+
+- 参考的 auto-clean 未实现，故“汇总相对 auto-clean 的位置”无法逐字对齐，标未验证。
+- `--without` 收窄时的人数未取到干净 oracle（探针里 path gem 被误加入索引，作废）；本实现按 requested groups 过滤，该路径未单测。
+- 全量 `crystal spec`、全量差分与上游 64 例套件未重跑。
