@@ -4973,3 +4973,49 @@ spec 家族 `m7_git_source_reuse_spec`、`m7_source_lock_options_spec`、`m7_loc
 - 桥枚举是新增 op，只服务本判据；插件 PATH/GEMSPEC 源未走该路径。
 - 2.7.2 的 D2 走 `check` 的 missing-gem 分支，依据单次 oracle；未覆盖 `install` 在 2.7.2 下的同场景。
 - 全量 `crystal spec`、全量差分与上游 64 例套件未重跑。
+
+## 2026-11-20（M7(6) task-45：before-install-all / after-install-all 插件钩子）
+
+### 参考行为（源码锚点）
+
+- `bundler/lib/bundler/installer.rb:12-20`：类方法 `install(root, definition, options)` 在 `installer.run` 之前触发 `Plugin.hook(GEM_BEFORE_INSTALL_ALL, definition.dependencies)`，之后触发 `GEM_AFTER_INSTALL_ALL`；`cli/update.rb:81` 复用同一入口，因此 `update` 同样两侧各触发一次。
+- `bundler/lib/bundler/plugin/events.rb:45-58`：事件名 `before-install-all` / `after-install-all`（另有每 spec 的 `after-install`）。
+- `bundler/lib/bundler/plugin.rb:228-240`：`Plugin.hook(event, *args)` 在 `Bundler.settings[:plugins]` 为假时直接返回；否则加载钩子插件并逐个调用块，参数即 `definition.dependencies`（`Array`，元素 `Bundler::Dependency`）。
+
+### oracle（4.0.24 与 2.7.2 一致）
+
+| 场景 | 观察 |
+| --- | --- |
+| 输出顺序（3 个 path gem） | `BEFORE_ALL …` → `Resolving dependencies...` → 安装动作 → `AFTER_ALL …` → `Bundle complete! …` → `Bundled gems are installed into …` |
+| 参数形态 | 外层 `Array`，元素 `Bundler::Dependency`；`names` 按 Gemfile 声明顺序（`alpha,beta,gamma`）；`groups` 可读（`default`） |
+| 依赖数 3 / 1 / 0 | 三个场景都触发；0 依赖时 `names=` 为空，stderr 另有 `The Gemfile specifies no dependencies` |
+| 无变化重跑 `install` | 仍然两侧各触发一次 |
+| `BUNDLE_PLUGINS=false` | 两侧都不出现任何输出 |
+| 钩子 stdout | 出现在 bundle 自身 stdout 中（与 `Resolving dependencies...` 交错在同一流），故参考用 `Bundler.ui.info` 之外的 `puts` 也能观察到 |
+
+### 实现
+
+- `src/celerite/plugin_hooks.cr:20-24`：`EVENTS` 扩为 `["after-install", "before-install-all", "after-install-all"]`；`HookResult` 新增 `output`（钩子块写入的 stdout）；`PluginHooks.call` 新增 `gemfile_path` 参数；新增 `PluginHooks.run(bridge, definition, config, event, stdout, stderr)` 统一处理“未启用 / 缺插件告警 / 加载失败 / 钩子失败”并返回退出码。
+- `src/celerite/bridge/client.cr`：`exec_plugin_hook` 增 `gemfile_path` 载荷字段。
+- `assets/bridge/server.rb`：`op_exec_plugin_hook` 对 `*-all` 事件用 `Bundler::Dsl.evaluate(gemfile, lockfile, {})` 取 `builder.dependencies` 作为参数（Gemfile 缺失/解析失败时退化为空数组）；块执行期间把 `$stdout` 换成 `StringIO`，结束后在 `ensure` 中恢复并把捕获内容随响应返回，避免插件 `puts` 写进 RPC 管道（早期版本会触发 `response id mismatch`）。
+- `src/celerite/cli/commands_install.cr`：解析前调用 `before-install-all`（失败即返回退出码），全部 spec 的 `after-install` 循环后、汇总输出前调用 `after-install-all`；每 spec 钩子的捕获输出在循环内回放到 stdout。
+- `src/celerite/cli/commands_surface.cr`（`update` 路径）：同样在解析前与 `Bundle updated!` 之前各调用一次。
+
+### 测试与差分
+
+- 新增差分夹具 `fixtures/differential/plugin-hook-before-after-all/`：`plugin install hook_all_plugin --path ./hook_all_plugin` 后执行 `install`，钩子打印 `BEFORE_ALL`/`AFTER_ALL` 及 class/names/groups。双 profile PASS：4.0.24 `PASS plugin-hook-before-after-all (exit=0)`，2.7.2 同。
+- 新增 `spec/m7_plugin_hook_all_events_spec.cr`（4 examples）：事件名精确定义；顺序断言（`BEFORE_ALL` < `Resolving dependencies...` < `AFTER_ALL` < `Bundle complete!`，names `alpha,beta`）；重跑再触发一次；`BUNDLE_PLUGINS=false` 静默。
+- `spec/plugin_hooks_spec.cr:97-101` 的事件名固定断言同步更新为三事件列表（原断言只列 `after-install`，是 task-11 时期的历史快照）。
+- 回归差分 10 项双 profile 全 PASS：`plugin-install`(1)、`plugin-install-hooks`(0)、`plugin-hook-per-gem`(0)、`plugin-uninstall`(0)、`plugin-uninstall-args`(0)、`plugin-source-typed`(0)、`plugin-source-install`(0)、`install-fresh`(0)、`install-rerun`(0)、`install-fund-summary`(0)（4.0.24 10/0、2.7.2 10/0）。
+- spec 家族 `plugin_hooks_spec`、`m7_plugin_hook_per_gem_spec`、`m7_plugin_hooks_registration_spec`、`m7_plugin_hook_failure_spec`、`m7_gemfile_plugins_spec`、`m7_plugin_hook_all_events_spec`：30 examples / 0 failures / 0 errors / 0 pending（隔离 `HOME`，避免宿主 `~/.bundle/config` 的 `BUNDLE_PATH: vendor/x`）。
+- 反向对照：`C:/temp/celerite-pre45`（`e4354f3`）旧二进制在本夹具上双 profile 均 FAIL，差异即缺失的 `BEFORE_ALL`/`AFTER_ALL` 两行（`3d2`/`5d3`）。
+
+### 门禁（全部 EXIT 0）
+
+`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`crystal build src/cli.cr -o bin/celerite.exe`、`git diff --check`、`git diff --cached --check`、`git diff e4354f3..HEAD --check`。
+
+### 已声明差异 / 未验证
+
+- 桥对 `*-all` 事件的参数用 Ruby 侧重新 `evaluate` Gemfile 得到，而不是复用 CLI 已算好的 `definition.dependencies`；两者在正常 Gemfile 下一致（names/groups 已 oracle 比对），但 Gemfile 解析失败时参考会先报错退出、我方退化为空数组，该路径未取 oracle。
+- `after-install-all` 在我方位于 `Bundle complete!` 之前、`Bundled gems are installed into …` 之前，与 oracle 一致；但参考还包含 auto-clean 与 funding 汇总，本轮未覆盖其与 auto-clean 的相对位置。
+- 仅 4.0.24 与 2.7.2 两个 profile；全量 `crystal spec`、全量差分与上游 64 例套件未重跑。
