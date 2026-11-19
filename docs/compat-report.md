@@ -4367,3 +4367,35 @@ installed locally.
 **门禁**：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告）；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0；`git diff --check`（暂存后）EXIT 0；定向 spec 1 example / 0 failures / 0 errors / 0 pending。
 
 **已声明差异/未验证**：安装路径（S3）未实现——`install`/`plugin install` 对自定义 source 仍按既有行为失败；`build_locked_index` 尚不接受 `PLUGIN SOURCE`（S2），因此锁存在时复用未验证；插件 source 的 `checksum` 与 `options_to_lock` 非空形态仅按 `{}` 实测；未跑全量 spec 与全量差分。checkbox 保持 `[ ]`。
+
+## 2026-11-19（M7(6) task-29：自定义 source 的 S2——锁定 `PLUGIN SOURCE` 复用与缺插件语义）
+
+**范围**：`Gemfile.lock` 已含 `PLUGIN SOURCE` 时的复用路径（`build_locked_index` 接受该段、经插件 `specs` 物化，不把插件源当普通 gem 重解析、不丢段），以及插件未安装时的参考错误语义。安装成功路径仍属 S3，不在本轮。
+
+**oracle（本机 Ruby 4.0.6；`ruby -S bundle _<ver>_ <cmd>`，隔离 HOME/BUNDLE_PATH，锁取自 4.0.24/2.7.2 各自的 `lock` 产物）**
+
+| 场景 | 4.0.24 | 2.7.2 |
+| --- | --- | --- |
+| 已装插件，`lock` | exit 0；stdout 仅 `Writing lockfile to …`，无 `Resolving` | 同左 |
+| 已装插件，`check` | exit 0；`The Gemfile's dependencies are satisfied` | 同左 |
+| 已装插件，`install` | exit 7；stdout `Fetching source index from file:///…/gem-index/`；stderr `Could not find gem 'bundler-source-mpath' in rubygems repository … or installed locally.` | 同左 |
+| 缺插件，`lock` / `check` | exit 15；stderr `[!] There was an error parsing \`Gemfile\`: No plugin sources available for mpath. Bundler cannot continue.` | 同左 |
+| 缺插件，`install` | exit 7；`Fetching source index …` + 同一缺少 `bundler-source-mpath` 文案 | 同左 |
+
+**参考锚点**：4.0.24 `.upstream-specs/v4.0.24/bundler/lib/bundler/plugin/api/source.rb:41`（`uri/options/name`）、`:73`（`options_to_lock`）、`:136`（`specs`）、`:283-295`（`to_lock`，含 `remote`/`type`/options/specs）；`bundler/plugin.rb:202-211`（锁内 type 未注册时返回 `UnloadedSource`）；`bundler/plugin/unloaded_source.rb` 继承 `API::Source`，默认 `fetch_gemspec_files` 为空 → `specs` 为空但锁仍可解析；求值阶段 `dsl.rb:130-139` / `source_list.rb:65`。
+
+**实现**：
+- `src/celerite/resolution.cr` `materialize_locked`：按锁段 `source.type` 区分，`PLUGIN SOURCE` 的 spec 标 `"PLUGIN"` 并携带由 `plugin_source_info` 复原的 `SourceInfo`（`plugin_type` + `lock_options`）；`build_locked_index` 增加 `PLUGIN SOURCE` 分支——按锁段构造 source info，调用桥 `plugin_source_specs` 取该名字的 specs；桥报 `BridgeError` 时跳过该条（等价 `UnloadedSource` 空 specs）。
+- `src/celerite/cli/commands_surface.cr` `installed_gem_dir`：`PLUGIN SOURCE` 的 `remote` 展开为项目内绝对路径，`check`/`list` 视插件物化出的 spec 为可用。
+- `src/celerite/cli/commands.cr` `run_check`：有锁时先 `evaluate_gemfile`（`BridgeError` 状态 4/15 原样上抛，其余忽略），复刻参考在 `Bundler.definition` 阶段先求值 Gemfile 的顺序（缺插件 exit 15 优先于锁内已装判定）。
+- `src/celerite/resolution.cr` checksum 段：2.x 过滤 `bundler` 自身条目（参考 2.7.2 不写该行）。
+- `src/celerite/cli/commands.cr` 无操作 `lock` 重写锁文本：2.x 移除 `bundler (` 行（4.x 锁在 2.x profile 下重写时不保留该行）。
+
+**测试/夹具**：
+- `spec/m7_plugin_source_typed_spec.cr` 扩到 3 例：S1 解析；锁定复用（exit 0、无 `Resolving`/`Fetching`、`PLUGIN SOURCE` 与 `bundler (4.0.24) sha256=` 保留）；缺插件（exit 15、`No plugin sources available for mpath`、锁不变）。3 examples / 0 failures / 0 errors / 0 pending。
+- 新增 `fixtures/differential/plugin-source-locked/`（预置带 `PLUGIN SOURCE` 的锁 + `extra/.bundle/plugin/**`，`command`=`lock`，`file-equals-4.0.24`/`file-equals-2.7.2` 逐字断言）与 `plugin-source-locked-missing/`（同锁、无 `extra/.bundle`，期望参考 exit 15）。
+- 差分：4.0.24 `plugin-source-locked` PASS exit 0、`plugin-source-locked-missing` PASS exit 15（2 passed / 0 failed / 0 skipped）；2.7.2 同两项 2/0/0。回归 `plugin-source-typed`/`plugin-install`/`plugin-uninstall`/`install-fresh`/`install-local`/`install-check`/`lock-noop` 双 profile 均 7 passed / 0 failed / 0 skipped。
+
+**门禁**：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告）；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0；暂存后 `git diff --cached --check` EXIT 0（无输出）。
+
+**已声明差异/未验证**：安装路径（S3）的参考行为（exit 7，缺 `bundler-source-mpath`）我方仍 exit 0 完成安装——属 `@inferred_plugins` 预装 pass，`commands_install.cr:111-116` 明确不在本轮；`check` 在锁定插件 source 上我方仍会打印 `Resolving dependencies...`（参考无），故夹具只用 `lock`；缺插件的 `install` 未加夹具（仅 oracle 记录）；插件 source 的 `checksum`/非空 `options_to_lock` 未覆盖；未跑全量 spec 与全量差分。checkbox 保持 `[ ]`。
