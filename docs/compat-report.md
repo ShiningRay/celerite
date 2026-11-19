@@ -4871,3 +4871,53 @@ oracle（4.0.24 与 2.7.2 语义一致；`file:///C:/…` 完整 legacy index，
 - 参考的 auto-clean 未实现，故“汇总相对 auto-clean 的位置”无法逐字对齐，标未验证。
 - `--without` 收窄时的人数未取到干净 oracle（探针里 path gem 被误加入索引，作废）；本实现按 requested groups 过滤，该路径未单测。
 - 全量 `crystal spec`、全量差分与上游 64 例套件未重跑。
+
+## 2026-11-20（M7(?) task-44a：`check` 改写的非 gem 段保真与空 GEM remote）
+
+结论：`check` 在只补本机平台时会把锁文件整体重写；我方此前在重写路径上把所有段压成 `GEM`，并把 PATH 段包进 `GEM / remote: https://rubygems.org/`，丢失 `PATH`/`glob` 与 pts。参考则从**锁里的 source 对象**重新序列化（`source/path.rb:41-43,45-50`、`source/git.rb:39-48`、`lockfile_generator.rb:31-42`），因此 `PATH`/`GIT`/`PLUGIN SOURCE` 段逐字保留；且未声明任何 `source` 行时 GEM 段不带 `remote:`（`source/rubygems.rb:114-120`）。本轮改 `materialize_locked` 重建段信息、GEM 段空 remote 形态，以及 CHECKSUMS 段的保留条件。
+
+### oracle 表（4.0.24 与 2.7.2 均为实测，两侧逐字节比对）
+
+| 用例 | 命令 | 参考 | 修复前我方 | 修复后我方 |
+| --- | --- | --- | --- | --- |
+| (i) PATH + 非默认 glob，锁被改成只有 `java`，再 `check` | `check` | exit 0；锁保留 `PATH / remote: vendor/d / glob: gems/*/*.gemspec / specs: dgem (2.0.0)`，PLATFORMS 变 `java` + `x64-mingw-ucrt`，`CHECKSUMS` 段保留（4.0.24 含 bundler 与 dgem 两行，2.7.2 只有 dgem） | 锁变成 `GEM / remote: https://rubygems.org/ / specs: dgem (2.0.0)`，PATH 与 glob 丢失；4.0.24 还丢掉整段 `CHECKSUMS` | 与参考逐字节一致（两 profile 均 IDENTICAL） |
+| (ii) 只有 path gem、Gemfile 无 `source` 行 | `lock` | exit 0；`GEM` 段无 `remote:` 行（`GEM\n  specs:\n`） | `GEM / remote: https://rubygems.org/ / specs:` | 与参考逐字节一致 |
+| (iii) 声明 `source "https://rubygems.org"` + path gem | `lock --local` | `GEM / remote: https://rubygems.org/ / specs:`（空段保留 remote） | 同参考 | 同参考（回归护栏，未变） |
+
+(i) 的 stdout 两侧都是 `Resolving dependencies...` + `The Gemfile's dependencies are satisfied`，stderr 空。
+
+### 代码锚点与改动
+
+- `src/celerite/resolution.cr` `materialize_locked`（原先把非 PLUGIN 段一律 `"GEM"`、`source_info=nil`）：改为按锁段类型重建 `source_info`，见新 `locked_source_type`（`PATH`/`GIT`/`PLUGIN`/`GEM`）与 `locked_source_info`（PATH 取 `remote` + `glob`（缺省 `Resolution::DEFAULT_GLOB`）；GIT 取 `remote`/`revision`/`ref`/`branch`/`tag`/`submodules`/`glob`；`PLUGIN SOURCE` 仍走 `plugin_source_info`）。对应参考 `Source::Path#from_lock`（`source/path.rb:41-43`）与 `LockfileGenerator#add_sources`（`lockfile_generator.rb:31-42`）。
+- `src/celerite/resolution.cr` `declared_rubygem_remotes`：删掉 `remote ||= primary_remote` 兜底（声明了无 remote 的 rubygems 源时不再伪造默认源）；新增 `rubygem_source_without_remote?`，`generated_lockfile` 在其为真且没有任何 GEM 段时补一个**无 options** 的 `GEM` 段。对应参考 `source/rubygems.rb:114-120`（`remote:` 行来自 `lockfile_remotes`，空列表即无该行）。
+- `src/celerite/resolution.cr` `checksums_enabled?`：把「锁里已有 CHECKSUMS 段就保留」提到最前，避免 4.0.24 在缺 `lockfile_checksums` 配置时把既有段丢掉；无段的新锁仍要求 `lockfile_checksums` 或 `--add-checksums`。对应参考 `definition.rb:661-670`（`locked_checksums` 由锁段初始化）+ `lockfile_generator.rb:69-76`。
+
+### 测试与夹具
+
+- 新 `spec/m7_lock_rewrite_fidelity_spec.cr`（2 examples，0 failures）：在 reuse 路径直接断言 `Resolution#lockfile_rewrite_text`（不触网）——(1) PATH 段与 `glob:` 原样保留、且不出现 `GEM\n  remote: https://rubygems.org/`；(2) 无 `source` 行时输出 `\nGEM\n  specs:\n` 且不含默认 remote。
+- 新 `fixtures/differential/check-rewrite-keeps-path-source/`（`command` = `check`，预置锁 PLATFORMS 只有 `java`，`extra/vendor/d/{dgem.gemspec,gems/x/dgem.gemspec}`；`file-equals-4.0.24` / `file-equals-2.7.2` 整锁断言）。
+- 新 `fixtures/differential/lock-path-source-only-no-remote/`（`command` = `lock`，Gemfile 只有 `gem "kgem", path: "vendor/k"`；`file-equals-*` 断言 `GEM` 段无 `remote:`）。
+- 双 profile：4.0.24 2 passed / 0 failed / 0 skipped；2.7.2 同上。
+
+### 负对照（`git worktree add C:/temp/celerite-pre44a 0cbbc6b`，重建旧二进制）
+
+- 4.0.24：0 passed / 2 failed——`check-rewrite-keeps-path-source` 的 cel 侧把 `PATH…glob…` 换成 `GEM / remote: https://rubygems.org/`；`lock-path-source-only-no-remote` 的 cel 侧多出 `remote: https://rubygems.org/`。
+- 2.7.2：0 passed / 2 failed（同样两处症状）。
+- ⇒ 两个夹具均有判别力。
+
+### 回归（双 profile）
+
+`check-rewrites-lock`、`check-dry-run-keeps-lock`、`scoped-source-lock`、`path-glob-default-root`、`path-glob-default-nested`、`path-glob-default-deep-miss`、`path-glob-monorepo`、`install-local`(7)、`lock-noop`、`install-fresh`、`plugin-source-locked-check`、`plugin-source-typed`、`install-platforms-add-local`：4.0.24 13 passed / 0 failed；2.7.2 15 passed / 0 failed（含本轮 2 个新夹具）。
+
+spec 家族 `m7_lock_rewrite_fidelity_spec`、`m7_git_source_reuse_spec`、`m7_installed_discovery_spec`、`m7_path_*`、`m7_source_*`：49 examples / 0 failures / 0 errors / 0 pending。
+
+### 门禁（全部 EXIT 0）
+
+`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`crystal build src/cli.cr -o bin/celerite.exe`、`git diff 0cbbc6b..HEAD --check`、`git diff --cached --check`、`git diff --check`。
+
+### 已声明差异 / 未验证
+
+- 本轮只覆盖 `check` 重写与空 remote 两个面；PATH 源 `glob:` 的身份判定（glob 不进 `eql?`）由 task-44 的 A1/A2 负责，不在本轮范围。
+- `PLUGIN SOURCE` 段的 GIT/PATH 之外的选项（插件自定义 `options_to_lock`）沿用既有 `plugin_source_info`，未在本轮重新取 oracle。
+- `BUNDLE_FROZEN=true` 下 `check` 的拒写路径未在本轮重取 oracle（此前 task-33/35 已有记录）。
+- 全量 `crystal spec`、全量差分与上游 64 例套件未重跑。
