@@ -4059,3 +4059,40 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 **环境前置（本轮实测）**：`crystal` 需要 `C:\msys64\usr\bin` 在 `PATH`（否则宏内 `sh -c` 报 `系统找不到指定的文件`）；`script/differential` 必须用 `C:\msys64\usr\bin\bash.exe`（`PATH` 里默认 `bash` 是 WSL，`/c/...` 不识别，报 `ruby: command not found`）。
 
 **本轮替代验证**：`crystal spec spec/m7_file_url_spec.cr` 5 examples 0 failures；0–24 与 25–49 两组共 328 examples 完成；差分 4.0.24 11 个夹具全 PASS，`plugin-install-source`/`plugin-install-source-noncanonical` 在 2.7.2 亦 PASS。
+
+## 2026-11-19（M7(6) task-20：`plugin uninstall` 选项/空参语义与注册表清理对齐）
+
+**范围**：只对齐 `bundle plugin uninstall` 的参数语义（含未声明选项、空参、`--all`）、按参考删除 `.bundle/plugin` 内 checkout，以及 commands/hooks/load_paths/plugin_paths/sources 的同步清理。`plugin install` 既有路径、自定义 source 成功路径与 M8 性能不在本轮。
+
+**Oracle**（真实 CLI，4.0.24 与 2.7.2 逐字一致；隔离沙箱，项目内 `hook_plugin` 以 `plugin install hook_plugin --path ./hook_plugin` 预装）：
+
+| 命令 | exit | stdout | stderr |
+| --- | --- | --- | --- |
+| `plugin uninstall` | 0 | 空 | `No plugins to uninstall. Specify at least 1 plugin to uninstall.` + `Use --all option to uninstall all the installed plugins.` |
+| `plugin uninstall nope` | 0 | 空 | `Plugin nope is not installed `（尾部含空格） |
+| `plugin uninstall hook_plugin --version 1.0` | 0 | `Uninstalled plugin hook_plugin` | `Plugin --version is not installed ` + `Plugin 1.0 is not installed ` |
+| `plugin uninstall hook_plugin --local` | 0 | 同上 | `Plugin hook_plugin is not installed `（若已卸）/ `Plugin --local is not installed ` |
+| `plugin uninstall --all`（无插件） | 0 | `No plugins installed` | 空 |
+
+参考 `uninstall` 只声明 `--all`（`cli/plugin.rb:25-32`），Thor 把其余 token 当位置参数；因此 `--version`/`--local` 不是“解析后忽略”，而是被当作插件名逐个尝试卸载（`plugin.rb:55-77`）。git 源插件 oracle（`plugin install hook_plugin --git file:///c:/temp/t20git/repo`，4.0.24/2.7.2 同）：index 记录 `commands: hookprobe`、`hooks: after-install`、`plugin_paths: .bundle/plugin/bundler/gems/repo-<sha>`；`plugin uninstall hook_plugin` exit 0，stdout `Uninstalled plugin hook_plugin`，index 变为空骨架，`bundler/gems` 下 checkout 被删除、`cache/bundler/git/repo-<full sha>` 保留。
+
+**参考锚点**：4.0.24 `bundler/lib/bundler/cli/plugin.rb:25-32`、`bundler/lib/bundler/plugin.rb:55-77`（空参两行错误、`--all` 取 `installed_plugins`、删除 checkout、`unregister_plugin`、逐名 info/error）；`bundler/lib/bundler/plugin/index.rb:78-88`（unregister：command 按 owner、sources 按 value、hooks 列表删名并删空事件、删 load_paths/plugin_paths）、`:169-171`（`installed_plugins` = `@plugin_paths.keys` 插入序）、`:192-196`（`installed_in_plugin_root?` = 路径以 `Plugin.root/` 起头）。2.7.2 安装在 `C:/Ruby40-x64/lib/ruby/gems/4.0.0/gems/bundler-2.7.2/lib/bundler/`：`plugin.rb:54-77`、`plugin/index.rb:78-88`、`:122`、`:145`，语义同上。
+
+**实现**：
+- `src/celerite/cli/commands_surface.cr:1547-1587`：`names` 改为 `rest[1..]` 中仅剔除 `--all`（不再丢弃 `--*`）；空参且无 `--all` 打印两行 stderr 并 return 0；目标列表取 `installed_plugins(index)`（`plugin_paths` 插入序）；逐个用实时 `installed` 列表判定，重名第二次报 not installed；命中时 `plugin_owned_path?` 为真则 `FileUtils.rm_rf`，随后打印 `Uninstalled plugin <name>`；仅在确有移除时重写 index（与参考“未 unregister 就不 save_index”一致）。
+- `:1914-1937`：`installed_plugins` 重载接收已解析 index，读 `plugin_paths`；新增 `plugin_path_map`/`plugin_path`。
+- `:1939-1943`：`plugin_owned_path?` 先统一 `\`→`/` 再比对 `plugin_tree_root/` 前缀，等价 `installed_in_plugin_root?`；`--path` 插件路径不在该根下，源目录保持不动。
+- `:1947-1990`：`write_plugin_index` 的 `render` 增加 `by_value` 参数；`sources` 按 value（插件名）删除，修正原先误按 key 删除；load_paths/plugin_paths 仍按 key。
+
+**测试与差分**：
+- `spec/m7_plugin_uninstall_hooks_spec.cr` 新增 6 例：空参两行消息、未知插件尾空格消息、未声明 token 透传 + checkout 删除 + 骨架 index + 命令注销（exit 15）、`--all` 空输出、`--path` 源目录保留、重名不重复报 Uninstalled；该文件 10 examples 0 failures。
+- 新增 `fixtures/differential/plugin-uninstall-args`（path 安装 + 空参 + 未知 + `--version 1.0` + list）与 `fixtures/differential/plugin-uninstall-index`（预置 git 源形态 index 与 `.bundle/plugin/bundler/gems/hook_plugin-abc123`，执行 list → uninstall → list → `hookprobe`，末命令 exit 15）。
+- 4.0.24：两夹具 PASS（exit=0 / exit=15）；2.7.2：同样 PASS。既有 plugin 夹具回归 `plugin-install`/`plugin-uninstall`/`plugin-hook-uninstall`/`plugin-command-list`/`plugin-command-reinstall` 均 PASS；`plugin-git-local` 仍因本机 celerite 子进程 msys `sh.exe` Low IL `0xC0000022` 失败（任务已登记的环境噪声，与本次改动无关，未改产品代码）。
+
+**门禁**（HEAD 前工作树）：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告，`commands_install.cr:1112:43`、`:1176:20`）；`crystal spec spec/m7_plugin_uninstall_hooks_spec.cr` → 10 examples, 0 failures, 0 errors, 0 pending；`git diff --check` EXIT 0；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0。
+
+**已声明差异 / 未验证**：
+1. 差分 `plugin-uninstall-index` 使用相对 `plugin_paths`，参考 `installed_in_plugin_root?` 与实现同判 false，故两侧都不删除 checkout；绝对路径下的 checkout 删除由 spec 覆盖（`plugin_owned_path?` + `rm_rf`）。真实 `--git` 安装→卸载的端到端链在本机仍被 `0xC0000022` 挡住，**未验证**。
+2. `--all` 多插件顺序按 index 插入序实现，但本轮无多插件 `--all` 夹具，顺序语义**未用差分验证**。
+3. 差分只比较输出与项目树路径集合；index 文本内容（骨架）由 spec 直接断言，未纳入 tree 内容比较。
+4. 全量 `crystal spec` 与全量差分未重跑（沿用 4061 行前的既有记录）。
