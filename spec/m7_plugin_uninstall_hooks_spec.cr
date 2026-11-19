@@ -225,3 +225,105 @@ describe "M7 task-9 plugin hook uninstall" do
     end
   end
 end
+
+describe "M7 task-20 plugin uninstall semantics" do
+  it "reports the two-line no-argument error and exits 0" do
+    with_project({"Gemfile" => uninstall_hooks_gemfile}) do |_dir|
+      code, out, err = run_cli(["plugin", "uninstall"])
+      code.should eq(0)
+      out.should be_empty
+      err.should eq(
+        "No plugins to uninstall. Specify at least 1 plugin to uninstall.\n" \
+        "Use --all option to uninstall all the installed plugins.\n"
+      )
+    end
+  end
+
+  it "reports an unknown plugin with the reference trailing-space message" do
+    with_project({"Gemfile" => uninstall_hooks_gemfile}) do |_dir|
+      code, out, err = run_cli(["plugin", "uninstall", "nope"])
+      code.should eq(0)
+      out.should be_empty
+      err.should eq("Plugin nope is not installed \n")
+    end
+  end
+
+  it "passes unsupported option tokens through as plugin names" do
+    with_project({"Gemfile" => uninstall_hooks_gemfile}) do |dir|
+      checkout = File.join(dir, ".bundle", "plugin", "bundler", "gems", "hook_plugin-abc123")
+      seed_plugin_index(dir, checkout)
+
+      code, out, err = run_cli(["plugin", "uninstall", "hook_plugin", "--version", "1.0"])
+      code.should eq(0)
+      out.should eq("Uninstalled plugin hook_plugin\n")
+      err.should eq("Plugin --version is not installed \nPlugin 1.0 is not installed \n")
+      File.exists?(checkout).should be_false
+      File.read(File.join(dir, ".bundle", "plugin", "index")).should eq(plugin_index_skeleton)
+      run_cli(["hookprobe"])[0].should eq(15)
+    end
+  end
+
+  it "prints No plugins installed for --all without plugins" do
+    with_project({"Gemfile" => uninstall_hooks_gemfile}) do |_dir|
+      code, out, err = run_cli(["plugin", "uninstall", "--all"])
+      code.should eq(0)
+      out.should eq("No plugins installed\n")
+      err.should be_empty
+    end
+  end
+
+  it "keeps an externally managed --path plugin source directory" do
+    pending! "ruby not available" unless ruby_available?
+    with_uninstall_hooks_bridge do
+      with_project({"Gemfile" => uninstall_hooks_gemfile}) do |dir|
+        log = File.join(dir, "hook-log")
+        source = File.join(dir, "hook_plugin")
+        uninstall_hooks_write_source(source, log)
+
+        run_cli(["plugin", "install", "hook_plugin", "--path", source])[0].should eq(0)
+        run_cli(["plugin", "uninstall", "hook_plugin"])[0].should eq(0)
+        Dir.exists?(source).should be_true
+      end
+    end
+  end
+
+  it "does not report an already uninstalled duplicate twice" do
+    with_project({"Gemfile" => uninstall_hooks_gemfile}) do |dir|
+      checkout = File.join(dir, ".bundle", "plugin", "bundler", "gems", "hook_plugin-abc123")
+      seed_plugin_index(dir, checkout)
+
+      code, out, err = run_cli(["plugin", "uninstall", "hook_plugin", "hook_plugin"])
+      code.should eq(0)
+      out.should eq("Uninstalled plugin hook_plugin\n")
+      err.should eq("Plugin hook_plugin is not installed \n")
+    end
+  end
+end
+
+# Seeds the index left behind by a git-source plugin install: the checkout
+# lives under `.bundle/plugin/bundler/gems` (the path shape produced by
+# `plugin install --git`, see commands_surface.cr plugin_install_remote).
+private def seed_plugin_index(dir : String, checkout : String) : Nil
+  Dir.mkdir_p(File.join(checkout, "lib"))
+  File.write(File.join(checkout, "plugins.rb"), %(require "bundler/plugin"\n))
+  File.write(File.join(checkout, "lib", "hook_plugin.rb"), "module HookPlugin\nend\n")
+  Dir.mkdir_p(File.join(dir, ".bundle", "plugin"))
+  File.write(File.join(dir, ".bundle", "plugin", "index"), <<-YAML)
+    ---
+    commands:
+      hookprobe: "hook_plugin"
+    hooks:
+      after-install:
+      - "hook_plugin"
+    load_paths:
+      hook_plugin:
+      - #{File.join(checkout, "lib").inspect}
+    plugin_paths:
+      hook_plugin: #{checkout.inspect}
+    sources:
+    YAML
+end
+
+private def plugin_index_skeleton : String
+  "---\ncommands:\nhooks:\nload_paths:\nplugin_paths:\nsources:\n"
+end

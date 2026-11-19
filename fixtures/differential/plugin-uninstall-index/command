@@ -1,0 +1,4 @@
+plugin list
+plugin uninstall hook_plugin
+plugin list
+hookprobe

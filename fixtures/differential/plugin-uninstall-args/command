@@ -1,0 +1,5 @@
+plugin install hook_plugin --path ./hook_plugin
+plugin uninstall
+plugin uninstall nope
+plugin uninstall hook_plugin --version 1.0
+plugin list

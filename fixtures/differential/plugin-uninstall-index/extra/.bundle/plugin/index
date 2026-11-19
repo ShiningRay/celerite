@@ -1,0 +1,12 @@
+---
+commands:
+  hookprobe: "hook_plugin"
+hooks:
+  after-install:
+  - "hook_plugin"
+load_paths:
+  hook_plugin:
+  - ".bundle/plugin/bundler/gems/hook_plugin-abc123/lib"
+plugin_paths:
+  hook_plugin: ".bundle/plugin/bundler/gems/hook_plugin-abc123"
+sources:
