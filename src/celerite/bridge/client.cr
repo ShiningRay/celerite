@@ -84,6 +84,32 @@ module Celerite
       getter submodules : Bool?
       getter cooldown : Int32?
       getter remote_cooldowns : Hash(String, Int32)?
+      # Plugin sources (`Bundler::Plugin::API::Source`): the declared plugin
+      # type (`source "...", type: :mpath`) and the options persisted by
+      # `options_to_lock` (`plugin/api/source.rb:73`).
+      getter plugin_type : String?
+      getter lock_options : Hash(String, String)?
+    end
+
+    struct PluginSpecDependency
+      include JSON::Serializable
+      getter name : String
+      getter requirements : Array(String)
+    end
+
+    struct PluginSourceSpec
+      include JSON::Serializable
+      getter name : String
+      getter version : String
+      getter platform : String
+      getter loaded_from : String?
+      getter dependencies : Array(PluginSpecDependency)?
+    end
+
+    struct PluginSourceSpecs
+      include JSON::Serializable
+      getter remote : String
+      getter specs : Array(PluginSourceSpec)
     end
 
     # Specification fields of a .gem, extracted by the bridge (Marshal side).
@@ -202,6 +228,15 @@ module Celerite
 
       def evaluate_gemfile(path : String) : GemfileEvaluation
         GemfileEvaluation.from_json(request("evaluate_gemfile", {"gemfile" => path}).to_json)
+      end
+
+      # Specs exposed by a plugin source (`Bundler::Plugin::API::Source#specs`).
+      # The bridge re-evaluates the Gemfile and returns the plugin source's
+      # materialized index; used when writing the PLUGIN SOURCE lock section.
+      def plugin_source_specs(gemfile : String, remote : String) : PluginSourceSpecs
+        PluginSourceSpecs.from_json(
+          request("plugin_source_specs", {"gemfile" => gemfile, "remote" => remote}).to_json
+        )
       end
 
       # Absolute paths of the gemspecs loaded by Gemfile `gemspec` directives,

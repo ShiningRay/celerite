@@ -236,6 +236,10 @@ module Celerite
       getter submodules : Bool?
       getter glob : String?
       property revision : String?
+      # Plugin sources: declared type and `options_to_lock` values from the
+      # bridge (`plugin/api/source.rb:41,73`).
+      getter plugin_type : String?
+      getter lock_options : Hash(String, String)?
     end
 
     getter evaluation : Bridge::GemfileEvaluation
@@ -258,6 +262,7 @@ module Celerite
     @locked_by_name : Hash(String, Array(LockedSpec))?
     @compact_index_client : CompactIndex::Client?
     @index_specs_cache : Hash(String, Array(Resolver::IndexSpec))?
+    @plugin_specs_cache : Hash(String, Array(Resolver::IndexSpec))?
     # Cooldown exclusions (name, version, created_at unix seconds) recorded
     # while building the candidate index (4.0.24 profile only).
     @cooldown_skipped = [] of Tuple(String, String, Int64)
@@ -476,6 +481,7 @@ module Celerite
             "type" => src.type, "remote" => (src.remote || src.remotes.try(&.first?) || ""),
             "branch" => src.branch, "tag" => src.tag, "ref" => src.ref,
             "submodules" => src.submodules, "glob" => src.glob, "revision" => nil,
+            "plugin_type" => src.plugin_type, "lock_options" => src.lock_options,
           }.to_json)
         end
         map
@@ -1300,9 +1306,33 @@ module Celerite
     # Git sources are cloned/checked out first (the reference fetches before
     # resolving).
     private def index_for_source_gem(name : String, source : SourceInfo) : Array(Resolver::IndexSpec)
+      return plugin_source_specs(name, source) if source.type == "Plugin"
       dir = ensure_source_dir(name, source)
       spec = load_source_gem_spec(name, dir, source.glob)
       spec ? [spec] : [] of Resolver::IndexSpec
+    end
+
+    # Plugin source specs come from the plugin itself
+    # (`Bundler::Plugin::API::Source#specs`, plugin/api/source.rb:136); the
+    # bridge re-evaluates the Gemfile and materializes its gemspec list.
+    private def plugin_source_specs(name : String, source : SourceInfo) : Array(Resolver::IndexSpec)
+      remote = source.remote
+      @plugin_specs_cache ||= {} of String => Array(Resolver::IndexSpec)
+      if cached = @plugin_specs_cache.not_nil![remote]?
+        return cached.select { |spec| spec.name == name }
+      end
+      result = @bridge.not_nil!.plugin_source_specs(@definition.gemfile_path, remote)
+      specs = result.specs.map do |info|
+        version = Gem::Version.new(info.version)
+        platform = info.platform == "ruby" ? Gem::Platform::RUBY : Gem::Platform.new(info.platform)
+        deps = (info.dependencies || [] of Bridge::PluginSpecDependency).map do |dep|
+          reqs = dep.requirements
+          Resolver::DepSpec.new(dep.name, reqs.empty? ? Gem::Requirement.new : Gem::Requirement.new(reqs))
+        end
+        Resolver::IndexSpec.new(info.name, version, platform, deps, Gem::Requirement.new, Gem::Requirement.new, nil)
+      end
+      @plugin_specs_cache.not_nil![remote] = specs
+      specs.select { |spec| spec.name == name }
     end
 
     # Ensures the gemspec directory exists for the source; for git sources
@@ -1455,6 +1485,21 @@ module Celerite
       # Non-GEM sources first (pinned: lock_sources = (path + git).sort_by
       # identifier — "git..." sorts before "path..." — then rubygems sources).
       non_gem = @resolved_specs.reject(&.source_type.==("GEM"))
+      # Plugin sources sort before git/path by identifier
+      # (`lockfile_generator.rb:31-36` + `plugin/api/source.rb:293-295`); their
+      # `to_lock` writes remote, type, then every `options_to_lock` entry.
+      non_gem.select(&.source_type.==("PLUGIN")).group_by(&.source_info.not_nil!.remote).each do |remote, specs|
+        info = specs.first.source_info.not_nil!
+        options = [Lockfile::Option.new("remote", remote),
+                   Lockfile::Option.new("type", info.plugin_type || "")]
+        (info.lock_options || {} of String => String).each do |key, value|
+          options << Lockfile::Option.new(key, value)
+        end
+        source_specs = specs.sort_by(&.full_name).map do |spec|
+          Lockfile::Spec.new(spec.name, spec.version.to_s, spec.platform, spec.dependencies)
+        end
+        sections << Lockfile::TypedSection.new(Lockfile::SourceSection.new("PLUGIN SOURCE", options, source_specs))
+      end
       non_gem.select(&.source_type.==("GIT")).group_by(&.source_info.not_nil!.remote).each do |remote, specs|
         source_specs = specs.map do |spec|
           Lockfile::Spec.new(spec.name, spec.version.to_s, spec.platform, spec.dependencies)

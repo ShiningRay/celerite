@@ -492,8 +492,62 @@ def op_exec_plugin_hook(payload)
   { "status" => "ok", "plugins" => loaded, "missing" => missing }
 end
 
+# Specs exposed by a plugin source: re-evaluates the Gemfile (the bridge has
+# no persistent source handles), finds the `Bundler::Plugin::API::Source` with
+# the same `uri`, and materializes its `specs` index
+# (`plugin/api/source.rb:136`, `fetch_gemspec_files`).
+def op_plugin_source_specs(payload)
+  gemfile = payload["gemfile"]
+  remote = payload["remote"].to_s
+  raise ArgumentError, "missing gemfile path" unless gemfile
+
+  bridge_activate_bundler
+  require "bundler"
+  require "bundler/dsl"
+
+  builder = Bundler::Dsl.new
+  builder.eval_gemfile(gemfile, File.read(gemfile))
+  candidates = builder.dependencies.map(&:source).compact +
+               builder.instance_variable_get(:@sources).all_sources
+  source = candidates.uniq.find do |candidate|
+    defined?(Bundler::Plugin::API::Source) &&
+      candidate.is_a?(Bundler::Plugin::API::Source) &&
+      candidate.uri.to_s == remote
+  end
+  raise ArgumentError, "plugin source not found: #{remote}" unless source
+
+  specs = source.specs.each.map do |spec|
+    {
+      "name" => spec.name,
+      "version" => spec.version.to_s,
+      "platform" => spec.platform.to_s,
+      "loaded_from" => spec.loaded_from,
+      "dependencies" => spec.dependencies.map do |dep|
+        { "name" => dep.name, "requirements" => dep.requirement.as_list }
+      end,
+    }
+  end
+  { "remote" => remote, "specs" => specs }
+end
+
 def serialize_source(source)
-  type = source.class.name.split("::").last # Rubygems / Git / Path / Plugin / Metadata
+  # Plugin sources (`Bundler::Plugin::API::Source`) are not a Bundler::Source
+  # subclass and their class name is the plugin's own class (e.g. `MPath`).
+  # The lockfile contract keys off the declared plugin `type` and the raw
+  # `uri` (`plugin/api/source.rb:41,283-295`).
+  if defined?(Bundler::Plugin::API::Source) && source.is_a?(Bundler::Plugin::API::Source)
+    lock_options = source.options_to_lock.each_with_object({}) do |(key, value), memo|
+      memo[key.to_s] = value.to_s
+    end
+    return {
+      "type" => "Plugin",
+      "plugin_type" => source.options["type"].to_s,
+      "remote" => source.uri.to_s,
+      "lock_options" => lock_options,
+      "name" => source.name.to_s,
+    }
+  end
+  type = source.class.name.split("::").last # Rubygems / Git / Path / Metadata
   result = { "type" => type }
   if source.respond_to?(:remotes) && !source.remotes.empty?
     result["remotes"] = source.remotes.map(&:to_s)
@@ -547,6 +601,7 @@ def bridge_dispatch(id, op, payload)
            when "load_gemspec_dir" then op_load_gemspec_dir(payload)
            when "exec_plugin_hook" then op_exec_plugin_hook(payload)
            when "plugin_gemfile_eval" then op_plugin_gemfile_eval(payload)
+           when "plugin_source_specs" then op_plugin_source_specs(payload)
   when "installed_specs" then op_installed_specs(payload)
     when "default_gem_spec" then op_default_gem_spec(payload)
            else

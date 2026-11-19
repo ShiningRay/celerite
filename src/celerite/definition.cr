@@ -211,7 +211,7 @@ module Celerite
       case source.type
       when "Git"
         git_label(source.remote, source.branch, source.tag, source.ref, source.glob)
-      when "Path"
+      when "Path", "Plugin"
         source.remote || "no specified source"
       else
         remotes = source.remotes
@@ -232,6 +232,8 @@ module Celerite
           option_string(section, "ref"), option_string(section, "glob"))
       when "PATH"
         option_string(section, "remote") || option_string(section, "path") || "no specified source"
+      when "PLUGIN SOURCE"
+        option_string(section, "remote") || "no specified source"
       else
         # Gems locked in the default `GEM` section have no source of their own
         # (`LockfileParser` only records one for `GIT`/`PATH` entries), so the
@@ -269,7 +271,7 @@ module Celerite
       return false unless sources = gemfile_sources
       gemfile_remotes = [] of String
       sources.each do |candidate|
-        next if candidate.type == "Git" || candidate.type == "Path"
+        next if candidate.type == "Git" || candidate.type == "Path" || candidate.type == "Plugin"
         remotes = candidate.remotes
         if remotes && !remotes.empty?
           remotes.each { |remote| gemfile_remotes << trim_remote(remote) }
