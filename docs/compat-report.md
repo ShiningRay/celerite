@@ -4287,4 +4287,37 @@ installed locally.
 
 **门禁**：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告）；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0；`git diff --check` EXIT 0。
 
+## 2026-11-19（M7(8) task-26：`lock --add-checksums` 计算路径与 frozen 空 CHECKSUMS 拒绝）
+
+**参考语义**
+- 4.0.24 `lib/bundler/definition.rb:564-583 add_checksums`：先设 `@locked_checksums = true`，`setup_domain!(add_checksums: true)` 并强制 materialize `specs`；对校验和缺失/为空的 Rubygems spec，用 `Gem::Package.new(spec.source.cached_built_in_gem(spec))` 取安装缓存（缓存缺失时经 `source/rubygems.rb:244-256/357-363` 下载到 `<bundle>/ruby/<abi>/cache/`）并 `Checksum.from_gem_package` 注册。`cli/lock.rb:70` 在 `definition.remotely!` 之前调用。
+- 2.7.2 安装 gem `bundler-2.7.2/lib/bundler/definition.rb:535-541 add_checksums`：只设 `@locked_checksums = true`、`setup_domain!(add_checksums: true)`、强制 materialize，不计算、不注册；因此只写出空 `CHECKSUMS` 条目。
+- 写出条件见 `lockfile_generator.rb:69-76`（`definition.locked_checksums`）；`--add-checksums` 使无 `CHECKSUMS` 段的旧锁也新增该段。
+
+**oracle（`file://` 源 + `bundle-preset` 已安装 stub；锁预置无段/一条空条目）**
+
+| 场景 | 4.0.24 | 2.7.2 |
+| --- | --- | --- |
+| `lock --add-checksums`（无段） | exit 0；stdout `Fetching source index from file:///…/gem-index/`、`Fetching json_pure 2.8.1`、`Writing lockfile…`；锁新增 `bundler (4.0.24) sha256=16ca64e2…` 与 `json_pure (2.8.1) sha256=6a877929…`，并在 bundle 缓存写入 `json_pure-2.8.1.gem` | exit 0；stdout 仅 index fetch + Writing（无 `Fetching json_pure`）；锁新增空 `json_pure (2.8.1)`，无 bundler 行、无缓存 gem |
+| `lock --add-checksums`（一条空条目） | exit 0；stdout 多一行 `Resolving dependencies...`；锁同上 | exit 0；stdout 多一行 `Resolving dependencies...`；条目仍为空 |
+| `BUNDLE_FROZEN=true install`（空条目） | exit 16；stderr 四行 `Your lockfile has an empty CHECKSUMS entry for "json_pure", but can't be updated` / `because frozen mode is set` / 空行 / `Run \`bundle install\` elsewhere and add the updated Gemfile.lock to version` / `control.`；锁不变 | 同左（逐字一致） |
+| `lock --add-checksums --local`（无段） | exit 0；stdout 同无段场景（仍 fetch index 与 gem）；锁同无段 | exit 0；stdout 同无段；锁新增空条目 |
+
+**实现**
+- `src/celerite/resolution.cr:1323-1327` 新增 `property add_checksums`；`:1650-1655 checksums_enabled?` 在 `add_checksums` 时直接为真（两 profile 都写段）。
+- `:298-345` 新增公开 `bridge` 与 `compute_checksums_from_installed`：仅处理已安装 spec（`specifications/<full_name>.gemspec` 存在）、跳过已有非空锁条目与自带 `spec.checksum`；缓存 gem 缺失时调用传入的 fetch 块并复制到 `<bundle>/ruby/<abi>/cache/<full_name>.gem`，再计算 sha256 写入 `install_checksums`。
+- `src/celerite/cli/commands.cr:2395-2412`：4.0.24 分支先 `resolve!`，再构造 `Downloader` 逐 gem 打印 `Fetching <name> <version>` 并取包；`:2324` 在 `--add-checksums` 时忽略 `--local` 的刷新抑制与 `local_only`；`:2389` 仅在没有待回填空条目时抑制 `Resolving dependencies...`（空条目场景仍打印）。
+- frozen 拒绝复用既有 `Definition#assert_frozen!`（`definition.cr:145-181`），输出与参考逐字一致，未改代码。
+- 未动：`file:` 源清空校验和、解析器、下载器、compact-index。
+
+**测试/夹具**
+- `spec/m7_checksums_trigger_spec.cr` 扩到 5 例：新增 `lock --add-checksums`（`file://`）计算并断言 stdout/锁；frozen 空条目断言 exit 16、逐字 stderr、锁不变。5 examples / 0 failures / 0 errors / 0 pending。
+- 新增 `fixtures/differential/lock-add-checksums/`（`file:///@INDEX_DIR@` + 预装 stub + 无段锁，`command`=`lock --add-checksums`）与 `lock-add-checksums-frozen/`（`frozen` 标记 + 空条目锁，`command`=`install`）；`file-equals-4.0.24`/`file-equals-2.7.2` 断言完整锁文件。`script/differential` 的 `file-equals` 期望文本现同时替换 `@INDEX_DIR@`。
+- 差分：4.0.24 `PASS lock-add-checksums (exit=0)`、`PASS lock-add-checksums-frozen (exit=16)`；2.7.2 同两项 `PASS`；均 2 passed / 0 failed / 0 skipped。
+
+**门禁**：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告）；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0；`git diff --check` EXIT 0。
+
+**已声明差异/未验证**：frozen 只覆盖空条目（缺条目未单独取 oracle，逻辑同 `assert_frozen!`）；`--add-checksums` 的 bundler 自身校验和依赖本机 bundler gem 缓存（参考同依赖）；平台变体与多 gem 未覆盖；`lock --add-checksums --print` 未取 oracle；全量 spec 与全量差分未重跑。checkbox 保持 `[ ]`。
+
+
 **已声明差异/未验证**：`lock --local` 的参考 CLI 行为未单独取 oracle（仅按 `empty_checksums_actionable?` 与 spec 断言）；frozen 模式下空条目的措辞/时序未实测；4.0.24 的 bundler 自身校验和来自本机 gem 缓存，若缓存缺失则无法生成该行（参考同样依赖本地 bundler gem）；差分只覆盖一个依赖与 `json_pure`/`bundler` 两条空条目，多平台/多 gem 组合未单独覆盖；全量 spec 与全量差分未重跑。checkbox 保持 `[ ]`。
