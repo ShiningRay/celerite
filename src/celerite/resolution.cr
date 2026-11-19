@@ -201,10 +201,19 @@ module Celerite
       getter source_info : SourceInfo?
       getter source_remote : String?
 
+      # `Gem::Specification#required_ruby_version` / `required_rubygems_version`
+      # from the resolved index entry. Reference `Installer#ensure_specs_are_compatible!`
+      # (`installer.rb:234-245`) compares both at install time. The locked reuse
+      # path materializes specs without loading gemspecs, so they stay nil there.
+      getter required_ruby_version : Gem::Requirement? = nil
+      getter required_rubygems_version : Gem::Requirement? = nil
+
       def initialize(@name : String, @version : Gem::Version, @platform : String?,
                      @dependencies : Array(Lockfile::SpecDependency), @checksum : String?,
                      @source_index : Int32, @source_type : String = "GEM",
-                     @source_info : SourceInfo? = nil, @source_remote : String? = nil)
+                     @source_info : SourceInfo? = nil, @source_remote : String? = nil,
+                     @required_ruby_version : Gem::Requirement? = nil,
+                     @required_rubygems_version : Gem::Requirement? = nil)
       end
 
       def platform_ruby? : Bool
@@ -463,7 +472,19 @@ module Celerite
       log_fetch_for(primary_remote)
     end
 
+    # True once the primary source-index fetch line has been printed. Callers
+    # that print the line themselves on the locked path use this to avoid the
+    # duplicate caused by a compatibility-check fetch.
+    def index_fetch_logged? : Bool
+      @index_fetch_logged
+    end
+
     @fetch_logged_remotes = Set(String).new
+
+    # Locked specs re-checked against the current Ruby/RubyGems and found
+    # incompatible (see `resolve!`); they must not seed the solver's locked
+    # index with empty requirements.
+    @excluded_locked_names = Set(String).new
 
     private def log_fetch_for(remote : String) : Nil
       return unless @fetch_logged_remotes.add?(remote)
@@ -733,13 +754,25 @@ module Celerite
     # Resolution
     # ------------------------------------------------------------------
 
-    def resolve!(reuse : Bool = false) : Array(ResolvedSpec)
+    def resolve!(reuse : Bool = false, verify_locked_compat : Bool = false) : Array(ResolvedSpec)
       @resolved = true
       deps = top_level_deps
 
       if reuse && reuse_locked_resolution?(deps)
-        @resolved_specs = materialize_locked
-        return @resolved_specs
+        # Reference `Installer#ensure_specs_are_compatible!` only runs after
+        # `setup_domain!` re-resolved (`installer.rb:79-82, 234-245`). A locked
+        # spec that still needs installing is checked against the current
+        # Ruby/RubyGems; an incompatible pin is unlocked so the solver reports
+        # the reference's "Because every version…" failure instead of
+        # materializing (or blindly installing) the gem.
+        incompatible = verify_locked_compat ? incompatible_locked_spec_names : [] of String
+        if incompatible.empty?
+          @resolved_specs = materialize_locked
+          return @resolved_specs
+        end
+        unlocked = @unlock.is_a?(Array(String)) ? @unlock.as(Array(String)) : [] of String
+        @unlock = (unlocked + incompatible).uniq
+        incompatible.each { |name| @excluded_locked_names << name }
       end
 
       @resolved_specs = run_resolution(deps)
@@ -919,6 +952,36 @@ module Celerite
       requested.diff(locked).nil?
     rescue
       locked_ruby == requested_ruby
+    end
+
+    # Reference `Gem::Specification#matches_current_ruby?` /
+    # `matches_current_rubygems?` (`installer.rb:234-245`). The lockfile carries
+    # no requirements, so consult the compact index; names whose entry is absent
+    # (or whose lookup fails offline) stay trusted — reuse is offline-first.
+    private def incompatible_locked_spec_names : Array(String)
+      names = [] of String
+      env = @bridge.not_nil!.ruby_environment
+      ruby = Gem::Version.new(env.ruby_version)
+      rubygems = Gem::Version.new(env.rubygems_version)
+      @definition.lockfile!.sources.each do |source|
+        next unless source.type == "GEM"
+        source.specs.each do |locked|
+          version = Gem::Version.new(locked.version)
+          platform = locked.platform || "ruby"
+          match = index_specs_for(locked.name).find do |candidate|
+            candidate.version == version && candidate.platform.to_s == platform
+          end
+          next unless match
+          unless match.required_ruby_version.satisfied_by?(ruby) &&
+                 match.required_rubygems_version.satisfied_by?(rubygems)
+            names << locked.name
+          end
+        end
+      end
+      names
+    rescue
+      # Only a positive index answer may veto reuse (see the offline note above).
+      [] of String
     end
 
     private def materialize_locked : Array(ResolvedSpec)
@@ -1137,7 +1200,7 @@ module Celerite
         source = non_gem_sources[name]?
         source_type = source ? source.type.upcase : "GEM"
         source_type = "PATH" if source_type == "GEMSPEC"
-        specs << ResolvedSpec.new(name, spec.version, spec.platform_ruby? ? nil : spec.platform.to_s, lock_deps, spec.checksum, 0, source_type, source, remote_for(name))
+        specs << ResolvedSpec.new(name, spec.version, spec.platform_ruby? ? nil : spec.platform.to_s, lock_deps, spec.checksum, 0, source_type, source, remote_for(name), spec.required_ruby_version, spec.required_rubygems_version)
       end
       specs.sort_by!(&.full_name)
       specs
@@ -1239,6 +1302,7 @@ module Celerite
       index = {} of String => Array(Resolver::IndexSpec)
       locked_specs.each do |locked|
         next unless locked.source_type == "GEM"
+        next if @excluded_locked_names.includes?(locked.name)
         (index[locked.name] ||= [] of Resolver::IndexSpec) << Resolver::IndexSpec.new(
           locked.name, locked.version,
           locked.platform && locked.platform != "ruby" ? Gem::Platform.new(locked.platform.not_nil!) : Gem::Platform::RUBY,

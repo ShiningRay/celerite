@@ -337,7 +337,18 @@ module Celerite
           resolution.ensure_source_dir(name, source)
         end
 
-        specs = resolution.resolve!(reuse)
+        # Reference `setup_domain!` re-resolves whenever a gem still needs
+        # installing, and only then can a locked spec's Ruby/RubyGems
+        # requirement matter (`definition.rb:190-203`, `installer.rb:79-82`).
+        # Silent idempotent reruns keep the offline path and print nothing.
+        verify_locked_compat = reuse && definition.lockfile_exists? &&
+                               definition.lockfile!.sources.any? do |source|
+                                 source.type == "GEM" && source.specs.any? do |locked|
+                                   !installer.installed?(locked.name, locked.version, locked.platform)
+                                 end
+                               end
+        specs = resolution.resolve!(reuse, verify_locked_compat: verify_locked_compat)
+        installer.ensure_specs_are_compatible!(specs)
 
         previous_versions = definition.lockfile_exists? ? definition.lockfile!.specs.to_h { |s| {s.name, s.version} } : {} of String => String
         # --force reinstalls already-installed gems (no "Fetching" lines for
@@ -364,7 +375,7 @@ module Celerite
         # Locked-path installs print the source-index line when downloads are
         # pending, but never a Resolving line (pinned reference behavior,
         # update-conservative fixture).
-        if reuse && pending.any?
+        if reuse && pending.any? && !resolution.index_fetch_logged?
           if resolution.primary_remote.starts_with?("file:")
             stdout.puts "Fetching source index from #{resolution.primary_remote}"
           else

@@ -62,6 +62,34 @@ module Celerite
       File.file?(spec_path) && Dir.exists?(gem_dir)
     end
 
+    # Reference `Bundler::Installer#ensure_specs_are_compatible!`
+    # (4.0.24 `lib/bundler/installer.rb:234-245`; 2.7.2 `:227-238`): every
+    # materialized spec must satisfy the running Ruby and RubyGems, otherwise
+    # an `InstallError` (status 5) names the gem, the requirement and the
+    # current version.
+    def self.ensure_specs_are_compatible!(specs : Array(Resolution::ResolvedSpec),
+                                          ruby_version : String, rubygems_version : String) : Nil
+      ruby = Gem::Version.new(ruby_version)
+      rubygems = Gem::Version.new(rubygems_version)
+      specs.each do |spec|
+        if requirement = spec.required_ruby_version
+          unless requirement.satisfied_by?(ruby)
+            raise InstallError.new("#{spec.full_name} requires ruby version #{requirement}, which is incompatible with the current version, #{ruby}")
+          end
+        end
+        if requirement = spec.required_rubygems_version
+          unless requirement.satisfied_by?(rubygems)
+            raise InstallError.new("#{spec.full_name} requires rubygems version #{requirement}, which is incompatible with the current version, #{rubygems}")
+          end
+        end
+      end
+    end
+
+    def ensure_specs_are_compatible!(specs : Array(Resolution::ResolvedSpec)) : Nil
+      env = @bridge.ruby_environment
+      Installer.ensure_specs_are_compatible!(specs, env.ruby_version, env.rubygems_version)
+    end
+
     # Installs one gem; skips when already installed (idempotent parity).
     # Returns true when work was done.
     def install(name : String, version : String, platform : String?, checksum : String?, force : Bool = false, gem_file : String? = nil) : Bool
