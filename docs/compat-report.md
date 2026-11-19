@@ -4497,3 +4497,35 @@ Installed stub-gem
 - spec 未断言 bundle 内落盘路径（Crystal `Dir.glob` 在 Windows 反斜杠路径上不稳定），落盘由差分 `installed-tree` 比较覆盖。
 - 全量 `crystal spec` 与全量差分未重跑；多平台/多 Ruby ABI 未验证；`commands_install.cr:111-116` 删除后是否有其他调用方依赖该错误文案未做全仓检索。
 - 2.7.2 的插件 gem 解包行为仅在 oracle 与差分树中观察，未做逐文件内容比对（file-equals 只覆盖 lock）。
+
+## 2026-11-19（M7 L161 task-32：上游 lockfile 基线二次重采集与 product 候选定性）
+
+范围：测量 + 文档，不改产品代码。HEAD `f4c5aac`；采集命令 `CELERITE_SKIP_TEST_DEPS=1 bash script/upstream-specs`（MSYS bash、`TMPDIR=/c/temp`、重建 `bin/celerite.exe`）。
+
+结果（`.upstream-specs/upstream-lockfile-v4.0.24-20261119T082530Z.md`，`rspec-output.json` 生成于 2026-11-19 16:32:01 +08:00）：
+
+| 指标 | 当前值 |
+|---|---|
+| 结果 | `64 examples, 54 failures`（10 passed），rspec exit 1 |
+| real-drive | 58 |
+| 分桶 | artifice 38 / low-il 8 / fetch-failed 6 / product 2 |
+
+逐桶对比（task-23 基线 → 本轮）：
+
+| 桶 | task-23 | task-32 | 变化原因 |
+|---|---|---|---|
+| artifice-unreachable | 37 | 38 | 候选 ① 移入：`Could not reach host gem.repo2`（`rspec-output.txt:3393`） |
+| low-il-shm | 8 | 8 | 环境未变 |
+| fetch-failed | 6 | 6 | 未变 |
+| missing-gem-files | 0 | 0 | task-23 修复保持 |
+| product:candidates | 3 | 2 | ① 移出，②/③ 保留 |
+
+候选定性：
+
+1. ① `fills empty CHECKSUMS entries...`：**未通过、未验证**。现落 env:artifice；task-25 后空 CHECKSUMS 触发重解析并尝试访问 `https://gem.repo2`，artifice 仅进程内可达。sha256 回填本身已由 task-25/26 差分覆盖，但上游例无法在本环境判定。
+2. ② `is conservative with dependencies of git gems`：**真产品候选（未修）**。期望 `v4.0.8` / `788d10f2…` / `ckeditor (4.0.8)`，实得 `v4.0.7` / `b8909d5…` / `ckeditor (4.0.7)`（失败 diff，`rspec-output.txt:2785` 起）。上游 `spec/lock/lockfile_spec.rb:658`；最小复现：本地仓库打 v4.0.7、v4.0.8 两 tag，Gemfile 以 `tag: "v4.0.8"` 引用，`celerite install` 后查看 lock。
+3. ③ `keeps existing platforms in the lockfile`：**真产品候选（未修）**。参考保留 `java` 并补本地平台；celerite 报 `Your bundle only supports platforms ["java"] but your local platform is x64-mingw-ucrt. …`（`rspec-output.txt:3260`）。上游 `spec/lock/lockfile_spec.rb:1222`；最小复现：lock 仅 `PLATFORMS java` + `gem "myrack"`，执行 `celerite install`。
+
+结论：product 候选 3 → 2 不是“修好一条”，而是候选 ① 的失败点被 artifice 环境前移；② git tag 选择、③ 缺失本地平台补全是两条独立真产品候选。按本轮 scope 只回报、未动代码。
+
+未验证：完整 `install_test_deps` 链、非 Low-IL 宿主、真实 gem 源；候选 ① 的上游通过/失败证据；②/③ 的独立最小复现已给出命令骨架但未在隔离项目逐字执行。
