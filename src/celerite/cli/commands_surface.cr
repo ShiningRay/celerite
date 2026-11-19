@@ -1546,27 +1546,44 @@ module Celerite
         0
       when "uninstall"
         all = rest.includes?("--all")
-        names = rest[1..].reject(&.starts_with?("--"))
+        # Reference `bundle plugin uninstall` declares only `--all`
+        # (cli/plugin.rb:25-32), so Thor passes any other token through as a
+        # plugin name: `--version`/`--local` are reported as missing plugins
+        # instead of being silently dropped (plugin.rb:55-77).
+        names = rest[1..].reject { |arg| arg == "--all" }
+        if names.empty? && !all
+          stderr.puts "No plugins to uninstall. Specify at least 1 plugin to uninstall."
+          stderr.puts "Use --all option to uninstall all the installed plugins."
+          return 0
+        end
         index_path = plugin_index_path
-        installed = installed_plugins
+        index = File.file?(index_path) ? (YAML.parse(File.read(index_path)) || YAML.parse("{}")) : YAML.parse("{}")
+        # Reference `installed_plugins` = @plugin_paths.keys (insertion order,
+        # plugin/index.rb:169-171); unregister_plugin mutates the index
+        # immediately, so a duplicate name on the command line is "not
+        # installed" the second time (plugin.rb:63-73).
+        installed = installed_plugins(index)
         targets = all ? installed : names
         if targets.empty?
           stdout.puts "No plugins installed"
           return 0
         end
-        index = File.file?(index_path) ? (YAML.parse(File.read(index_path)) || YAML.parse("{}")) : YAML.parse("{}")
-        changed = false
+        removed = [] of String
         targets.each do |name|
           unless installed.includes?(name)
             stderr.puts "Plugin #{name} is not installed "
             next
           end
-          changed = true
+          path = plugin_path(index, name)
+          # Plugins installed by Bundler itself live under
+          # `.bundle/plugin`; rm_rf their checkout before dropping the
+          # registry entries (plugin.rb:66-68, index.rb:192-196).
+          FileUtils.rm_rf(path) if path && plugin_owned_path?(path)
+          installed.delete(name)
+          removed << name
           stdout.puts "Uninstalled plugin #{name}"
         end
-        if changed || File.file?(index_path)
-          write_plugin_index(index_path, index, targets.select { |t| installed.includes?(t) })
-        end
+        write_plugin_index(index_path, index, removed) unless removed.empty?
         0
       when "new"
         stderr.puts "The 'plugin new' command is not implemented yet."
@@ -1898,23 +1915,45 @@ module Celerite
       index_path = plugin_index_path
       return [] of String unless File.file?(index_path)
 
-      index = YAML.parse(File.read(index_path))
-      names = (index["load_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any).keys.map(&.to_s)
-      names.sort
+      installed_plugins(YAML.parse(File.read(index_path)))
+    end
+
+    # `@plugin_paths.keys` order, never sorted: the reference keys the index
+    # hash by plugin_paths, so `list`/`--all` follow installation order
+    # (plugin/index.rb:169-171).
+    private def self.installed_plugins(index : YAML::Any) : Array(String)
+      plugin_path_map(index).keys.map(&.to_s)
+    end
+
+    private def self.plugin_path_map(index : YAML::Any) : Hash(YAML::Any, YAML::Any)
+      index["plugin_paths"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any
+    end
+
+    private def self.plugin_path(index : YAML::Any, name : String) : String?
+      plugin_path_map(index)[name]?.try(&.to_s)
+    end
+
+    # Equivalent of `Bundler::Plugin::Index#installed_in_plugin_root?`
+    # (plugin/index.rb:192-196): only checkouts below `.bundle/plugin` are
+    # Bundler-managed and safe to delete; `--path` plugins point elsewhere.
+    private def self.plugin_owned_path?(path : String) : Bool
+      root = plugin_tree_root.gsub('\\', "/")
+      prefix = root.ends_with?("/") ? root : root + "/"
+      path.gsub('\\', "/").starts_with?(prefix)
     end
 
     # Rewrites the plugin index without the uninstalled plugins, preserving
     # the reference layout (`---` start, bare empty collections).
     private def self.write_plugin_index(path : String, index : YAML::Any, removed : Array(String)) : Nil
-      render = ->(section : YAML::Any, out : String::Builder) do
+      render = ->(section : YAML::Any, out : String::Builder, by_value : Bool) do
         map = section.as_h? || {} of YAML::Any => YAML::Any
-        keys = map.keys.map(&.to_s).reject { |k| removed.includes?(k) }
-        keys.each do |key|
-          value = map[key]?
+        map.each do |key, value|
+          drop = by_value ? removed.includes?(value.to_s) : removed.includes?(key.to_s)
+          next if drop
           out.puts "  #{key}:"
-          if value && value.as_a?
+          if value.as_a?
             value.as_a.each { |v| out.puts "  - #{v.to_s.inspect}" }
-          elsif !value.nil?
+          else
             out.puts "  #{value.to_s.inspect}"
           end
         end
@@ -1940,11 +1979,13 @@ module Celerite
           owners.each { |name| y.puts "  - #{name.inspect}" }
         end
         y.puts "load_paths:"
-        render.call(index["load_paths"]? || YAML.parse("{}"), y)
+        render.call(index["load_paths"]? || YAML.parse("{}"), y, false)
         y.puts "plugin_paths:"
-        render.call(index["plugin_paths"]? || YAML.parse("{}"), y)
+        render.call(index["plugin_paths"]? || YAML.parse("{}"), y, false)
         y.puts "sources:"
-        render.call(index["sources"]? || YAML.parse("{}"), y)
+        # Sources map source-name => plugin-name; unregister_plugin drops by
+        # value, not by key (plugin/index.rb:80).
+        render.call(index["sources"]? || YAML.parse("{}"), y, true)
       end
       File.write(path, yaml)
     end
