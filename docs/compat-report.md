@@ -5193,3 +5193,41 @@ spec 家族 `m7_git_source_reuse_spec`、`m7_source_lock_options_spec`、`m7_loc
 - `issue-no-gemfile` 标记为 deferred（两 profile）：无 Gemfile 时参考会回溯到**宿主机** `~/.bundle/config`（harness 的 `HOME` 是 POSIX 风格路径，RubyGems 判定不可用后回落到开发者主目录），输出随开发机配置变化；这是夹具环境泄漏而非产品差异，未放宽 N5 比较。
 - `doctor` 的完整诊断面（`check_home_permissions`、`check_path_components`、`check_gem_path` 等）未实现，本实现只覆盖依赖满足/缺失与锁文件写入；`--verbose` 分层未对齐。
 - 未验证 Windows 信号/句柄细节；未重跑全量 spec、全量差分与上游 64 例套件。
+## 2026-11-20（M7(3) task-50：`info`/`show` 读取真实 gemspec 元数据）
+
+**结论**：`bundle info`/`show` 的 `Summary`/`Homepage`/`Documentation`/`Changelog` 等字段现在与参考一致——由 Ruby 解释器 `Gem::Specification.load` 求值后取 `summary`/`homepage`/`metadata`，不再由 Crystal 正则截取 `.gemspec` 文本。此前 `\\`、`\"`、`\n` 会以字面量形式输出。
+
+### Oracle（4.0.24 与 2.7.2 一致）
+
+用一个手写的已安装 spec（`bundle-preset/ruby/4.0.0/specifications/meta_gem-1.0.0.gemspec`，含 `s.summary = 'Summary with "quotes" and \\ backslash'`、`"documentation_uri" => "path\\with\\backslashes"`、`"changelog_uri" => "line1\nline2"`）：
+
+| 命令 | 参考输出（解码后） | 修复前 celerite |
+| --- | --- | --- |
+| `info meta_gem` | `Summary: Summary with "quotes" and \ backslash`；`Documentation: path\with\backslashes`；`Changelog: line1` + 换行 + `line2` | `\\`、`\\`、字面 `\n` |
+| `info --path` / `show` / `show --paths` | 仅路径或“missing”警告，不受转义影响 | 一致 |
+| `list` | `  * meta_gem (1.0.0)` | 一致 |
+| spec 存在、gem 目录缺失 | stderr `The gem meta_gem is missing. Gemspec information is still available though:` + 同样解码后的块，exit 0 | 修复前也会打印该块，但转义未解码 |
+
+构建带这种 metadata 的真实 gem 会被 RubyGems 拒绝（`Gem::InvalidSpecificationException: metadata['documentation_uri'] has invalid link`），因此 oracle 与差分夹具都使用手写 spec——这也正是 `bundle info` 的读取方式（`Gem::Specification.load`，不做 URI 校验）。
+
+### 根因与实现
+
+- 根因：`src/celerite/cli/commands.cr` 的 `read_gemspec_info` 只用正则从 `.gemspec` 文本里截取字面量，周围引号被去掉，但 Ruby 的转义序列从未求值。
+- 新 bridge op `assets/bridge/server.rb op_load_installed_spec` → `Gem::Specification.load(path)`，返回 name/version/platform/full_name/summary/description/homepage/license/licenses/metadata；`src/celerite/bridge/client.cr load_installed_spec(path)` 调用。
+- `read_gemspec_info` 记住命中的 spec 路径（已安装 `specifications/`、ABI 目录、`specifications/default/`、gem 目录内 `*.gemspec` 四处），优先 `read_gemspec_info_via_bridge`；仅在 bridge 不可用或求值失败时回退 `parse_gemspec_text` + `decode_ruby_string`（覆盖 `\\`、`\"`、`\'`、`\n`、`\t`、`\r`、`\e`、`\s`、`\0`、续行、`\xNN`、`\uXXXX`、`\u{…}`）。该回退是显式声明的降级路径，不是主路径。
+- 参考锚点：`bundler/lib/bundler/cli/info.rb:50-73`（`spec = definition.specs...`、`Bundler.ui.info` 打印 `spec.summary`/`spec.metadata[...]`）、`bundler/lib/bundler/cli/common.rb` 的 gem 信息打印；我方锚点 `src/celerite/cli/commands.cr`（`read_gemspec_info`/`read_gemspec_info_via_bridge`/`parse_gemspec_text`/`decode_ruby_string`）、`src/celerite/bridge/client.cr`、`assets/bridge/server.rb`。
+
+### 测试与证据
+
+- 差分夹具 `fixtures/differential/info-metadata-escapes/`：手写 spec + `gems/meta_gem-1.0.0`、`Gemfile`、`Gemfile.lock`，命令依次 `info meta_gem`、`info --path meta_gem`、`show meta_gem`、`show --paths meta_gem`、`list`。4.0.24 `PASS (exit=0)`，2.7.2 `PASS (exit=0)`。
+- 新增 `spec/m7_gem_info_metadata_spec.cr` 3 examples（反斜杠转义、`\n` 真实换行、spec-only 回退）：`3 examples, 0 failures`。
+- 受影响 spec 家族（`m7_info*`、`m7_show*`、`m7_list*`、`m7_installed_discovery`、`m7_default_gem`、新 spec）合计 **65 examples / 0 failures**。
+- 反向对照：`git worktree add C:/temp/celerite-pre50 efaa289` 构建旧二进制后跑新夹具 → **0 passed / 1 failed**，差异正是 `\\` 与 `\n` 未解码；对照后移除 worktree。
+- 回归差分（28 个 `info*`/`show*`/`list*`/`install-check`/`install-fresh` 夹具）：4.0.24 **28 passed / 0 failed**，2.7.2 **28 passed / 0 failed**。
+- 门禁：`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`crystal build src/cli.cr -o bin/celerite.exe`、`git diff efaa289..HEAD --check`、`git diff --check` 全部 EXIT 0（仅既有 2 条 `Deprecated File.executable?` 警告）。
+
+### 已声明差异 / 未验证
+
+- 无 Ruby 解释器时的文本回退路径只做转义解码，不还原 Ruby 的全部字面量语义（例如 `#{...}` 插值、heredoc、`%q`/`%Q` 边界）；主路径始终走 bridge。
+- 未验证第三方 gemspec 中 `metadata` 使用 `\u{...}`/`\xNN` 等罕见转义的真实生态案例；spec 已覆盖解码函数本身，但无差分夹具。
+- 未重跑全量 `crystal spec`、全量差分与上游 64 例套件。
