@@ -398,6 +398,24 @@ module Celerite
           pending = pending.reject { |spec| resolution.local_installed_full_names.includes?(spec.full_name) }
         end
 
+        # Default gems come from the interpreter, not from the declared
+        # sources. The reference installs nothing for them but warns that they
+        # cannot be cached (`rubygems_integration.rb` source cache), and still
+        # counts the dependency in the summary. Keep them in `specs` (counts)
+        # while removing them from the download/install worklist.
+        default_gems = specs.select do |spec|
+          next false unless spec.source_type == "GEM"
+          info = bridge.default_gem_spec(spec.name)
+          !info.nil? && info[:version] == spec.version.to_s
+        end
+        unless default_gems.empty?
+          default_gems.each do |spec|
+            stderr.puts "#{spec.full_name} is built in to Ruby, and can't be cached because your Gemfile doesn't have any sources that contain it."
+          end
+          pending.reject! { |spec| default_gems.includes?(spec) }
+          force_install.reject! { |spec| default_gems.includes?(spec) }
+        end
+
         # Locked-path installs print the source-index line when downloads are
         # pending, but never a Resolving line (pinned reference behavior,
         # update-conservative fixture).

@@ -14,11 +14,14 @@ module Celerite
       getter required_ruby_version : Gem::Requirement
       getter required_rubygems_version : Gem::Requirement
       getter checksum : String?
+      # Set for interpreter default-gem fallback candidates
+      # (`cli/common.rb:98-101`); ordinary index entries leave it nil.
+      getter default_gem_path : String?
 
       def initialize(@name : String, @version : Gem::Version, @platform : Gem::Platform,
                      @dependencies : Array(DepSpec), @required_ruby_version : Gem::Requirement,
                      @required_rubygems_version : Gem::Requirement = Gem::Requirement.new,
-                     @checksum : String? = nil)
+                     @checksum : String? = nil, @default_gem_path : String? = nil)
       end
 
       def platform_ruby? : Bool

@@ -250,11 +250,21 @@ end
 # interpreter's default gem alongside the bundled json_pure.
 def op_default_gem_spec(payload)
   name = payload["name"]
-  spec = Gem::Specification.find_all_by_name(name).last
-  return nil unless spec && spec.default_gem?
+  # The reference reads the interpreter's installed specs, where the default
+  # gem is the only same-name entry; a long-lived bridge process has already
+  # enumerated every installed gem, so select the default explicitly instead
+  # of relying on `.last`.
+  spec = Gem::Specification.find_all_by_name(name).select(&:default_gem?).max_by(&:version)
+  return nil unless spec
   {
     "name" => spec.name,
     "version" => spec.version.to_s,
+    "platform" => spec.platform.to_s,
+    "dependencies" => spec.runtime_dependencies.map { |d|
+      { "name" => d.name, "requirements" => d.requirement.as_list }
+    },
+    "required_ruby_version" => spec.required_ruby_version.to_s,
+    "required_rubygems_version" => spec.required_rubygems_version.to_s,
     "full_gem_path" => spec.full_gem_path,
   }
 end

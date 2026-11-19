@@ -1876,7 +1876,10 @@ module Celerite
             return 7
           end
         end
-        stderr.puts "Could not find '#{name}' in locally installed gems. Run `bundle install` to install missing gems."
+        # `Bundler::CLI::Common.select_spec` (`cli/common.rb:68-101`) raises
+        # `GemNotFound` with the bare spec name; both `info` and `show` render
+        # it through the same path.
+        stderr.puts "Could not find gem '#{name}'."
         return 7
       end
 
@@ -1934,7 +1937,7 @@ module Celerite
           info << "\tBug Tracker: #{metadata["bug_tracker_uri"]}\n" if metadata.has_key?("bug_tracker_uri")
           info << "\tMailing List: #{metadata["mailing_list_uri"]}\n" if metadata.has_key?("mailing_list_uri")
           info << "\tPath: #{display_path(gem_dir)}\n"
-          info << "\tDefault Gem: yes\n" if default_gem?(gem_dir)
+          info << "\tDefault Gem: yes\n" if default_gem?(gem_dir, spec.name, spec.version.to_s)
           reverse_dependencies = gem_reverse_dependencies(locked_specs, spec.name)
           if reverse_dependencies.any?
             info << "\tReverse Dependencies: \n"
@@ -2048,6 +2051,12 @@ module Celerite
           end
         end
       end
+      # Fallback: interpreter default gems keep their spec under
+      # `<Gem.default_dir>/specifications/default/`.
+      if text.nil?
+        default_spec = File.join(install_root, "specifications", "default", "#{full_name}.gemspec")
+        text = File.read(default_spec) if (File.file?(default_spec) rescue false)
+      end
       # Fallback: PATH/GIT sources keep the gemspec in the gem directory.
       if text.nil? && (Dir.exists?(gem_dir) rescue false)
         gem_name = full_name.sub(/-[^-]+(?:-[^-]+)?\z/, "")
@@ -2090,14 +2099,16 @@ module Celerite
 
     # Reference `spec.default_gem?` is true for specs installed in Ruby's
     # default gem directory; bundle-installed gems omit the line.
-    private def self.default_gem?(gem_dir : String) : Bool
+    private def self.default_gem?(gem_dir : String, name : String, version : String) : Bool
       return false unless bridge_available?
 
       bridge = Bridge::Client.new
       begin
-        env = bridge.ruby_environment
-        default_dir = env.default_gem_dir
-        !default_dir.empty? && gem_dir.starts_with?(default_dir)
+        spec = bridge.default_gem_spec(name)
+        return false unless spec
+        return false unless spec[:version] == version
+
+        spec[:full_gem_path].gsub('\\', "/").chomp("/") == gem_dir.gsub('\\', "/").chomp("/")
       rescue
         false
       ensure

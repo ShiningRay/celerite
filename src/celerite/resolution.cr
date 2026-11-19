@@ -263,6 +263,7 @@ module Celerite
     @compact_index_client : CompactIndex::Client?
     @index_specs_cache : Hash(String, Array(Resolver::IndexSpec))?
     @plugin_specs_cache : Hash(String, Array(Resolver::IndexSpec))?
+    @default_gem_specs_cache : Hash(String, Resolver::IndexSpec?)?
     # Cooldown exclusions (name, version, created_at unix seconds) recorded
     # while building the candidate index (4.0.24 profile only).
     @cooldown_skipped = [] of Tuple(String, String, Int64)
@@ -745,7 +746,47 @@ module Celerite
       if @prefer_local && !local.empty?
         return local
       end
-      index_specs_from_remote(name)
+      remote = index_specs_from_remote(name)
+      return remote unless remote.empty?
+
+      # `Bundler::CLI::Common.default_gem_spec` (cli/common.rb:98-101): when
+      # the index has no candidates for the name, Bundler's source can still
+      # materialize the interpreter's default gem. Keep this strictly a
+      # last-resort fallback; ordinary index hits never mix in default gems.
+      if fallback = default_gem_index_spec(name)
+        [fallback]
+      else
+        remote
+      end
+    end
+
+    # Build a resolver candidate from the interpreter's default gem. The
+    # reference writes it into the lockfile under the declared GEM remote
+    # (measured: `json (2.18.0)`), so the source type stays GEM.
+    private def default_gem_index_spec(name : String) : Resolver::IndexSpec?
+      @default_gem_specs_cache ||= {} of String => Resolver::IndexSpec?
+      if @default_gem_specs_cache.not_nil!.has_key?(name)
+        return @default_gem_specs_cache.not_nil![name]
+      end
+      data = @bridge.not_nil!.default_gem_spec(name)
+      spec = if data
+               platform = data[:platform] == "ruby" ? Gem::Platform::RUBY : Gem::Platform.new(data[:platform])
+               deps = data[:dependencies].map do |dep|
+                 Resolver::DepSpec.new(dep[:name], Gem::Requirement.new(dep[:requirements]))
+               end
+               Resolver::IndexSpec.new(
+                 data[:name],
+                 Gem::Version.new(data[:version]),
+                 platform,
+                 deps,
+                 requirement_from(data[:required_ruby_version]),
+                 requirement_from(data[:required_rubygems_version]),
+                 nil,
+                 data[:full_gem_path],
+               )
+             end
+      @default_gem_specs_cache.not_nil![name] = spec
+      spec
     end
 
     # Build candidate specs for one gem from the compact index.
@@ -1025,6 +1066,12 @@ module Celerite
         source.specs.each do |locked|
           version = Gem::Version.new(locked.version)
           platform = locked.platform || "ruby"
+          # A locked default gem is satisfied by the interpreter itself; do not
+          # hit the index just to prove it (also avoids a spurious Fetching
+          # line on a reused lock).
+          if default_gem = @bridge.not_nil!.default_gem_spec(locked.name)
+            next if default_gem[:version] == locked.version && default_gem[:platform] == platform
+          end
           match = index_specs_for(locked.name).find do |candidate|
             candidate.version == version && candidate.platform.to_s == platform
           end

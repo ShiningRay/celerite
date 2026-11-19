@@ -926,6 +926,23 @@ module Celerite
           end
         end
       end
+
+      # Interpreter default gems are not in `<bundle>/specifications` but are
+      # still valid for `check/list/show/info` (`cli/common.rb:68-101` falls
+      # back to `default_gem_spec`). A custom `path` does not hide them.
+      if (source.nil? || source.type == "GEM") && bridge_available?
+        bridge = Bridge::Client.new
+        begin
+          if info = bridge.default_gem_spec(spec.name)
+            if info[:version] == spec.version.to_s && (spec.platform.nil? || info[:platform] == spec.platform)
+              return info[:full_gem_path]
+            end
+          end
+        rescue
+        ensure
+          bridge.close
+        end
+      end
       nil
     end
 

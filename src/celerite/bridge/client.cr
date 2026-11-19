@@ -278,13 +278,24 @@ module Celerite
       # interpreter's default gem for a bare name, if any. `bundle open`
       # appends it to the regex candidates so `bundle open json` can offer
       # the interpreter's own `json` next to the bundled `json_pure`.
-      def default_gem_spec(name : String) : NamedTuple(name: String, version: String, full_gem_path: String)?
+      def default_gem_spec(name : String) : NamedTuple(
+        name: String, version: String, platform: String, full_gem_path: String,
+        dependencies: Array(NamedTuple(name: String, requirements: Array(String))),
+        required_ruby_version: String, required_rubygems_version: String)?
         result = request("default_gem_spec", {"name" => name})
         return nil if result.raw.nil?
+        dependencies = (result["dependencies"]?.try(&.as_a) || [] of JSON::Any).map do |dep|
+          requirements = (dep["requirements"]?.try(&.as_a) || [] of JSON::Any).map(&.as_s)
+          {name: dep["name"].as_s, requirements: requirements}
+        end
         {
-          name:          result["name"].as_s,
-          version:       result["version"].as_s,
-          full_gem_path: result["full_gem_path"].as_s,
+          name:                      result["name"].as_s,
+          version:                   result["version"].as_s,
+          platform:                  result["platform"].as_s,
+          full_gem_path:             result["full_gem_path"].as_s,
+          dependencies:              dependencies,
+          required_ruby_version:     result["required_ruby_version"].as_s,
+          required_rubygems_version: result["required_rubygems_version"].as_s,
         }
       end
 
