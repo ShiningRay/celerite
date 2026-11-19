@@ -1,0 +1,4 @@
+config set --local nope_key value
+config get nope_key
+plugin install hook_all_plugin --path ./hook_all_plugin
+plugin list

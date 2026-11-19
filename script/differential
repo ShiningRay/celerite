@@ -30,6 +30,9 @@
 #      presence + non-empty size + optional ruby loadability, never bytes:
 #      native builds are non-deterministic; the observable contract is
 #      "compiled and loadable", not byte-identical output.
+#   N10 an optional `env` fixture file (one KEY=VALUE per line) is exported for
+#      BOTH sides on top of the isolated defaults; spaces/empty values allowed,
+#      fixtures without it are unchanged.
 # Note (build PATH): build the CLI with the ORIGINAL PATH (Git/msys64/Ruby
 #   order), NOT the N8-normalized PATH: prepending the Ruby-bundled toolchain
 #   makes `cc` fail with "liblto_plugin.dll not found" (toolchain resolution,
@@ -311,6 +314,16 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
     frozen_env="BUNDLE_FROZEN=true"
     isolated_env+=(BUNDLE_FROZEN=true)
   fi
+  # Optional `env` marker: one `KEY=VALUE` per line, exported for BOTH sides
+  # (spaces and empty values allowed; absent file keeps the isolated defaults).
+  fixture_env=()
+  if [ -f "$fixture_dir/env" ]; then
+    while IFS= read -r line <&9; do
+      [ -z "$line" ] && continue
+      fixture_env+=("$line")
+    done 9< "$fixture_dir/env"
+  fi
+
   # `deploy` exercises deployment mode: same guard, but the "remove the freeze"
   # hint is kept (definition.rb:475-492 only drops it for the :env source).
   deploy_env=""
@@ -376,7 +389,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
     ref_n=$((ref_n + 1))
     (
       cd "$ref_sandbox/project" || exit 99
-      env "${isolated_env[@]}" ruby "$bundler_exe" $cmd
+      env "${isolated_env[@]}" "${fixture_env[@]+"${fixture_env[@]}"}" ruby "$bundler_exe" $cmd
     ) > "$work/ref.part.$ref_n.out" 2> "$work/ref.part.$ref_n.err"
     ref_code=$?
   done 3< "$fixture_dir/command"
@@ -407,6 +420,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
         ${deploy_env:+BUNDLE_DEPLOYMENT=true} \
         CELERITE_REFERENCE_BUNDLER_LIB="$bundler_lib" \
         CELERITE_PROFILE_BUNDLER_VERSION="$bundler_version" \
+        "${fixture_env[@]+"${fixture_env[@]}"}" \
         "$celerite_bin" $cmd
     ) > "$work/cel.part.$cel_n.out" 2> "$work/cel.part.$cel_n.err"
     cel_code=$?
