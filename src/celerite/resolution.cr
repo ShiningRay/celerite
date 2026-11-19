@@ -549,6 +549,8 @@ module Celerite
     # index with empty requirements.
     @excluded_locked_names = Set(String).new
 
+    @path_specs_changed : Bool?
+
     private def log_fetch_for(remote : String) : Nil
       return unless @fetch_logged_remotes.add?(remote)
       return if remote == primary_remote && @index_fetch_logged
@@ -977,6 +979,11 @@ module Celerite
       # identity; a changed tag must re-resolve instead of rewriting the old
       # lockfile. `source_diff` already owns the reference label rendering.
       return false if @definition.dependency_sources_changed?(@evaluation.dependencies, @evaluation.sources)
+      # `definition.rb:929-950` (`specs_changed?` -> `converge_paths`): for a
+      # PATH source the LOCKED source object is authoritative
+      # (`source_list.rb:208-217 replace_path_source`), so a glob change in the
+      # Gemfile never re-resolves; only a changed visible spec set does.
+      return false if path_specs_changed?
       return false unless sources_compatible?(lockfile)
       # Reference parity: a lockfile that does not cover the local platform
       # (no `ruby`, no matching entry) makes the definition re-resolve
@@ -985,6 +992,48 @@ module Celerite
       return false unless covers_local_platform?(lockfile)
 
       ruby_compatible?(lockfile)
+    end
+
+    # `definition.rb:929-950` (`specs_for_source_changed?`): compare the locked
+    # specs against the specs the source exposes now. The locked PATH source is
+    # authoritative (`source_list.rb:208-217 replace_path_source`), so the glob
+    # comes from the lockfile: a Gemfile glob change alone never re-resolves,
+    # while a gemspec version bump visible under the locked glob does.
+    def path_specs_changed? : Bool
+      cached = @path_specs_changed
+      return cached unless cached.nil?
+      @path_specs_changed = !Resolution.stale_path_specs(@definition, @bridge, @evaluation).empty?
+    end
+
+    # Locked PATH specs that the source no longer exposes under its LOCKED glob.
+    def self.stale_path_specs(definition : Definition, bridge : Bridge::Client?,
+                              evaluation : Bridge::GemfileEvaluation) : Array(Lockfile::Spec)
+      stale = [] of Lockfile::Spec
+      return stale unless bridge
+      return stale unless definition.lockfile_exists?
+      lockfile = definition.lockfile!
+      root = File.dirname(definition.gemfile_path)
+      evaluation.dependencies.each do |dep|
+        source = dep.source
+        next unless source && source.type == "Path"
+        section = lockfile.sources.find do |candidate|
+          candidate.type == "PATH" && candidate.specs.any? { |spec| spec.name == dep.name }
+        end
+        next unless section
+        remote = section.remote || section.option("path").as?(String)
+        next unless remote
+        glob = section.option("glob").as?(String) || DEFAULT_GLOB
+        dir = File.expand_path(remote, root)
+        visible = begin
+          bridge.load_gemspec_dir_specs(dir, glob).map { |spec| "#{spec.name}-#{spec.version}" }
+        rescue Bridge::BridgeError
+          next
+        end
+        section.specs.each do |locked|
+          stale << locked unless visible.includes?("#{locked.name}-#{locked.version}")
+        end
+      end
+      stale
     end
 
     # `@missing_lockfile_dep` / `@locked_spec_with_missing_deps` /

@@ -1410,16 +1410,24 @@ module Celerite
       # unavailable only narrows the reason list, never the outcome.
       gemfile_dependencies : Array(Bridge::EvaluatedDependency)? = nil
       gemfile_sources : Array(Bridge::EvaluatedSource)? = nil
+      check_bridge : Bridge::Client? = nil
+      check_evaluation : Bridge::GemfileEvaluation? = nil
+      path_specs_changed = false
       if config.frozen? && definition.lockfile_exists?
         begin
-          evaluation = Bridge::Client.new.evaluate_gemfile(definition.gemfile_path)
-          gemfile_dependencies = evaluation.dependencies
-          gemfile_sources = evaluation.sources
+          check_bridge = Bridge::Client.new
+          check_evaluation = check_bridge.not_nil!.evaluate_gemfile(definition.gemfile_path)
+          gemfile_dependencies = check_evaluation.not_nil!.dependencies
+          gemfile_sources = check_evaluation.not_nil!.sources
+          # `definition.rb:153` (`converge_paths`) only guards the 4.x line;
+          # 2.7.2 instead reports the locked spec as missing (oracle D2).
+          path_specs_changed = profile_bundler_version.starts_with?("4.") &&
+                               Resolution.stale_path_specs(definition, check_bridge, check_evaluation.not_nil!).any?
         rescue
         end
       end
       definition.validate_frozen_lockfile!(gemfile_dependencies: gemfile_dependencies,
-        gemfile_sources: gemfile_sources)
+        gemfile_sources: gemfile_sources, path_specs_changed: path_specs_changed)
       # `bundler/cli/check.rb:16` runs `validate_runtime!` only after the
       # frozen lockfile check, so the lockfile summary wins over a platform
       # mismatch.
@@ -1492,6 +1500,21 @@ module Celerite
       # fails the unresolved-dep probe before its resolver starts).
       if platform_missing?(definition)
         stdout.puts "Resolving dependencies..."
+      end
+
+      # 2.7.2 has no path-gemspec frozen guard: a locked PATH spec the source no
+      # longer exposes is reported as missing, exit 1 (oracle D2).
+      if config.frozen? && profile_bundler_version.starts_with?("2.") &&
+         (frozen_bridge = check_bridge) && (frozen_evaluation = check_evaluation)
+        stale = Resolution.stale_path_specs(definition, frozen_bridge, frozen_evaluation)
+        unless stale.empty?
+          stderr.puts "The following gems are missing"
+          stale.sort_by(&.full_name).each do |spec|
+            stderr.puts " * #{spec.name} (#{spec.version})"
+          end
+          stderr.puts "Install missing gems with `bundle install`"
+          return 1
+        end
       end
 
       missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
@@ -2397,9 +2420,15 @@ module Celerite
       if !checksum_refresh && !update && update_names.empty? && !add_checksums && !normalize_platforms &&
          !rest.includes?("--add-platform") && !rest.includes?("--remove-platform") &&
          !definition.dependency_sources_changed?(resolution.evaluation.dependencies, resolution.evaluation.sources) &&
+         !resolution.path_specs_changed? &&
          definition.lockfile_exists? && definition.lockfile_matches_dependencies?(resolution.evaluation.dependencies)
         resolution.close
         text = with_profile_indent(definition.lockfile!.to_lock)
+        # `definition.rb:401-418 write_lock` serializes `Bundler::VERSION`
+        # unconditionally, so a no-op rewrite retargets BUNDLED WITH even when
+        # the saved version came from the other profile (measured on 2.7.2
+        # rewriting a 4.0.24 lock: the version line becomes `   2.7.2`).
+        text = text.gsub(/(BUNDLED WITH\n[ \t]*)[^\n]*/) { "#{$1}#{resolution.bridge_bundler_version}" }
         # 2.7.x never records a bundler self-checksum. A no-op `lock` rewrites
         # the locked text as-is, so drop the entry a 4.x lockfile may carry
         # (`lockfile_generator.rb` only emits it on the 4.x line).

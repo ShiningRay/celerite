@@ -407,6 +407,30 @@ end
 # means the two languages cannot literally share the constant.
 SOURCE_DEFAULT_GLOB = "{,*,*/*}.gemspec"
 
+# Enumerate every gemspec a PATH source exposes under its glob, using the
+# reference's depth-first override rule (`source/path.rb:159-179`
+# `load_spec_files`: deeper gemspecs are inserted first, so a shallower
+# gemspec of the same name replaces them).
+# payload: dir, glob (optional).
+def op_load_gemspec_dir_specs(payload)
+  require "rubygems/specification"
+  dir = payload["dir"].tr("\\", "/")
+  glob = payload["glob"] || SOURCE_DEFAULT_GLOB
+  candidates = Dir.glob(File.join(dir, glob)).sort_by { |p| -p.split(File::SEPARATOR).size }
+  by_name = {}
+  candidates.each do |file|
+    spec = Gem::Specification.load(file)
+    next unless spec
+    by_name[spec.name] = {
+      "name"     => spec.name,
+      "version"  => spec.version.to_s,
+      "platform" => spec.platform.to_s,
+      "full_name" => spec.full_name,
+    }
+  end
+  { "specs" => by_name.values }
+end
+
 # Load the gemspec of a directory source (path gems, git checkouts).
 def op_load_gemspec_dir(payload)
   require "rubygems/specification"
@@ -667,6 +691,7 @@ def bridge_dispatch(id, op, payload)
            when "generate_bin_stubs" then op_generate_bin_stubs(payload)
            when "build_extension" then op_build_extension(payload)
            when "load_gemspec_dir" then op_load_gemspec_dir(payload)
+            when "load_gemspec_dir_specs" then op_load_gemspec_dir_specs(payload)
            when "exec_plugin_hook" then op_exec_plugin_hook(payload)
            when "plugin_gemfile_eval" then op_plugin_gemfile_eval(payload)
            when "plugin_source_specs" then op_plugin_source_specs(payload)

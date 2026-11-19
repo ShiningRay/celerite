@@ -123,6 +123,16 @@ module Celerite
       getter extensions : Array(String)
     end
 
+    # Minimal spec identity returned by `load_gemspec_dir_specs`; the PATH
+    # re-resolve judge only compares names and versions.
+    struct GemSpecSummary
+      include JSON::Serializable
+      getter name : String
+      getter version : String
+      getter platform : String
+      getter full_name : String
+    end
+
     struct GemSpecInfo
       include JSON::Serializable
       getter name : String
@@ -332,6 +342,14 @@ module Celerite
         payload = {"dir" => dir} of String => String
         payload["glob"] = glob if glob
         GemSpecInfo.from_json(request("load_gemspec_dir", payload).to_json)
+      end
+
+      # All gemspecs a PATH source exposes under `glob` (`source/path.rb:159-179`
+      # keeps the shallower gemspec when two share a name).
+      def load_gemspec_dir_specs(dir : String, glob : String? = nil) : Array(GemSpecSummary)
+        payload = {"dir" => dir} of String => String
+        payload["glob"] = glob if glob
+        Array(GemSpecSummary).from_json(request("load_gemspec_dir_specs", payload)["specs"].to_json)
       end
 
       def build_extension(gem_dir : String, destination : String, name : String, gem_path : String, target_rbconfig : String? = nil, build_args : Array(String)? = nil) : JSON::Any

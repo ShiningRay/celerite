@@ -244,7 +244,13 @@ module Celerite
         # still leaves `vendor/bundle/ruby/<abi>` behind.
         install_root = InstallPaths.gem_root(config, bridge.ruby_environment.default_gem_dir, InstallPaths.ruby_abi(bridge))
         Dir.mkdir_p(install_root)
-        definition.validate_frozen_lockfile!(rest.includes?("--deployment"), gemfile_dependencies, gemfile_sources)
+        # `definition.rb:153` (`converge_paths`) only guards the 4.x line; a
+        # stale PATH spec under frozen mode re-resolves nowhere and 2.7.2
+        # reports it as missing instead.
+        path_specs_changed = resolution.bridge_bundler_version.starts_with?("4.") &&
+                             resolution.path_specs_changed?
+        definition.validate_frozen_lockfile!(rest.includes?("--deployment"), gemfile_dependencies,
+          gemfile_sources, path_specs_changed: path_specs_changed)
         if !cooldown_flag_valid?(rest, stderr, resolution.bridge_bundler_version)
           return 15
         end

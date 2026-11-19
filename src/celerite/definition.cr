@@ -148,7 +148,8 @@ module Celerite
     # docs/compat-report.md).
     def validate_frozen_lockfile!(explicit_flag : Bool = false,
                                   gemfile_dependencies : Array(Bridge::EvaluatedDependency)? = nil,
-                                  gemfile_sources : Array(Bridge::EvaluatedSource)? = nil) : Nil
+                                  gemfile_sources : Array(Bridge::EvaluatedSource)? = nil,
+                                  path_specs_changed : Bool = false) : Nil
       return unless config.frozen?
       raise ProductionError.new("Frozen mode is set, but there's no lockfile") unless lockfile_exists?
 
@@ -165,6 +166,10 @@ module Celerite
         added = diff[0]
         deleted = diff[1]
       end
+      # `definition.rb:906-921` lists the path-gemspec reason after the
+      # platform ones; our reason list only carries the sources/dependency/
+      # checksums entries, so append it before them is not observable.
+      reasons << "the gemspecs for path gems changed" if path_specs_changed
       if reason = lockfile_update_reason
         reasons << reason
       end
@@ -288,11 +293,14 @@ module Celerite
       parts.empty? ? label : "#{label} (#{parts.join(", ")})"
     end
 
-    # `source/path.rb:45-48` writes `remote:` plus a non-default `glob:`;
-    # `source/path.rb:64-67` treats the expanded path as the source identity.
+    # `source/path.rb:64-68` (`eql?`): a PATH source's identity is the expanded
+    # path plus `version` — `glob` is deliberately NOT part of it, so a glob
+    # change alone never shows up as a source change here. Whether the re-resolve
+    # is needed is decided by the visible spec set instead
+    # (`Resolution#path_specs_changed?`).
     private def path_label(path : String?, glob : String?) : String
       return "no specified source" unless path
-      glob ? "#{path} (glob: #{glob})" : path
+      File.expand_path(path, File.dirname(gemfile_path)).gsub('\\', "/")
     end
 
     # `plugin/api/source.rb:283-295` locks `remote:` plus `type:`.
