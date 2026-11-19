@@ -795,9 +795,10 @@ module Celerite
     OUTDATED_SWITCH_VALUES = BARE_SWITCH_VALUES + ["--cooldown", "--group", "--source"]
     GEM_SWITCH_FLAGS       = BARE_SWITCH_FLAGS + [
       "--bundle", "--changelog", "--coc", "--exe", "--bin", "-b", "--git", "--mit", "--rubocop",
+      "--no-ci", "--no-ext", "--no-linter", "--no-test",
     ]
     GEM_SWITCH_VALUES = BARE_SWITCH_VALUES + [
-      "--ci", "--edit", "-e", "--ext", "--github-username", "--linter", "--test",
+      "--ci", "--edit", "-e", "--ext", "--github-username", "--linter", "--test", "-t",
     ]
     DOCTOR_SUBCOMMAND_FLAGS  = BARE_SWITCH_FLAGS + ["--ssl", "--quiet"]
     DOCTOR_SUBCOMMAND_VALUES = BARE_SWITCH_VALUES + ["--gemfile", "--tls-version", "--verify-mode"]

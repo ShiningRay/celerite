@@ -2729,12 +2729,95 @@ module Celerite
     # gem: project skeleton (bundle gem NAME)
     # ------------------------------------------------------------------
     def self.gem(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+      profile = bundle_profile_version
+      # cli.rb:589-602 lists --help as a class option; Thor prints the manpage
+      # before running the command (measured on 4.0.24 and 2.7.2).
+      if rest.includes?("--help") || rest.includes?("-h")
+        stdout.print GemTemplate.help_text(profile)
+        return 0
+      end
       if (code = reject_unknown_switches(stderr, rest, GEM_SWITCH_FLAGS, GEM_SWITCH_VALUES))
         return code
       end
+
+      # gem.rb/cli.rb:607-608: the deprecated `--rubocop` spellings raise
+      # InvalidOption before any work. 2.7.2 keeps the same rejection but uses
+      # "--linter" (without the =rubocop suffix) for --no-rubocop.
+      if rest.includes?("--rubocop")
+        stderr.puts "--rubocop has been removed, use --linter=rubocop"
+        return 15
+      end
+      if rest.includes?("--no-rubocop")
+        stderr.puts profile.starts_with?("2.") ? "--no-rubocop has been removed, use --linter" : "--no-rubocop has been removed, use --no-linter"
+        return 15
+      end
+
+      ext_values = profile.starts_with?("2.") ? ["c", "rust"] : ["c", "rust", "go"]
+      if (index = rest.index("--ext"))
+        next_argument = index + 1 < rest.size ? rest[index + 1] : nil
+        unless next_argument && ext_values.includes?(next_argument)
+          stderr.puts "Extensions can now be generated using C or Rust, so `--ext` with no arguments has been removed. Please select a language, e.g. `--ext=rust` to generate a Rust extension."
+          return 15
+        end
+      end
+
+      positionals = [] of String
+      values = {} of String => String
+      flags = Set(String).new
+      value_options = ["--test", "-t", "--ci", "--linter", "--ext", "--edit", "-e", "--github-username"]
+      index = 0
+      while index < rest.size
+        argument = rest[index]
+        name = argument.split("=", 2)[0]
+        if value_options.includes?(name)
+          if argument.includes?("=")
+            values[name] = argument.split("=", 2)[1]
+            index += 1
+          elsif index + 1 < rest.size
+            values[name] = rest[index + 1]
+            index += 2
+          else
+            values[name] = ""
+            index += 1
+          end
+        elsif argument.starts_with?("-")
+          flags << argument
+          index += 1
+        else
+          positionals << argument
+          index += 1
+        end
+      end
+
+      # Thor enum validation (`Expected '--test' to be one of rspec, minitest,
+      # test-unit; got minitestx`, exit 15) — measured on both references.
+      if value = values["--test"]?
+        unless ["rspec", "minitest", "test-unit"].includes?(value)
+          stderr.puts "Expected '--test' to be one of rspec, minitest, test-unit; got #{value}"
+          return 15
+        end
+      end
+      if value = values["--ci"]?
+        unless ["github", "gitlab", "circle"].includes?(value)
+          stderr.puts "Expected '--ci' to be one of github, gitlab, circle; got #{value}"
+          return 15
+        end
+      end
+      if value = values["--linter"]?
+        unless ["rubocop", "standard"].includes?(value)
+          stderr.puts "Expected '--linter' to be one of rubocop, standard; got #{value}"
+          return 15
+        end
+      end
+      if value = values["--ext"]?
+        unless ext_values.includes?(value)
+          stderr.puts "Expected '--ext' to be one of #{ext_values.join(", ")}; got #{value}"
+          return 15
+        end
+      end
+
       # Thor rejects a missing/multiple positionals before any work; the
-      # reference (4.0.24) prints these exact lines and exits 15.
-      positionals = rest.reject(&.starts_with?("-"))
+      # reference prints these exact lines and exits 15.
       if positionals.empty?
         stderr.puts %(ERROR: "bundle gem" was called with no arguments)
         stderr.puts %(Usage: "bundle gem NAME [OPTIONS]")
@@ -2746,34 +2829,20 @@ module Celerite
         return 15
       end
 
-      # gem.rb/cli.rb:607-608: the deprecated `--rubocop` spellings raise
-      # InvalidOption before any work.
-      if rest.includes?("--rubocop")
-        stderr.puts "--rubocop has been removed, use --linter=rubocop"
-        return 15
+      # --edit opens the generated gemspec and --bundle runs `bundle install`;
+      # the reference behavior is recorded in docs/compat-report.md. They are
+      # not silently ignored here.
+      if flags.includes?("--bundle")
+        stderr.puts "bundle gem option --bundle is not supported by Celerite (reference runs `bundle install`)"
+        return 1
       end
-      if rest.includes?("--no-rubocop")
-        stderr.puts "--no-rubocop has been removed, use --no-linter"
-        return 15
-      end
-
-      # DECLARED DEVIATION: non-default options are rejected instead of
-      # rendered. The reference accepts them (--mit adds the MIT license block,
-      # --test adds a test framework, --exe adds exe/, ...). See
-      # docs/compat-report.md "gem 模板对齐" for the measured reference output.
-      # Negations (`--no-git`, `--no-mit`, ...) all mean "keep the default", so
-      # Thor accepts them and the scaffold is unchanged.
-      supported = ["--git", "--no-git", "--no-mit", "--no-coc", "--no-changelog",
-                   "--no-exe", "--no-bundle"]
-      unsupported = rest.select { |arg| arg.starts_with?("-") && !supported.includes?(arg) }
-      unless unsupported.empty?
-        stderr.puts "bundle gem option #{unsupported.first} is not supported by Celerite"
-        stderr.puts "Supported options: --git (default), --no-git"
+      if values.has_key?("--edit") || values.has_key?("-e")
+        stderr.puts "bundle gem option --edit is not supported by Celerite (reference opens the gemspec in an editor)"
         return 1
       end
 
       name = File.basename(positionals.first)
-      use_git = !rest.includes?("--no-git") && !Process.find_executable("git").nil?
+      use_git = !flags.includes?("--no-git") && !Process.find_executable("git").nil?
       target = File.expand_path(name)
 
       if File.exists?(target) && !Dir.exists?(target)
@@ -2781,21 +2850,45 @@ module Celerite
         return 32
       end
 
-      # gem.rb:47-49: author/email/github come from `git config`, with the TODO
+      # gem.rb:45-49: author/email/github come from `git config`, with the TODO
       # fallbacks at gem.rb:69-70 and "[USERNAME]" at gem.rb:16/77. All three
-      # reads are gated on use_git (gem.rb:45-49): with `--no-git` the gemspec
-      # keeps the TODO placeholders.
+      # reads are gated on use_git.
       author = use_git ? git_config("user.name") : ""
       author = "TODO: Write your name" if author.empty?
       email = use_git ? git_config("user.email") : ""
       email = "TODO: Write your email address" if email.empty?
-      github_username = use_git ? git_config("github.user") : ""
+      github_username = values["--github-username"]? || (use_git ? git_config("github.user") : "")
+
+      test_given = values.has_key?("--test") || values.has_key?("-t")
+      ci_given = values.has_key?("--ci")
+      linter_given = values.has_key?("--linter")
+      test = values["--test"]? || values["-t"]?
+      test = nil if flags.includes?("--no-test")
+      ci = values["--ci"]?
+      ci = nil if flags.includes?("--no-ci")
+      linter = values["--linter"]?
+      linter = nil if flags.includes?("--no-linter")
+      ext = values["--ext"]?
+      ext = nil if flags.includes?("--no-ext")
+      exe = !flags.includes?("--no-exe") && (flags.includes?("--exe") || flags.includes?("--bin") || flags.includes?("-b"))
+      mit = flags.includes?("--no-mit") ? false : (flags.includes?("--mit") ? true : nil)
+      coc = flags.includes?("--no-coc") ? false : (flags.includes?("--coc") ? true : nil)
+      changelog = flags.includes?("--no-changelog") ? false : (flags.includes?("--changelog") ? true : nil)
 
       stdout.puts "Creating gem '#{name}'..."
-      # gem.rb prompts for test/CI/linter/license/COC/changelog and prefixes each
-      # question block with a blank line. Celerite does not implement the
-      # interactive prompts (declared deviation in docs/compat-report.md), so no
-      # blank separator is printed here.
+      # gem.rb:342-344/386-388/421-423: when the explicit option matches the
+      # persisted gem.* setting (the default settings in the reference test
+      # environment do), the reference logs this note before scaffolding.
+      stdout.puts "#{test} is already configured, ignoring --test flag." if test_given && test
+      stdout.puts "#{ci} is already configured, ignoring --ci flag." if ci_given && ci
+      stdout.puts "MIT License enabled in config" if mit
+      stdout.puts "Code of conduct enabled in config" if coc
+      stdout.puts "Changelog enabled in config" if changelog
+      stdout.puts "#{linter} is already configured, ignoring --linter flag." if linter_given && linter
+      if linter
+        stdout.puts "RuboCop enabled in config" if linter == "rubocop"
+        stdout.puts "Standard enabled in config" if linter == "standard"
+      end
 
       if use_git
         # gem.rb:257-262: the git-init line starts with a blank separator and
@@ -2805,11 +2898,20 @@ module Celerite
         Process.run("git", ["init", target], output: IO::Memory.new, error: :inherit)
       end
 
-      GemTemplate.render(name, author, email, github_username, use_git).each do |entry|
+      branch = use_git ? git_head_branch(target) : nil
+      options = GemTemplate::Options.new(test: test, ci: ci, linter: linter, ext: ext,
+        exe: exe, mit: mit == true, coc: coc == true, changelog: changelog == true, bundle: false)
+      GemTemplate.render(name, author, email, github_username, use_git, profile, options, branch).each do |entry|
         path = File.join(target, entry.path)
         Dir.mkdir_p(File.dirname(path))
         File.write(path, entry.content)
         stdout.puts "      create  #{name}/#{entry.path}"
+      end
+
+      # gem.rb:269-273: console/setup/exe are marked executable.
+      ["bin/console", "bin/setup", "exe/#{name}"].each do |relative|
+        path = File.join(target, relative)
+        File.chmod(path, 0o755) if File.exists?(path)
       end
 
       if use_git
@@ -2821,9 +2923,19 @@ module Celerite
       end
 
       stdout.puts
+      guide = profile.starts_with?("2.") ? "https://bundler.io/guides/creating_gem.html" : "https://guides.rubygems.org/make-your-own-gem/"
       stdout.puts "Gem '#{name}' was successfully created. " \
-                  "For more information on making a RubyGem visit https://guides.rubygems.org/make-your-own-gem/"
+                  "For more information on making a RubyGem visit #{guide}"
       0
+    end
+
+    private def self.git_head_branch(target : String) : String
+      head = File.join(target, ".git", "HEAD")
+      return "main" unless File.file?(head)
+      line = File.read(head).strip
+      line.split("refs/heads/").last? || "main"
+    rescue
+      "main"
     end
 
     private def self.git_config(key : String) : String
