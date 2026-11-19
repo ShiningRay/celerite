@@ -4743,3 +4743,40 @@ oracle（4.0.24 与 2.7.2 语义一致；`file:///C:/…` 完整 legacy index，
 - 无锁 `file://` 双版本场景参考打印两次 `Resolving dependencies...`，celerite 一次；未纳入夹具。
 - install 期 `ensure_specs_are_compatible!` 在本轮构造下不可达，未构造出参考 exit 5；该路径仍仅有 unit 级覆盖。
 - 多 ABI/多 Ruby 宿主矩阵未验证（本机仅 Ruby 4.0.6）；全量 spec/全量差分未重跑。
+
+## 2026-11-19（M7(6) task-40：合成规模离线证据链）
+
+结论：新增测试专用合成索引与 interleaved 驱动，在 `file://` 上以 4.0.24 profile 跑 N=20/100/300；三种规模的锁文件与参考逐字一致，k=5 中位锁耗时比为 **1.39 / 1.22 / 1.33**（N=100/300 达标 ≤1.35；N=20 固定启动开销占主导，列为自检点）。install 侧我方随 N 变慢（2.26× / 3.19× / 4.24×），只存基线、不设门——参考侧没有可离线运行的性能套件。
+
+三件套与参考锚点：
+
+- 参考 `file://` 走 marshal 全索引，至少需要 `gems/<full>.gem`、`quick/Marshal.4.8/<full>.gemspec.rz`、`specs.4.8.gz`；缺 gemspec.rz 会 ENOENT，缺 gem 文件会 FileNotFoundError（task-23/task-31 已复现）。
+- 本生成器同时产出 compact `info/<name>` 与 `versions`，因此同一索引既可被参考全索引路径读取，也可被我方 compact 路径读取；我方缺 gem 文件时的 404/exit 7 路径见 `src/celerite/compact_index/cache.cr:610` 附近。
+- 生成器用 `Gem::Package.build` + `Gem::Indexer.new(out, build_compact: true).generate_index`，两者都来自本机 RubyGems，不是产品路径；脚本头已注明 test-only。
+- 参考没有 timing gate：`.upstream-specs/v4.0.24/bundler/spec/realworld/slow_perf_spec.rb:5-16` 标 `realworld: true`，被 `spec/support/filters.rb:23-24` 的 `config.filter_run_excluding realworld: true` 排除，且断言是 `DEBUG_RESOLVER` 的 `Solution found after 1 attempts`，不是耗时。
+
+实现：
+
+- `script/synthetic-index.rb`：`--count N --out DIR`，生成 `synth_0001..N`（版本 1.0.0）三件套及 `Gemfile.fragment`；重复运行会清空并重建目标目录。
+- `script/synthetic-scale`：默认 `20 100 300`、`--runs 3`；每轮删除 `Gemfile.lock`/`bundle` 后按奇偶交替先参考后我方（或反之），逐字节比较两份锁；两侧各自安装并核对 `synth_*` 目录与 `.gemspec` 数量必须等于 N；输出中位耗时表并写 `docs/benchmarks/results-<日期>.md`。HOME 保留以复用缓存，首轮为冷启动。锁比对用 Ruby 读二进制（msys 无 `cmp`/`diff`）；结果文件只用 ASCII，避免 msys 管道把 `≤`/破折号写成乱码。
+- `spec/synthetic_scale_lock_spec.cr`：N=8、运行时生成索引、不调参考；把索引 URL 归一为 `file:///__INDEX__/` 后与内嵌锁逐字比较；1 example / 0 failures，约 1.5s。
+
+实测（`docs/benchmarks/results-20261119.md`，k=5，interleaved）：
+
+| N | 锁 | 参考锁 ms | 我方锁 ms | 比值 | 参考 install ms | 我方 install ms |
+|---|---|---|---|---|---|---|
+| 20 | 逐字一致 1621 B | 823 | 1140 | 1.39 | 983 | 2221 |
+| 100 | 逐字一致 6982 B | 1028 | 1251 | 1.22 | 1813 | 5782 |
+| 300 | 逐字一致 20382 B | 1398 | 1862 | 1.33 | 3549 | 15036 |
+
+- 安装计数三种规模均为 20/20、100/100、300/300。
+- 锁长比调研基线更长（6982 vs 5084、20382 vs 14684），原因是合成 Gemfile 固定版本且我方锁带 CHECKSUMS 条目；两侧仍逐字一致。
+- k=3 重跑波动达 1.09–1.63（宿主抖动），k=5 更稳定；N=20 的 1.39 已作为自检点写进结果文件。
+
+门禁：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅 2 条既有 `File.executable?` deprecation）；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0；`spec/synthetic_scale_lock_spec.cr` 1 example / 0 failures；`git diff --cached --check` EXIT 0；`git diff 7cf4e6a..HEAD --check` EXIT 0。
+
+已声明差异 / 未验证：
+
+- 真 Rails 规模仍不可验证：需真实网络取依赖图、本机缺 `make`、msys 在 Low IL 下 `0xC0000022` 阻塞原生扩展（分段证据见 `docs/compat-report.md:1925-1933`）。
+- 合成索引证明的是「同规模锁与耗时」，不是「真实依赖图复杂度」；install 侧慢的根因未拆到 per-gem RPC/安装开销，仅登记基线。
+- 宿主抖动大；N=20 受固定启动开销影响，不作为达标点。全量 spec/全量差分未重跑。
