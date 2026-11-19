@@ -4646,3 +4646,36 @@ oracle（4.0.24 与 2.7.2 逐字一致，仅 `BUNDLED WITH` 缩进/安装计数�
 - triplet 的“不存在 git 源”场景 stderr/exit 已对齐，但 stdout 少参考的 `Fetching file:///…/repo` 一行（本机 `git` 子进程受 Low-IL `0xC0000022` 影响）；未做夹具。
 - 2.7.2 对含 `CHECKSUMS` 的锁执行 `check` 时会打印 `Resolving dependencies...` 且不改写；该组合未纳入差分夹具。
 - 未重跑全量 `crystal spec` / 全量差分；未在非 Windows/非 Low-IL 宿主验证。
+
+## 2026-11-19（M7(8) task-36：path 源默认 glob 与失败归属）
+
+参考锚点：`bundler-4.0.24/lib/bundler/source/path.rb:14`（`DEFAULT_GLOB = "{,*,*/*}.gemspec"`）、`:19`（`options["glob"] || DEFAULT_GLOB`）、`:45-49`（默认 glob 不写锁）、`:52-54`（`to_s` = ``source at `<path>` ``）；`source/git.rb:15` 同默认值；`resolver/base.rb:115-118`（锁内 spec 的 source 变化且新 source 无匹配 spec 时抛 `GemNotFound`，消息含 `ls.source`）；`resolver.rb:336,361`（未命中消息用依赖所属 source，而非主 rubygems remote）。
+
+oracle（4.0.24 与 2.7.2 逐字相同；`file://` 全量索引 + `path "vendor/mono"` 不写 `glob:`）：
+
+| 布局 | 结果 | 说明 |
+|---|---|---|
+| A `vendor/mono/mono_a.gemspec` | exit 0 | PATH 段 `remote: vendor/mono` + `specs: mono_a (0.1.0)` |
+| B `vendor/mono/gems/mono_a.gemspec` | exit 0 | 默认 glob 命中 `*/*.gemspec` |
+| C `vendor/mono/gems/mono_a/mono_a.gemspec` | exit 7 | stderr `Could not find gem 'mono_a' in source at \`vendor/mono\`.` |
+| D 同目录 `mono_a` + `mono_b` 两个 gemspec | exit 0 | 只锁 `mono_a (0.1.0)`，不因多 gemspec 报错 |
+| E `vendor/mono/d1/mono_a.gemspec` | exit 0 | 深度 1 命中 |
+| E2 `vendor/mono/d1/d2/mono_a.gemspec` | exit 7 | 深度 2 不命中，路径源归属文案同 C |
+| F `gems/*/*.gemspec` 显式 glob + C 布局 | exit 0 | 锁多写 `glob: gems/*/*.gemspec` |
+
+实现：
+- `assets/bridge/server.rb`：新增 `SOURCE_DEFAULT_GLOB = "{,*,*/*}.gemspec"`（注释要求与 `Resolution::DEFAULT_GLOB` 同步），`op_load_gemspec_dir` 的 fallback 由 `{,*}.gemspec` 改为该常量。
+- `src/celerite/resolution.cr`：`load_source_gem_spec` 在 glob 为 nil 时显式传 `DEFAULT_GLOB`，不再依赖桥的 fallback；`make_source` 为 PATH 依赖构造 `source_descriptions`（`source at \`<remote>\``）。
+- `src/celerite/resolver/source.cr`：`ResolutionSource` 接受可选的 `source_descriptions`，`source_description(package)` 先按包名查该表，未命中才回落到 rubygems remote 文案；GIT/PLUGIN 归属仍保持原 rubygems 文案（已声明未改）。
+
+测试与反假绿：
+- 新夹具 `path-glob-default-root`（A，`file-contains` PATH 段）、`path-glob-default-nested`（B，`file-equals-4.0.24`/`-2.7.2`）、`path-glob-default-deep-miss`（C，`stderr-contains` 路径源文案 + exit 7）。双 profile 各 **3 passed / 0 failed / 0 skipped**。
+- 回归双 profile 各 **10 passed / 0 failed / 0 skipped**：`path-glob-monorepo`、`install-local`(7)、`install-fresh`、`lock-noop`、`lock-print`、`install-check`、`install-frozen`(15)、`check-rewrites-lock`、`install-platforms-add-local`、`plugin-source-install`。
+- `spec/m7_path_glob_default_spec.cr` 2 examples；与 `m7_source_lock_options`、`m7_path_*`、`m7_lockfile_*`、`m7_check_*` 成组运行 **43 examples / 0 failures / 0 errors / 0 pending**（隔离 HOME 后；全局 `~/.bundle/config` 的 `BUNDLE_PATH: vendor/x` 会让 `m7_path_system_spec` 4 例在共享 HOME 下假失败，属环境）。
+- 反假绿：`C:/temp/celerite-pre36` 检出 `ab1c866` 编译旧二进制；B 正例旧代码 **FAIL**（exit 7，`in rubygems repository`），C 负例旧代码 stderr 为 rubygems 文案而非 `in source at`；当前二进制两例均 PASS。
+
+已声明差异 / 未验证：
+- 仅 PATH 归属改为 `source at`；GIT/PLUGIN 的未命中归属仍为 rubygems 文案。
+- `file://` 参考索引必须含 `specs.4.8.gz`；compact-only 索引会先得 exit 17（与 task-31 记录一致）。
+- E2 及更深布局的 not-found 行为已与参考对照；未为每个深度单独建夹具。
+- 私有 source 鉴权、磁盘错误/中断清理仍只能 spec 或未验证；本机 git 族仍受 Low-IL `0xC0000022` 限制；全量 spec/差分未重跑。
