@@ -299,6 +299,13 @@ def op_write_installed_spec(payload)
   # it the generated stub lacks `s.installed_by_version` (reference parity).
   spec.installed_by_version = Gem::VERSION if spec.respond_to?(:installed_by_version=)
   FileUtils.mkdir_p(File.dirname(destination))
+  # 2.7.2 also unpacks the installed plugin gem under `.bundle/plugin/gems`
+  # (`Gem::Installer#unpack`), so mirror that when the caller asks for it.
+  if payload["unpack"] == "true" && (gem_dir = payload["gem_dir"])
+    FileUtils.rm_rf(gem_dir)
+    FileUtils.mkdir_p(gem_dir)
+    Gem::Package.new(gem_path).extract_files(gem_dir)
+  end
   # RubyGems writes Ruby-format stub specifications (not Marshal)
   File.binwrite(destination, spec.to_ruby_for_cache)
   {
@@ -530,6 +537,51 @@ def op_plugin_source_specs(payload)
   { "remote" => remote, "specs" => specs }
 end
 
+# Installs one spec through a plugin source's own `install` implementation
+# (`plugin/api/source.rb:90`; `installer/gem_installer.rb:67-75`). The plugin
+# source decides where the gem lands; the bridge only offers the bundle path
+# the reference's `Bundler.bundle_path` would resolve to.
+def op_plugin_source_install(payload)
+  gemfile = payload["gemfile"]
+  remote = payload["remote"].to_s
+  full_name = payload["full_name"].to_s
+  bundle_root = payload["bundle_root"].to_s
+  raise ArgumentError, "missing gemfile path" unless gemfile
+
+  bridge_activate_bundler
+  require "bundler"
+  require "bundler/dsl"
+  require "pathname"
+  # Bundler's own install path has FileUtils loaded; plugin `install` hooks
+  # routinely use it without an explicit require.
+  require "fileutils"
+
+  if !bundle_root.empty?
+    # `bundle_root` is the ABI install root (`<bundle>/ruby/<abi>`), the same
+    # path reference `Bundler.bundle_path` exposes. Set it in memory only:
+    # `set_local` would persist `BUNDLE_PATH` into the project's
+    # `.bundle/config`, which the reference does not write here.
+    Bundler.instance_variable_set(:@bundle_path, Pathname.new(bundle_root))
+  end
+
+  builder = Bundler::Dsl.new
+  builder.eval_gemfile(gemfile, File.read(gemfile))
+  candidates = builder.dependencies.map(&:source).compact +
+               builder.instance_variable_get(:@sources).all_sources
+  source = candidates.uniq.find do |candidate|
+    defined?(Bundler::Plugin::API::Source) &&
+      candidate.is_a?(Bundler::Plugin::API::Source) &&
+      candidate.uri.to_s == remote
+  end
+  raise ArgumentError, "plugin source not found: #{remote}" unless source
+
+  spec = source.specs.find { |candidate| candidate.full_name == full_name }
+  raise ArgumentError, "plugin spec not found: #{full_name}" unless spec
+
+  message = source.install(spec, force: false, local: false, build_args: [], previous_spec: nil)
+  { "message" => message.nil? ? nil : message.to_s }
+end
+
 def serialize_source(source)
   # Plugin sources (`Bundler::Plugin::API::Source`) are not a Bundler::Source
   # subclass and their class name is the plugin's own class (e.g. `MPath`).
@@ -602,6 +654,7 @@ def bridge_dispatch(id, op, payload)
            when "exec_plugin_hook" then op_exec_plugin_hook(payload)
            when "plugin_gemfile_eval" then op_plugin_gemfile_eval(payload)
            when "plugin_source_specs" then op_plugin_source_specs(payload)
+           when "plugin_source_install" then op_plugin_source_install(payload)
   when "installed_specs" then op_installed_specs(payload)
     when "default_gem_spec" then op_default_gem_spec(payload)
            else

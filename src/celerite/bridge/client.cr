@@ -239,6 +239,18 @@ module Celerite
         )
       end
 
+      # Runs a plugin source's own `install` implementation
+      # (`plugin/api/source.rb:90`, `installer/gem_installer.rb:67-75`) and
+      # returns the optional post-install message.
+      def plugin_source_install(gemfile : String, remote : String, full_name : String,
+                                bundle_root : String) : String?
+        result = request("plugin_source_install", {
+          "gemfile" => gemfile, "remote" => remote,
+          "full_name" => full_name, "bundle_root" => bundle_root,
+        })
+        result["message"]?.try(&.as_s?)
+      end
+
       # Absolute paths of the gemspecs loaded by Gemfile `gemspec` directives,
       # in DSL order (reference: `Bundler::Dsl#gemspecs.map(&:loaded_from)`).
       def gemspec_paths(gemfile : String) : Array(String)
@@ -276,8 +288,8 @@ module Celerite
         }
       end
 
-      def write_installed_spec(gem_path : String, destination : String, gem_dir : String) : JSON::Any
-        request("write_installed_spec", {"gem_path" => gem_path, "destination" => destination, "gem_dir" => gem_dir})
+      def write_installed_spec(gem_path : String, destination : String, gem_dir : String, unpack : Bool = false) : JSON::Any
+        request("write_installed_spec", {"gem_path" => gem_path, "destination" => destination, "gem_dir" => gem_dir, "unpack" => unpack ? "true" : ""})
       end
 
       # `spec_name`/`spec_full_name` mirror the reference hook argument: the

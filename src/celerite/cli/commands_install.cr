@@ -117,12 +117,6 @@ module Celerite
           code = plugin_install_remote([name], [] of String, stdout, stderr, local_only: true)
         end
         return code unless code == 0
-        # Declared deviation: the success path for custom plugin sources needs
-        # the plugin loaded in the bridge process, which is out of scope here.
-        if name.starts_with?("bundler-source-")
-          stderr.puts "Installing plugin sources declared in the Gemfile is not supported by Celerite: #{name.sub("bundler-source-", "")}"
-          return 1
-        end
       end
       nil
     end
@@ -298,6 +292,19 @@ module Celerite
 
         # --no-lock: resolve from scratch every run (no reuse, no write).
         no_lock = rest.includes?("--no-lock")
+        # `Plugin::DSL#source` adds an inferred `bundler-source-<type>`
+        # dependency for every typed source (plugin/dsl.rb:39-49). Reference
+        # `install` resolves it like any other gem, so the lockfile reused from
+        # a previous `lock` (which does not record inferred deps) no longer
+        # matches and the plugin gem is fetched.
+        inferred_plugins = [] of String
+        if evaluation
+          inferred = evaluation.sources.compact_map do |src|
+            src.type == "Plugin" ? src.plugin_type : nil
+          end.map { |plugin_type| "bundler-source-#{plugin_type}" }
+          inferred_plugins = inferred
+          resolution.add_inferred_plugin_dependencies!(inferred) unless inferred.empty?
+        end
         reuse = (no_reuse || no_lock) ? false : resolution_can_reuse?(resolution)
         # A lockfile whose CHECKSUMS entries are missing/empty must be refreshed
         # from the index even when every gem is already installed
@@ -421,6 +428,9 @@ module Celerite
         # `install_events` itself is declared above so the retry notice can
         # release one pending `Fetching` line early.
         repaired_edges = false
+        plugin_messages = [] of {String, String}
+        hidden_plugins = [] of String
+        hidden_full_names = [] of String
         begin
           cached_paths = {} of String => String
           # Download every pending gem first, then install them (pure-Ruby
@@ -501,6 +511,80 @@ module Celerite
               line: "Installing #{spec.name} #{spec.version}#{platform_suffix(spec.platform)}#{native_suffix(bridge, nil)}",
             }
             installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum, true)
+          end
+
+          # Plugin sources install through the plugin's own `install` method
+          # (`plugin/api/source.rb:90`, `installer/gem_installer.rb:67-75`);
+          # the reference prints no Fetching/Installing pair for these, only a
+          # post-install message after the summary. The inferred
+          # `bundler-source-<type>` dependency becomes a registered plugin and
+          # is dropped from the lockfile (`plugin/dsl.rb:39-49`; measured).
+          bundle_root = gem_root
+          specs.select(&.source_type.==("PLUGIN")).each do |spec|
+            next if installer.installed?(spec.name, spec.version.to_s, spec.platform)
+            remote = spec.source_remote || spec.source_info.try(&.remote) || ""
+            message = bridge.plugin_source_install(definition.gemfile_path, remote, spec.full_name, bundle_root)
+            plugin_messages << {spec.name, message.not_nil!} if message && !message.empty?
+            locked_bundler = definition.lockfile_exists? ? definition.lockfile!.bundler_version : nil
+            if resolution.bridge_bundler_version.starts_with?("2.") || ENV["CELERITE_PROFILE_BUNDLER_VERSION"]?.try(&.starts_with?("2.")) || locked_bundler.try(&.starts_with?("2."))
+              root = File.join(File.dirname(definition.gemfile_path), ".bundle", "plugin")
+              cache_files = [] of String
+              {File.join(gem_root, "cache"), File.join(root, "cache")}.each do |dir|
+                next unless Dir.exists?(dir)
+                Dir.children(dir).select { |f| f.ends_with?(".gem") }.each { |f| cache_files << File.join(dir, f) }
+              end
+              cache_files.uniq.each do |gem_file|
+                full = File.basename(gem_file, ".gem")
+                gems_dir = File.join(root, "gems", full)
+                next if Dir.exists?(gems_dir)
+                bridge.write_installed_spec(gem_file, File.join(root, "specifications", "#{full}.gemspec"), gems_dir, unpack: true)
+              end
+            end
+            if plugin_type = spec.source_info.try(&.plugin_type)
+              inferred = "bundler-source-#{plugin_type}"
+              full_name = specs.find { |s| s.name == inferred }.try(&.full_name)
+              hidden_plugins << inferred
+              hidden_full_names << full_name if full_name
+              resolution.hide_inferred_plugins!([inferred])
+            end
+          end
+          unless hidden_plugins.empty?
+            specs.reject! { |spec| hidden_plugins.includes?(spec.name) }
+            # The reference installs inferred plugin gems under the plugin
+            # root (`Plugin::Installer#install_all_sources` sets
+            # GEM_HOME/GEM_PATH to `Plugin.root`): only the cached package and
+            # the installed specification remain, not a regular bundle gem.
+            plugin_root = File.join(File.dirname(definition.gemfile_path), ".bundle", "plugin")
+            %w[build_info doc extensions gems plugins cache specifications].each do |dir|
+              Dir.mkdir_p(File.join(plugin_root, dir))
+            end
+            hidden_full_names.each do |full_name|
+              gem_file = File.join(gem_root, "cache", "#{full_name}.gem")
+              next unless File.file?(gem_file)
+              FileUtils.cp(gem_file, File.join(plugin_root, "cache", "#{full_name}.gem"))
+              temp_gem_dir = File.join(plugin_root, "gems", full_name)
+              bridge.write_installed_spec(gem_file, File.join(plugin_root, "specifications", "#{full_name}.gemspec"), temp_gem_dir, unpack: true)
+              # 2.7.2 leaves the unpacked plugin gem under `.bundle/plugin/gems`;
+              # 4.0.24 keeps only the cache and the generated specification.
+              locked_bundler = definition.lockfile_exists? ? definition.lockfile!.bundler_version : nil
+              keep_unpacked = resolution.bridge_bundler_version.starts_with?("2.") || ENV["CELERITE_PROFILE_BUNDLER_VERSION"]?.try(&.starts_with?("2.")) || locked_bundler.try(&.starts_with?("2."))
+              FileUtils.rm_rf(temp_gem_dir) unless keep_unpacked
+            end
+          end
+
+          # 2.7.2's plugin installer also unpacks the plugin gem under
+          # `.bundle/plugin/gems` even when the plugin was pre-installed by the
+          # inferred-plugin pass above (which only copies cache/specification).
+          plugin_root = File.join(File.dirname(definition.gemfile_path), ".bundle", "plugin")
+          locked_bundler = definition.lockfile_exists? ? definition.lockfile!.bundler_version : nil
+          if resolution.bridge_bundler_version.starts_with?("2.") || ENV["CELERITE_PROFILE_BUNDLER_VERSION"]?.try(&.starts_with?("2.")) || locked_bundler.try(&.starts_with?("2."))
+            cache_dir = File.join(plugin_root, "cache")
+            (Dir.exists?(cache_dir) ? Dir.children(cache_dir).select(&.ends_with?(".gem")).map { |f| File.join(cache_dir, f) } : [] of String).each do |gem_file|
+              full_name = File.basename(gem_file, ".gem")
+              gems_dir = File.join(plugin_root, "gems", full_name)
+              next if Dir.exists?(gems_dir)
+              bridge.write_installed_spec(gem_file, File.join(plugin_root, "specifications", "#{full_name}.gemspec"), gems_dir, unpack: true)
+            end
           end
 
           # Locked-path repair (reference `spec_set.rb#materialize`): the lockfile
@@ -629,7 +713,7 @@ module Celerite
         end
 
         if summary
-          deps_count = resolution.evaluation.dependencies.count { |d| !d.gemspec_dev_dep }
+          deps_count = resolution.evaluation.dependencies.count { |d| !d.gemspec_dev_dep && !hidden_plugins.includes?(d.name) }
           gems_count = specs.size
           # 2.7.x counts the running Bundler; a switched run counts the
           # switched-to bundler instead
@@ -655,6 +739,10 @@ module Celerite
             # prints it back with `./` for paths below the working directory.
             relative = InstallPaths.base_path_relative_to_pwd(config, definition.project_root)
             stdout.puts "Bundled gems are installed into `#{relative.gsub(/\\/, "/")}`"
+          end
+          plugin_messages.each do |(plugin_name, message)|
+            stdout.puts "Post-install message from #{plugin_name}:"
+            stdout.puts message
           end
           print_cooldown_summary(resolution, stdout)
         end

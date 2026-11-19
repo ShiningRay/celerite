@@ -1267,7 +1267,8 @@ module Celerite
         source = non_gem_sources[name]?
         source_type = source ? source.type.upcase : "GEM"
         source_type = "PATH" if source_type == "GEMSPEC"
-        specs << ResolvedSpec.new(name, spec.version, spec.platform_ruby? ? nil : spec.platform.to_s, lock_deps, spec.checksum, 0, source_type, source, remote_for(name), spec.required_ruby_version, spec.required_rubygems_version)
+        source_remote = source ? (source.remote || "") : remote_for(name)
+        specs << ResolvedSpec.new(name, spec.version, spec.platform_ruby? ? nil : spec.platform.to_s, lock_deps, spec.checksum, 0, source_type, source, source_remote, spec.required_ruby_version, spec.required_rubygems_version)
       end
       specs.sort_by!(&.full_name)
       specs
@@ -1458,6 +1459,38 @@ module Celerite
     # each downloaded package in the lockfile even for file:// sources.
     property install_checksums : Hash(String, String) = {} of String => String
 
+    # Gems installed as source plugins are removed from the bundle lockfile
+    # after installation: the reference's inferred `bundler-source-<type>`
+    # dependency is registered as a plugin, not as a bundled gem
+    # (`plugin/dsl.rb:39-49`; measured lock after install).
+    @hidden_dependencies = Set(String).new
+
+    def hide_inferred_plugins!(names : Enumerable(String)) : Nil
+      names.each do |name|
+        @hidden_dependencies << name
+        @resolved_specs.reject! { |spec| spec.name == name }
+      end
+    end
+
+    # `Bundler::Plugin::DSL#source` (4.0.24
+    # bundler/lib/bundler/plugin/dsl.rb:39-49) turns every typed source into a
+    # top-level `bundler-source-<type>` dependency for install-time resolution.
+    # The lockfile never records these inferred dependencies, so they are added
+    # only to the evaluation used by `install` and hidden again by
+    # `hide_inferred_plugins!`.
+    def add_inferred_plugin_dependencies!(names : Enumerable(String)) : Nil
+      names.each do |name|
+        next if @evaluation.dependencies.any? { |dep| dep.name == name }
+        dep = Bridge::EvaluatedDependency.from_json({
+          "name" => name, "requirements" => [">= 0"], "groups" => ["default"],
+          "platforms" => [] of String, "autorequire" => nil,
+          "force_ruby_platform" => false, "gemspec_dev_dep" => false,
+          "source" => nil,
+        }.to_json)
+        @evaluation.dependencies << dep
+      end
+    end
+
     # Lockfile form of a PATH source remote (reference
     # `Bundler::Source::Path#lockfile_path`, source/path.rb:136-139, with
     # `relative_path` at :210-215): a project-relative path stays relative, an
@@ -1563,6 +1596,7 @@ module Celerite
 
       gem_sections_by_remote = {} of String => Array(Lockfile::Spec)
       @resolved_specs.select(&.source_type.==("GEM")).reject(&.name.==("bundler")).each do |spec|
+        next if @hidden_dependencies.includes?(spec.name)
         remote = spec.source_remote || primary_remote
         gem_sections_by_remote[remote] ||= [] of Lockfile::Spec
         gem_sections_by_remote[remote] << Lockfile::Spec.new(spec.name, spec.version.to_s, spec.platform, spec.dependencies)
@@ -1628,6 +1662,7 @@ module Celerite
       dep_section = Lockfile::DependenciesSection.new
       @evaluation.dependencies.each do |dep|
         next if dep.gemspec_dev_dep
+        next if @hidden_dependencies.includes?(dep.name)
         requirement = Gem::Requirement.new(dep.requirements)
         source_type = dep.source.try(&.type)
         pinned = !source_type.nil? && source_type != "Rubygems" && source_type != "Metadata"
@@ -1646,6 +1681,7 @@ module Celerite
         # index checksum.
         existing_checksums = @definition.lockfile_exists? ? @definition.lockfile!.checksums : [] of Lockfile::ChecksumEntry
         @resolved_specs.reject(&.name.==("bundler")).each do |spec|
+          next if @hidden_dependencies.includes?(spec.name)
           installed = @install_checksums["#{spec.name}-#{spec.version}"]?
           existing = existing_checksums.find do |c|
             c.name == spec.name && c.version == spec.version.to_s &&
@@ -1743,6 +1779,10 @@ module Celerite
         return @definition.lockfile_exists? && !@definition.lockfile!.checksums_section.nil?
       end
 
+      # 4.0.24 writes CHECKSUMS only when `lockfile_checksums` is enabled in
+      # config, or the lockfile already carries the section. A plain install
+      # with a lockfile that has no section must not introduce one; only
+      # `lock --add-checksums` (handled above) forces it.
       return false if @definition.config["lockfile_checksums"] != true
 
       return true unless @definition.lockfile_exists?
