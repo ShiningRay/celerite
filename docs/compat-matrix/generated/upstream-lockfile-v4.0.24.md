@@ -331,7 +331,7 @@ ruby -S rspec -r "$repo\script\upstream-specs-celerite-override.rb" spec/lock/lo
 | `fixture:missing-gem-files` | 0（原 11 条中 9 → artifice、1 → low-il、1 → product） |
 
 - product 候选 ①：`fills empty CHECKSUMS entries when not frozen, even if every gem is already installed`，期望 `  myrack (0.9.1) sha256=64a66fbc…`，实际 `  myrack (0.9.1)`（缺 sha256）。该缺口与 task-25 的 CHECKSUMS 回填相邻，但本轮未复跑确认（未确认）。（已被 task-32 取代：该例转为 env:artifice，报 `Could not reach host gem.repo2`，见下方“2026-11-19 二次重采集”；不是已确认的产品缺口。）
-- product 候选 ②/③：`is conservative with dependencies of git gems`（期望文本含 git init 输出）与 `keeps existing platforms in the lockfile`（celerite 报 `Your bundle only supports platforms ["java"] …`）；均可能受 harness/环境叠加，未证明为产品缺陷（未验证）。
+- product 候选 ②/③：`is conservative with dependencies of git gems`（期望文本含 git init 输出；task-34 修了 source 变更重解析判据，真 git 端到端未验证）与 `keeps existing platforms in the lockfile`（celerite 报 `Your bundle only supports platforms ["java"] …`；已被 task-33 处理：平台补全判据已修，端到端未复跑）；均可能受 harness/环境叠加，未证明为产品缺陷（未验证）。
 - 采集时点：2026-11-19；`.upstream-specs/rspec-output.json` 早于 task-25…29，故 task-25…29 的产品变化未反映在上表。2.7.2 upstream profile 不适用（`.upstream-specs/v2.7.2` 为空目录，见 2026-11-13 节）。
 - 复现条件：非 Low-IL 宿主 + 完整 `install_test_deps` 链；当前环境仍为 Low-IL，故本基线只覆盖环境允许的部分，不能当作全绿声明。
 
@@ -361,7 +361,7 @@ ruby -S rspec -r "$repo\script\upstream-specs-celerite-override.rb" spec/lock/lo
 候选去向：
 
 1. ① `fills empty CHECKSUMS entries when not frozen, even if every gem is already installed`：现为 env:artifice，**未验证**。sha256 回填语义已由 task-25/26 的 `checksums-empty-*`、`lock-add-checksums*` 差分覆盖；上游例本身无法在本环境给出通过/失败结论。
-2. ② `is conservative with dependencies of git gems`：**真产品候选，未修**。期望 `revision: 788d10f2cb8d75b9697bc94ed6caddb4ddedcd47` / `tag: v4.0.8` / `ckeditor (4.0.8)`，实得 `revision: b8909d553c26a866d7ac69b669b8b4c1d0a02e71` / `tag: v4.0.7` / `ckeditor (4.0.7)`（`rspec-output.txt` 第 2785 行起 diff）。上游锚点 `spec/lock/lockfile_spec.rb:658`；最小复现：本地 git 仓库打 v4.0.7/v4.0.8 两个 tag，Gemfile `gem "ckeditor", tag: "v4.0.8", git: ...`，`celerite install` 后检查 lock 的 revision。
-3. ③ `keeps existing platforms in the lockfile`：**真产品候选，未修**。参考在 `PLATFORMS` 仅 `java` 时安装会保留 `java` 并补本地平台；celerite 直接失败：`Your bundle only supports platforms ["java"] but your local platform is x64-mingw-ucrt. Add the current platform to the lockfile with \`bundle lock --add-platform x64-mingw-ucrt\` and try again.`（`rspec-output.txt:3260-3261`）。上游锚点 `spec/lock/lockfile_spec.rb:1222`；最小复现：lock 的 `PLATFORMS` 只写 `java`，Gemfile 依赖 `myrack`，`celerite install`。
+2. ② `is conservative with dependencies of git gems`：**真产品候选；task-34 已修 source 变更重解析判据，真 git 端到端未验证**。期望 `revision: 788d10f2cb8d75b9697bc94ed6caddb4ddedcd47` / `tag: v4.0.8` / `ckeditor (4.0.8)`，实得 `revision: b8909d553c26a866d7ac69b669b8b4c1d0a02e71` / `tag: v4.0.7` / `ckeditor (4.0.7)`（`rspec-output.txt` 第 2785 行起 diff）。上游锚点 `spec/lock/lockfile_spec.rb:658`；最小复现：本地 git 仓库打 v4.0.7/v4.0.8 两个 tag，Gemfile `gem "ckeditor", tag: "v4.0.8", git: ...`，`celerite install` 后检查 lock 的 revision。
+3. ③ `keeps existing platforms in the lockfile`：**真产品候选；task-33 已修平台补全判据，端到端未复跑**。参考在 `PLATFORMS` 仅 `java` 时安装会保留 `java` 并补本地平台；celerite 直接失败：`Your bundle only supports platforms ["java"] but your local platform is x64-mingw-ucrt. Add the current platform to the lockfile with \`bundle lock --add-platform x64-mingw-ucrt\` and try again.`（`rspec-output.txt:3260-3261`）。上游锚点 `spec/lock/lockfile_spec.rb:1222`；最小复现：lock 的 `PLATFORMS` 只写 `java`，Gemfile 依赖 `myrack`，`celerite install`。
 
 复现与限制：`bash script/upstream-specs` 需 MSYS bash、`TMPDIR=/c/temp`、非 Low-IL 宿主；当前仍为 Low-IL，`install_test_deps` 完整链（sinatra/artifice）未安装，不能当作全绿声明。历史节不改。
