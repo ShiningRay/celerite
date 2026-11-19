@@ -490,7 +490,10 @@ module Celerite
 
     # Loads the spec of a path/git source gem (gemspec in the given dir).
     def load_source_gem_spec(name : String, dir : String, glob : String?) : Resolver::IndexSpec?
-      info = @bridge.not_nil!.load_gemspec_dir(dir, glob)
+      # Reference source/path.rb:19 and source/git.rb:15 default the glob to
+      # DEFAULT_GLOB; pass it explicitly so the bridge never falls back to a
+      # different shallow pattern.
+      info = @bridge.not_nil!.load_gemspec_dir(dir, glob || DEFAULT_GLOB)
       version = Gem::Version.new(info.version)
       platform = info.platform == "ruby" ? Gem::Platform::RUBY : Gem::Platform.new(info.platform)
       deps = (info.dependencies || [] of JSON::Any).map do |d|
@@ -1154,6 +1157,15 @@ module Celerite
                     else
                       "rubygems repository #{primary_remote} or installed locally"
                     end
+      # Reference `Source::Path#to_s` = "source at `<path>`" and
+      # `Resolver#raise_not_found!` prints the dependency's own source. Map only
+      # PATH dependencies here; GIT/PLUGIN attribution stays on the legacy
+      # rubygems wording (declared compatibility gap).
+      source_descriptions = {} of String => String
+      non_gem_sources.each do |name, info|
+        next unless info.type == "Path"
+        source_descriptions[name] = "source at `#{info.remote}`"
+      end
       source = Resolver::ResolutionSource.new(
         File.basename(@definition.gemfile_path),
         description,
@@ -1169,6 +1181,7 @@ module Celerite
         env.engine,
         env.engine_version,
         env.patchlevel,
+        source_descriptions,
       )
       prerelease_exceptions.each { |name| source.package_consider_prereleases(name) }
       source

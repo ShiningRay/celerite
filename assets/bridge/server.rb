@@ -391,11 +391,17 @@ rescue StandardError => e
   { "error_class" => e.class.name, "error" => e.message, "backtrace" => (e.backtrace || []) }
 end
 
+# Reference `Source::Path::DEFAULT_GLOB` / `Source::Git::DEFAULT_GLOB`
+# (bundler-4.0.24 source/path.rb:14, source/git.rb:15). Must stay in sync with
+# `Resolution::DEFAULT_GLOB` in src/celerite/resolution.cr: protocol boundary
+# means the two languages cannot literally share the constant.
+SOURCE_DEFAULT_GLOB = "{,*,*/*}.gemspec"
+
 # Load the gemspec of a directory source (path gems, git checkouts).
 def op_load_gemspec_dir(payload)
   require "rubygems/specification"
   dir = payload["dir"].tr("\\", "/")
-  glob = payload["glob"] || "{,*}.gemspec"
+  glob = payload["glob"] || SOURCE_DEFAULT_GLOB
   candidates = Dir.glob(File.join(dir, glob)).sort
   raise "no gemspec in #{dir}" if candidates.empty?
   spec = Gem::Specification.load(candidates.first)

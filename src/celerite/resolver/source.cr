@@ -75,7 +75,8 @@ module Celerite
                      @bridge_rubygems_version : String = "4.0.16",
                      @bridge_ruby_engine : String = "ruby",
                      @bridge_ruby_engine_version : String = "4.0.6",
-                     @bridge_ruby_patchlevel : String? = nil)
+                     @bridge_ruby_patchlevel : String? = nil,
+                     @source_descriptions : Hash(String, String)? = nil)
         @root = RootPackage.new(@root_name)
         @packages = {} of String => Package
         @all_versions = {} of Package => Array(Candidate)
@@ -165,7 +166,10 @@ module Celerite
       end
 
       def source_description(package : Package) : String
-        @remote_description
+        # Reference `Resolver#raise_not_found!` prints the dependency's own
+        # source (`Source::Path#to_s` = "source at `<path>`"), not the primary
+        # rubygems remote, so a missing path gem is attributed to that source.
+        @source_descriptions.try(&.[package.name]?) || @remote_description
       end
 
       # ------------------------------------------------------------------
