@@ -77,6 +77,23 @@ module Celerite
       {} of String => String
     end
 
+    # source type -> plugin name, preserving the index's insertion order
+    # (`sources:` in the reference index; plugin/index.rb:62-64, :186-200).
+    def self.sources(index_path : String) : Hash(String, String)
+      result = {} of String => String
+      return result unless File.file?(index_path)
+
+      data = YAML.parse(File.read(index_path))
+      if section = data["sources"]?
+        if map = section.as_h?
+          map.each { |key, value| result[key.as_s] = value.as_s }
+        end
+      end
+      result
+    rescue
+      {} of String => String
+    end
+
     # Declarations made by a plugin's `plugins.rb`: commands registered through
     # `Bundler::Plugin::API.command` and hook events registered through
     # `Bundler::Plugin.add_hook` (reference: bundler-4.0.24/lib/bundler/plugin.rb:207-220
@@ -84,10 +101,10 @@ module Celerite
     # `error` carries the load failure reported by the probe (`{"error": ...}`),
     # e.g. an undefined hook event that the reference raises for in plugin.rb:213-220;
     # both arrays are empty in that case and callers must not treat it as success.
-    alias Declared = NamedTuple(commands: Array(String), hooks: Array(String), error: String?)
+    alias Declared = NamedTuple(commands: Array(String), hooks: Array(String), sources: Array(String), error: String?)
 
     def self.declared(plugins_rb_path : String, load_paths : Array(String) = [] of String) : Declared
-      none = {commands: [] of String, hooks: [] of String, error: nil.as(String?)}
+      none = {commands: [] of String, hooks: [] of String, sources: [] of String, error: nil.as(String?)}
       return none unless File.file?(plugins_rb_path)
 
       begin
@@ -111,11 +128,11 @@ module Celerite
         # A malformed plugin makes the probe exit non-zero after printing the
         # error object; surface it instead of silently dropping the declarations.
         if failure = parsed["error"]?
-          return {commands: [] of String, hooks: [] of String, error: failure.to_s.as(String?)}
+          return {commands: [] of String, hooks: [] of String, sources: [] of String, error: failure.to_s.as(String?)}
         end
         return none unless process.success?
 
-        {commands: string_array(parsed, "commands"), hooks: string_array(parsed, "hooks"), error: nil.as(String?)}
+        {commands: string_array(parsed, "commands"), hooks: string_array(parsed, "hooks"), sources: string_array(parsed, "sources"), error: nil.as(String?)}
       rescue
         none
       end

@@ -659,6 +659,11 @@ module Celerite
     # (pinned `install --local`; the compact index is never consulted).
     property local_only : Bool = false
     property prefer_local : Bool = false
+    # `Plugin.gemfile_install` resolves the inferred `bundler-source-<type>`
+    # dependencies with `sources.cached!` + `remotely!` only, so
+    # `Source::Rubygems#to_s` reports "…, cached gems or installed locally"
+    # (rubygems.rb:122-136). Install sets this while probing inferred plugins.
+    property remote_only : Bool = false
     @installed_local_specs : Array(Resolver::IndexSpec)? = nil
     # full_name of the installed gems that supplied `--local` candidates; the
     # installer skips these (they are already present in this GEM_HOME).
@@ -1319,6 +1324,8 @@ module Celerite
       # is what `fund`/`clean`/`binstubs` report for a missing gem.
       description = if @local_only
                       "locally installed gems"
+                    elsif @remote_only
+                      "rubygems repository #{primary_remote}, cached gems or installed locally"
                     else
                       "rubygems repository #{primary_remote} or installed locally"
                     end

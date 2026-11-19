@@ -32,7 +32,14 @@ if mode == "--commands"
     load plugins_rb
     commands = Bundler::Plugin.instance_variable_get(:@commands) || {}
     hooks = Bundler::Plugin.instance_variable_get(:@hooks_by_event) || {}
-    puts JSON.generate({ "commands" => commands.keys, "hooks" => hooks.keys.map(&:to_s) })
+    # `Bundler::Plugin::API.source "<type>"` records the type in `@sources`
+    # (plugin.rb:181-183); register_plugin copies those keys into the index
+    # under `sources:` (plugin.rb:333, plugin/index.rb:62-64), which is what
+    # `Plugin.source?(type)` later checks when a Gemfile declares
+    # `source "...", type: :<type>` (dsl.rb:124-126).
+    sources = Bundler::Plugin.instance_variable_get(:@sources) || {}
+    puts JSON.generate({ "commands" => commands.keys, "hooks" => hooks.keys.map(&:to_s),
+                         "sources" => sources.keys.map(&:to_s) })
   rescue Exception => e # rubocop:disable Lint/RescueException
     puts JSON.generate({ "error" => "#{e.class}: #{e.message}" })
     exit 1

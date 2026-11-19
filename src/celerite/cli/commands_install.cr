@@ -310,6 +310,10 @@ module Celerite
           end.map { |plugin_type| "bundler-source-#{plugin_type}" }
           inferred_plugins = inferred
           resolution.add_inferred_plugin_dependencies!(inferred) unless inferred.empty?
+          # Reference resolves these inside `Plugin.gemfile_install`, whose
+          # definition only allows remote/cached sources (no local), so the
+          # missing-gem message reads "…, cached gems or installed locally".
+          resolution.remote_only = !inferred.empty?
         end
         reuse = (no_reuse || no_lock) ? false : resolution_can_reuse?(resolution)
         # A lockfile whose CHECKSUMS entries are missing/empty must be refreshed

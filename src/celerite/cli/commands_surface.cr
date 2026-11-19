@@ -1564,6 +1564,10 @@ module Celerite
         (index["hooks"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any).each do |key, value|
           hooks_map[key.as_s] = value.as_a?.try(&.map(&.as_s)) || [] of String
         end
+        sources_map = {} of String => String
+        (index["sources"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any).each do |key, value|
+          sources_map[key.as_s] = value.as_s
+        end
 
         registered = PluginCommands.commands(index_path)
         declared = PluginCommands.declared(File.join(root_dir, "plugins.rb"), [lib_dir])
@@ -1588,6 +1592,21 @@ module Celerite
         end
         merged_commands = registered.dup
         declared[:commands].each { |command| merged_commands[command] = info.name }
+        conflict_source = declared[:sources].find do |type|
+          owner = sources_map[type]?
+          !owner.nil? && owner != info.name
+        end
+        if conflict = conflict_source
+          message = "Failed to install plugin `#{info.name}`, due to Bundler::Plugin::Index::SourceConflict " \
+                    "(Source(s) `#{conflict}` declared by #{info.name} are already registered.)"
+          stderr.puts Commands.word_wrap(message, CLI.terminal_width)
+          return 29
+        end
+        # Source types a plugin registers through `Bundler::Plugin::API.source`
+        # are recorded in the index (`sources:` = type -> plugin,
+        # plugin/index.rb:62-64), which is what makes a later
+        # `source "...", type: :<type>` block resolvable (dsl.rb:124-126).
+        declared[:sources].each { |type| sources_map[type] = info.name }
         first_install = !plugin_path_map.has_key?(info.name)
         load_path_map[info.name] = [lib_dir]
         plugin_path_map[info.name] = root_dir
@@ -1618,6 +1637,7 @@ module Celerite
           y.puts "plugin_paths:"
           plugin_path_map.each { |key, value| y.puts "  #{key}: #{value.inspect}" }
           y.puts "sources:"
+          sources_map.each { |type, owner| y.puts "  #{type}: #{owner.inspect}" }
         end
         # The plugin tree is created only once the plugin is known to load; a
         # malformed plugin (undefined hook event) therefore leaves the project
@@ -1763,6 +1783,11 @@ module Celerite
           definition = Definition.build
           resolution = Resolution.new(definition, false, bridge)
           resolution.local_only = local_only
+          # `Plugin::Installer` resolves against remote/cached sources only
+          # (the definition never calls `local!`), so the reference GemNotFound
+          # message reads "…, cached gems or installed locally"
+          # (source/rubygems.rb:122-136).
+          resolution.remote_only = !local_only
           resolution.progress = stdout
           stdin_specs = resolution.resolve!
         rescue ex : Error
@@ -1887,6 +1912,10 @@ module Celerite
           (index["hooks"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any).each do |key, value|
             hooks_map[key.as_s] = value.as_a?.try(&.map(&.as_s)) || [] of String
           end
+          sources_map = {} of String => String
+          (index["sources"]?.try(&.as_h?) || {} of YAML::Any => YAML::Any).each do |key, value|
+            sources_map[key.as_s] = value.as_s
+          end
           conflict_command = declared[:commands].find do |command|
             owner = registered[command]?
             !owner.nil? && owner != spec.name
@@ -1899,6 +1928,19 @@ module Celerite
           end
           merged_commands = registered.dup
           declared[:commands].each { |command| merged_commands[command] = spec.name }
+          conflict_source = declared[:sources].find do |type|
+            owner = sources_map[type]?
+            !owner.nil? && owner != spec.name
+          end
+          if conflict = conflict_source
+            message = "Failed to install plugin `#{spec.name}`, due to Bundler::Plugin::Index::SourceConflict " \
+                      "(Source(s) `#{conflict}` declared by #{spec.name} are already registered.)"
+            stderr.puts Commands.word_wrap(message, CLI.terminal_width)
+            return 29
+          end
+          # `sources:` records the types registered through
+          # `Bundler::Plugin::API.source` (plugin/index.rb:62-64).
+          declared[:sources].each { |type| sources_map[type] = spec.name }
           first_install = !plugin_path_map.has_key?(spec.name)
           load_path_map[spec.name] = [lib_dir]
           plugin_path_map[spec.name] = gem_dir
@@ -1925,6 +1967,7 @@ module Celerite
             y.puts "plugin_paths:"
             plugin_path_map.each { |key, value| y.puts "  #{key}: #{value.inspect}" }
             y.puts "sources:"
+            sources_map.each { |type, owner| y.puts "  #{type}: #{owner.inspect}" }
           end
           File.write(index_path, yaml)
           stdout.puts "Installed plugin #{spec.name}" if first_install
