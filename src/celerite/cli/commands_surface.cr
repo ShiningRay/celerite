@@ -879,21 +879,28 @@ module Celerite
       # fallback search below (which used to make this order-dependent).
       if (source.nil? || source.type == "GEM") && InstallPaths.system_gems?(definition.config)
         if system_dir = system_gem_search_dirs.first?
-          gem_dir = File.join(system_dir, "gems", spec.full_name)
-          return gem_dir if Dir.exists?(gem_dir)
+          if installed_spec_file?(File.join(system_dir, "specifications"), spec.full_name)
+            return File.join(system_dir, "gems", spec.full_name)
+          end
         end
       end
 
-      # Default: RubyGems-installed spec under bundle install path.
+      # Default: RubyGems-installed spec under bundle install path. The
+      # reference materializes a `LazySpecification` through
+      # `Gem::Specification.stubs_for`, i.e. the installed specification file
+      # (`<root>/specifications/<full_name>.gemspec`), not the extracted gem
+      # directory. A spec file without its `gems/<full_name>` directory is
+      # still "installed" for check/list (and `show` warns), while a directory
+      # without its specification is missing. See `cli/check.rb:14-31`,
+      # `definition.rb:260-262`, `spec_set.rb:154-162`.
       install_path = InstallPaths.install_path(definition.config)
-      ruby_root = File.join(InstallPaths.install_path(definition.config), "ruby")
+      ruby_root = File.join(install_path, "ruby")
       if Dir.exists?(ruby_root)
         Dir.each_child(ruby_root) do |abi|
-          gem_dir = File.join(ruby_root, abi, "gems", spec.full_name)
-          # For read-only commands (check/list/show/info/doctor), treat extracted
-          # gem contents as installed even if the installed specification file is
-          # missing from this layout.
-          return gem_dir if Dir.exists?(gem_dir)
+          abi_root = File.join(ruby_root, abi)
+          if installed_spec_file?(File.join(abi_root, "specifications"), spec.full_name)
+            return File.join(abi_root, "gems", spec.full_name)
+          end
         end
       end
 
@@ -906,11 +913,18 @@ module Celerite
       # gem that only exists in `Gem.dir` as missing).
       if (source.nil? || source.type == "GEM") && system_gem_fallback_allowed?(definition)
         system_gem_search_dirs.each do |base|
-          gem_dir = File.join(base, "gems", spec.full_name)
-          return gem_dir if Dir.exists?(gem_dir)
+          if installed_spec_file?(File.join(base, "specifications"), spec.full_name)
+            return File.join(base, "gems", spec.full_name)
+          end
         end
       end
       nil
+    end
+
+    private def self.installed_spec_file?(specifications_dir : String, full_name : String) : Bool
+      File.file?(File.join(specifications_dir, "#{full_name}.gemspec"))
+    rescue
+      false
     end
 
     # System gem dirs hold the bundle when no custom `path` is configured (the

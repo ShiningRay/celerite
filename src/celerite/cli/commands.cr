@@ -1845,6 +1845,12 @@ module Celerite
 
       if command == "show" && rest.includes?("--paths")
         if gem_dir = installed_gem_dir(definition, spec, lockfile)
+          # `cli/show.rb:25-28` guards the path print the same way as the plain
+          # form: a specification without its extracted directory warns.
+          unless Dir.exists?(gem_dir)
+            stderr.puts "The gem #{name} is missing. It should be installed at #{display_path(gem_dir)}, but was not found"
+            return 0
+          end
           stdout.puts display_path(gem_dir)
           return 0
         end
@@ -1861,6 +1867,13 @@ module Celerite
           # Reference `bundle show <gem>` prints only the installed gem path;
           # detailed metadata belongs to `bundle info`.
           if command == "show"
+            # `cli/show.rb:25-28`: materialization succeeds as soon as the
+            # installed specification exists, so a spec without its extracted
+            # directory warns instead of failing.
+            unless Dir.exists?(gem_dir)
+              stderr.puts "The gem #{name} is missing. It should be installed at #{display_path(gem_dir)}, but was not found"
+              return 0
+            end
             stdout.puts display_path(gem_dir)
             return 0
           end
