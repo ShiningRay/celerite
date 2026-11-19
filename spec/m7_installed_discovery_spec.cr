@@ -160,6 +160,24 @@ describe "M7 installed gem discovery" do
     end
   end
 
+  it "info warns and keeps gemspec information when the spec exists but the gem dir was deleted" do
+    with_project(project_files(LOCKFILE_TEXT, {
+      "vendor/bundle/ruby/3.4.0/specifications/json_pure-2.8.1.gemspec" => "Gem::Specification.new\n",
+    })) do
+      code, out, err = capture_command { |o, e| Celerite::Commands.show_info("info", o, e, ["json_pure"]) }
+      code.should eq(0)
+      out.should eq("")
+      err.should contain("The gem json_pure is missing. Gemspec information is still available though:\n")
+      err.should contain("  * json_pure (2.8.1)\n")
+      err.should contain("\tPath: ")
+
+      path_code, path_out, path_err = capture_command { |o, e| Celerite::Commands.show_info("info", o, e, ["--path", "json_pure"]) }
+      path_code.should eq(0)
+      path_out.should eq("")
+      path_err.should contain("The gem json_pure is missing. It should be installed at ")
+    end
+  end
+
   it "check still reports a missing gem when neither dir nor specification exists" do
     with_project(project_files(LOCKFILE_TEXT)) do
       code, out, err = capture_command { |o, e| Celerite::Commands.check(o, e, [] of String) }
