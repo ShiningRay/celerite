@@ -4321,3 +4321,27 @@ installed locally.
 
 
 **已声明差异/未验证**：`lock --local` 的参考 CLI 行为未单独取 oracle（仅按 `empty_checksums_actionable?` 与 spec 断言）；frozen 模式下空条目的措辞/时序未实测；4.0.24 的 bundler 自身校验和来自本机 gem 缓存，若缓存缺失则无法生成该行（参考同样依赖本地 bundler gem）；差分只覆盖一个依赖与 `json_pure`/`bundler` 两条空条目，多平台/多 gem 组合未单独覆盖；全量 spec 与全量差分未重跑。checkbox 保持 `[ ]`。
+
+## 2026-11-19（M7(3) task-27：`bundle gem` 选项面与 `--help` 对齐）
+
+**范围**：`bundle gem` 的 `--help`、枚举选项、MIT/COC/changelog/exe/ext 模板分支与 Thor 的枚举/未知开关拒绝，对齐 4.0.24，2.7.2 共享同一套语义（Go 扩展与 `--rubocop` 段按版本区分）。`--edit`/`--bundle` 属交互/网络副作用，显式报“不支持 + 参考行为 + exit 1”，不静默忽略。
+
+**oracle（本机 Ruby 4.0.6；`ruby -S bundle _<ver>_ gem …`，隔离 HOME）**
+
+| 场景 | 4.0.24 | 2.7.2 |
+| --- | --- | --- |
+| `gem --help` | exit 0；manpage 6060 字节，含 `--ext=c/go/rust`，无 `--rubocop` 段 | exit 0；6100 字节，含 `--ext=c/rust` 与 `--rubocop` 段 |
+| 组合（`--test=rspec --linter=rubocop --ci=github --mit --exe --no-git --github-username=testuser`） | exit 0；`Creating gem 'foo'...`、三行 `… is already configured, ignoring … flag.`、`MIT License enabled in config`、`RuboCop enabled in config`，生成 `.github/workflows/main.yml`、`.rubocop.yml`、`LICENSE.txt`、`exe/foo`、`spec/foo_spec.rb` | 同上（成功 URL 为 `https://bundler.io/guides/creating_gem.html`） |
+| 枚举/未知开关 | `--test=minitestx` exit 15 `Expected '--test' to be one of rspec, minitest, test-unit; got minitestx`；`--bogus` exit 15 `Unknown switches "--bogus"` | 逐字一致 |
+| 扩展 | `--ext=c` 生成 `ext/foo/{extconf.rb,foo.c,foo.h}`；`--ext=rust` 生成 `Cargo.toml`、`ext/foo/{Cargo.toml,build.rs,extconf.rb,src/lib.rs}` | `--ext=c` 同左；`--ext=rust` 无 `build.rs`（2.7.2 模板集） |
+| 已存在目标 | 目录存在→继续写入；仅同名文件存在→exit 32 `Couldn't create a new gem named \`foo\` because there's an existing file named \`foo\`.` | 同左 |
+
+**参考锚点**：4.0.24 `.upstream-specs/v4.0.24/bundler/lib/bundler/cli.rb:589-602`（选项定义）、`:14`（`EXTENSIONS=["c","rust","go"]`）、`lib/bundler/cli/gem.rb:62-98`（config/template map）、`:118-155`（test）、`:157-171`（CI）、`:173-201`（mit/coc/changelog）、`:203-215`（linter）、`:217-220`（exe）、`:222-250`（c/rust/go ext）、`:252-255`（已存在文件）、`:257-262`（git init/branch）、`:269-273`（chmod）、`:289-290`（成功文案）；2.7.2 安装 gem `bundler-2.7.2/lib/bundler/cli.rb:538-551`、`cli/gem.rb:228-232`（无 build.rs）、`:419-434`（`--no-rubocop` 文案为 `use --linter`）。
+
+**实现**：`src/celerite/gem_template.cr` 改为调用 `assets/gem_render.rb`（复用 bundler 自身的 ERB 模板集；`assets/gem_templates/<profile>/newgem` 从安装 gem 逐字复制，`assets/gem_help/*.txt` 为 oracle 输出）；`src/celerite/cli/commands_surface.cr` 的 `gem` 改为完整选项解析（help、`--k=v`/分写、枚举、`--no-*`、`--github-username`）、模板分支与成功文案；`src/celerite/cli/commands.cr` 的 `GEM_SWITCH_FLAGS/VALUES` 补齐 `-t` 与 `--no-test/--no-ci/--no-linter/--no-ext`。
+
+**测试/夹具**：`spec/m7_gem_options_spec.cr` 新增 4 例（help 逐字、组合模板、Rust 扩展、未知开关/多 positional）；`spec/m7_gem_spec.cr` 的选项拒绝例改为 Thor 枚举文案。差分新增 `gem-options`/`gem-invalid`/`gem-ext`（`file-contains` 断言关键文件内容）；4.0.24 3/0，2.7.2 3/0；既有 `gem-default`/`gem-no-git` 4.0.24 2/0（2.7.2 沿用既有 skip 声明）。
+
+**门禁**：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告）；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0；`git diff --check` EXIT 0；定向 spec 15 examples / 0 failures / 0 errors / 0 pending。
+
+**已声明差异/未验证**：交互式提示（未指定 test/ci/linter/mit/coc/changelog 时的问卷）未实现，默认值按“不生成”处理；`--edit`/`--bundle` 只报不支持；2.7.2 的 `gem-default`/`gem-no-git` 因参考模板与成功 URL 历史差异继续 skip（4.0.24 目标已对齐）；未跑全量 spec 与全量差分。checkbox 保持 `[ ]`。
