@@ -5231,3 +5231,15 @@ spec 家族 `m7_git_source_reuse_spec`、`m7_source_lock_options_spec`、`m7_loc
 - 无 Ruby 解释器时的文本回退路径只做转义解码，不还原 Ruby 的全部字面量语义（例如 `#{...}` 插值、heredoc、`%q`/`%Q` 边界）；主路径始终走 bridge。
 - 未验证第三方 gemspec 中 `metadata` 使用 `\u{...}`/`\xNN` 等罕见转义的真实生态案例；spec 已覆盖解码函数本身，但无差分夹具。
 - 未重跑全量 `crystal spec`、全量差分与上游 64 例套件。
+
+## 2026-11-20（M7(8) task-51：`bundle cache` 根目录与 `BUNDLE_APP_CONFIG`）
+
+- 参考语义：`Bundler.app_cache` = `root.join(settings.app_cache_path)`（`bundler.rb:340-343`、`settings.rb:304-306`），`--cache-path` 相对根解析；`BUNDLE_APP_CONFIG` 绝对或相对根优先于 `<root>/.bundle`（`bundler.rb:326-339`），插件根同源。
+- 修复：`src/celerite/cli/commands_install.cr` 缓存目标改为 `File.dirname(definition.gemfile_path)` 下的 `vendor/cache`（`--cache-path` 相对根）；`src/celerite/config.cr` 新增 `Config.app_config_path`/`app_config_root`；`plugin_commands.cr`、`plugin_hooks.cr`、`commands.cr`、`commands_surface.cr`、`commands_install.cr` 的插件根统一走该函数。
+- 插件缺省措辞：`plugin_install_remote` 增加 `remote_only` 形参，仅 `Plugin.gemfile_install` 路径且已注册 source 时启用，恢复 `plugin-source`/`plugin-gemfile-missing` 的旧措辞并保持 `plugin-source-gem-end-to-end` 的 `, cached gems or installed locally`。
+- 差分工具：`script/differential` 支持每夹具 `env` 文件（`KEY=VALUE`，双侧注入），头部 N10 说明。
+- oracle（4.0.24/2.7.2，cwd≠Gemfile 根）：参考把缓存写入 `<root>/vendor/cache`，我方旧实现写 `<cwd>/vendor/cache`；`config get` 显示 `<app>/appcfg/config`，旧实现 `.bundle/config`；相对 `BUNDLE_APP_CONFIG=relcfg` 解析为 `<app>/relcfg`。
+- 夹具 `cache-into-gemfile-root`、`config-app-config-env` 双 profile PASS；旧二进制 2 FAIL（缓存落 cwd、配置落 `.bundle`）。
+- spec `spec/m7_cache_path_spec.cr` 3 examples、`spec/m7_app_config_env_spec.cr` 4 examples；12 个 cache/config/plugin 家族 spec 文件逐个跑合计 60 examples / 0 failures（合并单进程运行时偶发崩溃，已改逐个跑）。
+- 回归：cache/config/plugin 夹具 4.0.24 42 passed/3 failed（`cache-all-platforms`、`plugin-git-local`、`plugin-git-local2` 为 msys `0xC0000022` 环境噪声；同批基线单独跑曾 PASS，失败签名一致），2.7.2 30 passed/0 failed/2 skipped。
+- 未验证：2.7.2 `cache --all`/`--path` 的废弃开关行为（探针被 4.0.24 BUNDLED WITH 污染）、`BUNDLE_APP_CONFIG` 下 deployment/exec 交互、全量 spec/差分未复跑。复选框保持 `[ ]`。
