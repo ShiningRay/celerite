@@ -117,10 +117,11 @@ gem install bundler -v 2.7.2
 The harness runs each fixture in its own sandbox. Most fixtures are offline, but
 `http-index` fixtures start a loopback HTTP server on `127.0.0.1`. Known limits:
 Low-IL Windows hosts block some git-source fixtures (`0xC0000022`), and two
-fixtures are documented 2.7.2 skips (`gem-default`, `gem-no-git`). It compares
-exit codes, stdout/stderr, the project tree, and optional content probes —
+fixtures are deferred for the 2.7.2 profile (`gem-default`, `gem-no-git`; marker
+`deferred-2.7.2`, `script/differential:620-621`). It compares exit codes,
+stdout/stderr, the project tree, and optional content probes —
 `file-contains`, `file-absent`, `file-equals`, `installed-tree` and `first-line`
-(`script/differential:491-525`).
+(`script/differential:488-551`).
 
 ## License
 

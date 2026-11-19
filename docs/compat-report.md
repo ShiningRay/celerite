@@ -4424,8 +4424,8 @@ FAIL plugin-source-locked-check (check)
 ### README（A1–A7）
 
 - A1：参考 Bundler 安装拆成 `gem install bundler -v 4.0.24` 与 `gem install bundler -v 2.7.2` 两条命令。
-- A2：差分环境改为分层表述——多数夹具离线，`http-index` 夹具启动 `127.0.0.1` 回环服务；Low-IL Windows 下部分 git 源夹具 `0xC0000022`；两项 2.7.2 文档化 skip（`gem-default`、`gem-no-git`）。
-- A3：断言清单补 `file-equals`、`installed-tree`、`first-line`，锚点 `script/differential:491-525`。
+- A2：差分环境改为分层表述——多数夹具离线，`http-index` 夹具启动 `127.0.0.1` 回环服务；Low-IL Windows 下部分 git 源夹具 `0xC0000022`；两项 2.7.2 文档化 deferred（`gem-default`、`gem-no-git`；marker `deferred-2.7.2`，`script/differential:620-621`）。
+- A3：断言清单补 `file-equals`、`installed-tree`、`first-line`，锚点 `script/differential:488-551`。
 - A4：Status 补入安装期 Ruby/RubyGems 复核（`src/celerite/installer.cr:65-90`）、空 CHECKSUMS 回填（`src/celerite/definition.cr:362`）、installed-spec 发现（`src/celerite/cli/commands_surface.cr:860-885`）、typed source 的 S1+S2（`src/celerite/resolution.cr:1366`、`:1488`），并明确 S3 安装路径未实现。
 - A5：兼容矩阵来源改为 hand-collected + 采集日期，不再是“generated from pinned upstream sources”。
 - A6：Development 增补本机前置：`HOME`/`TMP`/`TEMP`/`TMPDIR` 指向工作区内，否则出现与产品无关的沙箱错误。
@@ -4433,7 +4433,8 @@ FAIL plugin-source-locked-check (check)
 
 ### 兼容矩阵（B）
 
-- `script/gen-cli-baseline 4.0.24 2.7.2` 已重跑，产物与 2026-11-07 基线逐字相同（参考 `--help` 面未变），故未产生 git diff；两文件头注明确“2026-11-19 重生成、字节相同、仅覆盖 help 面，行为缺口见 compat-report”。
+- `script/gen-cli-baseline 4.0.24 2.7.2` 已重跑：正文与 2026-11-07 基线逐字相同；相对 HEAD 的差异仅为删除手写的 4 行头注并加入生成器自有 scope 行，证明 `--help` 正文确实未变。
+- 生成文件头注现由生成器 `script/gen-cli-baseline:39-40` 输出（静态、不带日期），重跑幂等；提交后复跑 `git status --short docs/compat-matrix` 为空（见提交正文实测）。
 - `upstream-lockfile-v4.0.24.md` 头注说明 iteration-2 的 `64/64` 为历史基线；文末新增 2026-11-19 当前基线（64/54，artifice 37 / low-il 8 / fetch 6 / product 3，missing-gem 0），并标注该快照早于 task-25…29、product 候选未确认。
 - `script/gen-version-oracle` 只生成 `spec/fixtures/version_oracle.txt`，与本轮 CLI 矩阵无关，未使用。
 
