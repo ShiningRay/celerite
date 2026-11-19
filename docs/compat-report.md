@@ -4529,3 +4529,42 @@ Installed stub-gem
 结论：product 候选 3 → 2 不是“修好一条”，而是候选 ① 的失败点被 artifice 环境前移；② git tag 选择、③ 缺失本地平台补全是两条独立真产品候选。按本轮 scope 只回报、未动代码。
 
 未验证：完整 `install_test_deps` 链、非 Low-IL 宿主、真实 gem 源；候选 ① 的上游通过/失败证据；②/③ 的独立最小复现已给出命令骨架但未在隔离项目逐字执行。
+
+## 2026-11-19（M7(6) task-33：非 frozen 自动补本地平台）
+
+本轮修 task-32 产品候选 ③：非 frozen 模式下，锁文件只列其他平台时不再拒绝，而是在生成锁文件时补上当前本地平台；frozen 模式保持参考的拒绝文案与 exit 16。
+
+参考锚点：
+- `.upstream-specs/v4.0.24/bundler/lib/bundler/definition.rb:150`：`@current_platform_missing = add_current_platform unless Bundler.frozen_bundle?`，Definition 构造时即把本地平台加入 `@platforms`。
+- 同文件 `:524-530` `validate_platforms!`：`current_platform_locked?` 已为真则返回；`:844-848` `current_platform_locked?`、`:850-858` `add_current_platform`。
+- `:797` `@new_platforms.each` 与 `lockfile_generator.rb:20`、`:54` 起负责把新增平台写回 `PLATFORMS`；`cli/install.rb:46`、`cli/check.rb:16` 调 `validate_runtime!`，`cli/check.rb:33` 在满足时 `definition.lock(true)`。
+- 2.7.2 安装包 `bundler-2.7.2/lib/bundler/definition.rb` 同形（`:140` 附近、`:499-505`、`:812-826`）。
+
+oracle（4.0.24 与 2.7.2 逐字一致，仅 `BUNDLED WITH` 缩进/安装计数不同；`file:///C:/…/.tmp-scratch/t33index` 全量索引 + 预置 `PLATFORMS\n  java` + 已装 stub）：
+- (a) 非 frozen `install`：exit 0；stdout `Fetching source index from file:///…/`、`Resolving dependencies...`、`Bundle complete! 1 Gemfile dependency, 1 gem now installed.`、`Bundled gems are installed into \`./bundle\``；锁 `PLATFORMS` 变为 `java`、`x64-mingw-ucrt`（按字母序，无 `mingw` 泛化项）。
+- (b) `BUNDLE_FROZEN=true install`：exit 16；stderr 三行原文 `Your bundle only supports platforms ["java"] but your local platform is\nx64-mingw-ucrt. Add the current platform to the lockfile with\n\`bundle lock --add-platform x64-mingw-ucrt\` and try again.`；锁不变。
+- (c) 非 frozen `check`：exit 0；stdout `Resolving dependencies...`、`The Gemfile's dependencies are satisfied`；check 也把 `x64-mingw-ucrt` 写回锁（`cli/check.rb:33` 的 `definition.lock(true)`）。
+- (d) 本地平台即 `x64-mingw-ucrt`，未归一成 generic `mingw`。
+
+实现：
+- `src/celerite/definition.cr:125-139` `validate_platforms!` 在 `!config.frozen?` 时直接返回（等价参考构造期已补本地平台），frozen 分支保持原文案与 exit 16。
+- `src/celerite/cli/commands.cr:1500-1521`（`run_check` 满足分支前）：非 frozen、非 `--dry-run`、`platform_missing?` 且 `check` 成功时，把本地平台追加进已解析的 `PlatformsSection`、排序并用 `Lockfile.write` 落盘；不重新解析、不重复 `Fetching`。
+- 既有 `Resolution#generated_lockfile`（`src/celerite/resolution.cr:1620-1660`）本就保留旧平台并补 `Gem::Platform.local`、排序后写 `PLATFORMS`，因此 install 侧无需另改；未触碰平台解析/变体选择。
+
+夹具与反假绿：
+- `fixtures/differential/install-platforms-add-local/`：`file:///@LEGACY_INDEX_DIR@` + `json_pure`，锁预置 `PLATFORMS java`，`command=install`，`file-equals-4.0.24`/`-2.7.2` 断 `java`、`x64-mingw-ucrt` 与各自 `BUNDLED WITH` 缩进。
+- `fixtures/differential/install-platforms-frozen-error/`：同输入 + `frozen` 标记，断 exit 16、stderr 原文、锁不变（`file-equals`）。
+- 新 `fixtures/gem-index-legacy/`：只含 `json_pure-2.8.1.gem` 的全量索引（`specs.4.8.gz` 等），供 `file://` 参考侧使用；`script/differential` 新增 `@LEGACY_INDEX_DIR@` 替换。
+- 反假绿：`git worktree add C:/temp/celerite-pre33 c885275` 编译旧二进制后跑同一夹具，4.0.24 与 2.7.2 均 `FAIL install-platforms-add-local`（旧侧 exit 16，stdout 全缺、锁缺 `x64-mingw-ucrt`），`PASS install-platforms-frozen-error`（该行为本就一致，只作回归）。当前二进制双 profile 两夹具均 PASS（2 passed / 0 failed / 0 skipped）。
+
+回归与门禁：
+- 差分双 profile：`platform-ruby-mismatch`、`platform-variant-fail`、`install-frozen`、`lock-noop`、`install-fresh`、`install-check`、`lock-print` 均 7 passed / 0 failed / 0 skipped。
+- `spec/m7_platform_auto_add_spec.cr` 2 examples 0 failures（非 frozen 不抛、frozen 原文案）；与 `spec/m7_platform_spec.cr` 合计 5 examples 0 failures；`m7_lockfile_*` + `m7_no_lockfile_commands` + `m7_path_lockfile_relative` 23 examples 0 failures。
+- `crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有 2 条 `Deprecated File.executable?` 警告）；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0；`git diff --cached --check` 与 `git diff c885275..HEAD --check` 均为空（EXIT 0）。
+
+上游单例：在 `.upstream-specs/v4.0.24/bundler` 定向跑 `spec/lock/lockfile_spec.rb:1222`，1 example / 1 failure，失败点是 `Could not reach host gem.repo2. Check your network connection and try again.`（artifice 进程内网络桩），发生在平台断言之前，故该上游例仍未验证；product 候选 ③ 的关闭证据来自上述独立 oracle/差分，不改写上游基线计数（仍 64/54）。
+
+已声明差异：
+- `check` 仅补写 `PLATFORMS` 段，不做参考 `definition.lock(true)` 的全量重序列化；现有锁的其余内容保持逐字不变（对本次场景等价）。
+- 未复跑完整上游 64 例；未在非 Windows 宿主验证 generic platform 形态（本机仅 `x64-mingw-ucrt`）。
+- 平台校验仍以 `Gem::Platform.local.to_s` 为本地值；参考经 `Bundler.local_platform` 的 `===` 匹配，本次四种形态（java-only、已含本地、frozen、check）已对齐，其他变体未覆盖。
