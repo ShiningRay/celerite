@@ -318,10 +318,14 @@ module Celerite
       # just finished (`parallel_installer.rb:217`). The bridge hands the hook
       # block an object exposing `#name`/`#full_name`.
       def exec_plugin_hook(event : String, index_path : String,
-                           spec_name : String? = nil, spec_full_name : String? = nil) : JSON::Any
+                           spec_name : String? = nil, spec_full_name : String? = nil,
+                           gemfile_path : String? = nil) : JSON::Any
         payload = {"event" => event, "index_path" => index_path} of String => String?
         payload["spec_name"] = spec_name
         payload["spec_full_name"] = spec_full_name
+        # Install-all hooks receive `definition.dependencies` (an Array of
+        # `Bundler::Dependency`), which the bridge rebuilds from this Gemfile.
+        payload["gemfile_path"] = gemfile_path
         # Hooks run arbitrary plugin code, exactly like the reference, so they
         # are not cut off by the RPC deadline used for fast metadata calls.
         request("exec_plugin_hook", payload, limit: nil)

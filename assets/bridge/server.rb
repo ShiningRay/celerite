@@ -17,6 +17,7 @@
 # by the caller via $LOAD_PATH (CELERITE_REFERENCE_BUNDLER_LIB).
 
 require "json"
+require "stringio"
 require "digest"
 require "rbconfig"
 
@@ -526,17 +527,41 @@ def op_exec_plugin_hook(payload)
   # is not reproduced (declared difference).
   hooks = Bundler::Plugin.instance_variable_get(:@hooks_by_event) || {}
   blocks = hooks[event] || []
-  context = if payload["spec_name"]
+  context = if event.end_with?("-all")
+    # `Installer.install` hands `definition.dependencies` to both install-all
+    # events (`installer.rb:12-20`): an Array of `Bundler::Dependency`.
+    begin
+      gemfile = payload["gemfile_path"].to_s
+      if gemfile.empty? || !File.exist?(gemfile)
+        []
+      else
+        builder = Bundler::Dsl.evaluate(File.expand_path(gemfile),
+                                        File.expand_path("#{gemfile}.lock"), {})
+        builder.dependencies
+      end
+    rescue StandardError
+      []
+    end
+  elsif payload["spec_name"]
     PluginHookSpec.new(payload["spec_name"].to_s, payload["spec_full_name"].to_s)
   else
     payload["context"] || {}
   end
+  # Hook blocks write to $stdout exactly like the reference's in-process
+  # hooks. The bridge's own stdout is the RPC channel, so capture the block
+  # output and let the client replay it on the CLI's stdout instead.
+  captured = StringIO.new
+  previous_stdout = $stdout
   begin
+    $stdout = captured
     blocks.each { |blk| blk.call(context) }
   rescue StandardError => e
-    return { "status" => "hook_failed", "plugin" => (loaded.first || hook_plugins.first.to_s), "message" => e.message.to_s, "missing" => missing }
+    return { "status" => "hook_failed", "plugin" => (loaded.first || hook_plugins.first.to_s), "message" => e.message.to_s,
+             "missing" => missing, "stdout" => captured.string }
+  ensure
+    $stdout = previous_stdout
   end
-  { "status" => "ok", "plugins" => loaded, "missing" => missing }
+  { "status" => "ok", "plugins" => loaded, "missing" => missing, "stdout" => captured.string }
 end
 
 # Specs exposed by a plugin source: re-evaluates the Gemfile (the bridge has

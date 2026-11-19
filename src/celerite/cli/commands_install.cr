@@ -379,6 +379,12 @@ module Celerite
                                    !installer.installed?(locked.name, locked.version, locked.platform)
                                  end
                                end
+        # `Installer.install` fires `gem_before_install_all` before it resolves
+        # and installs (`installer.rb:12-20`); the hook receives
+        # `definition.dependencies`.
+        if code = PluginHooks.run(bridge, definition, config, "before-install-all", stdout, stderr)
+          return code
+        end
         specs = resolution.resolve!(reuse, verify_locked_compat: verify_locked_compat)
         installer.ensure_specs_are_compatible!(specs)
 
@@ -708,6 +714,7 @@ module Celerite
           first_hook = true
           hook_specs.each do |(hook_name, hook_full_name)|
             result = PluginHooks.call(bridge, definition, "after-install", hook_name, hook_full_name)
+            stdout.print result.output
             # The reference re-loads the plugin index on every `Plugin.hook`
             # call, so it warns once per spec; we warn once per command to keep
             # the pinned missing-path stderr stable (declared difference).
@@ -734,6 +741,13 @@ module Celerite
               return 1
             end
           end
+        end
+
+        # `Installer.install` fires `gem_after_install_all` after the install
+        # run (`installer.rb:12-20`); the summary below belongs to
+        # `cli/install.rb`, so the hook output precedes `Bundle complete!`.
+        if code = PluginHooks.run(bridge, definition, config, "after-install-all", stdout, stderr)
+          return code
         end
 
         if summary

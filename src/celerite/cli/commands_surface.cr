@@ -157,6 +157,11 @@ module Celerite
         installer.dependency_tree = ->(gem_name : String) { resolution.dependency_tree_for(gem_name) }
         installer.gemfile_name = File.basename(definition.gemfile_path)
 
+        # `update` runs through the same `Installer.install` entry point as
+        # `install` (`cli/update.rb:81`), so both install-all hooks fire.
+        if code = PluginHooks.run(bridge, definition, config, "before-install-all", stdout, stderr)
+          return code
+        end
         specs = resolution.resolve!
 
         # Reference prints "Resolving dependencies..." twice whenever a scoped
@@ -227,6 +232,12 @@ module Celerite
               stderr.puts "Bundler attempted to update #{gem_name} but its version stayed the same"
             end
           end
+        end
+
+        # `Installer.install` fires `gem_after_install_all` after the install
+        # run; `Bundle updated!` is printed afterwards by `cli/update.rb`.
+        if code = PluginHooks.run(bridge, definition, config, "after-install-all", stdout, stderr)
+          return code
         end
 
         stdout.puts "Bundle updated!"

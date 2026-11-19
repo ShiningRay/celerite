@@ -15,9 +15,13 @@ module Celerite
   #   re-raised.
   # - hook blocks are invoked without a rescue, so a raise aborts the command.
   module PluginHooks
-    # Reference layout event name: Bundler::Plugin::Events::GEM_AFTER_INSTALL
-    # serializes as "after-install" in the project plugin index.
-    EVENTS = ["after-install"]
+    # Reference event layout (`plugin/events.rb`): `GEM_BEFORE_INSTALL_ALL`
+    # serializes as "before-install-all" (`:49-50`), `GEM_AFTER_INSTALL_ALL`
+    # as "after-install-all" (`:57-58`), and the per-spec
+    # `GEM_AFTER_INSTALL` as "after-install" (`:45-46`). The install-all
+    # events receive `definition.dependencies` as their single argument
+    # (`installer.rb:12-20`).
+    EVENTS = ["after-install", "before-install-all", "after-install-all"]
 
     struct MissingPluginPaths
       getter plugin : String
@@ -34,10 +38,12 @@ module Celerite
       getter missing : Array(MissingPluginPaths)
       getter plugins : Array(String)
       getter reason : String?
+      getter output : String
 
       def initialize(@status : String, @message : String? = nil, @plugin : String? = nil,
                      @missing : Array(MissingPluginPaths) = [] of MissingPluginPaths,
-                     @plugins : Array(String) = [] of String, @reason : String? = nil)
+                     @plugins : Array(String) = [] of String, @reason : String? = nil,
+                     @output : String = "")
       end
 
       # Compatibility accessor for the first missing plugin's paths.
@@ -74,8 +80,10 @@ module Celerite
     # `SpecInstallation` (`name`/`full_name`/`state`). `spec_name` carries that
     # identity so plugin blocks that read `ctx.name` see the same value.
     def self.call(bridge : Bridge::Client, definition : Definition, event : String,
-                  spec_name : String? = nil, spec_full_name : String? = nil) : HookResult
-      result = bridge.exec_plugin_hook(event, index_path(definition), spec_name, spec_full_name)
+                  spec_name : String? = nil, spec_full_name : String? = nil,
+                  gemfile_path : String? = nil) : HookResult
+      result = bridge.exec_plugin_hook(event, index_path(definition), spec_name, spec_full_name,
+        gemfile_path || definition.gemfile_path)
       status = result["status"]?.try(&.as_s?) || "skipped"
       message = result["message"]?.try(&.as_s?)
       plugin = result["plugin"]?.try(&.as_s?)
@@ -102,8 +110,44 @@ module Celerite
       if status == "load_failed"
         reason ||= "plugin #{plugin} failed to load: #{message}"
       end
+      output = result["stdout"]?.try(&.as_s?) || ""
       HookResult.new(status: status, message: message, plugin: plugin,
-        missing: missing, plugins: loaded, reason: reason)
+        missing: missing, plugins: loaded, reason: reason, output: output)
+    end
+
+    # Runs an install-lifecycle event (`before-install-all` /
+    # `after-install-all`) and returns a non-nil exit code when the command
+    # must abort. The reference calls these from `Installer.install`
+    # (`installer.rb:12-20`) with no rescue around the block, so a raising
+    # hook aborts the command; missing load paths only warn
+    # (`plugin.rb:345-381`).
+    def self.run(bridge : Bridge::Client, definition : Definition, config : Config,
+                 event : String, stdout : IO, stderr : IO) : Int32?
+      return nil unless enabled?(config)
+
+      result = call(bridge, definition, event)
+      stdout.print result.output
+      result.missing.each do |entry|
+        stderr.puts "The following plugin paths don't exist: #{entry.paths.join(", ")}."
+        stderr.puts
+        stderr.puts "This can happen if the plugin was installed with a different version of Ruby that has since been uninstalled."
+        stderr.puts
+        stderr.puts "If you would like to reinstall the plugin, run:"
+        stderr.puts
+        stderr.puts "bundler plugin uninstall #{entry.plugin} && bundler plugin install #{entry.plugin}"
+        stderr.puts
+        stderr.puts "Continuing without installing plugin #{entry.plugin}."
+      end
+      case result.status
+      when "load_failed"
+        stderr.puts "Failed loading plugin #{result.plugin}: #{result.message}"
+        1
+      when "hook_failed"
+        stderr.puts "Plugin hook #{event} failed: #{result.message}"
+        1
+      else
+        nil
+      end
     end
   end
 end
