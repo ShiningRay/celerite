@@ -4144,3 +4144,40 @@ So, because current Ruby version is = 4.0.6,
 2. `file://` 参考走 legacy index，需要 `specs.4.8.gz`；本夹具索引按此构建，未覆盖 compact-index 的 `file://` 组合。
 3. 仅本机 C: 盘、Ruby 4.0.6 环境；跨盘符/跨 Ruby 版本未验证。
 4. 全量 `crystal spec` 与全量差分未重跑（沿用既有记录）。
+
+## 2026-11-19（M7(2) task-22：`check`/`list`/`show` 以 installed specification 判定已安装）
+
+**范围**：只改只读发现命令的「是否已安装」判据；`install` 幂等与 task-21 锁复用仍用 `Installer#installed?`（spec + gem 目录），不改解析/下载。
+
+**参考实现**：
+- 4.0.24 `cli/check.rb:14-31`：`definition.check!` 取 `missing_specs`，逐条打印 ` * name (version)`；`definition.rb:260-262` → `spec_set.rb:154-162` 的 `missing_specs_for` 只对 `completely_missing_specs` 报缺。
+- `lazy_specification.rb:224-229 materialize` 调 `source.specs.search`；Rubygems 源清单来自 `rubygems_integration.rb:438-440 find_name` = `Gem::Specification.stubs_for(name)`，即读 `<path>/specifications/*.gemspec`。
+- `cli/show.rb:25-28`：先算 `spec.full_gem_path`，`File.directory?` 为假时打 `The gem <name> is missing. It should be installed at <path>, but was not found` 并 exit 0；`cli/info.rb:41-44` 同形。
+- 2.7.2 对应文件同语义（`cli/check.rb`、`definition.rb`、`spec_set.rb`、`lazy_specification.rb`）。
+
+**Oracle（本机 ruby 4.0.6；`file://` 索引 `fixtures/gem-index`，`json_pure 2.8.1`；BUNDLE_PATH 独立沙箱；4.0.24 与 2.7.2 输出一致）**：
+
+| 场景 | 4.0.24 / 2.7.2 | 修复前 | 修复后 |
+| --- | --- | --- | --- |
+| 正常安装 | check 0 `The Gemfile's dependencies are satisfied`；list 0 含 ` * json_pure (2.8.1)`；show 0 打印 `…/gems/json_pure-2.8.1` | 同 | 同 |
+| 删 `gems/json_pure-2.8.1`，留 `specifications/json_pure-2.8.1.gemspec` | check 0 satisfied；list 0 正常；`show json_pure` 0、stdout 空、stderr `The gem json_pure is missing. It should be installed at …/gems/json_pure-2.8.1, but was not found` | 误判缺失：check 1 / list 1 / show 7 | 与参考逐字一致（`show --paths` 同警告、不打印路径） |
+| 删 `specifications/…gemspec`，留 gem 目录 | check 1 `The following gems are missing` + ` * json_pure (2.8.1)`；list 1 `Could not find json_pure-2.8.1 in locally installed gems`；show 7 同名 | 误判已安装：check 0 | 与参考逐字一致 |
+| 平台变体 `platgem (1.0.0-x64-mingw-ucrt)` | 规格文件名含平台后缀；删 gem 目录 check 0，删 spec check 1 打 ` * platgem (1.0.0)`（check 行不带平台）；list 1 打完整 full name | 同左误判 | 按 `<full_name>.gemspec` 判定，平台名原样保留 |
+
+**实现**：
+- `src/celerite/cli/commands_surface.cr` `installed_gem_dir`：GEM 分支（`path.system`、bundle `ruby/<abi>`、系统 gem 回退）先查 `specifications/<full_name>.gemspec`，命中后仍返回 `gems/<full_name>` 供 `show` 判断目录是否存在；新增 `installed_spec_file?`。注释锚 `cli/check.rb:14-31`、`definition.rb:260-262`、`spec_set.rb:154-162`。
+- `src/celerite/cli/commands.cr`：`show <gem>` 与 `show --paths <gem>` 在目录不存在时打参考警告并 exit 0（`cli/show.rb:25-28`）；其余 list/info 路径不变。
+- `src/celerite/installer.cr:58-63 installed?` 未改（安装幂等/锁复用仍要求目录 + spec）。
+
+**测试与差分**：
+- `spec/m7_installed_discovery_spec.cr` 由 20 → 22 examples：四个「目录存在即已安装」旧断言改为参考语义（check 1 / list 1 / show 7 / `show --paths` 7），新增 spec-only 的 check 0、show 警告，及平台 full_name 不匹配的 check 1；组/平台夹具补 `specifications/*.gemspec`。结果 **22 examples, 0 failures, 0 errors, 0 pending**。
+- 新增差分 `check-installed-spec-without-gemdir`（`bundle-preset` 只放 `ruby/4.0.0/specifications/json_pure-2.8.1.gemspec`；命令 `check`/`list`/`show`/`show --paths`）与 `check-gemdir-without-spec`（只放 `ruby/4.0.0/gems/json_pure-2.8.1`；命令 `check`/`list`/`show`，末退出 7）。4.0.24 与 2.7.2 均 **PASS**（exit 0 / 7）。
+- 定向回归（`check-*`、`list-*`、`show-*`、`git-installed-discovery`、`install-local` 共 37 个）：4.0.24 **35 passed, 1 failed, 1 skipped**；2.7.2 同。唯一失败为 `git-installed-discovery`：参考 0 / cel 1，stderr 见 `sh.exe ... NtCreateDirectoryObject ... 0xC0000022`，属既有 Low-IL 环境阻塞；skip 为 4.0.24 的 `show-outdated-verbose-272`（该夹具仅 2.7.2 适用）。
+
+**门禁**：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告，`commands_install.cr:1112:43`、`:1176:20`）；`crystal spec spec/m7_installed_discovery_spec.cr` → 22/0/0/0；`git diff --check` EXIT 0；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0。
+
+**已声明差异 / 未验证**：
+1. `install` 的已安装判定仍是「spec + 目录」（task-21 锁复用依赖它）；本轮只对齐只读命令，未统一。
+2. `bundle show --paths`（不带 gem 名）在「spec-only」时是否也逐条警告未取 oracle；带名路径已对齐。
+3. 平台变体只用单元夹具覆盖，未新增对应差分（现有 spec 断言 full_name）；跨盘符/多 Ruby 版本未验证。
+4. 全量 `crystal spec` 与全量差分未重跑（沿用既有记录）。
