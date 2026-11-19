@@ -4416,3 +4416,39 @@ FAIL plugin-source-locked-check (check)
 4.0.24 与 2.7.2 均如此；换当前二进制后两 profile 均 `PASS plugin-source-locked-check (exit=0)`。说明该夹具确实落在 S2 的「锁定插件 spec 视为已安装」路径，而非求值期。`plugin-source-locked`（`command`=`lock`）仍保留，但仅验证无操作锁重写，不具 S2 区分力。
 
 **已声明差异/未验证**：安装路径（S3）的参考行为（exit 7，缺 `bundler-source-mpath`）我方仍 exit 0 完成安装——属 `@inferred_plugins` 预装 pass，`commands_install.cr:111-116` 明确不在本轮；`check` 在锁定插件 source 上我方仍会打印 `Resolving dependencies...`（参考无），故夹具只用 `lock`；缺插件的 `install` 未加夹具（仅 oracle 记录）；插件 source 的 `checksum`/非空 `options_to_lock` 未覆盖；未跑全量 spec 与全量差分。checkbox 保持 `[ ]`。
+
+## 2026-11-19（L163 收口：README、兼容矩阵与 roadmap 同步）
+
+本轮仅改文档，未改产品代码，未重跑全量门禁。
+
+### README（A1–A7）
+
+- A1：参考 Bundler 安装拆成 `gem install bundler -v 4.0.24` 与 `gem install bundler -v 2.7.2` 两条命令。
+- A2：差分环境改为分层表述——多数夹具离线，`http-index` 夹具启动 `127.0.0.1` 回环服务；Low-IL Windows 下部分 git 源夹具 `0xC0000022`；两项 2.7.2 文档化 skip（`gem-default`、`gem-no-git`）。
+- A3：断言清单补 `file-equals`、`installed-tree`、`first-line`，锚点 `script/differential:491-525`。
+- A4：Status 补入安装期 Ruby/RubyGems 复核（`src/celerite/installer.cr:65-90`）、空 CHECKSUMS 回填（`src/celerite/definition.cr:362`）、installed-spec 发现（`src/celerite/cli/commands_surface.cr:860-885`）、typed source 的 S1+S2（`src/celerite/resolution.cr:1366`、`:1488`），并明确 S3 安装路径未实现。
+- A5：兼容矩阵来源改为 hand-collected + 采集日期，不再是“generated from pinned upstream sources”。
+- A6：Development 增补本机前置：`HOME`/`TMP`/`TEMP`/`TMPDIR` 指向工作区内，否则出现与产品无关的沙箱错误。
+- A7：上游套件声明补当前基线 `64 examples / 54 failed`（2026-11-19 采集）。
+
+### 兼容矩阵（B）
+
+- `script/gen-cli-baseline 4.0.24 2.7.2` 已重跑，产物与 2026-11-07 基线逐字相同（参考 `--help` 面未变），故未产生 git diff；两文件头注明确“2026-11-19 重生成、字节相同、仅覆盖 help 面，行为缺口见 compat-report”。
+- `upstream-lockfile-v4.0.24.md` 头注说明 iteration-2 的 `64/64` 为历史基线；文末新增 2026-11-19 当前基线（64/54，artifice 37 / low-il 8 / fetch 6 / product 3，missing-gem 0），并标注该快照早于 task-25…29、product 候选未确认。
+- `script/gen-version-oracle` 只生成 `spec/fixtures/version_oracle.txt`，与本轮 CLI 矩阵无关，未使用。
+
+### roadmap（C）
+
+- L154 记 task-21 安装期复核已落地；剩余为复核差分夹具与多 ABI/多 Ruby 矩阵（本机仅 4.0.6）。
+- L155 记 task-22 installed-spec 发现已对齐；剩余为 `check --dry-run` 无 oracle、`info` default-gem 未验证。
+- L156 记 `--edit`/`--bundle` 的显式 exit 1 是**已声明不支持边界**（参考会打开编辑器/自动安装），不是参考对齐；修正了任务书“记为参考对齐”的措辞，避免虚假声明。
+- L159 收窄为 S3 安装路径验收断言（`@inferred_plugins` 预装 pass、`commands_install.cr:111-116` 处置、旧二进制 FAIL / 新二进制 PASS）。
+- L161 上游基线更新为 64/54；`rspec-output.json` 早于 task-25…29，空 CHECKSUMS 候选疑已修复但**未确认**。
+- L162 复跑条件明确为非 Low-IL 宿主并重新采集 JSON。
+- L163 拆为 README A1–A7、matrix B、roadmap C 三组。
+
+### 更正上节（task-29）过时表述
+
+上节末尾“`check` 在锁定插件 source 上我方仍会打印 `Resolving dependencies...`”已被 task-29 返工推翻：返工后 `check` 输出与参考逐字一致（stdout 仅 `The Gemfile's dependencies are satisfied`，stderr 空），并新增 `plugin-source-locked-check` 夹具在 `87a69a4` 旧二进制 FAIL、当前二进制 4.0.24/2.7.2 均 PASS。以本条为准。
+
+**仍未同步/未验证**：compat-report 各历史节的旧基线数字未逐节改写（仅头注/文末标注）；全量 `crystal spec` 与全量差分未重跑；2.7.2 upstream profile 不可执行；上游 product 候选三条未复跑定性。
