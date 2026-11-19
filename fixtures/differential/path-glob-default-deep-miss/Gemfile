@@ -1,0 +1,5 @@
+source "file:///@INDEX_DIR@"
+
+path "vendor/mono" do
+  gem "mono_a"
+end
