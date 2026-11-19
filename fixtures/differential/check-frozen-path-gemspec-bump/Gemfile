@@ -1,0 +1,3 @@
+path "vendor/d" do
+  gem "dgem"
+end

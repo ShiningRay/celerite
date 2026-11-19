@@ -38,6 +38,18 @@ private def git_reuse_lock(index : String, options : String, version : String = 
   end
 end
 
+private def path_reuse_gemspec(name : String, version : String) : String
+  <<-SPEC
+    Gem::Specification.new do |s|
+      s.name = "#{name}"
+      s.version = "#{version}"
+      s.summary = "path gem"
+      s.authors = ["Celerite"]
+      s.files = []
+    end
+    SPEC
+end
+
 describe "git source reuse" do
   it "re-resolves when the Gemfile tag differs from the lockfile" do
     pending! "ruby not available" unless ruby_available?
@@ -92,7 +104,7 @@ describe "git source reuse" do
     end
   end
 
-  it "re-resolves when a PATH source glob differs" do
+  it "reuses the lockfile when only the PATH glob differs" do
     pending! "ruby not available" unless ruby_available?
     index = git_reuse_index
     lock = <<-LOCK
@@ -117,9 +129,50 @@ describe "git source reuse" do
       LOCK
     with_client do |client|
       with_project({
-        "Gemfile"      => %(source "#{index}"\n\ngem "pathgem", path: "./pathgem", glob: "*.gemspec"\n),
-        "Gemfile.lock" => lock,
+        "Gemfile"                       => %(source "#{index}"\n\ngem "pathgem", path: "./pathgem", glob: "*.gemspec"\n),
+        "Gemfile.lock"                  => lock,
+        "pathgem/extra/pathgem.gemspec" => path_reuse_gemspec("pathgem", "1.0.0"),
       }) do |_dir|
+        # `path.rb:64-68`: the locked source (path + version) is authoritative,
+        # so the Gemfile's `glob:` never drives the decision by itself.
+        resolution = Celerite::Resolution.new(Celerite::Definition.build, false, client)
+        resolution.progress = IO::Memory.new
+        resolution.reuse_locked?.should be_true
+      end
+    end
+  end
+
+  it "re-resolves when the PATH spec set changes under the locked glob" do
+    pending! "ruby not available" unless ruby_available?
+    index = git_reuse_index
+    lock = <<-LOCK
+      GEM
+        remote: #{index}/
+        specs:
+
+      PATH
+        remote: ./pathgem
+        glob: extra/*.gemspec
+        specs:
+          pathgem (1.0.0)
+
+      PLATFORMS
+        ruby
+
+      DEPENDENCIES
+        pathgem!
+
+      BUNDLED WITH
+         4.0.24
+      LOCK
+    with_client do |client|
+      with_project({
+        "Gemfile"                       => %(source "#{index}"\n\ngem "pathgem", path: "./pathgem", glob: "*.gemspec"\n),
+        "Gemfile.lock"                  => lock,
+        "pathgem/extra/pathgem.gemspec" => path_reuse_gemspec("pathgem", "2.0.0"),
+      }) do |_dir|
+        # `definition.rb:929-950` `specs_for_source_changed?`: the locked spec
+        # is no longer visible, so `converge_paths` forces a resolution.
         resolution = Celerite::Resolution.new(Celerite::Definition.build, false, client)
         resolution.progress = IO::Memory.new
         resolution.reuse_locked?.should be_false

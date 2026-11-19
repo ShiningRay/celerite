@@ -1,0 +1,3 @@
+path "vendor/d", glob: "gems/*/*.gemspec" do
+  gem "dgem"
+end
