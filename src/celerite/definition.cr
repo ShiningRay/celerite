@@ -120,9 +120,14 @@ module Celerite
     # Port of `Bundler::Definition#validate_platforms!` (definition.rb:524-530),
     # part of `validate_runtime!`: refuse to continue when the lockfile does
     # not list the local platform (and does not fall back to the `ruby`
-    # platform). Reference freezes the platform list, so this is what a frozen
-    # install reports instead of the lockfile-changes summary.
+    # platform). Reference freezes the platform list only in frozen mode:
+    # `Definition#initialize` calls `add_current_platform` unless
+    # `Bundler.frozen_bundle?` (definition.rb:150), so `current_platform_locked?`
+    # is already true when `validate_platforms!` runs. Celerite does not mutate
+    # the lockfile-backed platform list at definition-build time, so mirror the
+    # same outcome here and let lock generation add the local platform.
     def validate_platforms!(local_platform : String) : Nil
+      return unless config.frozen?
       return unless lockfile_exists?
       platforms = lockfile!.platforms
       return if platforms.empty? || platforms.includes?(local_platform) || platforms.includes?("ruby")

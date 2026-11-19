@@ -1497,6 +1497,24 @@ module Celerite
         return 1
       end
 
+      # A satisfied `check` persists the lockfile, not only when it had to be
+      # resolved from the Gemfile: `definition.lock(true)` also writes the
+      # local platform the reference added at definition-build time
+      # (definition.rb:150 + cli/check.rb:33). Rebuild only the platform
+      # section here, so `check` never re-resolves or refetches for this.
+      if !resolved_from_gemfile && !config.frozen? && !rest.includes?("--dry-run") && platform_missing?(definition)
+        if section = lockfile.platforms_section
+          local = Gem::Platform.local.to_s
+          section.platforms << local unless section.platforms.includes?(local)
+          section.platforms.sort!
+          text = with_profile_indent(lockfile.to_lock)
+          existing = File.file?(definition.lockfile_path) ? File.read(definition.lockfile_path) : nil
+          if existing.nil? || semantic_content(existing) != semantic_content(text)
+            Lockfile.write(definition.lockfile_path, text, preserve_crlf: preserve_lockfile_crlf?)
+          end
+        end
+      end
+
       # A definition resolved straight from the Gemfile has no lockfile yet;
       # the reference persists one as part of a satisfied `check` unless
       # `--dry-run` was given (`definition.lock(true) unless options[:"dry-run"]`).
