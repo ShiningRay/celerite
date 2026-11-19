@@ -4568,3 +4568,44 @@ oracle（4.0.24 与 2.7.2 逐字一致，仅 `BUNDLED WITH` 缩进/安装计数�
 - `check` 仅补写 `PLATFORMS` 段，不做参考 `definition.lock(true)` 的全量重序列化；现有锁的其余内容保持逐字不变（对本次场景等价）。
 - 未复跑完整上游 64 例；未在非 Windows 宿主验证 generic platform 形态（本机仅 `x64-mingw-ucrt`）。
 - 平台校验仍以 `Gem::Platform.local.to_s` 为本地值；参考经 `Bundler.local_platform` 的 `===` 匹配，本次四种形态（java-only、已含本地、frozen、check）已对齐，其他变体未覆盖。
+
+## 2026-11-19（M7(6) task-34：Git source 变化必须重解析）
+
+本轮关闭上游 product 候选 ② 的“source 变了却复用旧锁”缺口：锁钉 `tag: v4.0.7`、Gemfile 改成 `tag: v4.0.8` 时，参考会重新解析并把锁 bump 到新 revision/tag/版本；Celerite 之前只比较依赖 requirement 与 GEM remote，仍走锁短路。
+
+参考语义：
+- `.upstream-specs/v4.0.24/bundler/lib/bundler/source/git.rb:26`：`@ref = options["ref"] || options["branch"] || options["tag"]`。
+- 同文件 `:76-81` `eql?`：比较 uri、ref、glob、submodules；source 不同则锁定 spec 不能复用。
+- 上游用例 `.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:658-742`（`is conservative with dependencies of git gems`）：锁 `tag: v4.0.7`/`ckeditor (4.0.7)`，Gemfile `tag: v4.0.8`，一次 `bundle lock` 后期望 `revision: <v4.0.8>`、`tag: v4.0.8`、`ckeditor (4.0.8)`；依赖保守性指 `orm_adapter`，不是 revision。
+
+我方旧缺口：
+- `src/celerite/resolution.cr:884-913` `reuse_locked_resolution?` 只比依赖 requirement、`lockfile_covers_dependencies?`、GEM remote、本地平台/Ruby。
+- 同文件 `:962-969` `sources_compatible?` 对非 GEM 段 `next true`，GIT/PATH/PLUGIN 的 tag/ref/branch/glob/submodules/type 全部放行。
+- `src/celerite/cli/commands.cr:2367-2371` 的 `lock` no-op 分支在到达解析前也会原样重写锁，是第二处短路。
+
+实现：
+- `src/celerite/definition.cr:195-232`：`source_diff` 产出 Gemfile↔锁标签差异并以 `* name from` 行给出名称；新增公开 `dependency_sources_changed?`、`changed_dependency_sources`。
+- 同文件 `:280-303`：`git_label` 增加 `submodules`，`path_label` 增加 `glob`，`plugin_label` 增加 `type`；Gemfile 侧与锁侧标签同源比较，未另造字符串规则。
+- `src/celerite/resolution.cr:806-812`：解析前把变化 source 的依赖名加入 `@excluded_locked_names`，旧锁定 spec 不再喂给 solver；`:917` 在复用闸门直接返回 false。
+- `src/celerite/cli/commands.cr:2367-2371`、`:2429-2433`：`lock` 的 no-op 与 `lockfile_current` 都要求 source 未变化，source 变化时打印 `Resolving dependencies...` 并走解析。
+
+构造态证据（`.tmp-scratch/t34`，本机 git 子进程受限）：
+- 预置仓库 `repo`：v4.0.7 `6006d4b73e2a3c1d2f87dcef2948fcc7cc6bf4ff`，v4.0.8 `072aeca2b961e1668a82c5e330b2ac67fff5b778`；项目 Gemfile `tag: v4.0.8`，锁钉 `tag: v4.0.7`。
+- 参考 4.0.24 `bundle lock`：exit 0，stdout `Writing lockfile…`、`Fetching file:///…/repo`×2、`Resolving dependencies...`；锁 bump 到 v4.0.8 revision/tag 与 `ckeditor (4.0.8)`。
+- 旧 Celerite 二进制：exit 0，stdout 仅 `Writing lockfile…`，锁逐字不变（候选 ② 复现）。
+- 修复后：不再被 no-op 短路，进入解析并尝试 `git clone --mirror`；本机 msys `sh.exe` 在 Low IL 下 `NtCreateDirectoryObject(...): 0xC0000022`，git clone 以 `Could not read from remote repository` 失败，故端到端 bump 在本机不可执行。参考侧同一构造态可完成，说明判据方向正确、环境阻塞在 git 子进程。
+- 因此**不新增差分夹具**：共享一份预置缓存也无法让 Celerite 侧绕过 `git fetch/rev-parse`，夹具会因本机环境恒失败；改用 spec 覆盖标签判据，并在本文件声明该限制。
+
+测试与反假绿：
+- 新增 `spec/m7_git_source_reuse_spec.cr` 4 examples 0 failures：tag 不同→不复用；tag 相同→复用；ref/branch/glob/submodules 各自不同→不复用；PATH glob 不同→不复用。
+- 反假绿：`git worktree add C:/temp/celerite-pre34 b350607` 后把该 spec 复制进旧树运行，4 examples / **3 failures**（tag、ref/branch/glob/submodules、PATH glob 三例失败；tag 相同例仍通过），证明覆盖到旧行为。
+- 回归（双 profile）：`lock-noop`、`install-fresh`、`install-check`、`install-local`、`lock-print`、`install-frozen`、`install-platforms-add-local`、`plugin-source-typed`、`plugin-source-install`、`checksums-empty-install` 均 10 passed / 0 failed / 0 skipped。
+- 定向 spec：`m7_git_source_reuse` + `m7_lockfile_*` + `m7_platform_*` + `m7_no_lockfile_commands` + `m7_installed_discovery` 共 65 examples / 0 failures / 0 errors / 0 pending。
+- 门禁：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有 2 条 `Deprecated File.executable?` 警告）；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0；`git diff --check`、`git diff b350607..HEAD --check`、`git diff --cached --check` 均 EXIT 0。
+
+上游单例状态：本轮**未复跑** `lockfile_spec.rb:658` 单例；上一轮 task-32 的封闭环境仍会先被 artifice `gem.repo2`/本机 git `0xC0000022` 挡住。故上游基线仍记 64 examples / 54 failures；product 候选 ② 的真实状态是「代码判据已修、构造态参考侧已 bump、我方端到端与上游单例未验证」，不宣称上游通过，也不把 2→1→0 写成已清零。
+
+已声明差异：
+- GIT 的 `glob` 已纳入标签，但 GIT glob 端到端（真实 clone）未验证；PATH/PLUGIN 的标签比较只覆盖本文件列出的字段。
+- 构造态验证使用手工预置仓库；`0xC0000022` 是本机 Low-IL 环境缺陷，非产品逻辑。
+- 未重跑完整上游 64 例，未在非 Windows/非 Low-IL 宿主验证 git 端到端。
