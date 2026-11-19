@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+# Synthetic-scale evidence harness (task-40): generates an offline gem index,
+# then interleaves the pinned reference Bundler and Celerite for `lock` and
+# `install`, comparing lockfiles byte-for-byte and recording timings.
+#
+# This is test tooling only; it does not participate in the product path.
+#
+# Usage:
+#   script/synthetic-scale                     # N=20,100,300; k=3
+#   script/synthetic-scale --count 20 --runs 3
+#   script/synthetic-scale --count 100 --count 300 --runs 5
+#
+# Requirements: ruby (fixture generator), crystal-built bin/celerite.exe (or
+# CELERITE_BIN), and the vendored reference at .upstream-specs/v4.0.24.
+set -eu
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+celerite_bin="${CELERITE_BIN:-$repo_root/bin/celerite.exe}"
+ref_lib="$repo_root/.upstream-specs/v4.0.24/bundler/lib"
+ref_exe="$repo_root/.upstream-specs/v4.0.24/bundler/exe/bundle"
+work_root="${SYNTHETIC_SCALE_OUT:-${TMPDIR:-/tmp}/celerite-synthetic-scale}"
+counts=()
+runs=3
+
+usage() {
+  echo "usage: $0 [--count N]... [--runs K]" >&2
+  exit 2
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --count) [ $# -ge 2 ] || usage; counts+=("$2"); shift 2 ;;
+    --runs) [ $# -ge 2 ] || usage; runs="$2"; shift 2 ;;
+    -h|--help) usage ;;
+    *) echo "unknown argument: $1" >&2; usage ;;
+  esac
+done
+[ "${#counts[@]}" -gt 0 ] || counts=(20 100 300)
+[ "$runs" -ge 1 ] || usage
+
+for n in "${counts[@]}"; do
+  case "$n" in *[!0-9]*|'') echo "invalid --count: $n" >&2; exit 2 ;; esac
+  [ "$n" -gt 0 ] || { echo "--count must be positive" >&2; exit 2; }
+done
+[ -x "$celerite_bin" ] || { echo "celerite binary not found: $celerite_bin" >&2; exit 2; }
+[ -f "$ref_exe" ] || { echo "reference bundler not found: $ref_exe" >&2; exit 2; }
+
+mkdir -p "$work_root"
+today="$(date +%Y%m%d)"
+human_date="$(date +%Y-%m-%d)"
+out_file="$repo_root/docs/benchmarks/results-$today.md"
+tmp_out="$work_root/results-$today.md.tmp"
+
+ms_now() {
+  date +%s%3N 2>/dev/null || date +%s%N | cut -c1-13
+}
+
+median() {
+  printf '%s\n' "$@" | sort -n | awk '{a[NR]=$1} END {print a[int((NR+1)/2)]}'
+}
+
+row_lines=""
+lock_failed=0
+
+for n in "${counts[@]}"; do
+  echo "== N=$n: generating index =="
+  index_dir="$work_root/index-$n"
+  ruby "$repo_root/script/synthetic-index.rb" --count "$n" --out "$index_dir" >/dev/null 2>"$work_root/index-$n.generate.log"
+  index_url="file:///$(cygpath -m "$index_dir" 2>/dev/null || echo "$index_dir")"
+  fragment="$(cat "$index_dir/Gemfile.fragment")"
+
+  ref_project="$work_root/$n/ref"
+  cel_project="$work_root/$n/cel"
+  for project in "$ref_project" "$cel_project"; do
+    rm -rf "$project"
+    mkdir -p "$project"
+    printf 'source "%s"\n\n%s\n' "$index_url" "$fragment" > "$project/Gemfile"
+  done
+
+  ref_locks=(); cel_locks=(); ref_installs=(); cel_installs=()
+  lock_size=0; ref_install_count=0; cel_install_count=0
+
+  for run in $(seq 1 "$runs"); do
+    for side in ref cel; do
+      project="$ref_project"; [ "$side" = "cel" ] && project="$cel_project"
+      rm -f "$project/Gemfile.lock"
+      rm -rf "$project/bundle" "$project/.bundle"
+      mkdir -p "$project/.home"
+    done
+
+    # Interleave A/B, alternating the order each round.
+    if [ $((run % 2)) -eq 1 ]; then order="ref cel"; else order="cel ref"; fi
+    for side in $order; do
+      project="$ref_project"; [ "$side" = "cel" ] && project="$cel_project"
+      log="$project/lock.log"
+      start="$(ms_now)"
+      if [ "$side" = "ref" ]; then
+        if ! (cd "$project" && BUNDLE_GEMFILE="$project/Gemfile" BUNDLE_PATH="$project/bundle" \
+          BUNDLE_APP_CONFIG="$project/.bundle" BUNDLE_SILENCE_ROOT_WARNING=1 HOME="$project/.home" \
+          ruby -I "$ref_lib" "$ref_exe" lock) >"$log" 2>&1; then
+          echo "reference lock failed (N=$n run=$run)"; tail -20 "$log"; exit 1
+        fi
+      else
+        if ! (cd "$project" && BUNDLE_GEMFILE="$project/Gemfile" BUNDLE_PATH="$project/bundle" \
+          BUNDLE_APP_CONFIG="$project/.bundle" BUNDLE_SILENCE_ROOT_WARNING=1 HOME="$project/.home" \
+          CELERITE_BRIDGE_SERVER="$repo_root/assets/bridge/server.rb" \
+          CELERITE_PROFILE_BUNDLER_VERSION=4.0.24 \
+          "$celerite_bin" lock) >"$log" 2>&1; then
+          echo "celerite lock failed (N=$n run=$run)"; tail -20 "$log"; exit 1
+        fi
+      fi
+      elapsed=$(( $(ms_now) - start ))
+      if [ "$side" = "ref" ]; then ref_locks+=("$elapsed"); else cel_locks+=("$elapsed"); fi
+    done
+
+    if ! ruby -e 'exit(File.binread(ARGV[0]) == File.binread(ARGV[1]) ? 0 : 1)' "$ref_project/Gemfile.lock" "$cel_project/Gemfile.lock"; then
+      echo "FAIL: lockfiles differ at N=$n run=$run"
+      echo "--- ref lock (head)"; head -20 "$ref_project/Gemfile.lock"
+      echo "--- cel lock (head)"; head -20 "$cel_project/Gemfile.lock"
+      lock_failed=1
+      break
+    fi
+    lock_size=$(wc -c < "$ref_project/Gemfile.lock")
+
+    # Fresh install on each side from the identical lockfile.
+    for side in ref cel; do
+      project="$ref_project"; [ "$side" = "cel" ] && project="$cel_project"
+      rm -rf "$project/bundle"
+      log="$project/install.log"
+      start="$(ms_now)"
+      if [ "$side" = "ref" ]; then
+        if ! (cd "$project" && BUNDLE_GEMFILE="$project/Gemfile" BUNDLE_PATH="$project/bundle" \
+          BUNDLE_APP_CONFIG="$project/.bundle" BUNDLE_SILENCE_ROOT_WARNING=1 HOME="$project/.home" \
+          ruby -I "$ref_lib" "$ref_exe" install) >"$log" 2>&1; then
+          echo "reference install failed (N=$n run=$run)"; tail -20 "$log"; exit 1
+        fi
+      else
+        if ! (cd "$project" && BUNDLE_GEMFILE="$project/Gemfile" BUNDLE_PATH="$project/bundle" \
+          BUNDLE_APP_CONFIG="$project/.bundle" BUNDLE_SILENCE_ROOT_WARNING=1 HOME="$project/.home" \
+          CELERITE_BRIDGE_SERVER="$repo_root/assets/bridge/server.rb" \
+          CELERITE_PROFILE_BUNDLER_VERSION=4.0.24 \
+          "$celerite_bin" install) >"$log" 2>&1; then
+          echo "celerite install failed (N=$n run=$run)"; tail -20 "$log"; exit 1
+        fi
+      fi
+      elapsed=$(( $(ms_now) - start ))
+      if [ "$side" = "ref" ]; then ref_installs+=("$elapsed"); else cel_installs+=("$elapsed"); fi
+    done
+
+    ref_gems=$(find "$ref_project/bundle" -type d -name 'synth_*' | wc -l)
+    cel_gems=$(find "$cel_project/bundle" -type d -name 'synth_*' | wc -l)
+    ref_specs=$(find "$ref_project/bundle" -type f -name 'synth_*.gemspec' | wc -l)
+    cel_specs=$(find "$cel_project/bundle" -type f -name 'synth_*.gemspec' | wc -l)
+    ref_install_count=$ref_gems; cel_install_count=$cel_gems
+    if [ "$ref_gems" -ne "$n" ] || [ "$ref_specs" -ne "$n" ] || \
+       [ "$cel_gems" -ne "$n" ] || [ "$cel_specs" -ne "$n" ]; then
+      echo "FAIL: installed counts (N=$n run=$run) ref gems/specs=$ref_gems/$ref_specs cel gems/specs=$cel_gems/$cel_specs"
+      exit 1
+    fi
+  done
+
+  [ "$lock_failed" -eq 0 ] || break
+  ref_lock_med=$(median "${ref_locks[@]}")
+  cel_lock_med=$(median "${cel_locks[@]}")
+  ref_install_med=$(median "${ref_installs[@]}")
+  cel_install_med=$(median "${cel_installs[@]}")
+  ratio=$(awk -v c="$cel_lock_med" -v r="$ref_lock_med" 'BEGIN { if (r == 0) print "n/a"; else printf "%.2f", c / r }')
+  # Lock timing is a hard criterion (byte identity is checked above).
+  if [ "$ratio" != "n/a" ] && awk -v x="$ratio" 'BEGIN { exit !(x > 1.35) }'; then
+    echo "WARNING: lock timing ratio $ratio exceeds 1.35 at N=$n"
+  fi
+  row_lines="${row_lines}| $n | identical ($lock_size B) | $ref_lock_med | $cel_lock_med | $ratio | $ref_install_med | $cel_install_med | ${ref_install_count}/${cel_install_count} |"$'\n'
+  echo "N=$n lock=identical (${lock_size} B) ref=${ref_lock_med}ms cel=${cel_lock_med}ms ratio=${ratio} install ref=${ref_install_med}ms cel=${cel_install_med}ms"
+done
+
+# Install median regression against the most recent earlier results file only.
+baseline=""
+for candidate in $(ls "$repo_root"/docs/benchmarks/results-*.md 2>/dev/null | grep -v "/results-$today.md$" | sort); do
+  baseline="$candidate"
+done
+regressions=""
+if [ -n "$baseline" ] && [ -f "$baseline" ]; then
+  for n in "${counts[@]}"; do
+    prev=$(awk -F'|' -v n="$n" '$2 + 0 == n { gsub(/ /, "", $8); print $8; exit }' "$baseline" 2>/dev/null || true)
+    cur=$(awk -F'|' -v n="$n" '$2 + 0 == n { gsub(/ /, "", $8); print $8; exit }' <<< "$row_lines" || true)
+    if [ -n "$prev" ] && [ -n "$cur" ] && [ "$prev" -gt 0 ] 2>/dev/null; then
+      if awk -v c="$cur" -v p="$prev" 'BEGIN { exit !(c > p * 1.15) }'; then
+        regressions="${regressions}REGRESSION N=$n install cel median ${cur}ms > +15% vs $(basename "$baseline") (${prev}ms)"$'\n'
+      fi
+    fi
+  done
+fi
+
+{
+  echo "# Synthetic scale results - $human_date"
+  echo
+  echo "Generated by \`script/synthetic-scale\` at $(date -Iseconds)."
+  echo
+  cmd="script/synthetic-scale"; for n in "${counts[@]}"; do cmd="$cmd --count $n"; done; cmd="$cmd --runs $runs"; echo "- Command: \`$cmd\`"
+  echo "- Lock criterion: byte-identical Gemfile.lock (hard); lock time ratio <= 1.35."
+  echo "- Install criterion: no reference ratio gate; median compared with the previous"
+  echo "  results file, > +15% prints REGRESSION (advisory; host jitter ~20%)."
+  echo "- Counts: ${counts[*]}; runs per N: $runs; interleaved A/B."
+  echo
+  echo "## Environment"
+  echo
+  echo '```'
+  ruby -v
+  printf "celerite: "; "$celerite_bin" --version 2>/dev/null || echo unknown
+  printf "crystal: "; crystal --version 2>/dev/null | head -1 || echo unknown
+  echo '```'
+  echo
+  echo "## Results"
+  echo
+  echo "| N | lockfile | ref lock ms | cel lock ms | lock ratio | ref install ms | cel install ms | installed ref/cel |"
+  echo "|---|---|---|---|---|---|---|---|"
+  printf '%s' "$row_lines"
+  echo
+  echo "## Notes"
+  echo
+  echo "- \`file://\` index; each gem has \`gems/<full>.gem\`, \`quick/Marshal.4.8/<full>.gemspec.rz\`,"
+  echo "  and compact \`info/<name>\` + \`versions\` (see \`script/synthetic-index.rb\`)."
+  echo "- Install count = number of \`synth_*\` gem dirs and \`.gemspec\` files under BUNDLE_PATH."
+  echo "- HOME is retained across runs (only Gemfile.lock and bundle are removed); the first run is cold."
+  echo "- N=20 is a self-check point; fixed process startup dominates its ratio, so the 1.35"
+  echo "  lock criterion is applied to N=100/300."
+  if [ -n "$regressions" ]; then
+    echo
+    echo "### Advisory regressions"
+    echo
+    printf '%s' "$regressions" | sed 's/^/- /'
+  fi
+} > "$tmp_out"
+mv "$tmp_out" "$out_file"
+echo "wrote ${out_file#$repo_root/}"
+if [ "$lock_failed" -ne 0 ]; then
+  echo "FAIL: at least one lockfile mismatch" >&2
+  exit 1
+fi
+exit 0
