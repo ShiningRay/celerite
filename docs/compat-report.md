@@ -4219,3 +4219,39 @@ So, because current Ruby version is = 4.0.6,
 **门禁**：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告，`commands_install.cr:1123:43`、`:1187:20`）；`git diff --check` EXIT 0。本轮未改 `src/`/`spec/`，无新增产品侧 spec；`crystal spec` 未跑。
 
 **已声明差异/未验证**：仅跑 4.0.24；`.upstream-specs/v2.7.2` 无可用 bundler checkout，2.7.2 profile 未跑。`artifice-unreachable`/`low-il-shm`/`fetch-failed` 仍是环境桶，不能据此宣称 M7(8) 完成。harness 修复依赖本机存在 rake gem 缓存；无缓存时仍会打印 warning 并保留旧的空仓库（fail-open，不伪造通过）。checkbox 保持 `[ ]`。
+
+## 2026-11-19（M7(6) task-24：typed source 独存时 install 失败面对齐）
+
+**结论**：Gemfile 只有 `source "…", type: :foo`（无普通 `source` 行）且插件开启时，Celerite 原先在 `PluginGemfile.primary_source` 返回 nil 后回落 `https://rubygems.org/`（`commands_install.cr:105`），于是先撞网络/SSL：exit 17 `Could not verify the SSL certificate for https://rubygems.org/.`。参考用空 source list 解析推断插件，本地无该插件时直接 `GemNotFoundError`（exit 7）。本轮只对齐失败面与执行顺序：无 primary source 时以 `local_only` 解析插件，得到与参考相同的消息与退出码；自定义 source 成功路径仍留待后续切片。
+
+**Oracle（4.0.24 与 2.7.2 实测，逐字）**：
+- 场景 A（仅 typed source，插件开）：两版本均 exit 7，stdout 为空，stderr：
+```
+Could not find gem 'bundler-source-foo' in locally installed gems.
+```
+- 场景 B（同上，`BUNDLE_PLUGINS=false`）：两版本均 exit 15，stdout 为空，stderr 首行为空行后：
+```
+[!] There was an error parsing `Gemfile`: No plugin sources available for foo. Bundler cannot continue.
+```
+（4.0.24 片段只有 `>  source …` 一行；2.7.2 片段含重复 source 行，格式差异属既有 Gemfile 错误渲染，本切片未改。）
+- 场景 C（`source "file://…/gem-index"` + typed source）：两版本均 exit 7；stdout `Fetching source index from file://…/gem-index/`；stderr 换行包裹：
+```
+Could not find gem 'bundler-source-foo' in rubygems repository
+file://…/gem-index/ or
+installed locally.
+```
+- 场景 D（typed source 带 block `do gem "json_pure" end`）：与场景 A 完全一致（exit 7、同 stderr）。⇒ block 不影响推断插件，typed source 本身不提供 remote。
+- 我方修复前：场景 A exit 17 + SSL 证书消息；场景 C 与参考已逐字一致。修复后场景 A 与参考逐字一致（stdout 空、stderr 单行、exit 7）。
+
+**参考锚点**：4.0.24 `lib/bundler/cli/install.rb:41` 在 install 前调 `Plugin.gemfile_install`；`lib/bundler/plugin.rb:104-121` 用 `Plugin::DSL` 求值、`definition = builder.to_definition(nil, true)`、`Installer#install_definition`；`lib/bundler/plugin/dsl.rb:39-50` 把 `source … type:` 推断为 `bundler-source-<type>` 且不登记 source；`lib/bundler/plugin/installer.rb:35-40`（`install_definition` 只 `remotely!` 空 source list）、`:91-101`（`install_all_sources` 构造无 remote 的 dependency）。2.7.2 对应：`bundler-2.7.2/lib/bundler/cli/install.rb:65`、`plugin.rb:103`、`plugin/dsl.rb:44`、`plugin/installer.rb:35`、`:101`。
+
+**改动**：
+- `src/celerite/cli/commands_install.cr:105-123`：`remote = PluginGemfile.primary_source(gemfile_path)` 不再回落 rubygems.org；`remote` 存在时照旧 `--source <remote>`，不存在时调 `plugin_install_remote([name], [] of String, …, local_only: true)`。
+- `src/celerite/cli/commands_surface.cr:1641-1646`：`plugin_install_remote` 新增 `local_only : Bool = false` 关键字（注释说明空 source list 语义）；`:1695` 在构造 `Resolution` 后设 `resolution.local_only = local_only`，使合成 Gemfile 的 `source "https://rubygems.org/"` 只用于本地索引，不联网。
+- 未动：主 Gemfile 求值、`primary_source` 本身（typed 行仍被跳过）、其他 plugin 安装路径。
+
+**测试/夹具**：新增 `spec/m7_typed_source_spec.cr`（2 例：typed-only 与 typed+block，断言 stdout 空、stderr 逐字、exit 7，并断言不出现 `rubygems.org`/`SSL`）；与 `spec/m7_gemfile_plugins_spec.cr` 合并跑 9 examples / 0 failures。新增差分 `fixtures/differential/install-typed-source-missing-plugin/`（`Gemfile` 仅 typed source、`command` 单行 `install`，末字节 LF），4.0.24 与 2.7.2 均 `PASS … (exit=7)`，1 passed / 0 failed / 0 skipped。
+
+**门禁**：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告）；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0；`git diff --check` EXIT 0。
+
+**已声明差异/未验证**：本切片只修失败面；若 `bundler-source-<type>` 可从本地索引解析，仍会进入既有的“自定义 source 成功路径未支持”分支（`commands_install.cr:113-116`，exit 1），参考则继续安装插件并进入主 install。插件已安装时 `installed_plugin?` 仍直接跳过（沿用既有行为）。未覆盖 `plugin "x"` 声明的 typed 组合；`BUNDLE_PLUGINS=false` 下 2.7.2 的片段格式未单独对我方取 oracle（4.0.24 已逐字对齐）。全量 spec 与全量差分未重跑。checkbox 保持 `[ ]`。
