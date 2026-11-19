@@ -4345,3 +4345,25 @@ installed locally.
 **门禁**：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告）；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0；`git diff --check` EXIT 0；定向 spec 15 examples / 0 failures / 0 errors / 0 pending。
 
 **已声明差异/未验证**：交互式提示（未指定 test/ci/linter/mit/coc/changelog 时的问卷）未实现，默认值按“不生成”处理；`--edit`/`--bundle` 只报不支持；2.7.2 的 `gem-default`/`gem-no-git` 因参考模板与成功 URL 历史差异继续 skip（4.0.24 目标已对齐）；未跑全量 spec 与全量差分。checkbox 保持 `[ ]`。
+
+## 2026-11-19（M7(6) task-28：自定义 source 的 S1——求值、specs 与 `PLUGIN SOURCE` 锁段）
+
+**范围**：`source "<uri>", type: :<plugin>` 的 S1 切片——桥进程求值 Gemfile 后取得插件 source 的 `specs`，解析阶段用这些 specs 建立索引，`lock` 写出版本门禁 `>= 1.13` 的 `PLUGIN SOURCE` 段（`remote`/`type`/`options_to_lock`/`specs`），顶层依赖带 `!`。安装（S3）、锁定索引复用（S2）与 `@inferred_plugins` 预装不在本切片。
+
+**oracle（本机 Ruby 4.0.6；`ruby -S bundle _<ver>_ lock`，隔离 HOME；`fixtures/differential/plugin-source-typed` 等价的 `./stub-path-gem` + `type: :mpath`）**
+
+| 场景 | 4.0.24 | 2.7.2 |
+| --- | --- | --- |
+| `lock` | exit 0；stdout `Writing lockfile to …`、`Resolving dependencies...`；锁含 `PLUGIN SOURCE` / `remote: ./stub-path-gem` / `type: mpath` / `specs:` / `stub-gem (1.0.0)`，`DEPENDENCIES` 为 `stub-gem!` | 同左 |
+| 校验段 | `CHECKSUMS` 含 `bundler (4.0.24) sha256=16ca64e2…` 与空摘要 `stub-gem (1.0.0)` | 无 `CHECKSUMS` 段 |
+| 尾部 | `BUNDLED WITH` 缩进 2 空格 + `4.0.24` | 缩进 3 空格 + `2.7.2` |
+
+**参考锚点**：4.0.24 `.upstream-specs/v4.0.24/bundler/lib/bundler/plugin/api/source.rb:41`（`uri/options/name`）、`:73`（`options_to_lock` 默认 `{}`）、`:136`（`specs` 来自 `fetch_gemspec_files`）、`:283-295`（`to_lock`，注释声明不得覆写）；求值期只调用 `initialize`（`dsl.rb:130-139`、`source_list.rb:65`）；锁写入 `lockfile_generator.rb:31-42`；锁读取 `lockfile_parser.rb:195`（版本门禁 `1.13`）。
+
+**实现**：`assets/bridge/server.rb` 的 `serialize_source` 识别 `Bundler::Plugin::API::Source`，输出 `type=Plugin`、`plugin_type`、`remote`、`lock_options`；新增 `plugin_source_specs` 操作经 `source.specs` 返回 name/version/platform/loaded_from/dependencies。`src/celerite/bridge/client.cr` 增加 `plugin_type`/`lock_options` 与 specs 结构；`src/celerite/resolution.cr` 为 Plugin 源跳过文件系统索引、按 bridge specs 建 `IndexSpec` 与锁段；`src/celerite/definition.cr` 的 source 标签与默认源比较接受 `Plugin`/`PLUGIN SOURCE`。
+
+**测试/夹具**：新增 `spec/m7_plugin_source_typed_spec.cr`（1 例：解析并写出非空 `specs` 的 `PLUGIN SOURCE` 段、`stub-gem!`）；新增差分 `plugin-source-typed`（`command` 为 `lock`，`extra/` 携带相对路径的 `.bundle/plugin/index` 与 `bundler-source-mpath` 插件，锁用 `file-equals-4.0.24`/`file-equals-2.7.2` 逐字断言）。4.0.24：`plugin-source`/`plugin-source-ok`/`plugin-source-typed`/`plugin-install*`/`plugin-uninstall*`/`plugin-hook*`/`plugin-command*`/`gem-*`/`install-*` 共 26 passed、0 failed、0 skipped；2.7.2 同批 24 passed、0 failed、2 skipped（`gem-default`/`gem-no-git` 沿用既有版本差异声明）。
+
+**门禁**：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告）；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0；`git diff --check`（暂存后）EXIT 0；定向 spec 1 example / 0 failures / 0 errors / 0 pending。
+
+**已声明差异/未验证**：安装路径（S3）未实现——`install`/`plugin install` 对自定义 source 仍按既有行为失败；`build_locked_index` 尚不接受 `PLUGIN SOURCE`（S2），因此锁存在时复用未验证；插件 source 的 `checksum` 与 `options_to_lock` 非空形态仅按 `{}` 实测；未跑全量 spec 与全量差分。checkbox 保持 `[ ]`。
