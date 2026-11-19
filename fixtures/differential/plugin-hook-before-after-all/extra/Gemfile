@@ -1,0 +1,5 @@
+source "https://rubygems.org"
+
+gem "alpha", path: "vendor/alpha"
+gem "beta", path: "vendor/beta"
+gem "gamma", path: "vendor/gamma"

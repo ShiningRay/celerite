@@ -1,0 +1,2 @@
+plugin install hook_all_plugin --path ./hook_all_plugin
+install

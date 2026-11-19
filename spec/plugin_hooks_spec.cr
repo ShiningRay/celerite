@@ -94,9 +94,11 @@ module Celerite
       end
     end
 
-    it "pins the hook event list to the reference after-install layout" do
+    it "pins the hook event list to the reference layout" do
       pending! "ruby not available" unless ruby_available?
-      PluginHooks::EVENTS.should eq(["after-install"])
+      # after-install (per spec), plus the install-all pair fired around
+      # Installer#run (bundler/lib/bundler/installer.rb:12-20).
+      PluginHooks::EVENTS.should eq(["after-install", "before-install-all", "after-install-all"])
     end
 
     it "documents the legacy post-install event name is a silent no-op on a reference-layout index" do
