@@ -2366,6 +2366,7 @@ module Celerite
       # dependencies..."). The forcing flags resolve too.
       if !checksum_refresh && !update && update_names.empty? && !add_checksums && !normalize_platforms &&
          !rest.includes?("--add-platform") && !rest.includes?("--remove-platform") &&
+         !definition.dependency_sources_changed?(resolution.evaluation.dependencies, resolution.evaluation.sources) &&
          definition.lockfile_exists? && definition.lockfile_matches_dependencies?(resolution.evaluation.dependencies)
         resolution.close
         text = with_profile_indent(definition.lockfile!.to_lock)
@@ -2427,6 +2428,7 @@ module Celerite
       lockfile_current = lockfile_exists_at_start &&
                          !update && update_names.empty? &&
                          !rest.includes?("--add-platform") && !rest.includes?("--remove-platform") &&
+                         !definition.dependency_sources_changed?(resolution.evaluation.dependencies, resolution.evaluation.sources) &&
                          definition.lockfile_matches_dependencies?(resolution.evaluation.dependencies)
       if lockfile_current && (print_mode || normalize_platforms || (add_checksums && !checksum_refresh))
         resolution.show_resolving = false

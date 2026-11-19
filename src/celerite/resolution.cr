@@ -799,6 +799,15 @@ module Celerite
       @resolved = true
       deps = top_level_deps
 
+      # `source/git.rb:76-81`: a source change makes the locked spec ineligible;
+      # drop it from the locked index so the solver would otherwise keep the
+      # old conservative pin even though the Gemfile points at a new tag.
+      if @definition.lockfile_exists?
+        @definition.changed_dependency_sources(@evaluation.dependencies, @evaluation.sources).each do |name|
+          @excluded_locked_names << name
+        end
+      end
+
       if reuse && reuse_locked_resolution?(deps)
         # Reference `Installer#ensure_specs_are_compatible!` only runs after
         # `setup_domain!` re-resolved (`installer.rb:79-82, 234-245`). A locked
@@ -902,6 +911,10 @@ module Celerite
       # every dependency, otherwise `@missing_lockfile_dep` (etc.) makes
       # `something_changed?` (definition.rb:630-645) true and we re-resolve.
       return false unless lockfile_covers_dependencies?(lockfile, deps)
+      # `source/git.rb:76-81` includes uri/ref/branch/glob/submodules in source
+      # identity; a changed tag must re-resolve instead of rewriting the old
+      # lockfile. `source_diff` already owns the reference label rendering.
+      return false if @definition.dependency_sources_changed?(@evaluation.dependencies, @evaluation.sources)
       return false unless sources_compatible?(lockfile)
       # Reference parity: a lockfile that does not cover the local platform
       # (no `ruby`, no matching entry) makes the definition re-resolve

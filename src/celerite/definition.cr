@@ -208,6 +208,25 @@ module Celerite
       {changed, default_changed || !changed.empty?}
     end
 
+    # `source/git.rb:76-81`: two Git sources are the same only when uri, ref,
+    # branch, glob and submodules all match. Reuse must apply the same rule, so
+    # a changed tag/ref/branch/glob has to re-resolve instead of rewriting the
+    # old lockfile (`source/git.rb:64` is the `to_gemfile` label).
+    def dependency_sources_changed?(deps : Array(Bridge::EvaluatedDependency),
+                                    gemfile_sources : Array(Bridge::EvaluatedSource)?) : Bool
+      !changed_dependency_sources(deps, gemfile_sources).empty?
+    end
+
+    # Names whose Gemfile source label no longer matches the locked section.
+    # The resolver must also drop these from the locked index: otherwise the
+    # old locked spec remains a candidate and wins as the conservative pin even
+    # though the source changed.
+    def changed_dependency_sources(deps : Array(Bridge::EvaluatedDependency),
+                                   gemfile_sources : Array(Bridge::EvaluatedSource)?) : Array(String)
+      return [] of String unless lockfile_exists?
+      source_diff(deps, gemfile_sources)[0].compact_map { |line| line[/\* (\S+) from/, 1]? }
+    end
+
     # `source/rubygems.rb:146` (`to_gemfile` is `identifier`), `source/git.rb:64`,
     # `source/path.rb:58` (`to_gemfile` is `path`); the Gemfile side of an entry
     # without an explicit `source:` option has no source at all.
@@ -215,9 +234,12 @@ module Celerite
       return "no specified source" unless source
       case source.type
       when "Git"
-        git_label(source.remote, source.branch, source.tag, source.ref, source.glob)
-      when "Path", "Plugin"
-        source.remote || "no specified source"
+        git_label(source.remote, source.branch, source.tag, source.ref, source.glob,
+          source.submodules.try(&.to_s))
+      when "Path"
+        path_label(source.remote, source.glob)
+      when "Plugin"
+        plugin_label(source.remote, source.plugin_type)
       else
         remotes = source.remotes
         remote = source.remote
@@ -233,12 +255,15 @@ module Celerite
       return "no specified source" unless section
       case section.type
       when "GIT"
+        submodules = section.option("submodules")
         git_label(section.remote, option_string(section, "branch"), option_string(section, "tag"),
-          option_string(section, "ref"), option_string(section, "glob"))
+          option_string(section, "ref"), option_string(section, "glob"),
+          submodules.nil? ? nil : submodules.to_s)
       when "PATH"
-        option_string(section, "remote") || option_string(section, "path") || "no specified source"
+        path_label(option_string(section, "remote") || option_string(section, "path"),
+          option_string(section, "glob"))
       when "PLUGIN SOURCE"
-        option_string(section, "remote") || "no specified source"
+        plugin_label(option_string(section, "remote"), option_string(section, "type"))
       else
         # Gems locked in the default `GEM` section have no source of their own
         # (`LockfileParser` only records one for `GIT`/`PATH` entries), so the
@@ -252,14 +277,28 @@ module Celerite
       section.option(key).as?(String)
     end
 
-    private def git_label(remote : String?, branch : String?, tag : String?, ref : String?, glob : String?) : String
+    private def git_label(remote : String?, branch : String?, tag : String?, ref : String?, glob : String?,
+                          submodules : String? = nil) : String
       label = remote || ""
-      specifiers = {"branch" => branch, "tag" => tag, "ref" => ref, "submodules" => nil, "glob" => glob}
+      specifiers = {"branch" => branch, "tag" => tag, "ref" => ref, "submodules" => submodules, "glob" => glob}
       parts = [] of String
       specifiers.each do |name, value|
         parts << "#{name}: #{value}" if value
       end
       parts.empty? ? label : "#{label} (#{parts.join(", ")})"
+    end
+
+    # `source/path.rb:45-48` writes `remote:` plus a non-default `glob:`;
+    # `source/path.rb:64-67` treats the expanded path as the source identity.
+    private def path_label(path : String?, glob : String?) : String
+      return "no specified source" unless path
+      glob ? "#{path} (glob: #{glob})" : path
+    end
+
+    # `plugin/api/source.rb:283-295` locks `remote:` plus `type:`.
+    private def plugin_label(remote : String?, plugin_type : String?) : String
+      return "no specified source" unless remote
+      plugin_type ? "#{remote} (type: #{plugin_type})" : remote
     end
 
     private def trim_remote(value : String) : String
