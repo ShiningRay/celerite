@@ -5125,3 +5125,32 @@ spec 家族 `m7_git_source_reuse_spec`、`m7_source_lock_options_spec`、`m7_loc
 - 插件 gem 由本仓库脚本本地构建（`fixtures/plugin-source-gem`），不代表真实第三方插件生态；`Gem::Package.build` 的产物时间戳/校验和随环境变化，未做跨机器复现。
 - 仅验证单插件注册单一 source；多插件共存、插件间 source/command 冲突、需要原生扩展的插件未测。
 - 未验证真实远端（非 `file://`）插件源安装；未重跑全量 `crystal spec`、全量差分与上游 64 例套件。
+## 2026-11-20（M7(2) task-48：`exec` 的 RUBYOPT 注入与显式 Gemfile 缺失语义）
+
+### Oracle（4.0.24 与 2.7.2 同形）
+
+| 场景 | 参考 | 修复前我方 |
+| --- | --- | --- |
+| `exec ruby -e` 打印 `RUBYOPT` | 恰好 1 个 `-r<lib>/bundler/setup`；`RUBYLIB` 1 条 | 2 个 `-r`（一正斜杠一混合斜杠），子进程内 bundler/setup 再追加一次 |
+| `BUNDLE_GEMFILE` 指向不存在文件 / `exec --gemfile missing.rb` | 子进程 `-rbundler/setup` 抛 `Bundler::GemfileNotFound`（`definition.rb:38`）并带 backtrace，exit 1 | 父进程读文件失败，单行 `No such file or directory @ rb_sysopen - <path>`，exit 1 |
+| 无 Gemfile（未显式指定） | 父进程 `Could not locate Gemfile`，exit 10 | 同（无差异） |
+
+参考锚点：`lib/bundler/cli/exec.rb:54-68`（注入 `RUBYOPT`/`BUNDLE_GEMFILE` 后直接 exec，不读 Gemfile）、`lib/bundler/shared_helpers.rb:355,362-372`（`-rbundler/setup` 去重）、`lib/bundler/plugin` 不相关；`lib/bundler/setup.rb:32` 与 `definition.rb:38` 产生缺失 Gemfile 的异常。
+
+### 修复
+
+- `src/celerite/cli/commands_install.cr` exec 段：注入路径统一为正斜杠（`File.join(...).gsub('\\', "/")`），否则子进程 bundler/setup 的字符串比较会追加第二个等价 `-r`；`RUBYOPT`/`RUBYLIB` 归一化后去重（`normalize_env_path`）。
+- 显式 `--gemfile`/`BUNDLE_GEMFILE` 指向不存在路径时，不再在父进程调用 `Definition.build`/`evaluate_gemfile`，而是照参考导出 `RUBYOPT`/`BUNDLE_GEMFILE` 并 exec 子进程，让 `Bundler::GemfileNotFound` 在子进程出现（exit 1）。
+
+### 测试与证据
+
+- 新 spec `spec/m7_exec_env_spec.cr`（3 例）：单 `-r`、保留无关 `RUBYOPT` 条目且 setup 仍为 1、显式缺失 Gemfile 时子进程未执行脚本且 exit 1。与 `m7_exec_spec.cr`、`m7_install_ruby_compat_spec.cr` 合计 12 例 0 失败。
+- 新差分夹具 `exec-env-injected`（`install` + `exec ruby count_env.rb`，断言 `setup_entries=1`）与 `exec-no-gemfile`（`exec --gemfile missing.rb`，`stderr-contains` 断言 `definition.rb:`、`missing.rb not found (Bundler::GemfileNotFound)`）；4.0.24 与 2.7.2 均 PASS（exit 0 / exit 1）。
+- 回归差分两 profile 各 10 项 0 失败：`exec-loader`(42)、`exec-loader-disabled`(42)、`exec-missing`(127)、`exec-no-arguments`(128)、`exec-thor-version`(0)、`exec-unknown-command`(127)、`exec-env-injected`(0)、`exec-no-gemfile`(1)、`install-fresh`(0)、`install-check`(0)。
+- 负向对照：`2e6a5aa` 旧二进制两 profile 均 FAIL——`setup_entries=2`；`exec-no-gemfile` 缺 `GemfileNotFound` 文本。
+- 门禁：`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`crystal build src/cli.cr -o bin/celerite.exe`、`git diff --cached --check`、`git diff 2e6a5aa..HEAD --check` 全部 EXIT 0（仅 2 条既有 `Deprecated File.executable?` 警告）。
+
+### 已声明差异 / 未验证
+
+- 缺失 Gemfile 的 stderr 采用 contains 断言（两侧 bundler lib 绝对路径不同，无法逐字比较）。
+- 未覆盖嵌套 `exec`、Windows 信号转发细节、`--keep-file-descriptors` 的实际 fd 行为；未重跑全量 spec/差分/上游 64 例。
