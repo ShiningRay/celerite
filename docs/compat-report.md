@@ -5154,3 +5154,42 @@ spec 家族 `m7_git_source_reuse_spec`、`m7_source_lock_options_spec`、`m7_loc
 
 - 缺失 Gemfile 的 stderr 采用 contains 断言（两侧 bundler lib 绝对路径不同，无法逐字比较）。
 - 未覆盖嵌套 `exec`、Windows 信号转发细节、`--keep-file-descriptors` 的实际 fd 行为；未重跑全量 spec/差分/上游 64 例。
+
+## 2026-11-20（M7(3) task-49：`issue` 无锁报告的失败面与 doctor 共用路径）
+
+### 现象与 oracle
+
+`bundle issue` 在「只有 Gemfile、没有 Gemfile.lock」的项目里，本实现打印 `## Bundle Doctor` 后以 stderr `Could not locate Gemfile` 退出 10，也不再输出 doctor 结论；参考 4.0.24 / 2.7.2 会正常解析、写出锁文件并给出 `No issues found with the installed bundle`。两版参考行为一致，仅锁文件形状不同（4.0.24 212 字节带 CHECKSUMS，2.7.2 110 字节）。
+
+| 场景 | 参考 4.0.24 | 参考 2.7.2 | 本实现（修前） | 本实现（修后） |
+| --- | --- | --- | --- | --- |
+| Gemfile 无锁 → `issue` | exit 0，`Resolving dependencies...`、`The Gemfile's dependencies are satisfied`、`No issues found...`，写锁 212B | 同上，写锁 110B | exit 10，`Could not locate Gemfile`，无锁 | exit 0，逐项一致（按 profile 写 212B / 110B） |
+| Gemfile 无锁 → `doctor` | 同上（共用 doctor 主体） | 同上 | exit 0，但不写锁 | exit 0，写锁 |
+| Gemfile 无锁 → `env` | exit 0，不写锁 | 同 | 一致（`<No … found>` 占位） | 一致 |
+| 有锁但缺 gem → `issue` | exit 1，缺 gem 列表 | 同 | exit 1，但多一空行 | exit 1，逐字一致 |
+
+### 根因与改动
+
+- `src/celerite/cli/commands_surface.cr:2647` `issue` 复制了 `env` 的报告代码，并用 `File.file?` 决定是否打印 `## Gemfile` / `### Gemfile.lock`；随后 `lockfile.nil?` 直接返回 10。参考 `cli/issue.rb:33-38` 是「先打印 env 报告（`Env.report` 始终输出 Gemfile 段，缺失文件用 `Env.read_file` 占位），再调用 doctor」，无锁不是错误。
+- 新增 `print_gemfile_sections(stdout, definition, bridge)`（`:760`）：`env` 与 `issue` 共用，含 `<No <abs> found>` 占位与可选 `## Gemspecs`（`env.rb:35-66`）。
+- 新增 `doctor_report(stdout, stderr) : Int32`（`:853`）：`doctor` 与 `issue` 共用「建 definition → 解析/写入锁 → 缺 gem 判定 → satisfied + `No issues found`」。
+- 新增 `persist_generated_lockfile`（`:885`）：无锁且依赖满足时按 `lockfile.to_lock` 写出锁文件（参考 doctor 亦写锁）。
+- `issue` 删除 `lockfile.nil?` 提前返回与重复的缺 gem 判定，改在报告后调用 `doctor_report`；缺失 Gemfile 仍由 CLI 统一转成 exit 10。
+- `script/differential:110-123` 的 N5 归一化此前把 `## Environment` 到 `## Bundle Doctor` 之间的**所有** `## ` 段一并丢弃，导致 issue 夹具从未比较 Gemfile/settings 段（盲区）。现改为只丢弃 `## Environment` 自身的正文（到下一个 `^## ` 行为止，保留该标题），并同步注释。
+
+### 测试与证据
+
+- 新夹具 `fixtures/differential/issue-no-lockfile`（Gemfile-only，`issue`；`bundle-preset/ruby/4.0.0/.keep` 用于避开参考 `check_home_permissions` 在缺失 bundle 子目录时的 ENOENT 崩溃）与 `doctor-no-lockfile`，双 profile 均 PASS（exit 0，`Gemfile.lock` 出现且含 `BUNDLED WITH`）。
+- 既有 `env-report`、`env-gemspec`、`issue-satisfied`、`issue-missing-gems` 在 N5 收紧后重跑仍 PASS；回归 `install-check`、`install-fresh` 双 profile 各 8/0。
+- `spec/m7_issue_report_spec.cr` 3 例（无锁不报错并写锁、`issue` 与 `doctor` 主体一致、Gemfile 段与 `env` 共用），与 `spec/m7_env_output_spec.cr` 合计 12 例 0 失败。
+- 负向对照：`05cedfe` 旧二进制运行两新夹具 0 passed / 2 failed（`Could not locate Gemfile`、缺锁、缺 doctor 结论）。
+
+### 门禁
+
+`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`crystal build src/cli.cr -o bin/celerite.exe`、`git diff --cached --check`、`git diff 05cedfe..HEAD --check` 全部 EXIT 0（仅 2 条既有 `Deprecated File.executable?` 警告）。
+
+### 已声明差异 / 未验证
+
+- `issue-no-gemfile` 标记为 deferred（两 profile）：无 Gemfile 时参考会回溯到**宿主机** `~/.bundle/config`（harness 的 `HOME` 是 POSIX 风格路径，RubyGems 判定不可用后回落到开发者主目录），输出随开发机配置变化；这是夹具环境泄漏而非产品差异，未放宽 N5 比较。
+- `doctor` 的完整诊断面（`check_home_permissions`、`check_path_components`、`check_gem_path` 等）未实现，本实现只覆盖依赖满足/缺失与锁文件写入；`--verbose` 分层未对齐。
+- 未验证 Windows 信号/句柄细节；未重跑全量 spec、全量差分与上游 64 例套件。
