@@ -1,0 +1,23 @@
+Gemfile.lock
+PATH
+  remote: vendor/d
+  glob: gems/*/*.gemspec
+  specs:
+    dgem (2.0.0)
+
+GEM
+  specs:
+
+PLATFORMS
+  java
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  dgem!
+
+CHECKSUMS
+  bundler (4.0.24) sha256=16ca64e20816a0cf151a948fb141d788602996d2b4d73577b74388fe84fa98bc
+  dgem (2.0.0)
+
+BUNDLED WITH
+  4.0.24
