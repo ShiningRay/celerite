@@ -118,6 +118,18 @@ describe "M7(6) locked plugin source" do
     end
   end
 
+  it "treats a locked plugin source spec as installed for check" do
+    with_project(locked_typed_source_files(true, "4.0.24")) do |project|
+      with_typed_source_env(project) do
+        code, stdout, stderr = run_cli(["check"])
+
+        code.should eq(0), "stdout=#{stdout.inspect} stderr=#{stderr.inspect}"
+        stdout.should eq("The Gemfile's dependencies are satisfied\n")
+        stderr.should eq("")
+      end
+    end
+  end
+
   it "raises the reference Gemfile error when the plugin is not installed" do
     with_project(locked_typed_source_files(false, "4.0.24")) do |project|
       with_typed_source_env(project) do

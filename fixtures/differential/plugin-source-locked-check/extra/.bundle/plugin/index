@@ -1,0 +1,10 @@
+---
+commands:
+hooks:
+load_paths:
+  bundler-source-mpath:
+  - ".bundle/plugin/bundler-source-mpath/lib"
+plugin_paths:
+  bundler-source-mpath: ".bundle/plugin/bundler-source-mpath"
+sources:
+  mpath: "bundler-source-mpath"
