@@ -1,0 +1,2 @@
+source "https://rubygems.org/"
+gem "nope-gem", path: "vendor/x"
