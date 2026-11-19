@@ -1,0 +1,19 @@
+Gemfile.lock
+PLUGIN SOURCE
+  remote: ./stub-path-gem
+  type: mpath
+  specs:
+    stub-gem (1.0.0)
+
+GEM
+  remote: file:///@PLUGIN_SOURCE_INDEX_DIR@/
+  specs:
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  stub-gem!
+
+BUNDLED WITH
+  4.0.24

@@ -143,3 +143,49 @@ describe "M7(6) locked plugin source" do
     end
   end
 end
+
+# M7(6) S3: installing a typed plugin source materializes the source's gem via
+# the plugin's `install` hook and drops the inferred plugin dependency from the
+# lock (plugin/api/source.rb:90; installer/gem_installer.rb:67-75).
+private def install_typed_source_files(version : String) : Hash(String, String)
+  root = File.expand_path("../fixtures/differential/plugin-source-install", __DIR__)
+  index_remote = File.expand_path("../fixtures/gem-index-plugin-source", __DIR__).gsub("\\", "/")
+  files = {} of String => String
+  collect_typed_source_files(File.join(root, "extra"), "", files)
+  files["Gemfile"] = File.read(File.join(root, "Gemfile")).gsub("@PLUGIN_SOURCE_INDEX_DIR@", index_remote)
+  files["Gemfile.lock"] = File.read(File.join(root, "Gemfile.lock"))
+    .gsub("@PLUGIN_SOURCE_INDEX_DIR@", index_remote)
+    .gsub("@BUNDLER_VERSION@", version)
+  files
+end
+
+describe "M7(6) typed plugin source install" do
+  it "installs the source gem and drops the inferred plugin dependency" do
+    with_project(install_typed_source_files("4.0.24")) do |project|
+      with_typed_source_env(project) do
+        previous_bundle_path = ENV["BUNDLE_PATH"]?
+        bundle_path = File.join(project, "vendor", "bundle")
+        ENV["BUNDLE_PATH"] = bundle_path
+        begin
+          code, stdout, stderr = run_cli(["install"])
+
+          code.should eq(0), "stdout=#{stdout.inspect} stderr=#{stderr.inspect}"
+          stderr.should eq("")
+          stdout.should contain("Post-install message from stub-gem:")
+          stdout.should contain("Installed stub-gem")
+
+          lock = File.read(File.join(project, "Gemfile.lock"))
+          lock.should contain("PLUGIN SOURCE\n  remote: ./stub-path-gem\n  type: mpath\n  specs:\n    stub-gem (1.0.0)\n")
+          lock.should contain("DEPENDENCIES\n  stub-gem!\n")
+          lock.should_not contain("bundler-source-mpath")
+        ensure
+          if previous_bundle_path
+            ENV["BUNDLE_PATH"] = previous_bundle_path
+          else
+            ENV.delete("BUNDLE_PATH")
+          end
+        end
+      end
+    end
+  end
+end

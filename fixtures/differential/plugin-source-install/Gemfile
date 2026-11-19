@@ -1,0 +1,5 @@
+source "file:///@PLUGIN_SOURCE_INDEX_DIR@"
+
+source "./stub-path-gem", type: :mpath do
+  gem "stub-gem"
+end
