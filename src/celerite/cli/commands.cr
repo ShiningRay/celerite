@@ -1893,6 +1893,12 @@ module Celerite
         end
       elsif command == "info" && rest.includes?("--path")
         if gem_dir = installed_gem_dir(definition, spec, lockfile)
+          # `cli/info.rb:36-48`: print_gem_path warns when the extracted
+          # directory is absent, exactly like show --paths.
+          unless Dir.exists?(gem_dir)
+            stderr.puts "The gem #{name} is missing. It should be installed at #{display_path(gem_dir)}, but was not found"
+            return 0
+          end
           stdout.puts display_path(gem_dir)
           return 0
         end
@@ -1916,23 +1922,33 @@ module Celerite
           end
 
           summary, homepage, metadata = read_gemspec_info(gem_dir, spec.full_name)
-          stdout.puts "  * #{spec_display_name(spec, lockfile)}"
-          stdout.puts "\tSummary: #{summary}" if summary
-          stdout.puts "\tHomepage: #{homepage}" if homepage
-          stdout.puts "\tDocumentation: #{metadata["documentation_uri"]}" if metadata.has_key?("documentation_uri")
-          stdout.puts "\tSource Code: #{metadata["source_code_uri"]}" if metadata.has_key?("source_code_uri")
-          stdout.puts "\tFunding: #{metadata["funding_uri"]}" if metadata.has_key?("funding_uri")
-          stdout.puts "\tWiki: #{metadata["wiki_uri"]}" if metadata.has_key?("wiki_uri")
-          stdout.puts "\tChangelog: #{metadata["changelog_uri"]}" if metadata.has_key?("changelog_uri")
-          stdout.puts "\tBug Tracker: #{metadata["bug_tracker_uri"]}" if metadata.has_key?("bug_tracker_uri")
-          stdout.puts "\tMailing List: #{metadata["mailing_list_uri"]}" if metadata.has_key?("mailing_list_uri")
-          stdout.puts "\tPath: #{display_path(gem_dir)}"
-          stdout.puts "\tDefault Gem: yes" if default_gem?(gem_dir)
+          info = String::Builder.new
+          info << "  * #{spec_display_name(spec, lockfile)}\n"
+          info << "\tSummary: #{summary}\n" if summary
+          info << "\tHomepage: #{homepage}\n" if homepage
+          info << "\tDocumentation: #{metadata["documentation_uri"]}\n" if metadata.has_key?("documentation_uri")
+          info << "\tSource Code: #{metadata["source_code_uri"]}\n" if metadata.has_key?("source_code_uri")
+          info << "\tFunding: #{metadata["funding_uri"]}\n" if metadata.has_key?("funding_uri")
+          info << "\tWiki: #{metadata["wiki_uri"]}\n" if metadata.has_key?("wiki_uri")
+          info << "\tChangelog: #{metadata["changelog_uri"]}\n" if metadata.has_key?("changelog_uri")
+          info << "\tBug Tracker: #{metadata["bug_tracker_uri"]}\n" if metadata.has_key?("bug_tracker_uri")
+          info << "\tMailing List: #{metadata["mailing_list_uri"]}\n" if metadata.has_key?("mailing_list_uri")
+          info << "\tPath: #{display_path(gem_dir)}\n"
+          info << "\tDefault Gem: yes\n" if default_gem?(gem_dir)
           reverse_dependencies = gem_reverse_dependencies(locked_specs, spec.name)
           if reverse_dependencies.any?
-            stdout.puts "\tReverse Dependencies: "
-            reverse_dependencies.each { |line| stdout.puts "\t\t#{line}" }
+            info << "\tReverse Dependencies: \n"
+            reverse_dependencies.each { |line| info << "\t\t#{line}\n" }
           end
+          # `cli/info.rb:68-72`: a specification without its extracted
+          # directory still has enough metadata to print, but Bundler routes
+          # the whole block through ui.warn (stderr) with a leading warning.
+          if !Dir.exists?(gem_dir)
+            stderr.puts "The gem #{name} is missing. Gemspec information is still available though:"
+            stderr.print info.to_s
+            return 0
+          end
+          stdout.print info.to_s
           return 0
         end
       end
