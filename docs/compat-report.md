@@ -4921,3 +4921,55 @@ spec 家族 `m7_lock_rewrite_fidelity_spec`、`m7_git_source_reuse_spec`、`m7_i
 - `PLUGIN SOURCE` 段的 GIT/PATH 之外的选项（插件自定义 `options_to_lock`）沿用既有 `plugin_source_info`，未在本轮重新取 oracle。
 - `BUNDLE_FROZEN=true` 下 `check` 的拒写路径未在本轮重取 oracle（此前 task-33/35 已有记录）。
 - 全量 `crystal spec`、全量差分与上游 64 例套件未重跑。
+
+## 2026-11-20（M7(8) task-44b：PATH 源身份与可见 spec 集判据）
+
+结论：参考把 PATH 源的 **身份**定义为 `expanded_original_path` + `version`，`glob` 不参与（`source/path.rb:64-68`，`alias_method :==, :eql?`）；`glob` 只影响「该源当前可见哪些 gemspec」。因此 `Definition#converge_paths` → `specs_changed?`（`definition.rb:929-950`）比较的是**锁侧 spec 集是否被当前可见集覆盖**（`locked_index.subset?(source.specs)`），而不是字符串标签。我方此前把 `glob` 拼进 `path_label`（task-34 引入），导致 `glob:` 一变就判成「源变了」：`lock` 多打一次 `Resolving dependencies...` 并写 `glob:` 行，`frozen` 下 `check` 误报 exit 16；反过来，锁里默认 glob 的 gemspec 版本从 1.0.0 升到 2.0.0 时又不重解。本轮去掉 `glob` 对身份的影响，并新增「按锁侧 path+glob 枚举 gemspec 名称/版本、与锁侧 spec 集比对」的判据。
+
+### oracle 表（4.0.24 与 2.7.2 均为实测，两侧逐字节比对）
+
+| 用例 | 命令 | 参考 | 修复前我方 | 修复后我方 |
+| --- | --- | --- | --- | --- |
+| (C1) 默认 glob 锁定 dgem 1.0.0；新增 `vendor/d/gems/y/dgem.gemspec` 2.0.0，Gemfile 改为 `glob: "gems/*/*.gemspec"` | `lock` | exit 0；只打 `Writing lockfile to …`；锁**不变**（仍 `dgem (1.0.0)`，无 `glob:` 行） | exit 0；多打 `Resolving dependencies...`；锁写成 `glob: gems/*/*.gemspec` + `dgem (2.0.0)` | 与参考逐字节一致 |
+| (C2) 锁仍用默认 glob，`vendor/d/dgem.gemspec` 1.0.0→2.0.0 | `lock` | exit 0；`Writing lockfile to …` + `Resolving dependencies...`；锁重写为 `dgem (2.0.0)` | 只打 `Writing lockfile`，锁保持 `dgem (1.0.0)`（漏重解） | 与参考逐字节一致 |
+| (D1) 同 C1，但 `BUNDLE_FROZEN=true` | `check` | exit 0；`The Gemfile's dependencies are satisfied` | exit 16；`The list of sources changed…` + `* dgem from \`vendor/d\` to \`vendor/d (glob: gems/*/*.gemspec)\`` | 与参考逐字节一致（exit 0） |
+| (D2) 同 C2，但 `BUNDLE_FROZEN=true` | `check` | 4.0.24：exit 16，`The gemspecs for path gems changed, but the lockfile can't be updated because frozen mode is set`；2.7.2：exit 1，`The following gems are missing` + ` * dgem (1.0.0)` + 安装提示 | 两侧都 exit 0 | 与参考逐字节一致 |
+| (E) 锁里写明非默认 `glob: gems/*/*.gemspec`（2.0.0）；Gemfile 去掉 glob 行 | `lock` | exit 0；只打 `Writing lockfile to …`；锁**保留** `glob:` 与 `dgem (2.0.0)` | exit 7；`Could not find gem 'dgem' with platform 'x64-mingw-ucrt' in source at \`vendor/d\`.` | 与参考逐字节一致 |
+
+### 代码锚点与改动
+
+- `src/celerite/definition.cr` `path_label`：不再拼 `glob`，两侧都 `File.expand_path(path, File.dirname(gemfile_path))` 后比较（桥接侧把 `./pathgem` 归一成 `pathgem`，锁里仍是 `./pathgem`；参考身份是 `expanded_original_path`）。`git_label` 保留 `glob`（参考 `source/git.rb:72-83` 的 `eql?` 含 glob，GIT 不在本轮改动内）。
+- `src/celerite/resolution.cr`：新增 `Resolution.stale_path_specs(definition, bridge, evaluation)`——对每个 PATH 依赖，取**锁段**的 `remote`（或 `path`）与 `glob`（缺省 `DEFAULT_GLOB`），相对 Gemfile 目录展开，经新桥接 op `load_gemspec_dir_specs` 枚举该 glob 下 `name`+`version`（浅层覆盖深层，同 `source/path.rb:159-179`），返回锁段里不可见的 spec；桥缺失/报错按 fail-open 返回空。`reuse_locked_resolution?` 在依赖源判据之后加 `return false if path_specs_changed?`；锁 no-op 条件加 `!resolution.path_specs_changed?`，避免短路掉应有的重解。
+- `assets/bridge/server.rb`：新 `op_load_gemspec_dir_specs`（`dir`/`glob` → 按深度排序后 `Gem::Specification.load`，按 `name` 去重保留浅层），并在显式 dispatch 表注册；`src/celerite/bridge/client.cr` 加 `GemSpecSummary` 与 `load_gemspec_dir_specs`。
+- `src/celerite/definition.cr` `validate_frozen_lockfile!` 新增 `path_specs_changed` 参数，追加理由 `the gemspecs for path gems changed`（参考 `definition.rb:906-920` 的 `@path_changes` 文案）；`src/celerite/cli/commands_install.cr` 与 `src/celerite/cli/commands.cr` 的 `check` 在 4.x 传入该标志。
+- `src/celerite/cli/commands.cr` `check`：2.x + frozen + 锁侧 PATH spec 已不可见时，走参考的 missing-gem 文案（`The following gems are missing` + ` * dgem (1.0.0)` + \"Install missing gems with `bundle install`\"）exit 1。
+- 锁 no-op 重写顺带把 `BUNDLED WITH` 改成当前 bridge 版本（参考 `definition.rb:401-418` 每次都序列化 `Bundler::VERSION`；实测 2.7.2 会改写 4.0.24 的锁）。
+
+### 测试与夹具
+
+- `spec/m7_git_source_reuse_spec.cr` 重写原「glob 变了就重解」用例为两条：glob-only 变化 → `reuse_locked?` 为 true；锁侧 glob 下 gemspec 版本变化 → false。
+- 新夹具（`file-equals-4.0.24` / `file-equals-2.7.2` 整锁断言）：`fixtures/differential/path-glob-change-keeps-lock/`（C1）、`path-gemspec-bump-reresolves/`（C2）、`check-frozen-path-gemspec-bump/`（D2，`frozen` marker）、`path-locked-glob-wins/`（E）。
+- 双 profile：4.0.24 与 2.7.2 均 4 passed / 0 failed / 0 skipped。
+
+### 负对照（`git worktree add C:/temp/celerite-pre44b 7fab7a4`，重建旧二进制）
+
+- 4.0.24：0 passed / 4 failed——C1/E 的 cel 侧重解并写入 `glob:`，D2 的 cel 侧 exit 0 且 stderr 为空（参考 exit 16 的 path-gemspec 理由缺失），C2 的 cel 侧不重解。
+- ⇒ 四个夹具均有判别力；2.7.2 负对照未单独重跑（同源二进制）。
+
+### 回归（双 profile）
+
+`path-glob-default-root`、`path-glob-default-nested`、`path-glob-default-deep-miss`、`path-glob-monorepo`、`scoped-source-lock`、`check-rewrites-lock`、`check-dry-run-keeps-lock`、`check-rewrite-keeps-path-source`、`lock-path-source-only-no-remote`、`install-frozen`(15)、`install-frozen-source-changed`(16)、`install-platforms-add-local`、`install-platforms-frozen-error`(16)、`install-fresh`、`lock-noop`、`install-local`(7)，加本轮 4 个新夹具：4.0.24 20 passed / 0 failed；2.7.2 20 passed / 0 failed。
+
+spec 家族 `m7_git_source_reuse_spec`、`m7_source_lock_options_spec`、`m7_lock_rewrite_fidelity_spec`、`m7_installed_discovery_spec`、`m7_path_*`：50 examples / 0 failures / 0 errors / 0 pending（隔离 `HOME` 后；宿主 `~/.bundle/config` 的 `BUNDLE_PATH: vendor/x` 会让 `m7_path_system_spec` 假失败）。
+
+### 门禁（全部 EXIT 0）
+
+`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`crystal build src/cli.cr -o bin/celerite.exe`、`git diff --check`、`git diff --cached --check`、`git diff 7fab7a4..HEAD --check`。
+
+### 已声明差异 / 未验证
+
+- PATH 源「身份」仍以字符串比较实现（`path_label` 展开后的绝对路径），未把 `version`（Gemfile `gem "x", path: ..., version:` 的 fake gemspec 形态）纳入标签；该形态本轮未取 oracle。
+- 可见 spec 集判据只比 `name`+`version`，未比 `platform` 与运行时依赖（参考 `subset?` 还比 `runtime_dependencies` 与 `source`）；差异需构造同名同版本不同 platform 才可见，本轮未覆盖。
+- 桥枚举是新增 op，只服务本判据；插件 PATH/GEMSPEC 源未走该路径。
+- 2.7.2 的 D2 走 `check` 的 missing-gem 分支，依据单次 oracle；未覆盖 `install` 在 2.7.2 下的同场景。
+- 全量 `crystal spec`、全量差分与上游 64 例套件未重跑。
