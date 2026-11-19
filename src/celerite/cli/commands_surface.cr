@@ -746,48 +746,53 @@ module Celerite
           stdout.puts "```"
         end
 
-        stdout.puts
-        # Gemfile section
-        stdout.puts "## Gemfile"
-        stdout.puts
-        stdout.puts "### Gemfile"
-        stdout.puts
-        stdout.puts "```ruby"
-        File.each_line(definition.gemfile_path) { |l| stdout.puts l.chomp }
-        stdout.puts "```"
-        stdout.puts
-        stdout.puts "### Gemfile.lock"
-        stdout.puts
-        stdout.puts "```"
-        if definition.lockfile_exists?
-          File.each_line(definition.lockfile_path) { |l| stdout.puts l.chomp }
-        else
-          # Bundler::Env.read_file returns this placeholder instead of an
-          # empty fence when the lockfile is absent.
-          stdout.puts "<No #{definition.lockfile_path.gsub(/\\/, "/")} found>"
-        end
-        stdout.puts "```"
-        # Bundler::Env appends `## Gemspecs` after the Gemfile section, one
-        # `### <basename>` ruby fence per gemspec loaded by `gemspec` directives
-        # (env.rb:51-58); the whole section is omitted when there are none.
-        gemspec_paths = bridge.gemspec_paths(definition.gemfile_path)
-        unless gemspec_paths.empty?
-          stdout.puts
-          stdout.puts "## Gemspecs"
-          gemspec_paths.each do |path|
-            stdout.puts
-            stdout.puts "### #{File.basename(path)}"
-            stdout.puts
-            stdout.puts "```ruby"
-            # Ruby writes the file with LF; normalize CRLF like the reference
-            # `.chomp` rendering so the differential comparison is byte-stable.
-            stdout.puts File.read(path).gsub(/\r\n?/, "\n").chomp
-            stdout.puts "```"
-          end
-        end
+        print_gemfile_sections(stdout, definition, bridge)
         0
       ensure
         bridge.close
+      end
+    end
+
+    # Gemfile / Gemfile.lock / Gemspecs sections shared by `env` and `issue`
+    # (Bundler::Env.report, env.rb:35-58). The reference always prints the
+    # Gemfile.lock heading and falls back to `<No <path> found>` when the file
+    # is absent (Env.read_file, env.rb:63-66).
+    private def self.print_gemfile_sections(stdout : IO, definition : Definition, bridge : Bridge::Client?) : Nil
+      stdout.puts
+      stdout.puts "## Gemfile"
+      stdout.puts
+      stdout.puts "### Gemfile"
+      stdout.puts
+      stdout.puts "```ruby"
+      File.each_line(definition.gemfile_path) { |l| stdout.puts l.chomp }
+      stdout.puts "```"
+      stdout.puts
+      stdout.puts "### Gemfile.lock"
+      stdout.puts
+      stdout.puts "```"
+      if definition.lockfile_exists?
+        File.each_line(definition.lockfile_path) { |l| stdout.puts l.chomp }
+      else
+        stdout.puts "<No #{definition.lockfile_path.gsub(/\\/, "/")} found>"
+      end
+      stdout.puts "```"
+      # Bundler::Env appends `## Gemspecs` after the Gemfile section, one
+      # `### <basename>` ruby fence per gemspec loaded by `gemspec` directives
+      # (env.rb:51-58); the whole section is omitted when there are none.
+      gemspec_paths = bridge ? bridge.gemspec_paths(definition.gemfile_path) : [] of String
+      unless gemspec_paths.empty?
+        stdout.puts
+        stdout.puts "## Gemspecs"
+        gemspec_paths.each do |path|
+          stdout.puts
+          stdout.puts "### #{File.basename(path)}"
+          stdout.puts
+          stdout.puts "```ruby"
+          # Ruby writes the file with LF; normalize CRLF like the reference
+          # `.chomp` rendering so the differential comparison is byte-stable.
+          stdout.puts File.read(path).gsub(/\r\n?/, "\n").chomp
+          stdout.puts "```"
+        end
       end
     end
 
@@ -837,6 +842,15 @@ module Celerite
         stderr.puts %(Usage: "bundle doctor diagnose [OPTIONS]")
         return 15
       end
+      doctor_report(stdout, stderr)
+    end
+
+    # The `## Bundle Doctor` body shared by `doctor` and `issue`
+    # (cli/doctor.rb:8-16, cli/doctor/diagnose.rb:74-76). Resolving from a
+    # missing lockfile writes it (reference Diagnose#run leaves the definition
+    # locked), which is why `issue` on a Gemfile-only project must not fail with
+    # the old `Could not locate Gemfile`.
+    def self.doctor_report(stdout : IO, stderr : IO) : Int32
       definition = Definition.build
       Commands.validate_ruby_runtime!(definition)
       # `doctor` resolves like `check` (cli/doctor.rb): it may fetch the index,
@@ -845,10 +859,12 @@ module Celerite
       locked_specs = lockfile.specs.sort_by(&.full_name)
 
       if locked_specs.empty?
+        persist_generated_lockfile(definition, lockfile)
         stdout.puts "The Gemfile's dependencies are satisfied"
       else
         missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
         if missing.empty?
+          persist_generated_lockfile(definition, lockfile)
           stdout.puts "The Gemfile's dependencies are satisfied"
         else
           stderr.puts "The following gems are missing"
@@ -861,6 +877,14 @@ module Celerite
       end
       stdout.puts "No issues found with the installed bundle"
       0
+    end
+
+    # `Definition#resolve` in the reference resolves into the lockfile object
+    # that Diagnose later writes; our materialize_lockfile returns the generated
+    # lockfile without touching disk, so the doctor command has to persist it.
+    private def self.persist_generated_lockfile(definition : Definition, lockfile : Lockfile::Data) : Nil
+      return if definition.lockfile_exists?
+      File.write(definition.lockfile_path, lockfile.to_lock)
     end
 
     # Returns true when the locked spec is installed/available for read-only commands.
@@ -2695,63 +2719,27 @@ module Celerite
             config.pretty_values_for(name).each { |l| stdout.puts "  " + l }
           end
           stdout.puts "```"
-          stdout.puts
         end
 
-        # Gemfile sections only when the files exist (reference issue prints
-        # empty sections otherwise; fixture uses Gemfile-less sandbox)
-        gemfile_path = File.join(Dir.current, "Gemfile")
-        lockfile_path = File.join(Dir.current, "Gemfile.lock")
-        if File.file?(gemfile_path)
-          stdout.puts "## Gemfile"
-          stdout.puts
-          stdout.puts "### Gemfile"
-          stdout.puts
-          stdout.puts "```ruby"
-          File.each_line(gemfile_path) { |l| stdout.puts l.chomp }
-          stdout.puts "```"
-          stdout.puts
-          if File.file?(lockfile_path)
-            stdout.puts "### Gemfile.lock"
-            stdout.puts
-            stdout.puts "```"
-            File.each_line(lockfile_path) { |l| stdout.puts l.chomp }
-            stdout.puts "```"
-            stdout.puts
-          end
+        # Bundler::Env.report builds the Gemfile sections from the current
+        # definition (env.rb:35-45); `issue` prints them before the doctor
+        # section and only omits them when there is no Gemfile at all.
+        definition = begin
+          Definition.build
+        rescue GemfileNotFound
+          nil
         end
+        print_gemfile_sections(stdout, definition, bridge) if definition
 
+        stdout.puts
         stdout.puts "## Bundle Doctor"
       ensure
         bridge.close
       end
 
-      definition = Definition.build
-      lockfile = definition.lockfile_exists? ? definition.lockfile! : nil
-      if lockfile.nil?
-        stderr.puts "Could not locate Gemfile"
-        return 10
-      end
-
-      # Reference parity: the doctor's check re-resolves when the lockfile
-      # does not cover the local platform (see the platform-missing note in
-      # `check`), and the resolver announces that on stdout.
-      if Commands.platform_missing?(definition)
-        stdout.puts "Resolving dependencies..."
-      end
-
-      missing = lockfile.specs.sort_by(&.full_name).reject do |spec|
-        installed_spec_dir?(definition, spec, lockfile)
-      end
-      unless missing.empty?
-        stderr.puts "The following gems are missing"
-        missing.each { |spec| stderr.puts " * #{spec.name} (#{spec.version})" }
-        stderr.puts "Install missing gems with `bundle install`"
-        return 1
-      end
-      stdout.puts "The Gemfile's dependencies are satisfied"
-      stdout.puts "No issues found with the installed bundle"
-      0
+      # cli/issue.rb:33-38 delegates to the doctor; a missing Gemfile raises
+      # GemfileNotFound from here, after the report above (exit 10).
+      doctor_report(stdout, stderr)
     end
 
     # ------------------------------------------------------------------
