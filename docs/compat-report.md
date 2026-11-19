@@ -4181,3 +4181,41 @@ So, because current Ruby version is = 4.0.6,
 2. `bundle show --paths`（不带 gem 名）在「spec-only」时是否也逐条警告未取 oracle；带名路径已对齐。
 3. 平台变体只用单元夹具覆盖，未新增对应差分（现有 spec 断言 full_name）；跨盘符/多 Ruby 版本未验证。
 4. 全量 `crystal spec` 与全量差分未重跑（沿用既有记录）。
+
+## 2026-11-19（M7 L161 task-23：upstream-specs 装具缺失 gem 文件诊断）
+
+**结论**：`fixture:missing-gem-files`（11 例）不是 Celerite 产品差异，而是 upstream 测试装具的**夹具仓库毒化**：首次 `before(:suite)` 在缺少 upstream dev/test 依赖缓存时，`build_repo1` 以 `nil` 的 `rake_path` 调 `FileUtils.cp` 抛 `TypeError`，此时 `build_repo` 已创建空的 `remote1/gems`；后续运行因目录已存在而早退，`build_repo2` 逐字复制空 `remote1`，于是所有需要 `remote2/gems/myrack-*.gem` 的用例报 `Errno::ENOENT`。已在 harness 侧（`script/upstream-specs`）修复并从未污染状态复跑，未改 `.upstream-specs/v4.0.24/` 任何 vendored 文件。
+
+**根因链（锚点）**：
+- `spec/spec_helper.rb:141` 在 `before(:suite)` 调 `build_repo1`；`build_repo1`（`spec/support/builders.rb:29-41`）第 31 行 `FileUtils.cp rake_path, "#{gem_repo1}/gems/"`。
+- `rake_path` 由 `spec/support/path.rb:298-300` → `:322-324` 用 `Dir["#{scoped_base_system_gem_path}/**/rake-*.gem"].first` 解析；`base_system_gem_path` 是 `tmp/gems/base`（`path.rb:186-188`，**不带 `2.1` scope**），`scoped_gem_path` 再拼 `Gem.ruby_engine/ruby_version`（`path.rb:241-243`）。
+- upstream 的 dev/test 依赖只在 `Spec::Rubygems.test_setup` 的 `install_test_deps` 中安装（`spec/support/rubygems_ext.rb:30-32`、`:58-67`）；harness 在 `CELERITE_SKIP_TEST_DEPS=1` 时用 `RSPEC_FORMATTER_OUTPUT_ID` 跳过它，故该缓存常缺失。
+- `build_repo`（`builders.rb:269-275`）先 `mkdir_p("#{path}/gems")` 再 yield；`TypeError` 因此在建目录之后抛出，留下空 `remote1/gems`。之后 `build_repo` 的 `return if File.directory?(path)` 使 `remote1` 永久为空。
+- `build_repo2`（`builders.rb:183-186`）`FileUtils.cp_r gem_repo1, gem_repo2` 复制空仓库；`reset!`（`spec/support/helpers.rb:20-30`）每例后删除 `remote2`，所以只在用例运行期出现 ENOENT：`.../tmp/2.1/gems/remote2/gems/myrack-1.0.0.gem`、`myrack-0.9.1.gem`。
+- 最小复现（清空 `tmp/2.1` 后跑单例）：
+  `CELERITE_SKIP_TEST_DEPS=1 ruby -S rspec -r script/upstream-specs-celerite-override.rb spec/lock/lockfile_spec.rb -e "generates a simple lockfile for a single source, gem"`
+  → `An error occurred in a 'before(:suite)' hook.` / `Failure/Error: FileUtils.cp rake_path, "#{gem_repo1}/gems/"` / `TypeError: no implicit conversion of nil into String`，栈顶 `fileutils.rb:2484 File.path` → `builders.rb:31`。
+  另证：`Gem::Package.build` 在本机可正常产 gem（手工构建 `myrack-1.0.0.gem` 成功），排除 Windows 构建能力问题。
+
+**修复**（`script/upstream-specs`，rspec 之前）：
+1. 若 `tmp/2.1/gems/remote1/gems` 存在但无 `*.gem`，删除 `remote1` 与 `remote2`，让 `build_repo1` 重新执行。
+2. 若 `tmp/gems/base` 下无 `rake-*.gem`，从本机 `Gem::Specification.find_by_name("rake").cache_file`（回退 `Gem.default_dir/cache/rake-*.gem`）复制到 `tmp/gems/base/<Gem.ruby_engine>/<ruby_version>/cache/`（本次 `ruby/4.0.0/rake-13.4.2.gem`），使 `rake_path` 非 nil。
+两处都带注释锚定上述 upstream 行号；不修改 vendored 测试源码，也不跳过/弱化断言。
+
+**新基线（4.0.24，`CELERITE_SKIP_TEST_DEPS=1`，从“空 `remote1` + 无 base 缓存”的毒化状态启动，日志确认 `repairing stale empty upstream fixture repo` 与 `seeding upstream base gem cache with rake-13.4.2.gem`）**：
+
+| 指标 | 修复前（roadmap L161 记录） | 修复后（本轮） |
+| --- | --- | --- |
+| examples / failures | 64 / 55（9 通过） | **64 / 54（10 通过）** |
+| env:artifice-unreachable | 34 | 37 |
+| env:low-il-shm | 8 | 8 |
+| fixture:missing-gem-files | 11 | **0** |
+| fixture:fetch-failed | 1 | 6 |
+| env:network-policy | 1 | 0 |
+| product:candidates | 0 | 3 |
+
+11 例去向（按新桶）：9 例转 `env:artifice-unreachable`（`generates a simple lockfile for a single source, gem`、`captures the Ruby version in the lockfile`、`works correctly with multiple version dependencies`、`does not add duplicate dependencies`、`does not add duplicate dependencies with versions`、`does not add duplicate gems`、`does not add duplicate dependencies in different groups`、`does not add credentials to lockfile when it does not have them already`、`keeps credentials in lockfile if already there`——它们用进程内 artifice 的 `https://gem.repo2`，celerite 子进程无法接入，属既有 harness 限制）；1 例转 `env:low-il-shm`（`sorts serialized sources by type`）；1 例转 `product:candidates` 且附断言级证据：`fills empty CHECKSUMS entries when not frozen, even if every gem is already installed` 期望 `  myrack (0.9.1) sha256=…`，实际只写 `  myrack (0.9.1)`（缺 sha256）。新增的另两个 `product:candidates`（`is conservative with dependencies of git gems`、`keeps existing platforms in the lockfile`）本轮才越过夹具阶段，尚未逐条判为产品缺陷（前者含 git 环境输出，后者是“锁文件仅 java 平台”下的 add-platform 告警），标**未验证**。
+
+**门禁**：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告，`commands_install.cr:1123:43`、`:1187:20`）；`git diff --check` EXIT 0。本轮未改 `src/`/`spec/`，无新增产品侧 spec；`crystal spec` 未跑。
+
+**已声明差异/未验证**：仅跑 4.0.24；`.upstream-specs/v2.7.2` 无可用 bundler checkout，2.7.2 profile 未跑。`artifice-unreachable`/`low-il-shm`/`fetch-failed` 仍是环境桶，不能据此宣称 M7(8) 完成。harness 修复依赖本机存在 rake gem 缓存；无缓存时仍会打印 warning 并保留旧的空仓库（fail-open，不伪造通过）。checkbox 保持 `[ ]`。
