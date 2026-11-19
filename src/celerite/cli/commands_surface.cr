@@ -231,6 +231,9 @@ module Celerite
 
         stdout.puts "Bundle updated!"
         print_cooldown_summary(resolution, stdout)
+        # `cli/update.rb:123`: same trailing funding hint as install, printed
+        # last, over the freshly resolved definition.
+        print_fund_summary(definition, resolution.evaluation, resolution.generated_lockfile, bridge, stdout)
         0
       ensure
         lock.try(&.close)
@@ -1194,6 +1197,37 @@ module Celerite
     # Bundler validates every source in the definition, not just the ones that
     # back a direct dependency, so a missing PATH entry anywhere in the
     # lockfile aborts with PathError (source/path.rb:198-204) in lockfile order.
+    # `cli/common.rb:34-47` prints a trailing funding hint after install and
+    # update: it counts only the Gemfile's direct dependencies in the requested
+    # groups whose (locked) spec carries a `funding_uri` metadata entry, and
+    # stays silent when the count is zero or `ignore_funding_requests` is set
+    # (`Bundler.settings["ignore_funding_requests"]` short-circuits first).
+    def self.print_fund_summary(definition : Definition, evaluation : Bridge::GemfileEvaluation,
+                                lockfile : Lockfile::Data?, bridge : Bridge::Client, stream : IO) : Nil
+      case value = definition.config["ignore_funding_requests"]
+      when Array(String) then return if !value.empty?
+      else
+        return if Config.to_bool(value)
+      end
+
+      return unless lockfile
+
+      requested_groups = fund_requested_groups(evaluation, definition.config)
+      count = evaluation.dependencies.count do |dep|
+        next false unless dep.groups.any? { |group| requested_groups.includes?(group) }
+
+        spec = lockfile.specs.find(&.name.==(dep.name))
+        next false unless spec
+
+        !read_funding_uri(definition, spec, lockfile, bridge).nil?
+      end
+      return if count.zero?
+
+      intro = count > 1 ? "#{count} installed gems you directly depend on are" : "#{count} installed gem you directly depend on is"
+      stream.puts "#{intro} looking for funding."
+      stream.puts "  Run `bundle fund` for details"
+    end
+
     private def self.fund_missing_path(definition : Definition, lockfile : Lockfile::Data) : String?
       lockfile.sources.each do |source|
         next unless source.type == "PATH"

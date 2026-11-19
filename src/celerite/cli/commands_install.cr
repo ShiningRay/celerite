@@ -763,6 +763,11 @@ module Celerite
             stdout.puts message
           end
           print_cooldown_summary(resolution, stdout)
+          # `cli/install.rb:74`: the funding hint is the last line group of the
+          # install summary, after post-install messages and the cooldown line.
+          # The reference reads it off the freshly resolved definition, so use
+          # the generated lock rather than the file on disk (written below).
+          print_fund_summary(definition, resolution.evaluation, resolution.generated_lockfile, bridge, stdout)
         end
 
         unless rest.includes?("--no-lock") || config.frozen?
