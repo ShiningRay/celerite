@@ -1,0 +1,13 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    meta_gem (1.0.0)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  meta_gem
+
+BUNDLED WITH
+   @BUNDLER_VERSION@

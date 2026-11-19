@@ -1,0 +1,5 @@
+info meta_gem
+info --path meta_gem
+show meta_gem
+show --paths meta_gem
+list
