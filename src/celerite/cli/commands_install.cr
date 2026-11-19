@@ -104,6 +104,11 @@ module Celerite
 
       remote = PluginGemfile.primary_source(gemfile_path)
       index_path = PluginCommands.index_path(gemfile_path)
+      # Reference resolves the inferred plugin inside `Plugin.gemfile_install`,
+      # whose definition allows remote/cached sources only — but only once a
+      # plugin actually registered a source; with no plugin loaded the same
+      # lookup runs with local sources allowed (source/rubygems.rb:122-136).
+      remote_only = !PluginCommands.sources(index_path).empty?
       names.each do |name|
         next if PluginCommands.installed_plugin?(index_path, name)
         # A Gemfile that only declares `source ..., type: :t` has no primary
@@ -112,9 +117,9 @@ module Celerite
         # source list), so a missing `bundler-source-t` is a local GemNotFound
         # (exit 7), not a network attempt against rubygems.org.
         if remote
-          code = plugin_install_remote([name], ["--source", remote], stdout, stderr)
+          code = plugin_install_remote([name], ["--source", remote], stdout, stderr, remote_only: remote_only)
         else
-          code = plugin_install_remote([name], [] of String, stdout, stderr, local_only: true)
+          code = plugin_install_remote([name], [] of String, stdout, stderr, local_only: true, remote_only: remote_only)
         end
         return code unless code == 0
       end
@@ -310,10 +315,6 @@ module Celerite
           end.map { |plugin_type| "bundler-source-#{plugin_type}" }
           inferred_plugins = inferred
           resolution.add_inferred_plugin_dependencies!(inferred) unless inferred.empty?
-          # Reference resolves these inside `Plugin.gemfile_install`, whose
-          # definition only allows remote/cached sources (no local), so the
-          # missing-gem message reads "…, cached gems or installed locally".
-          resolution.remote_only = !inferred.empty?
         end
         reuse = (no_reuse || no_lock) ? false : resolution_can_reuse?(resolution)
         # A lockfile whose CHECKSUMS entries are missing/empty must be refreshed
@@ -561,7 +562,7 @@ module Celerite
             plugin_messages << {spec.name, message.not_nil!} if message && !message.empty?
             locked_bundler = definition.lockfile_exists? ? definition.lockfile!.bundler_version : nil
             if resolution.bridge_bundler_version.starts_with?("2.") || ENV["CELERITE_PROFILE_BUNDLER_VERSION"]?.try(&.starts_with?("2.")) || locked_bundler.try(&.starts_with?("2."))
-              root = File.join(File.dirname(definition.gemfile_path), ".bundle", "plugin")
+              root = File.join(Config.app_config_path(File.dirname(definition.gemfile_path)), "plugin")
               cache_files = [] of String
               {File.join(gem_root, "cache"), File.join(root, "cache")}.each do |dir|
                 next unless Dir.exists?(dir)
@@ -588,7 +589,7 @@ module Celerite
             # root (`Plugin::Installer#install_all_sources` sets
             # GEM_HOME/GEM_PATH to `Plugin.root`): only the cached package and
             # the installed specification remain, not a regular bundle gem.
-            plugin_root = File.join(File.dirname(definition.gemfile_path), ".bundle", "plugin")
+            plugin_root = File.join(Config.app_config_path(File.dirname(definition.gemfile_path)), "plugin")
             %w[build_info doc extensions gems plugins cache specifications].each do |dir|
               Dir.mkdir_p(File.join(plugin_root, dir))
             end
@@ -609,7 +610,7 @@ module Celerite
           # 2.7.2's plugin installer also unpacks the plugin gem under
           # `.bundle/plugin/gems` even when the plugin was pre-installed by the
           # inferred-plugin pass above (which only copies cache/specification).
-          plugin_root = File.join(File.dirname(definition.gemfile_path), ".bundle", "plugin")
+          plugin_root = File.join(Config.app_config_path(File.dirname(definition.gemfile_path)), "plugin")
           locked_bundler = definition.lockfile_exists? ? definition.lockfile!.bundler_version : nil
           if resolution.bridge_bundler_version.starts_with?("2.") || ENV["CELERITE_PROFILE_BUNDLER_VERSION"]?.try(&.starts_with?("2.")) || locked_bundler.try(&.starts_with?("2."))
             cache_dir = File.join(plugin_root, "cache")
@@ -990,7 +991,12 @@ module Celerite
         end
       end
       cache_arg = flag_value(rest, "--cache-path") if rest.any? { |a| a == "--cache-path" || a.starts_with?("--cache-path=") }
-      cache_target = cache_arg ? File.expand_path(cache_arg) : File.join(Dir.current, "vendor", "cache")
+      # `Bundler.app_cache` = `Pathname.new(custom_path || root).join(cache_path)`
+      # (bundler.rb:340-343), and `cache_path` defaults to "vendor/cache"
+      # (settings.rb:304-306) — both resolve against the Gemfile root, never the
+      # invocation cwd.
+      gemfile_root = File.dirname(definition.gemfile_path)
+      cache_target = cache_arg ? File.expand_path(cache_arg, gemfile_root) : File.join(gemfile_root, "vendor", "cache")
       cache_label = cache_arg ? cache_arg.gsub(/\\/, "/") : "vendor/cache"
 
       # `cache` always runs the install pipeline (reference `CLI::Cache#run` →
