@@ -295,6 +295,41 @@ module Celerite
       @bridge.not_nil!.close if @owned_bridge
     end
 
+    # Exposed for callers that need the running Ruby ABI (e.g. the
+    # `--add-checksums` installation cache and the bundle gem root).
+    def bridge : Bridge::Client
+      @bridge.not_nil!
+    end
+
+    # `--add-checksums` on 4.0.24 computes digests from the installed package
+    # cache (`definition.rb:564-583`), fetching the gem when only the
+    # specification is present. 2.7.2 only forces a CHECKSUMS section, so
+    # callers gate this on the profile.
+    def compute_checksums_from_installed(&fetch : ResolvedSpec -> String?) : Nil
+      bridge = @bridge.not_nil!
+      gem_root = InstallPaths.gem_root(@definition.config, bridge.ruby_environment.default_gem_dir, InstallPaths.ruby_abi(bridge))
+      cache_dir = File.join(gem_root, "cache")
+      existing_checksums = @definition.lockfile_exists? ? @definition.lockfile!.checksums : [] of Lockfile::ChecksumEntry
+      @resolved_specs.each do |spec|
+        next if spec.name == "bundler"
+        next if spec.checksum
+        existing = existing_checksums.find do |c|
+          c.name == spec.name && c.version == spec.version.to_s &&
+            (c.platform.nil? || c.platform == "ruby") && !c.checksums.empty?
+        end
+        next if existing
+        next unless File.file?(File.join(gem_root, "specifications", "#{spec.full_name}.gemspec"))
+        cached = File.join(cache_dir, "#{spec.full_name}.gem")
+        unless File.file?(cached)
+          next unless fetched = fetch.call(spec)
+          next unless File.file?(fetched)
+          Dir.mkdir_p(cache_dir)
+          File.copy(fetched, cached)
+        end
+        @install_checksums["#{spec.name}-#{spec.version}"] = "sha256=#{Digest::SHA256.hexdigest(File.read(cached))}"
+      end
+    end
+
     private def eval_gemfile : Bridge::GemfileEvaluation
       @bridge.not_nil!.evaluate_gemfile(@definition.gemfile_path)
     end
@@ -1320,6 +1355,10 @@ module Celerite
     property added_platforms : Array(String) = [] of String
     property removed_platforms : Array(String) = [] of String
     property normalize_platforms : Bool = false
+    # `lock --add-checksums`: the reference records a CHECKSUMS section even
+    # when the lockfile had none and the running profile would not enable
+    # checksums by default (`cli/lock.rb:70` → `definition.add_checksums`).
+    property add_checksums : Bool = false
 
     # Resolution platform set: local + existing lockfile platforms + added.
     def resolution_platforms : Array(Gem::Platform)
@@ -1602,6 +1641,10 @@ module Celerite
     # them on (4.0.24) or the config forces them; an existing lockfile keeps
     # whatever it had (absent stays absent). 2.7.x defaults CHECKSUMS off.
     private def checksums_enabled? : Bool
+      # `lock --add-checksums` writes the section in both profiles, even when
+      # it did not exist before (`definition.rb:564-583`, 2.7.2 `:535-541`).
+      return true if @add_checksums
+
       if profile_is_2_x?
         # 2.7.x defaults CHECKSUMS off; keep them only when already locked
         return @definition.lockfile_exists? && !@definition.lockfile!.checksums_section.nil?

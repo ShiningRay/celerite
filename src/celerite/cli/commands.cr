@@ -2320,8 +2320,9 @@ module Celerite
       lockfile_exists_at_start = definition.lockfile_exists?
       # Missing/empty CHECKSUMS entries force a remote re-resolution even when
       # DEPENDENCIES already matches the Gemfile (`definition.rb:630-659`,
-      # `empty_checksums_actionable?`); `--local` keeps the no-op path.
-      checksum_refresh = definition.checksums_need_refresh?(rest.includes?("--local"))
+      # `empty_checksums_actionable?`); `--local` keeps the no-op path unless
+      # `--add-checksums` explicitly asks to compute (`cli/lock.rb:70`).
+      checksum_refresh = definition.checksums_need_refresh?(rest.includes?("--local") && !add_checksums)
 
       resolution = Resolution.new(definition, unlock)
       # Nothing to unlock and `DEPENDENCIES` already matches the Gemfile: the
@@ -2366,9 +2367,10 @@ module Celerite
       if days = cooldown_flag_value(rest)
         resolution.cooldown_days = days
       end
-      resolution.local_only = rest.includes?("--local")
+      resolution.local_only = rest.includes?("--local") && !add_checksums
       resolution.prefer_local = rest.includes?("--prefer-local")
       resolution.normalize_platforms = rest.includes?("--normalize-platforms")
+      resolution.add_checksums = add_checksums
       resolution.added_platforms = add_platforms
       resolution.removed_platforms = remove_platforms
       # Progress goes to stdout in write mode and to stderr in `--print` mode
@@ -2386,8 +2388,26 @@ module Celerite
                          !update && update_names.empty? &&
                          !rest.includes?("--add-platform") && !rest.includes?("--remove-platform") &&
                          definition.lockfile_matches_dependencies?(resolution.evaluation.dependencies)
-      if lockfile_current && (print_mode || add_checksums || normalize_platforms)
+      if lockfile_current && (print_mode || normalize_platforms || (add_checksums && !checksum_refresh))
         resolution.show_resolving = false
+      end
+
+      # 4.0.24 `--add-checksums` derives digests from the installed package
+      # cache before writing the lockfile (`definition.rb:564-583`); the
+      # reference prints "Fetching <name> <version>" when it has to download
+      # the gem into the bundle cache first.
+      if add_checksums && !resolution.bridge_bundler_version.starts_with?("2.")
+        resolution.resolve!
+        downloader = Downloader.new(resolution.primary_remote, InstallPaths.downloader_cache_root,
+          Commands.retry_count(definition.config), Celerite::Mirror.resolve(definition.config, resolution.primary_remote),
+          Commands.ssl_option(definition.config, "ssl_ca_cert"), Commands.ssl_option(definition.config, "ssl_client_cert"),
+          Commands.ssl_option(definition.config, "ssl_verify_mode"), definition.config.credentials_for(resolution.primary_remote),
+          timeout: Commands.timeout_seconds(definition.config), proxy: Celerite::Proxy.resolve(definition.config))
+        resolution.compute_checksums_from_installed do |spec|
+          stdout.puts "Fetching #{spec.name} #{spec.version}"
+          stdout.flush
+          downloader.fetch(spec.name, spec.version.to_s, spec.platform, nil)
+        end
       end
 
       unless print_mode
