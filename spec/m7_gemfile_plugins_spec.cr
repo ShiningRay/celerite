@@ -78,8 +78,11 @@ describe "M7(6) Gemfile-declared plugins" do
         code.should eq(7)
         out.should contain("Fetching source index from #{remote}")
         err.should contain("Could not find gem 'bundler-source-psource' in rubygems repository")
-        err.should contain("gem-index/ or")
-        err.should contain("installed locally.")
+        # `Plugin.gemfile_install` resolves remotely only, so the reference
+        # `Source::Rubygems#to_s` includes the cached branch
+        # (source/rubygems.rb:122-136; task-43 oracle).
+        err.should contain("gem-index/,")
+        err.should contain("cached gems or installed locally.")
       end
     end
   end

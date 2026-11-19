@@ -1,0 +1,5 @@
+plugin install mpath_plugin --source file://@PLUGIN_GEM_INDEX_DIR@
+plugin list
+lock
+install
+check
