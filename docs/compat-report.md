@@ -4679,3 +4679,35 @@ oracle（4.0.24 与 2.7.2 逐字相同；`file://` 全量索引 + `path "vendor/
 - `file://` 参考索引必须含 `specs.4.8.gz`；compact-only 索引会先得 exit 17（与 task-31 记录一致）。
 - E2 及更深布局的 not-found 行为已与参考对照；未为每个深度单独建夹具。
 - 私有 source 鉴权、磁盘错误/中断清理仍只能 spec 或未验证；本机 git 族仍受 Low-IL `0xC0000022` 限制；全量 spec/差分未重跑。
+
+## 2026-11-19（M7(8) task-37：`list`/`show`/`info` 在已装 spec、目录缺失时的语义）
+
+参考锚点：`cli/show.rb:23-30`（`full_gem_path` 不存在 → `ui.warn "The gem <name> is missing. It should be installed at <path>, but was not found"`，exit 0）；`cli/list.rb:22-29`（`Bundler.load.specs` rescue `GemNotFound` → `ui.error e.message` + `ui.warn "Install missing gems with \`bundle install\`."`，exit 1）；`cli/info.rb:36-48`（`--path` 与 show 同警告）、`:68-72`（普通 info 在 `installation_missing?` 时把整块 gemspec 信息经 `ui.warn` 写到 stderr，前缀 `The gem <name> is missing. Gemspec information is still available though:`，exit 0）。
+
+oracle（4.0.24 与 2.7.2 逐字相同；预置态 = `bundle-preset/ruby/4.0.0/specifications/json_pure-2.8.1.gemspec` 存在、`gems/json_pure-2.8.1/` 缺失）：
+
+| 命令 | 态一（仅 spec） | 态二（spec 与目录全缺） |
+|---|---|---|
+| `list` | exit 0，`Gems included by the bundle:` + `  * json_pure (2.8.1)` + `Use \`bundle info\`…` | exit 1，stderr `Could not find json_pure-2.8.1 in locally installed gems` + `Install missing gems with \`bundle install\`.` |
+| `list --paths` | 同 list | 同 list |
+| `show json_pure` | exit 0，stdout 空，stderr `The gem json_pure is missing. It should be installed at <path>, but was not found` | exit 7，stderr `Could not find json_pure-2.8.1 in locally installed gems` |
+| `show --paths json_pure` | 同 show | 同 show |
+| `info json_pure` | exit 0，stdout 空；stderr 前缀 + `  * json_pure (2.8.1)` / `\tSummary: …` / `\tPath: …` | exit 7，stderr `Could not find json_pure-2.8.1 in locally installed gems` |
+
+我方实测：`list`/`list --paths`/`show`/`show --paths` 在两态均已逐字对齐；差异只在 `info` 态一——旧实现把 gemspec 信息写到 stdout 且缺“missing”前缀。`info --path` 态一也与 `show --paths` 同形（旧实现缺警告）。
+
+实现：
+- `src/celerite/cli/commands.cr` 的 `info` 分支改为先构造整块 gemspec 文本；`!Dir.exists?(gem_dir)` 时先 `stderr.puts "The gem <name> is missing. Gemspec information is still available though:"`，再 `stderr.print` 整块，exit 0；目录存在时仍 `stdout.print`，内容与旧 `puts` 序列逐字一致。
+- 同分支的 `info --path` 增加与 `show --paths` 相同的目录缺失警告后返回 0，不再打印路径。
+
+测试与反假绿：
+- 新夹具 `list-installed-spec-without-gemdir`（态一 list）、`list-gem-entirely-missing`（态二 list）、`info-installed-spec-without-gemdir`（态一 `info json_pure` + `info --path json_pure`，末次 exit 0）。双 profile 各 **3 passed / 0 failed / 0 skipped**。
+- 区分力：`C:/temp/celerite-pre37` 检出 `fb714e9` 编译旧二进制；`info-installed-spec-without-gemdir` 旧代码 **FAIL**（stdout 多出 `  * json_pure…`/`Path:`，stderr 空），当前 PASS；两个 list 夹具在旧代码上同样 PASS，属**非区分性回归夹具**，保留用于防回归。
+- 回归双 profile 各 **8 passed / 0 failed / 0 skipped**：`check-installed-spec-without-gemdir`、`check-gemdir-without-spec`(7)、`path-glob-default-nested`、`path-glob-default-deep-miss`(7)、`install-local`(7)、`install-check`、`lock-noop`、`install-fresh`。
+- `spec/m7_installed_discovery_spec.cr` 新增 example（info 缺目录 → stderr 前缀+`Path:`，`info --path` → 警告且 stdout 空）；与 `m7_show_*`、`m7_list_*`、`m7_info_checksum_value_spec.cr` 成组 **58 examples / 0 failures / 0 errors / 0 pending**。
+
+已声明差异 / 未验证：
+- `list`/`list --paths` 两态本已对齐，本次没有产品改动，仅补夹具；两个 list 夹具无区分力，已在上面标注。
+- 未 oracle `info --version` 在目录缺失时的行为（参考不检查目录，直接打印版本；本次未改）。
+- 未覆盖“已安装目录存在时的 info”差分（既有 spec 覆盖，未纳入差分）。
+- 全量 `crystal spec` / 全量差分未重跑；非 Windows/非 Low-IL 宿主未验证。
