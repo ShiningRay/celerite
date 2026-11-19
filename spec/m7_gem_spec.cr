@@ -45,13 +45,12 @@ describe "M7 gem scaffold" do
     end
   end
 
-  it "rejects options it does not render yet (declared deviation)" do
+  it "rejects an enum value with Thor's exact validation error" do
     with_project({} of String => String) do
       output = IO::Memory.new
       errors = IO::Memory.new
-      Celerite::Commands.gem(output, errors, ["widget", "--test"]).should eq(1)
-      errors.to_s.should contain("bundle gem option --test is not supported by Celerite")
-      errors.to_s.should contain("Supported options: --git (default), --no-git")
+      Celerite::Commands.gem(output, errors, ["widget", "--test=minitestx"]).should eq(15)
+      errors.to_s.should eq("Expected '--test' to be one of rspec, minitest, test-unit; got minitestx\n")
       File.exists?("widget").should be_false
     end
   end

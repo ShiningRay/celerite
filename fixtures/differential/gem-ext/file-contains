@@ -1,0 +1,3 @@
+foo/Cargo.toml	foo
+foo/ext/foo/src/lib.rs	Foo
+foo/foo.gemspec	extensions

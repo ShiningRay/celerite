@@ -1,0 +1,7 @@
+foo/Gemfile	rubocop
+foo/exe/foo	require "foo"
+foo/.github/workflows/main.yml	name:
+foo/foo.gemspec	github.com/testuser/foo
+foo/LICENSE.txt	MIT License
+foo/spec/foo_spec.rb	Foo
+foo/.rubocop.yml	TargetRubyVersion

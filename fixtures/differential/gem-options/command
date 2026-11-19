@@ -1,0 +1,1 @@
+gem foo --test=rspec --linter=rubocop --ci=github --mit --exe --no-coc --no-changelog --no-bundle --github-username=testuser --no-git

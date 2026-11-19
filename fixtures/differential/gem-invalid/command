@@ -1,0 +1,2 @@
+gem foo --test=minitestx
+gem foo --bogus
