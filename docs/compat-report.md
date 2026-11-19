@@ -5072,3 +5072,56 @@ spec 家族 `m7_git_source_reuse_spec`、`m7_source_lock_options_spec`、`m7_loc
 - 同名多层只验证了「浅层胜出」与「取到同名那份」；同名不同版本的「深层被浅层覆盖」在差分里未构造（spec 覆盖到 2.0.0 胜出）。
 - PLUGIN 夹具用目录型 stub source（与既有 S1–S3 夹具一致），未覆盖第三方 plugin gem 安装后注册 source 的路径（task-43 仍暂停）。
 - 全量 `crystal spec`、全量差分与上游 64 例套件未重跑。
+## 2026-11-20（M7(6) task-47：第三方插件 gem 的端到端 source）
+
+### 结论
+
+起先把 S1–S3 的插件 source 夹具都预置成目录型 stub（`extra/.bundle/plugin/index` + `plugins.rb`），跳过了「插件 gem 真正装进来」这一步。本轮用一个真实打包的插件 gem（`mpath_plugin`，`plugins.rb` 调 `Bundler::Plugin::API.source` 注册 `mpath`）走完整链路：`plugin install` → 索引出现 `sources: mpath: "mpath_plugin"` → Gemfile 的 `source "...", type: :mpath` 可解析 → `lock`/`install`/`check` 与参考 4.0.24、2.7.2 双 profile 逐字一致。
+
+过程中补了两处真实缺口：(1) 插件索引从未记录 `sources`，导致 `Plugin.source?("mpath")` 等价判断为假、`lock` 报 `No plugin sources available for mpath`（exit 15）；(2) 插件 gemfile 安装走 remote/cached-only 源，缺 gem 的措辞应为 `…, cached gems or installed locally`，我方原先只有 `… or installed locally`。
+
+### Oracle（4.0.24 与 2.7.2 同形）
+
+同一项目依次执行：
+
+1. `plugin install mpath_plugin --source file:///<plugin-gem-index>` → exit 0，stdout：`Fetching source index from …`、`Resolving dependencies...`、`Fetching mpath_plugin 1.0.0`、`Installing mpath_plugin 1.0.0`、`Installed plugin mpath_plugin`。
+2. `plugin list` → exit 0，`mpath_plugin` / `-----`。
+3. `lock` → exit 0，`Writing lockfile to …/Gemfile.lock`、`Resolving dependencies...`；锁文件含 `PLUGIN SOURCE` / `  remote: ./stub-path-gem` / `  type: mpath` / `  specs:` / `    stub-gem (1.0.0)`，`DEPENDENCIES` 为 `  stub-gem!`。
+4. `install` → exit 7，stderr：`Could not find gem 'bundler-source-mpath' in rubygems repository` + `\n<remote>,\ncached gems or installed locally.`（reference 在 `Plugin.gemfile_install` 里以 `sources.cached!` + `remotely!` 解析推断出的 `bundler-source-<type>`，故是带 cached 的第三分支）。
+5. `check` → exit 0，`The Gemfile's dependencies are satisfied`。
+
+### 参考锚点
+
+- `bundler/lib/bundler/plugin/api.rb:43-46`：`self.source(source, cls = self)` → include `Plugin::API::Source` 并 `Plugin.add_source`。
+- `bundler/lib/bundler/plugin.rb:309-340`：`register_plugin` 把 `@sources.keys` 交给 `index.register_plugin`，索引因此有 `sources` 表；`:138-158` 的 `root` 在项目内为 `<app>/.bundle/plugin`。
+- `bundler/lib/bundler/plugin/index.rb:54-76`：`sources.each { |k| @sources[k] = name }`，冲突抛 `SourceConflict`。
+- `bundler/lib/bundler/source/rubygems.rb:122-136`：`to_s` 的 cached 分支（remote-only 时输出 `…, cached gems or installed locally`）。
+
+### 实现
+
+- `assets/bridge/plugin_command.rb`：`--commands` 探测额外返回 `sources`（`Bundler::Plugin.instance_variable_get(:@sources).keys`）。
+- `src/celerite/plugin_commands.cr`：`Declared` 增 `sources`，新增 `PluginCommands.sources(index_path)`。
+- `src/celerite/cli/commands_surface.cr`：两处插件安装写索引时读入既有 `sources_map`、冲突按参考措辞报 `SourceConflict`（exit 29，`Failed to install plugin \`<name>\`, due to Bundler::Plugin::Index::SourceConflict (Source(s) \`<type>\` declared by <name> are already registered.)`），并把声明类型写回 `sources:`。
+- `src/celerite/resolution.cr`：新增 `property remote_only`，`make_source` 的描述在 remote-only 时输出 `rubygems repository <remote>, cached gems or installed locally`。
+- `src/celerite/cli/commands_surface.cr` `plugin_install_remote`：非 `local_only` 时置 `resolution.remote_only = true`，对齐 `Plugin::Installer` 的 remote/cached-only 解析。
+- 夹具与工具：`fixtures/plugin-source-gem/`（可复用插件 gem 源）、`fixtures/gem-index-plugin-gem/`（`script/build-plugin-gem-index.rb` 生成，含 legacy/compact 索引，`versions` 哈希可复现）、`script/differential` 新增 `@PLUGIN_GEM_INDEX_DIR@` 替换点。
+
+### 测试与差分
+
+- 新夹具 `fixtures/differential/plugin-source-gem-end-to-end/`（命令序列如上；`file-contains` 断言锁内 `PLUGIN SOURCE`/`type: mpath`/`stub-gem (1.0.0)`/`stub-gem!`）：4.0.24 `PASS (exit=0)`、2.7.2 `PASS (exit=0)`。
+- `spec/m7_gemfile_plugins_spec.cr` 的缺 gem 断言改为参考的 cached 分支措辞；相关 spec 家族（`m7_gemfile_plugins`、`m7_plugin_install_source`、`m7_plugin_source_typed`、`plugin_hooks`、`m7_plugin_hook_all_events`）24 examples / 0 failures。
+- 回归差分 4.0.24 8/0、2.7.2 9/0（`plugin-install`、`plugin-install-source`、`plugin-install-hooks`、`plugin-source-typed`、`plugin-source-install`、`plugin-source-locked-check`、`install-fresh`、`install-check`，2.7.2 另加新夹具）。
+
+### 反向对照
+
+`git worktree add C:/temp/celerite-pre47 49e3e21` 构建旧二进制后跑新夹具：双 profile 均 FAIL——`exit code: reference=0 celerite=15`，我方 `[!] There was an error parsing \`Gemfile\`: No plugin sources available for mpath.`，缺 `Gemfile.lock`，`sources:` 为空，且缺 gem 措辞仍是旧的 `… or installed locally.`。
+
+### 门禁（全部 EXIT 0）
+
+`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`crystal build src/cli.cr -o bin/celerite.exe`、`git diff --check`、`git diff --cached --check`。
+
+### 已声明差异 / 未验证
+
+- 插件 gem 由本仓库脚本本地构建（`fixtures/plugin-source-gem`），不代表真实第三方插件生态；`Gem::Package.build` 的产物时间戳/校验和随环境变化，未做跨机器复现。
+- 仅验证单插件注册单一 source；多插件共存、插件间 source/command 冲突、需要原生扩展的插件未测。
+- 未验证真实远端（非 `file://`）插件源安装；未重跑全量 `crystal spec`、全量差分与上游 64 例套件。
