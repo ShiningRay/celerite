@@ -1567,6 +1567,18 @@ module Celerite
       options
     end
 
+    # `bundle check`'s satisfied branch calls `definition.lock(true)`; the
+    # reference serializes the already-locked definition without resolving.
+    # Materialize the locked specs directly so the rewrite keeps the locked
+    # resolution while still refreshing PLATFORMS/CHECKSUMS/BUNDLED WITH.
+    def lockfile_rewrite_text : String
+      if !@resolved && @definition.lockfile_exists?
+        @resolved_specs = materialize_locked
+        @resolved = true
+      end
+      generated_lockfile.to_lock
+    end
+
     def generated_lockfile : Lockfile::Data
       resolve! unless @resolved
 

@@ -115,9 +115,11 @@ module Celerite
       errors = IO::Memory.new
       result = chdir ? Process.run(executable, args, chdir: chdir, output: output, error: errors) : Process.run(executable, args, output: output, error: errors)
       unless result.success?
-        raise Error.new("git command failed: #{executable} #{args.join(" ")} — #{errors.to_s.chomp}")
+        raise GitError.new("git command failed: #{executable} #{args.join(" ")} — #{errors.to_s.chomp}")
       end
       output.to_s
+    rescue ex : IO::Error
+      raise GitError.new("git command failed: #{executable} #{args.join(" ")} — #{ex.message}")
     end
   end
 end

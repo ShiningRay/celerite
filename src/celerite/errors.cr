@@ -196,6 +196,17 @@ module Celerite
     end
   end
 
+  # Bundler::GitError — a `git` subprocess failed to run or reported failure.
+  class GitError < Error
+    def status_code : Int32
+      11
+    end
+
+    def wrap? : Bool
+      true
+    end
+  end
+
   # Raised when a Gemfile cannot be located (mirrors Bundler::GemfileNotFound).
   class GemfileNotFound < Error
     def status_code : Int32
