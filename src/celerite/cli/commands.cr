@@ -2318,6 +2318,10 @@ module Celerite
       # the line -- on stderr in `--print` mode (measured on 4.0.24 and 2.7.2:
       # `lock --update --print` and a stale lock both print it).
       lockfile_exists_at_start = definition.lockfile_exists?
+      # Missing/empty CHECKSUMS entries force a remote re-resolution even when
+      # DEPENDENCIES already matches the Gemfile (`definition.rb:630-659`,
+      # `empty_checksums_actionable?`); `--local` keeps the no-op path.
+      checksum_refresh = definition.checksums_need_refresh?(rest.includes?("--local"))
 
       resolution = Resolution.new(definition, unlock)
       # Nothing to unlock and `DEPENDENCIES` already matches the Gemfile: the
@@ -2325,7 +2329,7 @@ module Celerite
       # lockfile to ..." and `lock --print` prints only the lock body (measured
       # on 4.0.24 and 2.7.2 -- no "Fetching source index", no "Resolving
       # dependencies..."). The forcing flags resolve too.
-      if !update && update_names.empty? && !add_checksums && !normalize_platforms &&
+      if !checksum_refresh && !update && update_names.empty? && !add_checksums && !normalize_platforms &&
          !rest.includes?("--add-platform") && !rest.includes?("--remove-platform") &&
          definition.lockfile_exists? && definition.lockfile_matches_dependencies?(resolution.evaluation.dependencies)
         resolution.close

@@ -299,7 +299,17 @@ module Celerite
         # --no-lock: resolve from scratch every run (no reuse, no write).
         no_lock = rest.includes?("--no-lock")
         reuse = (no_reuse || no_lock) ? false : resolution_can_reuse?(resolution)
+        # A lockfile whose CHECKSUMS entries are missing/empty must be refreshed
+        # from the index even when every gem is already installed
+        # (`definition.rb:630-659`; only a remote fetch can fill the entry).
+        # `--local` keeps the locked resolution, matching the reference's
+        # `empty_checksums_actionable?`.
+        checksum_refresh = reuse && definition.checksums_need_refresh?(rest.includes?("--local"))
+        reuse = false if checksum_refresh
         resolution.show_resolving = show_resolving
+        # 4.0.24 backfills checksums without announcing resolution on `install`
+        # (measured; `lock` does print it), while 2.7.2 prints both lines.
+        resolution.show_resolving = false if checksum_refresh && !resolution.bridge_bundler_version.starts_with?("2.")
 
         # --no-lock exists only on 4.x (2.7.x: unknown switch).
         if no_lock && resolution.bridge_bundler_version.starts_with?("2.")

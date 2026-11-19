@@ -353,6 +353,36 @@ module Celerite
       nil
     end
 
+    # Reference `Definition#something_changed?` / `#empty_checksums_actionable?`
+    # (definition.rb:630-659): a *missing* CHECKSUMS entry always forces the
+    # lockfile to be refreshed; an *empty* one only when a remote fetch can fill
+    # it (`Bundler.frozen_bundle? || !sources.local_mode?`). Without a remote
+    # fetch a local resolution would repeat on every setup without changing the
+    # lockfile, so `--local` keeps reusing the locked resolution.
+    def checksums_need_refresh?(local_only : Bool = false) : Bool
+      return false unless lockfile_exists?
+
+      data = lockfile!
+      section = data.checksums_section
+      return false unless section
+
+      missing = false
+      empty = false
+      data.sources.each do |source|
+        next unless source.type == "GEM"
+
+        source.specs.each do |spec|
+          entry = section.entries.find { |candidate| checksum_matches?(candidate, spec) }
+          if entry.nil?
+            missing = true
+          elsif entry.checksums.empty?
+            empty = true
+          end
+        end
+      end
+      missing || (empty && (config.frozen? || !local_only))
+    end
+
     private def checksum_matches?(entry : Lockfile::ChecksumEntry, spec : Lockfile::Spec) : Bool
       return false unless entry.name == spec.name && entry.version == spec.version
 
