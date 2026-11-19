@@ -5019,3 +5019,56 @@ spec 家族 `m7_git_source_reuse_spec`、`m7_source_lock_options_spec`、`m7_loc
 - 桥对 `*-all` 事件的参数用 Ruby 侧重新 `evaluate` Gemfile 得到，而不是复用 CLI 已算好的 `definition.dependencies`；两者在正常 Gemfile 下一致（names/groups 已 oracle 比对），但 Gemfile 解析失败时参考会先报错退出、我方退化为空数组，该路径未取 oracle。
 - `after-install-all` 在我方位于 `Bundle complete!` 之前、`Bundled gems are installed into …` 之前，与 oracle 一致；但参考还包含 auto-clean 与 funding 汇总，本轮未覆盖其与 auto-clean 的相对位置。
 - 仅 4.0.24 与 2.7.2 两个 profile；全量 `crystal spec`、全量差分与上游 64 例套件未重跑。
+## 2026-11-20（M7(8) task-46：PATH 源按名匹配与 PLUGIN 源归属）
+
+### 缺陷（静默错误安装级）
+
+沙箱 `Gemfile` 为 `source "https://rubygems.org/"` + `gem "nope-gem", path: "vendor/x"`，而 `vendor/x/` 只有 `other-gem.gemspec`（`other-gem 1.0.0`）：
+
+- 修复前 `celerite lock`：**exit 0**，并写出
+  ```
+  PATH
+    remote: vendor/x
+    specs:
+      nope-gem (1.0.0)
+  ```
+  ——`nope-gem` 不存在，版本是从 `other-gem` 抄来的。
+- 参考 4.0.24：**exit 7**，stdout 仅 `Writing lockfile to …`，stderr 单行 `` Could not find gem 'nope-gem' in source at `vendor/x`. ``，不写锁。
+
+根因：`assets/bridge/server.rb` 的 `op_load_gemspec_dir` 取 `candidates.first` 加载，`src/celerite/resolution.cr` 的 `load_source_gem_spec` 又把调用方传进来的 `name` 直接当成 spec 名（`Resolver::IndexSpec.new(name, …)`），从不校验 `spec.name == name`。参考语义是 `source/path.rb:159-179` 载入 glob 全集、`resolver/base.rb:113-118` 以 `specs.search(ls.name).empty?` 判未命中。
+
+### 修复
+
+- 桥 `op_load_gemspec_dir` 增加可选 `name`：按深度优先顺序枚举整个 glob（与 `op_load_gemspec_dir_specs` 一致，浅层覆盖深层），只返回 `spec.name == name` 的那份；未命中 `raise "gem '<name>' not found in <dir>"`（结构化失败，不再回退到兄弟 gemspec）。`src/celerite/bridge/client.cr` 的 `load_gemspec_dir` 增同名可选参数。
+- `src/celerite/resolution.cr` `load_source_gem_spec` 传 `name`，并只在 `info.name == name` 时构造 `IndexSpec`，否则返回 `nil`；`index_for_source_gem` 得到空候选，解析器按 `GemNotFoundError` 报错，PATH 归属沿用 `Source::Path#to_s`（`source at `<path>``，task-36 已接线）。
+- PLUGIN 源归属：`make_source` 的 `source_descriptions` 增 Plugin 分支 `"plugin source for #{plugin_type} with uri #{remote}"`，锚 `plugin/api/source.rb:293-296`；GIT 分支保持原状（见未验证）。
+
+### oracle（4.0.24 与 2.7.2 一致）
+
+| 场景 | 参考 |
+| --- | --- |
+| PATH 未命中 | exit 7；stdout `Writing lockfile to …`；stderr `` Could not find gem 'nope-gem' in source at `vendor/x`. ``；不写锁 |
+| PLUGIN 未命中（`type: :mpath`，uri `./stub-path-gem`） | exit 7；stdout `Writing lockfile to …`；stderr 两行（80 列折行）`Could not find gem 'nope-gem' in plugin source for mpath with uri` / `./stub-path-gem.`；不写锁 |
+
+### 测试与差分
+
+- 新夹具 `fixtures/differential/path-source-missing-gem/`（`Gemfile` + `vendor/x/other-gem.gemspec` + `command=lock` + `file-absent Gemfile.lock`）。
+- 新夹具 `fixtures/differential/plugin-source-missing-gem/`（复用 `plugin-source-typed` 的预置 `.bundle/plugin` 与 `extra/stub-path-gem/`，Gemfile 内加 `gem "nope-gem"`；`command=lock` + `file-absent Gemfile.lock`）。
+- 差分：4.0.24 `PASS path-source-missing-gem (exit=7)`、`PASS plugin-source-missing-gem (exit=7)`；2.7.2 同 → 各 2 passed / 0 failed / 0 skipped。
+- 新 spec `spec/m7_path_source_missing_gem_spec.cr`（3 examples）：同名命中仍正常解析；异名不伪造（exit 7 + 逐字 stderr + 无锁文件）；同名深浅两层时浅层胜出（锁写 `pathgem (2.0.0)`）。
+- spec 家族 `m7_path*` + `m7_git_source_reuse_spec` + 新 spec：23 examples / 0 failures / 0 errors / 0 pending（隔离 `HOME`）。
+- 回归差分 13 项双 profile 全 PASS：`path-glob-default-root`、`path-glob-default-nested`、`path-glob-default-deep-miss`、`path-glob-monorepo`、`scoped-source-lock`、`path-locked-glob-wins`、`path-gemspec-bump-reresolves`、`path-glob-change-keeps-lock`、`install-local`(7)、`plugin-source-typed`、`plugin-source-install`、`install-fresh`、`plugin-install`(1)（4.0.24 13/0、2.7.2 13/0）。
+- 反向对照 `C:/temp/celerite-pre46`（`e058de4`）旧二进制双 profile 均 `0 passed / 2 failed`：
+  - PATH：`exit code: reference=7 celerite=0`，旧版多出 `Resolving dependencies...`，缺 `` Could not find gem 'nope-gem' in source at `vendor/x`. ``，并写出 `Gemfile.lock`（`file-absent violated`）。
+  - PLUGIN：stderr 变成 `Could not find gem 'nope-gem' in rubygems repository` / `file:///…/fixtures/gem-index/ or` / `installed locally.`（归属错误）。
+
+### 门禁（全部 EXIT 0）
+
+`crystal tool format --check src spec`（先格式化新 spec）、`crystal build --no-codegen src/cli.cr`、`crystal build src/cli.cr -o bin/celerite.exe`、`git diff --check`、`git diff --cached --check`、`git diff e058de4..HEAD --check`。
+
+### 已声明差异 / 未验证
+
+- **GIT 源未命中归属未实现**：参考形态为 `<uri> (at <ref>@<short>)`，但本机 celerite 的 git 子进程被环境阻断（`sh.exe` `0xC0000022`，Crystal 祖先链问题；参考不受影响），GIT 端到端无法取我方 oracle，本轮不动 GIT 分支。
+- 同名多层只验证了「浅层胜出」与「取到同名那份」；同名不同版本的「深层被浅层覆盖」在差分里未构造（spec 覆盖到 2.0.0 胜出）。
+- PLUGIN 夹具用目录型 stub source（与既有 S1–S3 夹具一致），未覆盖第三方 plugin gem 安装后注册 source 的路径（task-43 仍暂停）。
+- 全量 `crystal spec`、全量差分与上游 64 例套件未重跑。
