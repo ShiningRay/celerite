@@ -415,6 +415,14 @@ module Celerite
     # Declared Rubygems/Metadata source remotes in Gemfile evaluation order,
     # normalized for lockfile GEM sections. Includes scoped remotes and the
     # primary source; deduplicates by normalized remote.
+    #
+    # A rubygems source that declares no remote at all (a Gemfile with no
+    # `source` line) is *not* expanded into the `https://rubygems.org/` default:
+    # the reference writes `GEM` with an empty option list there
+    # (`source/rubygems.rb:114-120 to_lock`: `remote` lines come from
+    # `lockfile_remotes`, so an empty list yields `GEM\n  specs:\n`). Measured
+    # on 4.0.24/2.7.2 (task-44b oracle (d)). `rubygem_source_without_remote?`
+    # reports that shape.
     private def declared_rubygem_remotes : Array(String)
       remotes = [] of String
       seen = Set(String).new
@@ -430,7 +438,7 @@ module Celerite
           end
         else
           remote = normalize_rubygems_remote(source.remote)
-          remote ||= primary_remote
+          next unless remote
           unless seen.includes?(remote)
             remotes << remote
             seen << remote
@@ -438,6 +446,16 @@ module Celerite
         end
       end
       remotes
+    end
+
+    # True when the Gemfile declares a rubygems source with no remote at all
+    # (no `source` line): the lockfile then carries a bare `GEM` section.
+    private def rubygem_source_without_remote? : Bool
+      @sources.any? do |source|
+        next false unless source.type == "Rubygems" || source.type == "Metadata"
+        remotes = source.remotes
+        (remotes.nil? || remotes.empty?) && normalize_rubygems_remote(source.remote).nil?
+      end
     end
 
     def compact_index_client : CompactIndex::Client
@@ -1092,17 +1110,62 @@ module Celerite
       lockfile = @definition.lockfile!
       specs = [] of ResolvedSpec
       lockfile.sources.each do |source|
-        locked_plugin = source.type == "PLUGIN SOURCE"
-        source_info = locked_plugin ? plugin_source_info(source) : nil
-        source_remote = locked_plugin ? source.remote : nil
+        source_info = locked_source_info(source)
+        # GEM sections keep the resolved remote out of `source_remote`: the
+        # reuse path never re-groups them, and the existing emission logic
+        # already falls back to `primary_remote` there.
+        source_remote = source.type == "PLUGIN SOURCE" ? source.remote : nil
         source.specs.each do |spec|
           checksum = lockfile.checksums.find { |c| c.name == spec.name && c.version == spec.version }
           specs << ResolvedSpec.new(spec.name, Gem::Version.new(spec.version), spec.platform,
             spec.dependencies, checksum.try(&.checksums.first?), 0,
-            locked_plugin ? "PLUGIN" : "GEM", source_info, source_remote)
+            locked_source_type(source.type), source_info, source_remote)
         end
       end
       specs
+    end
+
+    # Lock section type -> `ResolvedSpec#source_type`; `generated_lockfile`
+    # groups non-GEM specs by tag ("PATH"/"GIT"/"PLUGIN").
+    private def locked_source_type(type : String) : String
+      case type
+      when "PATH"          then "PATH"
+      when "GIT"           then "GIT"
+      when "PLUGIN SOURCE" then "PLUGIN"
+      else                      "GEM"
+      end
+    end
+
+    # Rebuilds the non-GEM source descriptor from the lockfile section so that
+    # a reused lockfile re-emits its `PATH`/`GIT`/`PLUGIN SOURCE` blocks
+    # verbatim. Reference `Source::Path#from_lock`/`Git#from_lock`
+    # (source/path.rb:41-43, source/git.rb:39-48) replay the locked options into
+    # the source object; `lockfile_generator.rb:31-42` then writes
+    # `source.to_lock` from that object, not from the Gemfile.
+    private def locked_source_info(source : Lockfile::SourceSection) : SourceInfo?
+      case source.type
+      when "PLUGIN SOURCE"
+        plugin_source_info(source)
+      when "PATH"
+        glob = source.option("glob").as?(String) || DEFAULT_GLOB
+        SourceInfo.from_json({
+          "type" => "Path", "remote" => source.remote || "",
+          "glob" => glob, "revision" => nil,
+        }.to_json)
+      when "GIT"
+        glob = source.option("glob").as?(String)
+        SourceInfo.from_json({
+          "type" => "Git", "remote" => source.remote || "",
+          "revision" => source.option("revision").as?(String),
+          "ref" => source.option("ref").as?(String),
+          "branch" => source.option("branch").as?(String),
+          "tag" => source.option("tag").as?(String),
+          "submodules" => source.option("submodules") == true,
+          "glob" => glob,
+        }.to_json)
+      else
+        nil
+      end
     end
 
     # Rebuilds the plugin source metadata from a `PLUGIN SOURCE` lockfile
@@ -1695,11 +1758,22 @@ module Celerite
 
       # Bundler emits declared rubygems source sections even when no GEM specs
       # resolve from them (for example a Gemfile with only a path gem still
-      # records `GEM / remote: https://rubygems.org/ / specs:`).
+      # records `GEM / remote: https://rubygems.org/ / specs:` when the Gemfile
+      # declares that source).
+      gem_section_emitted = !gem_sections_by_remote.empty?
       declared_rubygem_remotes.each do |remote|
         next if gem_sections_by_remote.has_key?(remote)
         sections << Lockfile::TypedSection.new(Lockfile::SourceSection.new("GEM",
           [Lockfile::Option.new("remote", remote)], [] of Lockfile::Spec))
+        gem_section_emitted = true
+      end
+
+      # A Gemfile with no `source` line still locks an (empty) GEM section, but
+      # without a `remote:` line (`source/rubygems.rb:114-120`; measured on
+      # 4.0.24 and 2.7.2 — task-44b oracle (d)).
+      if !gem_section_emitted && rubygem_source_without_remote?
+        sections << Lockfile::TypedSection.new(Lockfile::SourceSection.new("GEM",
+          [] of Lockfile::Option, [] of Lockfile::Spec))
       end
 
       platforms = [] of String
@@ -1864,14 +1938,19 @@ module Celerite
         return @definition.lockfile_exists? && !@definition.lockfile!.checksums_section.nil?
       end
 
-      # 4.0.24 writes CHECKSUMS only when `lockfile_checksums` is enabled in
-      # config, or the lockfile already carries the section. A plain install
-      # with a lockfile that has no section must not introduce one; only
-      # `lock --add-checksums` (handled above) forces it.
+      # A lockfile that already carries the section keeps it on every rewrite:
+      # `lockfile_generator.rb:69-76` emits CHECKSUMS whenever
+      # `definition.locked_checksums` is set, and `locked_checksums` is
+      # initialized from the locked section (`definition.rb:661-670`), not from
+      # config. This is what `check`'s lockfile rewrite relies on (oracle case
+      # (c): reference keeps `CHECKSUMS` while adding the local platform).
+      return true if @definition.lockfile_exists? && !@definition.lockfile!.checksums_section.nil?
+
+      # A fresh lockfile still needs `lockfile_checksums` enabled in config;
+      # `lock --add-checksums` (handled above) forces the section instead.
       return false if @definition.config["lockfile_checksums"] != true
 
-      return true unless @definition.lockfile_exists?
-      !@definition.lockfile!.checksums_section.nil?
+      !@definition.lockfile_exists?
     end
 
     private def profile_is_2_x? : Bool
