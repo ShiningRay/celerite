@@ -118,6 +118,44 @@ json_out="$repo_root/.upstream-specs/rspec-output.json"
 bucket_md="$repo_root/.upstream-specs/failure-buckets.md"
 mkdir -p "$(dirname "$rspec_out")"
 
+# Upstream fixture repos are built once in spec_helper's before(:suite) hook.
+# build_repo1 (spec/support/builders.rb:31) copies `rake_path` -- resolved by
+# path.rb:322-324 from tmp/gems/base/<engine>/<ruby>/ (base_system_gem_path is
+# deliberately *not* version-scoped; only tmp(*) applies "2.1") -- into
+# remote1/gems before building myrack. When upstream test deps were not
+# installed (CELERITE_SKIP_TEST_DEPS=1, or a failed install_test_deps), that
+# base cache is absent, rake_path is nil, and FileUtils.cp raises TypeError
+# *after* build_repo has already created remote1/gems. The empty remote1 then
+# short-circuits every later build_repo1 run, build_repo2 copies it verbatim,
+# and lockfile specs fail with ENOENT on remote2/gems/myrack-*.gem.
+#
+# Repair the two poisoned preconditions from the harness side: drop a stale
+# empty remote1/remote2 pair so build_repo1 runs again, and seed the scoped
+# base cache with the host's rake gem when upstream's install_test_deps has
+# not populated it. No vendored upstream file is modified.
+tmp_root="$repo_root/.upstream-specs/$rev/bundler/tmp/2.1" # path.rb:127-136 (2.1 = "2." + scope "1")
+base_gem_root="$repo_root/.upstream-specs/$rev/bundler/tmp/gems/base" # path.rb:186-188
+remote1_gems="$tmp_root/gems/remote1/gems"
+if [ -d "$remote1_gems" ] && [ -z "$(find "$remote1_gems" -maxdepth 1 -name '*.gem' -print -quit 2>/dev/null)" ]; then
+  echo "repairing stale empty upstream fixture repo: $tmp_root/gems/remote1"
+  rm -rf "$tmp_root/gems/remote1" "$tmp_root/gems/remote2"
+fi
+if [ -z "$(find "$base_gem_root" -name 'rake-*.gem' -print -quit 2>/dev/null)" ]; then
+  scoped_path="$(ruby -rrubygems -rrbconfig -e 'print File.join(Gem.ruby_engine, RbConfig::CONFIG["ruby_version"])' 2>/dev/null || true)"
+  rake_cache="$(ruby -e 'spec = Gem::Specification.find_by_name("rake") rescue nil; puts spec.cache_file if spec && File.file?(spec.cache_file)' 2>/dev/null || true)"
+  if [ -z "$rake_cache" ]; then
+    rake_cache="$(ruby -rrubygems -e 'puts Dir[File.join(Gem.default_dir, "cache", "rake-*.gem")].sort.last' 2>/dev/null || true)"
+  fi
+  if [ -n "$scoped_path" ] && [ -n "$rake_cache" ] && [ -f "$rake_cache" ]; then
+    echo "seeding upstream base gem cache with $(basename "$rake_cache")"
+    mkdir -p "$base_gem_root/$scoped_path/cache"
+    cp "$rake_cache" "$base_gem_root/$scoped_path/cache/"
+  else
+    echo "warning: no rake gem available to seed upstream base cache; fixtures may be incomplete" >&2
+  fi
+fi
+
+
 # Run from bundler dir so .rspec (--require spec_helper) and relative paths
 # resolve as upstream expects. Set envs used by harness/probe workflows.
 (
