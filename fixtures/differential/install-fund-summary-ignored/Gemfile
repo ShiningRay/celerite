@@ -1,0 +1,4 @@
+source "file:///@INDEX_DIR@"
+
+gem "alpha", path: "vendor/alpha"
+gem "json_pure"
