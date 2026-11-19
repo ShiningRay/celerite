@@ -284,6 +284,15 @@ module Celerite
         request("read_gem_spec", {"path" => path})
       end
 
+      # `Gem::Specification.load` for an installed `specifications/*.gemspec`
+      # (reference `bundle info` reads the real spec, cli/info.rb:50-73). The
+      # bridge evaluates the file as Ruby, so escaped literals are decoded.
+      def load_installed_spec(path : String) : JSON::Any?
+        result = request("load_installed_spec", {"path" => path})
+        spec = result["spec"]?
+        spec.nil? || spec.raw.nil? ? nil : spec
+      end
+
       # `Bundler::CLI::Common.default_gem_spec` (common.rb:98-101): the
       # interpreter's default gem for a bare name, if any. `bundle open`
       # appends it to the regex candidates so `bundle open json` can offer

@@ -296,6 +296,35 @@ def op_read_gem_spec(payload)
   }
 end
 
+# Load an installed `specifications/<full_name>.gemspec` the way Bundler does
+# (`Gem::Specification.load`, cli/info.rb:50-73).  RubyGems evaluates the file
+# as Ruby source, so escaped literals (`\\`, `\n`, `\uXXXX`, ...) arrive here
+# already decoded; Crystal-side regex parsing cannot reproduce that.
+def op_load_installed_spec(payload)
+  path = payload["path"]
+  spec = begin
+    Gem::Specification.load(path)
+  rescue StandardError
+    nil
+  end
+  return { "spec" => nil } unless spec
+  metadata = spec.respond_to?(:metadata) ? (spec.metadata || {}) : {}
+  {
+    "spec" => {
+      "name" => spec.name,
+      "version" => spec.version.to_s,
+      "platform" => spec.platform.to_s,
+      "full_name" => spec.full_name,
+      "summary" => (spec.summary if spec.respond_to?(:summary)),
+      "description" => (spec.description if spec.respond_to?(:description)),
+      "homepage" => (spec.homepage if spec.respond_to?(:homepage)),
+      "license" => (spec.license if spec.respond_to?(:license)),
+      "licenses" => (spec.licenses if spec.respond_to?(:licenses)),
+      "metadata" => metadata,
+    },
+  }
+end
+
 # Write the Marshal'd specification of an installed gem (specifications/*.gemspec)
 # the way RubyGems does, given the extracted gem directory.
 def op_write_installed_spec(payload)
@@ -732,6 +761,7 @@ def bridge_dispatch(id, op, payload)
            when "gemspec_paths"   then op_gemspec_paths(payload)
            when "bundler_cache_file" then op_bundler_cache_file(payload)
            when "read_gem_spec" then op_read_gem_spec(payload)
+    when "load_installed_spec" then op_load_installed_spec(payload)
            when "write_installed_spec" then op_write_installed_spec(payload)
            when "generate_bin_stubs" then op_generate_bin_stubs(payload)
            when "build_extension" then op_build_extension(payload)

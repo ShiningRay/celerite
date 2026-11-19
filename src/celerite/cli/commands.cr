@@ -2058,6 +2058,7 @@ module Celerite
       install_root = File.dirname(File.dirname(gem_dir))
       spec_path = File.join(install_root, "specifications", "#{full_name}.gemspec")
       text = (File.file?(spec_path) rescue false) ? File.read(spec_path) : nil
+      found_path = text ? spec_path : nil
       # Fallback: search abi directories.
       if text.nil?
         ruby_root = File.dirname(install_root)
@@ -2067,6 +2068,7 @@ module Celerite
               candidate = File.join(ruby_root, abi, "specifications", "#{full_name}.gemspec")
               if (File.file?(candidate) rescue false)
                 text = File.read(candidate)
+                found_path = candidate
                 break
               end
             end
@@ -2078,13 +2080,19 @@ module Celerite
       # `<Gem.default_dir>/specifications/default/`.
       if text.nil?
         default_spec = File.join(install_root, "specifications", "default", "#{full_name}.gemspec")
-        text = File.read(default_spec) if (File.file?(default_spec) rescue false)
+        if (File.file?(default_spec) rescue false)
+          text = File.read(default_spec)
+          found_path = default_spec
+        end
       end
       # Fallback: PATH/GIT sources keep the gemspec in the gem directory.
       if text.nil? && (Dir.exists?(gem_dir) rescue false)
         gem_name = full_name.sub(/-[^-]+(?:-[^-]+)?\z/, "")
         candidate = File.join(gem_dir, "#{gem_name}.gemspec")
-        text = File.read(candidate) if (File.file?(candidate) rescue false)
+        if (File.file?(candidate) rescue false)
+          text = File.read(candidate)
+          found_path = candidate
+        end
         if text.nil?
           begin
             Dir.each_child(gem_dir) do |entry|
@@ -2092,6 +2100,7 @@ module Celerite
               candidate = File.join(gem_dir, entry)
               if (File.file?(candidate) rescue false)
                 text = File.read(candidate)
+                found_path = candidate
                 break
               end
             end
@@ -2101,23 +2110,132 @@ module Celerite
       end
       return {nil, nil, {} of String => String} unless text
 
+      # Reference `bundle info` reads the installed spec object
+      # (`Gem::Specification.load`, cli/info.rb:50-73), so Ruby has already
+      # decoded `\\`, `\n`, `\"`, `\uXXXX`, ... before Bundler prints them.
+      # Ask the bridge for that object first; only the degraded path (no Ruby
+      # interpreter) falls back to parsing the spec text.
+      if path = found_path
+        if info = read_gemspec_info_via_bridge(path)
+          return info
+        end
+      end
+      parse_gemspec_text(text)
+    end
+
+    # Decode a Ruby string literal body the way the interpreter would for the
+    # escapes RubyGems writes into a gemspec (`Gem::Specification#to_ruby`):
+    # `\\`, `\"`, `\'`, `\n`, `\t`, `\r`, `\e`, `\s`, `\0`, `\xNN`, `\uXXXX`,
+    # `\u{...}` and a line continuation. Fallback only; the bridge path is
+    # authoritative.
+    # Ruby's `\xNN` / `\uXXXX` accept only ASCII hex digits.
+    private def self.hex_digit?(ch : Char) : Bool
+      (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
+    end
+
+    private def self.decode_ruby_string(raw : String) : String
+      out = String::Builder.new
+      i = 0
+      while i < raw.size
+        ch = raw[i]
+        unless ch == '\\' && i + 1 < raw.size
+          out << ch
+          i += 1
+          next
+        end
+        nxt = raw[i + 1]
+        case nxt
+        when '\\' then out << "\\"
+        when '"'  then out << "\""
+        when '\'' then out << "'"
+        when 'n'  then out << "\n"
+        when 't'  then out << "\t"
+        when 'r'  then out << "\r"
+        when 'e'  then out << "\e"
+        when 's'  then out << " "
+        when '0'  then out << "\0"
+        when "\n" then nil
+        when 'x'
+          hex = raw[i + 2, 2]?
+          if hex && hex.size == 2 && hex.each_char.all? { |c| hex_digit?(c) }
+            out << hex.to_i(16).to_u8.chr
+            i += 4
+            next
+          end
+          out << nxt
+        when 'u'
+          if raw[i + 2]? == '{'
+            close = raw.index('}', i + 3)
+            if close
+              raw[(i + 3)...close].split(' ').each do |code|
+                out << code.to_i(16).chr if code.each_char.all? { |c| hex_digit?(c) }
+              end
+              i = close + 1
+              next
+            end
+          else
+            hex = raw[i + 2, 4]?
+            if hex && hex.size == 4 && hex.each_char.all? { |c| hex_digit?(c) }
+              out << hex.to_i(16).chr
+              i += 6
+              next
+            end
+          end
+          out << nxt
+        else
+          out << nxt
+        end
+        i += 2
+      end
+      out.to_s
+    end
+
+    # Text fallback for `read_gemspec_info`: same regex shape as before, but
+    # every captured literal goes through `decode_ruby_string`.
+    private def self.parse_gemspec_text(text : String) : {String?, String?, Hash(String, String)}
       # Match the quotes, not `[^"']`, so an apostrophe inside a double-quoted
       # summary (`The best way to manage your application's dependencies`) does
       # not truncate it.
-      summary = text.match(/\.summary\s*=\s*"([^"]*)"/).try(&.[1]) ||
-                text.match(/\.summary\s*=\s*'([^']*)'/).try(&.[1])
-      homepage = text.match(/\.homepage\s*=\s*"([^"]*)"/).try(&.[1]) ||
-                 text.match(/\.homepage\s*=\s*'([^']*)'/).try(&.[1])
+      summary_raw = text.match(/\.summary\s*=\s*"([^"]*)"/).try(&.[1]) ||
+                    text.match(/\.summary\s*=\s*'([^']*)'/).try(&.[1])
+      homepage_raw = text.match(/\.homepage\s*=\s*"([^"]*)"/).try(&.[1]) ||
+                     text.match(/\.homepage\s*=\s*'([^']*)'/).try(&.[1])
       metadata = {} of String => String
       text.scan(/\.metadata\s*=\s*\{(.*?)\}/m) do |match|
         match[1].scan(/["']([^"']+)["']\s*=>\s*["']([^"']*)["']/) do |pair|
-          metadata[pair[1]] = pair[2]
+          metadata[decode_ruby_string(pair[1])] = decode_ruby_string(pair[2])
         end
       end
       text.scan(/\.metadata\[["']([^"']+)["']\]\s*=\s*["']([^"']*)["']/) do |pair|
-        metadata[pair[1]] = pair[2]
+        metadata[decode_ruby_string(pair[1])] = decode_ruby_string(pair[2])
       end
-      {summary, homepage, metadata}
+      {summary_raw.try { |s| decode_ruby_string(s) },
+       homepage_raw.try { |s| decode_ruby_string(s) },
+       metadata}
+    end
+
+    # `Gem::Specification.load` through the bridge; nil when the interpreter is
+    # unavailable or cannot evaluate the file (caller then parses text).
+    private def self.read_gemspec_info_via_bridge(path : String) : {String?, String?, Hash(String, String)}?
+      return nil unless bridge_available?
+      bridge = Bridge::Client.new
+      begin
+        json = bridge.load_installed_spec(path)
+        return nil unless json
+        summary = json["summary"]?.try(&.as_s?)
+        homepage = json["homepage"]?.try(&.as_s?)
+        metadata = {} of String => String
+        if raw = json["metadata"]?
+          raw.as_h?.try &.each do |key, value|
+            metadata[key] = value.as_s? || value.to_s
+          end
+        end
+        {summary, homepage, metadata}
+      rescue
+        nil
+      ensure
+        bridge.close
+      end
     end
 
     # Reference `spec.default_gem?` is true for specs installed in Ruby's
