@@ -1386,6 +1386,21 @@ module Celerite
       definition = Definition.build
       config = definition.config
 
+      # `bundler/cli/check.rb:14` builds `Bundler.definition`, which evaluates
+      # the Gemfile. A plugin source whose plugin is not installed raises
+      # `DslError` there (`plugin.rb:202-211` + `dsl.rb`), before any lockfile
+      # inspection; reproduce that ordering. Bridge statuses 4/15 are the
+      # Gemfile/Dsl errors and must reach friendly-errors unchanged; a missing
+      # bridge only narrows the check back to locked specs.
+      if definition.lockfile_exists?
+        begin
+          Bridge::Client.new.evaluate_gemfile(definition.gemfile_path)
+        rescue ex : Bridge::BridgeError
+          raise ex if {4, 15}.includes?(ex.status_code)
+        rescue
+        end
+      end
+
       if config.frozen? && !definition.lockfile_exists?
         raise ProductionError.new("Frozen mode is set, but there's no lockfile")
       end
@@ -2336,6 +2351,12 @@ module Celerite
          definition.lockfile_exists? && definition.lockfile_matches_dependencies?(resolution.evaluation.dependencies)
         resolution.close
         text = with_profile_indent(definition.lockfile!.to_lock)
+        # 2.7.x never records a bundler self-checksum. A no-op `lock` rewrites
+        # the locked text as-is, so drop the entry a 4.x lockfile may carry
+        # (`lockfile_generator.rb` only emits it on the 4.x line).
+        if resolution.bridge_bundler_version.starts_with?("2.")
+          text = text.lines(chomp: false).reject { |line| line.starts_with?("  bundler (") }.join
+        end
         if print_mode
           stdout.print text
         else

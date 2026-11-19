@@ -1029,13 +1029,39 @@ module Celerite
       lockfile = @definition.lockfile!
       specs = [] of ResolvedSpec
       lockfile.sources.each do |source|
+        locked_plugin = source.type == "PLUGIN SOURCE"
+        source_info = locked_plugin ? plugin_source_info(source) : nil
+        source_remote = locked_plugin ? source.remote : nil
         source.specs.each do |spec|
           checksum = lockfile.checksums.find { |c| c.name == spec.name && c.version == spec.version }
           specs << ResolvedSpec.new(spec.name, Gem::Version.new(spec.version), spec.platform,
-            spec.dependencies, checksum.try(&.checksums.first?), 0)
+            spec.dependencies, checksum.try(&.checksums.first?), 0,
+            locked_plugin ? "PLUGIN" : "GEM", source_info, source_remote)
         end
       end
       specs
+    end
+
+    # Rebuilds the plugin source metadata from a `PLUGIN SOURCE` lockfile
+    # section (`plugin/api/source.rb:45-52,283-295`): the lockfile records the
+    # `type` as a lock option and the remaining options are replayed into the
+    # plugin's `initialize` when the plugin is loaded.
+    private def plugin_source_info(source : Lockfile::SourceSection) : SourceInfo
+      lock_options = {} of String => String
+      plugin_type = nil.as(String?)
+      source.options.each do |option|
+        value = option.value
+        next unless value.is_a?(String)
+        if option.key == "type"
+          plugin_type = value
+        elsif option.key != "remote"
+          lock_options[option.key] = value
+        end
+      end
+      SourceInfo.from_json({
+        "type" => "Plugin", "remote" => source.remote || "",
+        "plugin_type" => plugin_type, "lock_options" => lock_options,
+      }.to_json)
     end
 
     # Reuse-path repair for stale dependency edges. The lockfile records each
@@ -1365,14 +1391,32 @@ module Celerite
 
     def build_locked_index : Hash(String, Array(Resolver::IndexSpec))
       index = {} of String => Array(Resolver::IndexSpec)
+      lockfile = @definition.lockfile_exists? ? @definition.lockfile! : nil
       locked_specs.each do |locked|
-        next unless locked.source_type == "GEM"
         next if @excluded_locked_names.includes?(locked.name)
-        (index[locked.name] ||= [] of Resolver::IndexSpec) << Resolver::IndexSpec.new(
-          locked.name, locked.version,
-          locked.platform && locked.platform != "ruby" ? Gem::Platform.new(locked.platform.not_nil!) : Gem::Platform::RUBY,
-          [] of Resolver::DepSpec, Gem::Requirement.new, Gem::Requirement.new, nil
-        )
+        case locked.source_type
+        when "GEM"
+          (index[locked.name] ||= [] of Resolver::IndexSpec) << Resolver::IndexSpec.new(
+            locked.name, locked.version,
+            locked.platform && locked.platform != "ruby" ? Gem::Platform.new(locked.platform.not_nil!) : Gem::Platform::RUBY,
+            [] of Resolver::DepSpec, Gem::Requirement.new, Gem::Requirement.new, nil
+          )
+        when "PLUGIN SOURCE"
+          source = lockfile.try(&.sources.find do |section|
+            section.type == "PLUGIN SOURCE" && section.specs.any? { |spec| spec.name == locked.name }
+          end)
+          next unless source
+          begin
+            specs = plugin_source_specs(locked.name, plugin_source_info(source))
+          rescue ex : Bridge::BridgeError
+            # Plugin not installed: the reference's `UnloadedSource` yields an
+            # empty spec list (`plugin.rb:202-211`), so the locked entry cannot
+            # satisfy resolution. Keep the section intact for reuse and let the
+            # caller surface the missing plugin.
+            next
+          end
+          (index[locked.name] ||= [] of Resolver::IndexSpec).concat(specs)
+        end
       end
       index
     end
@@ -1628,6 +1672,10 @@ module Celerite
         end
         checksum_section.entries.clear
         deduped.values.each { |e| checksum_section.entries << e }
+        # 2.7.x never records a bundler self-checksum, including when an older
+        # lockfile (or a 4.x refresh) already carries one; the reference drops
+        # it on rewrite (`lockfile_generator.rb` 4.0.24-only path).
+        checksum_section.entries.reject! { |e| profile_is_2_x? && e.name == "bundler" }
         sections << Lockfile::TypedSection.new(checksum_section)
       end
 

@@ -871,6 +871,14 @@ module Celerite
           revision = source.option("revision").to_s
           remote = source.option("remote").to_s
           return installed_git_checkout(definition, spec.name, remote, revision)
+        when "PLUGIN SOURCE"
+          # A plugin source materializes its gemspecs from the source itself
+          # (`plugin/api/source.rb:136` + `fetch_gemspec_files`), so the locked
+          # spec is already available once the plugin is loaded. The reference
+          # `check` reports these as satisfied without a bundle `<gems>` tree
+          # (`cli/check.rb:18-31`).
+          remote = source.option("remote").to_s
+          return remote.empty? ? nil : File.expand_path(remote, File.dirname(definition.gemfile_path))
         end
       end
 
