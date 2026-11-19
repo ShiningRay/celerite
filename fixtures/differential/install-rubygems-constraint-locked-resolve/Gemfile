@@ -1,0 +1,3 @@
+source "file:///@RUBY_VERSIONS_INDEX_DIR@"
+
+gem "rg_gem"

@@ -1,0 +1,14 @@
+Gemfile.lock
+GEM
+  remote: file:///@RUBY_VERSIONS_INDEX_DIR@/
+  specs:
+    rg_gem (0.9.0)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  rg_gem
+
+BUNDLED WITH
+  4.0.24
