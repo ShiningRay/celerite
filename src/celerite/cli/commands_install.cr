@@ -1215,17 +1215,26 @@ module Celerite
         return 128
       end
 
-      definition = Definition.build
+      explicit_gemfile = ENV["BUNDLE_GEMFILE"]?
+      # Reference `Bundler::CLI::Exec` never reads the Gemfile itself: it exports
+      # RUBYOPT/BUNDLE_GEMFILE and execs the child, so a missing explicit
+      # Gemfile surfaces as `-rbundler/setup` raising Bundler::GemfileNotFound
+      # inside the child (cli/exec.rb:54-68, setup.rb:32). Skip the Crystal-side
+      # definition/evaluation in that case.
+      missing_explicit_gemfile = explicit_gemfile && !explicit_gemfile.empty? && !File.file?(explicit_gemfile)
+      definition = missing_explicit_gemfile ? nil : Definition.build
       bridge = Bridge::Client.new
       begin
         env = bridge.ruby_environment
         # Reference Bundler.setup validates Ruby requirements during exec.
-        begin
-          evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
-          RubyRuntime.validate!(evaluation.ruby, env) if evaluation.ruby
-        rescue ex : Error
-          raise ex
-        rescue
+        if current_definition = definition
+          begin
+            evaluation = bridge.evaluate_gemfile(current_definition.gemfile_path)
+            RubyRuntime.validate!(evaluation.ruby, env) if evaluation.ruby
+          rescue ex : Error
+            raise ex
+          rescue
+          end
         end
         bundler_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
         bundler_lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]?
@@ -1235,7 +1244,11 @@ module Celerite
         bundler_lib = bundler_lib.not_nil!
 
         abi = ruby_abi(bridge)
-        bin_dir = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "bin")
+        bin_dir = if d = definition
+                    File.join(InstallPaths.gem_root(d.config, bridge.ruby_environment.default_gem_dir, abi), "bin")
+                  else
+                    ""
+                  end
 
         process_env = ENV.to_h
         # Windows environment variable names are case-insensitive at the OS
@@ -1249,25 +1262,42 @@ module Celerite
         # Never inject a `-r` that cannot resolve: a missing bundler lib would
         # abort the child with a LoadError before the command runs.
         unless bundler_lib.empty?
-          setup_path = File.join(bundler_lib, "bundler/setup")
+          # Forward slashes matter: the child's own `bundler/setup` compares
+          # its `-r` entry against RUBYOPT verbatim (shared_helpers.rb:362-372),
+          # and a backslash path would make it append a second, equivalent
+          # entry (task-48 S1). Reference `exec.rb:59` injects a slash path.
+          setup_path = File.join(bundler_lib, "bundler/setup").gsub('\\', "/")
           setup_require = setup_path.includes?(" ") ? "-rbundler/setup" : "-r#{setup_path}"
           existing_rubyopt = (process_env["RUBYOPT"]? || "").split(" ").reject(&.empty?)
-          unless existing_rubyopt.includes?(setup_require)
+          # The bridge reports its own setup entry with Windows backslashes
+          # (`-rC:\...\bundler\setup` on some hosts), so compare after
+          # normalizing separators. Reference `shared_helpers.rb:355,362-372`
+          # drops any existing `-rbundler/setup` and adds exactly one entry.
+          normalized_setup = normalize_env_path(setup_require)
+          existing_rubyopt.reject! do |arg|
+            normalized = normalize_env_path(arg)
+            normalized == "-rbundler/setup" || normalized.ends_with?("/bundler/setup")
+          end
+          unless existing_rubyopt.any? { |arg| normalize_env_path(arg) == normalized_setup }
             existing_rubyopt.unshift(setup_require)
           end
           process_env["RUBYOPT"] = existing_rubyopt.join(" ")
           rubylib = (process_env["RUBYLIB"]? || "").split(path_delimiter_static).reject(&.empty?)
-          rubylib.unshift(bundler_lib) unless rubylib.includes?(bundler_lib)
+          normalized_lib = normalize_env_path(bundler_lib)
+          rubylib.reject! { |entry| normalize_env_path(entry) == normalized_lib }
+          rubylib.unshift(bundler_lib)
           process_env["RUBYLIB"] = rubylib.join(path_delimiter_static)
           process_env["BUNDLER_SETUP"] = setup_path
           exe_candidate = File.join(bundler_lib, "..", "exe", "bundle")
           process_env["BUNDLE_BIN_PATH"] = File.expand_path(exe_candidate).gsub(/\\/, "/") if File.file?(exe_candidate)
         end
-        process_env["BUNDLE_GEMFILE"] = File.expand_path(definition.gemfile_path).gsub(/\\/, "/")
-        process_env["BUNDLE_LOCKFILE"] = File.expand_path(definition.lockfile_path).gsub(/\\/, "/")
+        gemfile_for_env = definition.try(&.gemfile_path) || explicit_gemfile.not_nil!
+        lockfile_for_env = definition.try(&.lockfile_path) || "#{gemfile_for_env}.lock"
+        process_env["BUNDLE_GEMFILE"] = File.expand_path(gemfile_for_env).gsub(/\\/, "/")
+        process_env["BUNDLE_LOCKFILE"] = File.expand_path(lockfile_for_env).gsub(/\\/, "/")
         process_env["BUNDLER_VERSION"] = bundler_version
         path_delimiter = {{ flag?(:windows) }} ? ";" : ":"
-        process_env["PATH"] = "#{bin_dir.gsub(/\\/, "/")}#{path_delimiter}#{path_value}"
+        process_env["PATH"] = bin_dir.empty? ? path_value : "#{bin_dir.gsub(/\\/, "/")}#{path_delimiter}#{path_value}"
 
         args = rest[1..]
 
@@ -1288,8 +1318,7 @@ module Celerite
         else
           # Resolve the command against the child PATH. Direct execution avoids
           # cmd.exe quoting mangling; .bat/.cmd wrappers still need the shell.
-          bin_forward = bin_dir.gsub(/\\/, "/")
-          search_path = "#{bin_forward}#{path_delimiter}#{process_env["PATH"]? || ""}"
+          search_path = process_env["PATH"]? || ""
           resolved = find_executable(command, search_path)
           if resolved.nil?
             stderr.puts "bundler: command not found: #{command}"
@@ -1298,7 +1327,7 @@ module Celerite
           end
         end
 
-        disable_exec_load = definition.config["disable_exec_load"] == true
+        disable_exec_load = definition.try { |d| d.config["disable_exec_load"] == true } || false
         loadable = !disable_exec_load && directly_loadable?(resolved, env.ruby_exe, stderr)
         executable : String
         exec_args : Array(String)
@@ -1354,6 +1383,14 @@ module Celerite
 
     private def self.path_delimiter_static : String
       {{ flag?(:windows) }} ? ";" : ":"
+    end
+
+    # Compares environment entries (RUBYOPT `-r` targets, RUBYLIB directories)
+    # after normalizing Windows separators and trailing slashes; the bridge
+    # reports its own bundler setup entry with backslashes on some hosts, and a
+    # raw comparison would therefore inject a duplicate `-r` (task-48 S1).
+    private def self.normalize_env_path(value : String) : String
+      value.gsub('\\', '/').sub(/\/+$/, "")
     end
 
     # Runs the child and forwards SIGINT (the reference's only trapped
