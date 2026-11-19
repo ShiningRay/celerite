@@ -4609,3 +4609,40 @@ oracle（4.0.24 与 2.7.2 逐字一致，仅 `BUNDLED WITH` 缩进/安装计数�
 - GIT 的 `glob` 已纳入标签，但 GIT glob 端到端（真实 clone）未验证；PATH/PLUGIN 的标签比较只覆盖本文件列出的字段。
 - 构造态验证使用手工预置仓库；`0xC0000022` 是本机 Low-IL 环境缺陷，非产品逻辑。
 - 未重跑完整上游 64 例，未在非 Windows/非 Low-IL 宿主验证 git 端到端。
+
+## 2026-11-19（M7(8) task-35：`bundle check` 成功落盘与失败三元组）
+
+范围：`bundle check` 在依赖满足时是否按参考 `definition.lock(true)` 持久化锁文件，以及解析/来源失败时是否输出参考的 "can't satisfy" 两条错误并 exit 1。参考锚点：4.0.24 `bundler/cli/check.rb:20-36`（成功分支 `definition.lock(true) unless options[:"dry-run"]`；异常分支 rescue `GemNotFound, GitError, SolveFailure` → 两行 stderr + exit 1）、`definition.rb:379-433`（`lock`/`write_lock`；`lockfiles_equal?` 时只 touch）、`definition.rb:1257-1269`（`preserve_unknown_sections` 下忽略 `BUNDLED`/`RUBY` 等段）；2.7.2 同形实现。
+
+### oracle（4.0.24 与 2.7.2，隔离 HOME/BUNDLE_PATH，`file://` legacy 全量索引）
+
+| 场景 | 4.0.24 | 2.7.2 |
+| --- | --- | --- |
+| 已满足、仅 `BUNDLED WITH` 过期（4.0.20/2.7.1） | exit 0，`The Gemfile's dependencies are satisfied`，锁哈希不变、BUNDLED 保留 | 同左 |
+| 同上 + `--dry-run` | exit 0，输出同上，锁哈希不变 | 同左 |
+| `PLATFORMS` 仅 `java`（本机 `x64-mingw-ucrt` 缺失） | exit 0，stdout `Resolving dependencies...` + satisfied；锁改写为 `java` + `x64-mingw-ucrt`，BUNDLED 更新为 4.0.24 | 同左，BUNDLED 更新为 2.7.2（3 空格） |
+| 锁含 `CHECKSUMS` 但缺 `bundler` 行、BUNDLED 4.0.20 | exit 0，仅 satisfied；补 `bundler (4.0.24) sha256=16ca64e2…`，BUNDLED 4.0.24；哈希 `b18fa748…`→`cb2bc36d…` | 该锁形态下输出 `Resolving dependencies...` + satisfied，锁哈希不变 |
+| 无锁、缺失 gem / 需求冲突 / 不存在 git 源 | exit 1；stdout 一行 Fetching；stderr 逐字 `Bundler can't satisfy your Gemfile's dependencies.` + `Install missing gems with \`bundle install\`.`；不写锁 | 同左 |
+
+关键结论：**仅 `BUNDLED WITH` 过期不会引起内容改写**（参考只 touch）；有实际语义变化（平台/校验和）才重写。新实现按 `semantic_content` 比较忽略 BUNDLED 版本行，避免把 touch 变成重写。
+
+### 实现锚点
+
+- `src/celerite/resolution.cr:1570-1581` 新增 `lockfile_rewrite_text`：未解析且有锁文件时 `materialize_locked` 后 `generated_lockfile.to_lock`，不发起新解析。
+- `src/celerite/cli/commands.cr:1500-1524` 成功分支统一为“解析后文本或锁复用文本 → `with_profile_indent` → 语义比较 → 写入”；`bridge_available?` 为假时跳过（无 Ruby 桥时的既有 fail-safe，已声明）。`--dry-run` 与 frozen 不写。
+- `src/celerite/cli/commands.cr:1437-1445` 包住无锁路径的 `resolution.resolve!`，捕获 `GemNotFoundError | SolveFailureError | GitError` 后打印参考两条 stderr 并返回 1。
+- `src/celerite/errors.cr:198-208` 新增 `GitError`（status 11，镜像 `Bundler::GitError`）；`src/celerite/git_source.cr:113-124` 将 `git` 子进程启动失败/非零退出包装为 `GitError`（不再落到 `celerite internal error`）。
+
+### 测试与反假绿
+
+- `spec/m7_check_rewrite_spec.cr`：3 examples（成功重写平台+BUNDLED、`--dry-run` 保持、triplet 失败）。目标 spec 合计 65 examples / 0 failures（含 `m7_check_*`、`m7_lockfile_*`、`m7_platform_*`、`m7_installed_discovery`）。
+- 差分夹具：`check-rewrites-lock`（`file-equals-4.0.24`/`-2.7.2`）、`check-dry-run-keeps-lock`（`file-equals` 保持原锁）、`check-triplet-missing-index`（exit 1 + 两行 stderr）。双 profile 各 **3 passed / 0 failed / 0 skipped**。
+- 回归（双 profile）：`install-check`、`lock-noop`、`lock-print`、`install-fresh`、`install-platforms-add-local`、`plugin-source-locked-check`、`checksums-empty-install`、`install-frozen`、`install-deployment-empty-checksums` 连同 3 个新夹具 → **12 passed / 0 failed / 0 skipped**。
+- 反假绿：`git worktree add C:/temp/celerite-pre35 1d3eacb` 编译旧二进制；`check-rewrites-lock` 在旧代码上 **FAIL**（`Gemfile.lock` cel 侧仍为 `4.0.20`，参考/期望为 `4.0.24`）；当前二进制 PASS。
+
+### 已声明差异 / 未验证
+
+- 无 Ruby 桥（`CELERITE_BRIDGE_SERVER` 与 `CELERITE_REFERENCE_BUNDLER_LIB` 均缺失）时跳过成功落盘；参考仍会写锁。这是既有 fail-safe，spec 明确覆盖。
+- triplet 的“不存在 git 源”场景 stderr/exit 已对齐，但 stdout 少参考的 `Fetching file:///…/repo` 一行（本机 `git` 子进程受 Low-IL `0xC0000022` 影响）；未做夹具。
+- 2.7.2 对含 `CHECKSUMS` 的锁执行 `check` 时会打印 `Resolving dependencies...` 且不改写；该组合未纳入差分夹具。
+- 未重跑全量 `crystal spec` / 全量差分；未在非 Windows/非 Low-IL 宿主验证。
