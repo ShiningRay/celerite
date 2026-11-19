@@ -4096,3 +4096,51 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 2. `--all` 多插件顺序按 index 插入序实现，但本轮无多插件 `--all` 夹具，顺序语义**未用差分验证**。
 3. 差分只比较输出与项目树路径集合；index 文本内容（骨架）由 spec 直接断言，未纳入 tree 内容比较。
 4. 全量 `crystal spec` 与全量差分未重跑（沿用 4061 行前的既有记录）。
+
+## 2026-11-19（M7(3) task-21：安装期 `required_ruby_version` / `required_rubygems_version` 复核对齐）
+
+**范围**：锁文件把不兼容 gem 钉死时，`bundle install` 不得静默安装；要求与参考 `Bundler::Installer#ensure_specs_are_compatible!` 的运行时约束一致，同时不改动解析期候选过滤与 check/show/binstubs 的运行时校验。参考版本 4.0.24 与 2.7.2 逐字对照。
+
+**oracle（本机 Ruby 4.0.6 / RubyGems 3.6.9；`file://` 索引含 `incompat_ruby-1.0.0`「required_ruby_version >= 99」与 `incompat_rg-1.0.0`「required_rubygems_version >= 99」；手写命中锁）：**
+
+| 场景 | 参考 4.0.24 | 参考 2.7.2 | 修复前 celerite | 修复后 celerite |
+| --- | --- | --- | --- | --- |
+| 锁 + `install`（ruby 不兼容） | exit 6，stdout `Fetching source index from file:///…/`、`Resolving dependencies...`，stderr 见下 | 同 4.0.24 | exit 0，安装成功（缺陷） | exit 6，stdout/stderr 与参考逐字一致 |
+| 锁 + `install --local` | exit 7，stderr `Could not find incompat_ruby-1.0.0 in locally installed gems` | 同左 | 同参考（无锁复用路径） | 同参考 |
+| 锁 + `check` | exit 1，stderr `The following gems are missing` / ` * incompat_ruby (1.0.0)` / “Install missing gems with \`bundle install\`” | 同左 | 同参考 | 同参考 |
+| 无锁 + `install` | exit 6，同一 Molinillo 文案 | 同左 | exit 6，已逐字一致 | 不变 |
+| BUNDLE_PATH 预置不兼容 gem + 锁 | exit 0，`Bundle complete! …`（`setup_domain!` 为 false，`ensure_specs_are_compatible!` 不执行） | 同左 | exit 0 | exit 0 |
+
+参考 exit 6 的 stderr（两版逐字）：
+
+```
+Could not find compatible versions
+
+Because every version of incompat_ruby depends on Ruby >= 99
+  and Gemfile depends on incompat_ruby >= 0,
+  Ruby >= 99 is required.
+So, because current Ruby version is = 4.0.6,
+  version solving has failed.
+```
+
+**结论**：参考的 `ensure_specs_are_compatible!`（4.0.24 `installer.rb:234-245`，入口 `installer.rb:79-82`；2.7.2 `installer.rb:227-238`）在正常流程中**不可达**——`definition.rb:190-203` 的 `setup_domain!` 只在需要安装时返回 true，而解析器已先按 `required_ruby_version`/`required_rubygems_version` 过滤候选，最终以 exit 6（`SolveFailure`，`errors.rb:26`）呈现。用户可见的参考行为是**解析期失败**，不是 exit 5 的 `InstallError`（`errors.rb:21`）。因此实现必须让锁文件复用路径回到解析期：否则会出现「锁文件命中 → 直接 materialize → 静默安装」。
+
+**实现**（全部锚定参考）：
+- `src/celerite/resolution.cr`：`ResolvedSpec` 增加 `required_ruby_version` / `required_rubygems_version`（由 `IndexSpec` 携带）；`resolve!(reuse, verify_locked_compat:)` 在复用前用 `incompatible_locked_spec_names` 比对锁文件钉住版本与索引 requirements，命中则把名字加入 `@unlock` 与 `@excluded_locked_names`，再走 `run_resolution`；`build_locked_index` 跳过被排除的名字，避免解析器再次接受不兼容钉子。`index_fetch_logged?` 暴露本次是否已打印 `Fetching source index`，供 CLI 去重。
+- `src/celerite/installer.cr`：新增 `Installer.ensure_specs_are_compatible!(specs, ruby_version, rubygems_version)` 与实例包装，逐字复刻参考两条消息（`… requires ruby version …, which is incompatible with the current version, …` / rubygems 同形），作为「解析器让步」时的兜底，exit 5。
+- `src/celerite/cli/commands_install.cr`：仅当 `reuse` 且锁文件存在、且至少一个锁定 spec 尚未安装时置 `verify_locked_compat = true`，随后 `resolve!(reuse, verify_locked_compat:)` 并调用 `installer.ensure_specs_are_compatible!(specs)`；安装输出条件改为 `reuse && pending.any? && !resolution.index_fetch_logged?`，避免已由解析打印的 fetch 行重复。
+- 未改 `src/celerite/resolver/source.cr:283-284` 的解析期过滤，也未改 check/show/binstubs 的运行时校验。
+
+**测试与差分**：
+- 新增 `spec/m7_install_ruby_compat_spec.cr` 3 例：① CLI 锁 + 不兼容 → exit 6，stdout 两行、stderr 整块逐字断言；② 兼容锁复用 → specs 仅 `json_pure`，只打印一次 `Fetching source index`、无 `Resolving`；③ 直接调用 `ensure_specs_are_compatible!` → 两条 `InstallError` 文案逐字。该文件 3 examples 0 failures；与 `spec/m7_ruby_runtime_enforcement_spec.cr`、`spec/downloader_spec.cr` 合跑 13 examples 0 failures 0 errors 0 pending。
+- 新增 `fixtures/gem-index-locked-ruby/`（由本机 oracle 索引复制：`incompat_ruby`/`incompat_rg` 的 `.gem`、`info/`、`quick/`、`specs.4.8.gz` 等；参考 `file://` 走 legacy index，必须有 `specs.4.8.gz`）与 `fixtures/differential/install-locked-ruby-incompatible/`（`command`=`install`、`Gemfile`、手写 `Gemfile.lock`，占位 `@LOCKED_RUBY_INDEX_DIR@`）。
+- `script/differential` 增加 `@LOCKED_RUBY_INDEX_DIR@` 的六处替换（含 `|g` 变体）。
+- 差分：4.0.24 `PASS install-locked-ruby-incompatible (exit=6)`，1 passed / 0 failed / 0 skipped；2.7.2 同。回归子集双 profile 7/0/0（`install-rerun` exit 0、`install-local` 7、`install-force` 0、`install-frozen` 15、`install-fresh` 0、`check-no-lockfile-installed` 0、`plugin-install` 1）。
+
+**门禁**（HEAD 前工作树）：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告，`commands_install.cr:1112:43`、`:1176:20`）；`crystal spec spec/m7_install_ruby_compat_spec.cr spec/m7_ruby_runtime_enforcement_spec.cr spec/downloader_spec.cr` → 13 examples, 0 failures, 0 errors, 0 pending；`git diff --check` EXIT 0；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0。
+
+**已声明差异 / 未验证**：
+1. CLI 下 `ensure_specs_are_compatible!` 的 exit 5 分支在参考与实现中都不可达（解析期先失败）；该函数仅由 spec 单元验证，**未经 CLI 差分**。
+2. `file://` 参考走 legacy index，需要 `specs.4.8.gz`；本夹具索引按此构建，未覆盖 compact-index 的 `file://` 组合。
+3. 仅本机 C: 盘、Ruby 4.0.6 环境；跨盘符/跨 Ruby 版本未验证。
+4. 全量 `crystal spec` 与全量差分未重跑（沿用既有记录）。
