@@ -12,11 +12,11 @@ compatibility boundary. Performance is a measured goal, not an unconditional cla
 > Recent native coverage includes install-time `required_ruby_version` /
 > `required_rubygems_version` rechecks (`src/celerite/installer.cr:65-90`),
 > empty-CHECKSUMS backfill (`src/celerite/definition.cr:362`),
-> installed-specification detection for `check`/`list`/`show`
-> (`src/celerite/cli/commands_surface.cr:860-885`), and typed custom sources at
-> S1+S2 (`PLUGIN SOURCE` write and locked reuse,
-> `src/celerite/resolution.cr:1366`, `:1488`). The S3 install path for typed
-> plugin sources is not implemented.
+> installed-specification detection for `check`/`list`/`show`/`info`
+> (`src/celerite/cli/commands_surface.cr:860-931`), and typed custom sources at
+> S1+S2+S3 (`PLUGIN SOURCE` write, locked reuse and install;
+> `src/celerite/resolution.cr:1362`, `:1371`, `:1494`). The S3 install path is
+> covered by `plugin-source-install` on both reference profiles.
 >
 > The current roadmap prioritizes correctness and trustworthy upstream evidence
 > (M7), then batch bridge calls and no-Ruby cache hits (M8), native install plans
@@ -36,8 +36,10 @@ compatibility boundary. Performance is a measured goal, not an unconditional cla
 - Keep a controlled Ruby compatibility bridge for arbitrary Ruby DSL, native
   extension builds, and third-party Bundler plugins.
 - Verify behavior with differential tests and the upstream Bundler test suite
-  (current v4.0.24 lockfile baseline: 64 examples, 54 failed / 10 passed,
-  collected 2026-11-19; see `docs/compat-report.md` task-23).
+  (current v4.0.24 lockfile baseline: 64 examples, 54 failed / 10 passed;
+  buckets artifice 38 / low-IL 8 / fetch 6 / product 2, collected 2026-11-19
+  16:32 by task-32; not recollected after tasks 33–40; see
+  `docs/compat-report.md` task-32).
 
 ## Non-goals
 
@@ -118,10 +120,10 @@ The harness runs each fixture in its own sandbox. Most fixtures are offline, but
 `http-index` fixtures start a loopback HTTP server on `127.0.0.1`. Known limits:
 Low-IL Windows hosts block some git-source fixtures (`0xC0000022`), and two
 fixtures are deferred for the 2.7.2 profile (`gem-default`, `gem-no-git`; marker
-`deferred-2.7.2`, `script/differential:620-621`). It compares exit codes,
+`deferred-2.7.2`, `script/differential:622-624`). It compares exit codes,
 stdout/stderr, the project tree, and optional content probes —
-`file-contains`, `file-absent`, `file-equals`, `installed-tree` and `first-line`
-(`script/differential:488-551`).
+`file-contains` (`:535-547`), `file-absent` (`:549-566`), `file-equals`
+(`:513-533`), `installed-tree` (`:491-500`) and `first-line` (`:502-512`).
 
 ## License
 

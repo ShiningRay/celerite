@@ -1,6 +1,6 @@
-# Compatibility matrix (M0 baseline)
+# Compatibility matrix (hand-collected baseline)
 
-Generated from the pinned reference revisions in `vendor/reference/MANIFEST.md`
+Hand-collected from the pinned reference revisions in `vendor/reference/MANIFEST.md`
 (Bundler 4.0.24 primary; 2.7.2 still-supported reference). Every entry states which
 reference version it was derived from. Behavior not listed here must not be
 implemented ad hoc — extend the matrix first, then implement, then differential-test.
