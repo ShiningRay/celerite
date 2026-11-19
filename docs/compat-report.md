@@ -4453,3 +4453,47 @@ FAIL plugin-source-locked-check (check)
 上节末尾“`check` 在锁定插件 source 上我方仍会打印 `Resolving dependencies...`”已被 task-29 返工推翻：返工后 `check` 输出与参考逐字一致（stdout 仅 `The Gemfile's dependencies are satisfied`，stderr 空），并新增 `plugin-source-locked-check` 夹具在 `87a69a4` 旧二进制 FAIL、当前二进制 4.0.24/2.7.2 均 PASS。以本条为准。
 
 **仍未同步/未验证**：compat-report 各历史节的旧基线数字未逐节改写（仅头注/文末标注）；全量 `crystal spec` 与全量差分未重跑；2.7.2 upstream profile 不可执行；上游 product 候选三条未复跑定性。
+
+## 2026-11-19（M7(6) task-31：typed plugin source 安装成功路径）
+
+范围：S3 切片——`install` 对已安装 typed plugin source（`source "./stub-path-gem", type: :mpath`）的成功路径：解析 `@inferred_plugins` 依赖、调用插件的 `install(spec, opts)`、把 gem 落盘到 bundle、输出 post-install 消息，并在 lock 中隐藏推断出的 `bundler-source-<type>` 依赖。未改 S1/S2 的锁读写语义。
+
+参考 oracle（4.0.24 与 2.7.2，干净 lock + 已装插件；`plugin-source-install` 夹具同形）：
+
+```
+Fetching source index from file:///C:/.../t31index/
+Resolving dependencies...
+Fetching bundler-source-mpath 1.0.0
+Installing bundler-source-mpath 1.0.0
+Bundle complete! 1 Gemfile dependency, 1 gem now installed.
+Bundled gems are installed into `...`
+Post-install message from stub-gem:
+Installed stub-gem
+```
+
+- 2.7.2 同一流程唯二差异：`Bundle complete! ... 2 gems now installed.`，且插件 gem 在 `.bundle/plugin/gems/bundler-source-mpath-1.0.0` 解包；4.0.24 只保留 `.bundle/plugin/cache/*.gem` 与 `.bundle/plugin/specifications/*.gemspec`（空 `build_info/doc/extensions/gems/plugins` 目录）。
+- install 后 lock：`PLUGIN SOURCE` 不变、`GEM` specs 为空、`DEPENDENCIES` 只剩 `stub-gem!`（`bundler-source-mpath` 被隐藏）；4.0.24 写 CHECKSUMS，2.7.2 不写。
+- 参考契约：`plugin/dsl.rb:39-49` 为 typed source 注入 `bundler-source-<type>` 依赖（`@inferred_plugins`）；`plugin/api/source.rb:90-92` 默认 `install` 抛 `MalformattedPlugin`；`installer/gem_installer.rb:67-75` 调 `source.install(spec, force:, local:, build_args:, previous_spec:)` 并把返回值作为 post-install 消息。
+
+实现（`assets/bridge/server.rb`、`src/celerite/bridge/client.cr`、`src/celerite/resolution.cr`、`src/celerite/cli/commands_install.cr`）：
+
+- 新桥操作 `plugin_source_install`（server.rb 约 :537）：只设 `Bundler.instance_variable_set(:@bundle_path, ...)`（不写 `.bundle/config`），按 `uri` 找插件 source、按 `full_name` 找 spec，调插件 `install`，返回消息。
+- `commands_install.cr`：安装前从 `evaluation.sources` 的 `"Plugin"` 源推导 `bundler-source-<type>` 并调用 `resolution.add_inferred_plugin_dependencies!`，因此与参考一样先 `Resolving dependencies...` 并安装插件 gem；插件 spec 未安装时调桥安装，收集消息；`hide_inferred_plugins!` 后从本次解析结果中剔除推断依赖（GEM/DEPENDENCIES/CHECKSUMS 三处），loader 不再把它写进 lock；安装后在 summary 与 Bundled-gems 行之后打印 `Post-install message from <name>:`。
+- 删除了旧 `Installing plugin sources … is not supported` 分支（`commands_install.cr:111-116` 原位置）；该路径现由 S3 覆盖。2.x 额外把插件 gem 解包到 `.bundle/plugin/gems`（`op_write_installed_spec` 的 `unpack`）。
+- `decisions_to_specs` 对非 GEM source 使用 `source.remote`（此前误用主 GEM 索引 URL，导致桥报 `plugin source not found: file:///.../index/`）。
+
+夹具与证据：
+
+- 新增 `fixtures/differential/plugin-source-install/`（`Gemfile`、干净 `Gemfile.lock`、`command=install`、`extra/.bundle/plugin/**`、插件源码、`file-equals-4.0.24/2.7.2`）；新增 `fixtures/gem-index-plugin-source/`（含 `bundler-source-mpath-1.0.0.gem` 的 legacy index）；`script/differential` 新增 `@PLUGIN_SOURCE_INDEX_DIR@` 替换。
+- 差分：`plugin-source-install` 在 4.0.24 与 2.7.2 均 `PASS (exit=0)`。
+- 反假绿：`git worktree add C:/temp/celerite-pre31 ce58d1f` 重建二进制后同夹具 `FAIL`（缺 `Fetching/Resolving/Installing` 行、缺 post-install 消息与 `.bundle/plugin` 目录）；当前二进制 PASS。
+- 回归（双 profile 各 6/0/0）：`plugin-source-typed`、`plugin-source-locked`、`plugin-source-locked-check`、`plugin-source-locked-missing`、`plugin-install`、`install-fresh`。
+- spec：`spec/m7_plugin_source_typed_spec.cr` 共 5 例（新增 install 成功断言：exit 0、stderr 空、post-install 消息、lock 无 `bundler-source-mpath`），5/0/0/0。
+- 门禁：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅 2 条既有 `Deprecated File.executable?` 警告）；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0；`git diff --check` EXIT 0。
+
+已声明差异与未验证：
+
+- 干净 lock、未带 CHECKSUMS 时，`install` 不主动创建 CHECKSUMS（与本次 harness 参考一致；手工环境差异已用夹具固定为无 CHECKSUMS 形态）。
+- spec 未断言 bundle 内落盘路径（Crystal `Dir.glob` 在 Windows 反斜杠路径上不稳定），落盘由差分 `installed-tree` 比较覆盖。
+- 全量 `crystal spec` 与全量差分未重跑；多平台/多 Ruby ABI 未验证；`commands_install.cr:111-116` 删除后是否有其他调用方依赖该错误文案未做全仓检索。
+- 2.7.2 的插件 gem 解包行为仅在 oracle 与差分树中观察，未做逐文件内容比对（file-equals 只覆盖 lock）。
