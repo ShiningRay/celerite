@@ -4780,3 +4780,21 @@ oracle（4.0.24 与 2.7.2 语义一致；`file:///C:/…` 完整 legacy index，
 - 真 Rails 规模仍不可验证：需真实网络取依赖图、本机缺 `make`、msys 在 Low IL 下 `0xC0000022` 阻塞原生扩展（分段证据见 `docs/compat-report.md:1925-1933`）。
 - 合成索引证明的是「同规模锁与耗时」，不是「真实依赖图复杂度」；install 侧慢的根因未拆到 per-gem RPC/安装开销，仅登记基线。
 - 宿主抖动大；N=20 受固定启动开销影响，不作为达标点。全量 spec/全量差分未重跑。
+
+## 2026-11-19（L163 task-39：文档漂移清理）
+
+范围：仅改 README、compat-matrix 与 roadmap 的文案/基线/锚点，不动 `src/`、`fixtures/`、`script/`、`spec/`，不勾选任何复选框；未运行 `script/gen-cli-baseline`（会重生成 CLI 帮助段，非本轮范围）。
+
+逐条核实与修正：
+- R1/R4：roadmap L154 原“剩余＝复核路径的差分夹具”已过期——`install-locked-ruby-incompatible` 已存在且双 profile PASS，task-38 又补 3 个约束夹具；L158 默认 glob 已对齐 `{,*,*/*}.gemspec`，C 负例 `path-glob-default-deep-miss` 存在，仍缺 E2（`d1/d2`）及更深逐层夹具。
+- R2/R3：L155 的“`installed_gem_dir` 容忍缺 specifications 文件”是 task-22 前历史；现行判定为 `<bundle>/specifications/<full>.gemspec` 存在即已装、缺 spec 即 missing（`src/celerite/cli/commands_surface.cr:860-931`）。`spec/m7_installed_discovery_spec.cr` 实测 **23 examples, 0 failures**（task-22 的 22 + task-37 的 info 例），原清单“20”不准确。
+- R5：L159 的“成功路径未实现、打印不支持 exit 1”是 2026-11-15 快照；task-31 S3 已删除 `commands_install.cr:111-116` 旧分支，`plugin-source-install` 双 profile PASS，旧文保留为历史。
+- R6–R9：L161 首测 55 failures（9 passed）为历史；当前 54 failures / 10 passed；task-32 于 2026-11-19 16:32 采集分桶 artifice 38 / low-IL 8 / fetch 6 / product 2（旧 37/8/6/3 属 task-23）；空 CHECKSUMS 例已确认转 env:artifice（`Could not reach host gem.repo2`）；product 候选仍为 2，②/③ 未复跑。
+- M1–M6：README 状态改为 S1+S2+S3 均已实现，锚点改为 `resolution.cr:1362`（`index_for_source_gem` 插件分支）、`:1371`（`plugin_source_specs`）、`:1494`（`hide_inferred_plugins!`）与 `commands_surface.cr:860-931`；上游基线补 task-32 分桶与采集时间并注明 33–40 未复采；deferred 锚点改 `script/differential:622-624`；断言子锚点改为 installed-tree 491-500、first-line 502-512、file-equals 513-533、file-contains 535-547、file-absent 549-566。
+- 矩阵：`docs/compat-matrix/README.md` 由“Generated”改为 hand-collected；`upstream-lockfile-v4.0.24.md` 头注改为 task-32 当前基线 38/8/6/2、16:32、predates 33–40；task-23 分桶行标注历史；候选 ① 注记追加“已被 task-32 取代（artifice，非产品缺口）”。
+
+验证与自检：
+- roadmap 六行（L154/155/158/159/161/163）逐行自检：`task-39`=1、`****`=0、CR=0、复选框仍 `[ ]`；文件保持 218 行。
+- `git diff --check` EXIT 0；`git diff --cached --check` EXIT 0；修改后未勾选任何复选框。
+- 未重跑全量 `crystal spec`、全量差分与 `script/gen-cli-baseline`；上游基线未在 33–40 后复采。
+- 本清理首个提交 `3af2f5b docs(L163): correct stale capability, baseline and anchor references`；本节随第二个 docs 提交落盘。
