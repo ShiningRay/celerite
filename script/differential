@@ -18,7 +18,7 @@
 #   N2 CRLF -> LF
 #   N3 ISO timestamps -> {TIMESTAMP}
 #   N4 calendar dates -> {DATE}
-#   N5 `## Environment` body (until `## Bundle Doctor`) dropped
+#   N5 `## Environment` body dropped (until the next `## ` heading)
 #   N6 Ruby backtrace `   from ...` frames dropped
 #   N7 runs of consecutive `Fetching ` lines sorted (parallel download order)
 #   N8 native-extension fixtures require a C compiler on PATH (Ruby-bundled
@@ -109,18 +109,14 @@ normalize() {
       -e 's/^bundle #!.*/bundle #!  {BUNDLE_SHEBANG}/' \
       -e '/^[ 	]*from /d' \
     | awk '
-        # N5 drops the `## Environment` body only for `bundle doctor` reports,
-        # which terminate it with `## Bundle Doctor`. A standalone `bundle env`
-        # output has no terminator, and the old sed range
-        # (`/^## Environment$/,/^## Bundle Doctor$/...`) therefore deleted the
-        # whole section down to EOF on both sides: env-report compared empty
-        # strings and always passed. Buffer the section and drop it only when
-        # the terminator is present.
-        /^## Environment$/ { in_env = 1; env_count = 0; env_buf[env_count++] = $0; next }
-        in_env && /^## Bundle Doctor$/ { in_env = 0; env_count = 0; print; next }
-        in_env { env_buf[env_count++] = $0; next }
+        # N5 drops only the `## Environment` body, up to the next `## ` heading;
+        # the heading itself stays in the comparison. This keeps `bundle env`
+        # and `bundle issue` / `bundle doctor` reports comparable section by
+        # section instead of deleting the Gemfile sections that follow.
+        /^## Environment$/ { print; in_env = 1; next }
+        in_env && /^## / { in_env = 0; print; next }
+        in_env { next }
         { print }
-        END { if (in_env) for (i = 0; i < env_count; i++) print env_buf[i] }
       ' \
     | awk '
         /^Fetching / { buf[n++] = $0; next }
