@@ -4037,3 +4037,25 @@ A/B 共 23 例 × 2 profile，唯一差异是 `bundle --verbose` 场景（参考
 3. `file:C:/x`（opaque）参考 4.0.24/2.7.2 均 exit 1（`NoMethodError`），我方按 `C:/x` 接受（exit 0）。这是本轮之前就存在的分歧，未随本次改动引入，也未为对齐参考而人为制造崩溃——保留并在本节声明。
 4. `file://host/x` 的 host 现被忽略（与参考一致）；旧实现会折成 `/host/x`，已删除。
 5. `Resolution#normalize_remote` 仍是旧式 `lchop("file:").lstrip('/')` 展开，host/UNC 形式在锁 source 比对中的行为未随本轮变更（不在本任务范围）。
+
+## 2026-11-19（M7(6) task-19 验收补记：全量 `crystal spec` 的本机限制）
+
+本节记录本轮验收时全量 spec 的实际表现，**不作为通过证据**：全量 `crystal spec` 在本机跑不到 `Finished`，下面逐项写明现象、观测、归因与替代验证，凡未跑通者一律标未验证。
+
+**现象**：本轮复跑全量 `crystal spec`（`spec/` 下 100 个 `*_spec.cr`）无法跑到 `Finished`——进程打印若干进度点后静默结束，EXIT 1，无 failures 摘要、无 `Finished in`、stderr 无异常文本。
+
+**观测**（HEAD=`380d8d6`，串行、无并发 crystal 进程）：
+
+- 无 `--verbose`：输出 131 字符进度行后静默结束（日志 1974 字节）。
+- 两次 `--verbose`：分别停在 `M7(2) bundle add/remove switch surface` 的 `rejects --strict together with --optimistic (exit 15, period)` 之后，以及 `bundle list output formats` / `m7_outdated_naming_spec` 的样例处（日志 25668 与 95416 字节，均无摘要）。
+- 分组每 25 个文件：0–24 组 178 examples / 3 failures / 0 errors 完成，25–49 组 150 examples / 1 failure / 1 pending 完成，50–74 组与 75–99 组均静默结束无摘要。
+
+**归因（已排除本轮改动）**：`git worktree add C:/temp/celerite-pre19 a3ed3ec`（task-19 之前提交）复跑同样静默结束——全量跑到 `M7(2) bundle add/remove switch surface` 后中断，50–74 组同组中断。故与本轮 `file://C:/` 归一化改动无关，属既存环境/长跑缺陷，根因未定位。
+
+**已定位的 4 个失败（均环境耦合，非产品缺陷）**：机器级 `~/.bundle/config` 含 `BUNDLE_PATH: "vendor/x"`，导致 `spec/config_spec.cr:97`、`spec/config_spec.cr:146`（`lines.size` 期望 1 得 2）、`spec/m7_deployment_path_spec.cr:105`（期望 `…/vendor/bundle` 得 `…/vendor/x`）；另有 `spec/m7_list_groups_plain_env_spec.cr:54` 在本轮一次分组运行中因 `celerite internal error: Unable to create directory: '<TEMP>\…\.bundle-test': 拒绝访问。` 失败（EXIT 1，疑似临时目录/AV 侧拒绝）。`config_spec.cr:97` 此前已登记为环境耦合。
+
+**残留副作用**：被中断/终止的 spec 进程会继续占用 `%LOCALAPPDATA%\crystal\cache\crystal-run-spec.tmp.exe`，后续 `crystal spec` 在链接阶段报 `ld.exe: cannot open output file …: Permission denied`（`collect2.exe: error: ld returned 1 exit status`）；需先 `Stop-Process` 清理残留进程再跑。
+
+**环境前置（本轮实测）**：`crystal` 需要 `C:\msys64\usr\bin` 在 `PATH`（否则宏内 `sh -c` 报 `系统找不到指定的文件`）；`script/differential` 必须用 `C:\msys64\usr\bin\bash.exe`（`PATH` 里默认 `bash` 是 WSL，`/c/...` 不识别，报 `ruby: command not found`）。
+
+**本轮替代验证**：`crystal spec spec/m7_file_url_spec.cr` 5 examples 0 failures；0–24 与 25–49 两组共 328 examples 完成；差分 4.0.24 11 个夹具全 PASS，`plugin-install-source`/`plugin-install-source-noncanonical` 在 2.7.2 亦 PASS。
