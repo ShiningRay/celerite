@@ -1,0 +1,2 @@
+install
+exec ruby count_env.rb
