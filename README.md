@@ -9,6 +9,15 @@ compatibility boundary. Performance is a measured goal, not an unconditional cla
 > Ruby still handles dynamic Gemfile/gemspec evaluation, native extension builds,
 > plugin hooks and parts of the runtime through the compatibility bridge.
 >
+> Recent native coverage includes install-time `required_ruby_version` /
+> `required_rubygems_version` rechecks (`src/celerite/installer.cr:65-90`),
+> empty-CHECKSUMS backfill (`src/celerite/definition.cr:362`),
+> installed-specification detection for `check`/`list`/`show`
+> (`src/celerite/cli/commands_surface.cr:860-885`), and typed custom sources at
+> S1+S2 (`PLUGIN SOURCE` write and locked reuse,
+> `src/celerite/resolution.cr:1366`, `:1488`). The S3 install path for typed
+> plugin sources is not implemented.
+>
 > The current roadmap prioritizes correctness and trustworthy upstream evidence
 > (M7), then batch bridge calls and no-Ruby cache hits (M8), native install plans
 > and a lightweight runtime (M9). Embedding Crystal as a Ruby native extension is
@@ -26,7 +35,9 @@ compatibility boundary. Performance is a measured goal, not an unconditional cla
   and installation planning into native Crystal code.
 - Keep a controlled Ruby compatibility bridge for arbitrary Ruby DSL, native
   extension builds, and third-party Bundler plugins.
-- Verify behavior with differential tests and the upstream Bundler test suite.
+- Verify behavior with differential tests and the upstream Bundler test suite
+  (current v4.0.24 lockfile baseline: 64 examples, 54 failed / 10 passed,
+  collected 2026-11-19; see `docs/compat-report.md` task-23).
 
 ## Non-goals
 
@@ -43,8 +54,9 @@ explicit, opt-in installation step; it will never be overwritten automatically.
 - [架构方案](docs/architecture.md)
 - [兼容性契约](docs/compatibility.md)
 - [实施计划](docs/roadmap.md)
-- [兼容矩阵基线](docs/compat-matrix/README.md) — per-version feature lists generated
-  from pinned upstream sources ([manifest](vendor/reference/MANIFEST.md))
+- [兼容矩阵基线](docs/compat-matrix/README.md) — hand-collected per-version
+  feature lists pinned to the upstream manifest ([manifest](vendor/reference/MANIFEST.md));
+  collection dates are recorded in each generated file header
 
 ## Install
 
@@ -81,7 +93,11 @@ always build through `script/gem`.
 
 ## Development
 
-Requires Crystal 1.21.1 or newer.
+Requires Crystal 1.21.1 or newer. On this Windows host, run specs with `HOME`,
+`TMP`, `TEMP` and `TMPDIR` pointed inside the workspace (e.g.
+`.tmp-scratch/spectmp`); otherwise environment-related sandbox errors appear and
+are not product failures (see `docs/compat-report.md`). The differential harness
+also needs the msys64 tool directories on `PATH` and `CELERITE_BIN` set.
 
 ```console
 shards build          # build bin/celerite
@@ -91,9 +107,20 @@ script/differential   # differential harness vs pinned reference Bundlers
 ```
 
 Reference Bundler versions (4.0.24 and 2.7.2) must be installed for the
-differential harness: `gem install bundler -v 4.0.24 -v 2.7.2`. The harness runs
-each fixture in isolated sandboxes (no network) and compares exit codes,
-stdout/stderr, and the project file tree after path normalization.
+differential harness:
+
+```console
+gem install bundler -v 4.0.24
+gem install bundler -v 2.7.2
+```
+
+The harness runs each fixture in its own sandbox. Most fixtures are offline, but
+`http-index` fixtures start a loopback HTTP server on `127.0.0.1`. Known limits:
+Low-IL Windows hosts block some git-source fixtures (`0xC0000022`), and two
+fixtures are documented 2.7.2 skips (`gem-default`, `gem-no-git`). It compares
+exit codes, stdout/stderr, the project tree, and optional content probes —
+`file-contains`, `file-absent`, `file-equals`, `installed-tree` and `first-line`
+(`script/differential:491-525`).
 
 ## License
 
