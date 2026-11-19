@@ -1,0 +1,13 @@
+GEM
+  remote: file:///@LOCKED_RUBY_INDEX_DIR@/
+  specs:
+    incompat_ruby (1.0.0)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  incompat_ruby
+
+BUNDLED WITH
+   @BUNDLER_VERSION@

@@ -1,0 +1,3 @@
+source "file:///@LOCKED_RUBY_INDEX_DIR@"
+
+gem "incompat_ruby"
