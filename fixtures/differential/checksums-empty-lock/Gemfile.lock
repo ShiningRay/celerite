@@ -1,0 +1,17 @@
+GEM
+  remote: http://127.0.0.1:8765/
+  specs:
+    json_pure (2.8.1)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  json_pure
+
+CHECKSUMS
+  bundler (@BUNDLER_VERSION@)
+  json_pure (2.8.1)
+
+BUNDLED WITH
+  @BUNDLER_VERSION@

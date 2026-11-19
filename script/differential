@@ -507,6 +507,28 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
       ok=0; detail+="  first-line differs ($rel): ref=$ref_line cel=$cel_line"$'\n'
     fi
   fi
+  # Optional `file-equals` marker: the first line is a project-relative path
+  # and the remaining lines are the exact expected file body. The
+  # `file-equals-<BUNDLER_VERSION>` variant overrides it for that profile
+  # (CHECKSUMS sections differ: 4.0.24 records a bundler self-checksum, 2.7.x
+  # drops it). Placeholders such as @BUNDLER_VERSION@ are substituted.
+  local equals_marker="$fixture_dir/file-equals"
+  if [ -f "$fixture_dir/file-equals-$bundler_version" ]; then
+    equals_marker="$fixture_dir/file-equals-$bundler_version"
+  fi
+  if [ -f "$equals_marker" ]; then
+    local rel expected_file side actual_file
+    rel="$(head -1 "$equals_marker" | tr -d '\r')"
+    expected_file="$work/file-equals.expected"
+    tail -n +2 "$equals_marker" | sed -e "s|@BUNDLER_VERSION@|$bundler_version|g" > "$expected_file"
+    for side in ref cel; do
+      if [ "$side" = "ref" ]; then actual_file="$ref_sandbox/project/$rel"; else actual_file="$cel_sandbox/project/$rel"; fi
+      if ! diff -q "$expected_file" "$actual_file" >/dev/null 2>&1; then
+        ok=0; detail+="  file-equals differs ($rel, $side):"$'\n'"$(diff "$expected_file" "$actual_file" | head -15)"$'\n'
+      fi
+    done
+  fi
+
   # Optional `file-contains` marker: each TSV line is `<path>\t<needle>` and
   # the needle must appear verbatim in that project file on both sides
   # (content probe for Gemfile lines emitted by `bundle add`).
