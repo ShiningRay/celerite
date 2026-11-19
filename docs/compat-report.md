@@ -4398,4 +4398,21 @@ installed locally.
 
 **门禁**：`crystal tool format --check src spec` EXIT 0；`crystal build --no-codegen src/cli.cr` EXIT 0（仅既有两条 `Deprecated File.executable?` 警告）；`crystal build src/cli.cr -o bin/celerite.exe` EXIT 0；暂存后 `git diff --cached --check` EXIT 0（无输出）。
 
+**区分力自证**：新增 `fixtures/differential/plugin-source-locked-check/`（同锁与插件，`command`=`check`）。用 `87a69a4` 的 worktree 编译 pre-29 二进制（`C:/temp/cel29check`）跑该夹具：
+
+```
+FAIL plugin-source-locked-check (check)
+      exit code: reference=0 celerite=1
+      stdout differs:
+    1d0
+    < The Gemfile's dependencies are satisfied
+      stderr differs:
+    0a1,3
+    > The following gems are missing
+    >  * stub-gem (1.0.0)
+    > Install missing gems with `bundle install`
+```
+
+4.0.24 与 2.7.2 均如此；换当前二进制后两 profile 均 `PASS plugin-source-locked-check (exit=0)`。说明该夹具确实落在 S2 的「锁定插件 spec 视为已安装」路径，而非求值期。`plugin-source-locked`（`command`=`lock`）仍保留，但仅验证无操作锁重写，不具 S2 区分力。
+
 **已声明差异/未验证**：安装路径（S3）的参考行为（exit 7，缺 `bundler-source-mpath`）我方仍 exit 0 完成安装——属 `@inferred_plugins` 预装 pass，`commands_install.cr:111-116` 明确不在本轮；`check` 在锁定插件 source 上我方仍会打印 `Resolving dependencies...`（参考无），故夹具只用 `lock`；缺插件的 `install` 未加夹具（仅 oracle 记录）；插件 source 的 `checksum`/非空 `options_to_lock` 未覆盖；未跑全量 spec 与全量差分。checkbox 保持 `[ ]`。
