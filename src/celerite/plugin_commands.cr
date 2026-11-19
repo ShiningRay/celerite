@@ -54,7 +54,7 @@ module Celerite
     end
 
     def self.index_path(gemfile_path : String) : String
-      File.join(File.dirname(gemfile_path), ".bundle", "plugin", "index")
+      File.join(Config.app_config_path(File.dirname(gemfile_path)), "plugin", "index")
     end
 
     def self.enabled?(config : Config) : Bool

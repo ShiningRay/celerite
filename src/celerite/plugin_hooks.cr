@@ -72,7 +72,7 @@ module Celerite
     # Reference layout: the plugin index is project-local
     # (<project>/.bundle/plugin/index) — written by `plugin install`.
     def self.index_path(definition : Definition) : String
-      File.join(File.dirname(definition.gemfile_path), ".bundle", "plugin", "index")
+      File.join(Config.app_config_path(File.dirname(definition.gemfile_path)), "plugin", "index")
     end
 
     # The reference fires `gem_after_install` once per installed spec from

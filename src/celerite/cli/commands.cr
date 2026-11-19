@@ -3407,7 +3407,7 @@ module Celerite
       # (`~/.bundle/plugin`) otherwise — a Gemfile-less cwd does not see a
       # project-local plugin install.
       index = if gemfile
-                File.join(project_dir, ".bundle", "plugin", "index")
+                File.join(Config.app_config_path(project_dir), "plugin", "index")
               else
                 File.join(Config.user_home || ".", ".bundle", "plugin", "index")
               end

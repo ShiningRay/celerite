@@ -112,17 +112,27 @@ module Celerite
     # `path` values and the deployment default `vendor/bundle`).
     getter project_root : String?
 
+    # `Bundler.app_config_path` (bundler.rb:326-339): `BUNDLE_APP_CONFIG`
+    # wins (absolute, or relative to the project root), otherwise
+    # `<root>/.bundle`. Plugin roots and `config set --local` both use this.
+    getter app_config_root : String
+
+    def self.app_config_path(project_root : String?) : String
+      root = project_root || Dir.current
+      if configured = ENV["BUNDLE_APP_CONFIG"]?
+        unless configured.empty?
+          return File.expand_path(configured, root)
+        end
+      end
+      File.expand_path(File.join(root, ".bundle"))
+    end
+
     def initialize(project_root : String? = nil, temporary : Hash(String, Value) = {} of String => Value)
       @temporary = temporary
       @project_root = project_root ? File.expand_path(project_root) : nil
       ignore = ENV["BUNDLE_IGNORE_CONFIG"]?
 
-      local_root =
-        if root = project_root
-          File.expand_path(File.join(root, ".bundle"))
-        else
-          File.expand_path(".bundle")
-        end
+      local_root = @app_config_root = Config.app_config_path(@project_root)
 
       local_file = ignore ? nil : File.join(local_root, "config")
       @local_config_file = local_file

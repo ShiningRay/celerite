@@ -1757,7 +1757,7 @@ module Celerite
     # definition with an empty source list, so resolution only sees installed
     # gems and a missing inferred plugin raises GemNotFoundError (exit 7,
     # "Could not find gem 'bundler-source-<type>' in locally installed gems.").
-    def self.plugin_install_remote(names : Array(String), rest : Array(String), stdout : IO, stderr : IO, local_only : Bool = false) : Int32
+    def self.plugin_install_remote(names : Array(String), rest : Array(String), stdout : IO, stderr : IO, local_only : Bool = false, remote_only : Bool = false) : Int32
       version = flag_value(rest, "--version") || ">= 0"
       git_remote = flag_value(rest, "--git")
       source_remote = flag_value(rest, "--source")
@@ -1807,11 +1807,11 @@ module Celerite
           definition = Definition.build
           resolution = Resolution.new(definition, false, bridge)
           resolution.local_only = local_only
+          resolution.remote_only = remote_only
           # `Plugin::Installer` resolves against remote/cached sources only
           # (the definition never calls `local!`), so the reference GemNotFound
           # message reads "…, cached gems or installed locally"
           # (source/rubygems.rb:122-136).
-          resolution.remote_only = !local_only
           resolution.progress = stdout
           stdin_specs = resolution.resolve!
         rescue ex : Error
@@ -2041,7 +2041,7 @@ module Celerite
         nil
       end
       if gemfile
-        File.join(File.dirname(gemfile), ".bundle")
+        Config.app_config_path(File.dirname(gemfile))
       else
         File.join(Config.user_home || ".", ".bundle")
       end
