@@ -421,7 +421,7 @@ module Celerite
     # the reference writes `GEM` with an empty option list there
     # (`source/rubygems.rb:114-120 to_lock`: `remote` lines come from
     # `lockfile_remotes`, so an empty list yields `GEM\n  specs:\n`). Measured
-    # on 4.0.24/2.7.2 (task-44b oracle (d)). `rubygem_source_without_remote?`
+    # on 4.0.24/2.7.2 (task-44a oracle (d)). `rubygem_source_without_remote?`
     # reports that shape.
     private def declared_rubygem_remotes : Array(String)
       remotes = [] of String
@@ -1770,7 +1770,7 @@ module Celerite
 
       # A Gemfile with no `source` line still locks an (empty) GEM section, but
       # without a `remote:` line (`source/rubygems.rb:114-120`; measured on
-      # 4.0.24 and 2.7.2 — task-44b oracle (d)).
+      # 4.0.24 and 2.7.2 — task-44a oracle (d)).
       if !gem_section_emitted && rubygem_source_without_remote?
         sections << Lockfile::TypedSection.new(Lockfile::SourceSection.new("GEM",
           [] of Lockfile::Option, [] of Lockfile::Spec))

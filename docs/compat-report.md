@@ -4872,9 +4872,9 @@ oracle（4.0.24 与 2.7.2 语义一致；`file:///C:/…` 完整 legacy index，
 - `--without` 收窄时的人数未取到干净 oracle（探针里 path gem 被误加入索引，作废）；本实现按 requested groups 过滤，该路径未单测。
 - 全量 `crystal spec`、全量差分与上游 64 例套件未重跑。
 
-## 2026-11-20（M7(?) task-44a：`check` 改写的非 gem 段保真与空 GEM remote）
+## 2026-11-20（M7(8) task-44a：`check` 改写的非 gem 段保真与空 GEM remote）
 
-结论：`check` 在只补本机平台时会把锁文件整体重写；我方此前在重写路径上把所有段压成 `GEM`，并把 PATH 段包进 `GEM / remote: https://rubygems.org/`，丢失 `PATH`/`glob` 与 pts。参考则从**锁里的 source 对象**重新序列化（`source/path.rb:41-43,45-50`、`source/git.rb:39-48`、`lockfile_generator.rb:31-42`），因此 `PATH`/`GIT`/`PLUGIN SOURCE` 段逐字保留；且未声明任何 `source` 行时 GEM 段不带 `remote:`（`source/rubygems.rb:114-120`）。本轮改 `materialize_locked` 重建段信息、GEM 段空 remote 形态，以及 CHECKSUMS 段的保留条件。
+结论：`check` 在只补本机平台时会把锁文件整体重写；我方此前在重写路径上把所有段压成 `GEM`，并把 PATH 段包进 `GEM / remote: https://rubygems.org/`，丢失 `PATH`/`glob` 段。参考则从**锁里的 source 对象**重新序列化（`source/path.rb:41-43,45-50`、`source/git.rb:39-48`、`lockfile_generator.rb:31-42`），因此 `PATH`/`GIT`/`PLUGIN SOURCE` 段逐字保留；且未声明任何 `source` 行时 GEM 段不带 `remote:`（`source/rubygems.rb:114-120`）。本轮改 `materialize_locked` 重建段信息、GEM 段空 remote 形态，以及 CHECKSUMS 段的保留条件。
 
 ### oracle 表（4.0.24 与 2.7.2 均为实测，两侧逐字节比对）
 
