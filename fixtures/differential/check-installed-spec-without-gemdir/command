@@ -1,0 +1,4 @@
+check
+list
+show json_pure
+show --paths json_pure

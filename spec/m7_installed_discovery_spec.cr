@@ -93,47 +93,70 @@ private def project_files_for(lockfile : String, gemfile : String, extra : Hash(
 end
 
 describe "M7 installed gem discovery" do
-  it "check treats a gem dir without a specifications file as installed" do
+  it "check reports a gem dir without a specifications file as missing" do
     with_project(project_files(LOCKFILE_TEXT, {
       "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
     })) do
       code, out, err = capture_command { |o, e| Celerite::Commands.check(o, e, [] of String) }
-      err.should eq("")
-      out.should eq("The Gemfile's dependencies are satisfied\n")
-      code.should eq(0)
+      code.should eq(1)
+      out.should eq("")
+      err.should eq("The following gems are missing\n * json_pure (2.8.1)\nInstall missing gems with `bundle install`\n")
     end
   end
 
-  it "list shows a gem whose dir exists without a specifications file" do
+  it "list reports a gem dir without a specifications file as missing" do
     with_project(project_files(LOCKFILE_TEXT, {
       "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
     })) do
       code, out, err = capture_command { |o, e| Celerite::Commands.list(o, e, [] of String) }
-      err.should eq("")
-      out.should eq("Gems included by the bundle:\n  * json_pure (2.8.1)\nUse `bundle info` to print more detailed information about a gem\n")
-      code.should eq(0)
+      code.should eq(1)
+      out.should eq("")
+      err.should eq("Could not find json_pure-2.8.1 in locally installed gems\nInstall missing gems with `bundle install`.\n")
     end
   end
 
-  it "show treats a gem dir without a specifications file as installed" do
+  it "show reports a gem dir without a specifications file as missing" do
     with_project(project_files(LOCKFILE_TEXT, {
       "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
     })) do
       code, out, err = capture_command { |o, e| Celerite::Commands.show_info("show", o, e, ["json_pure"]) }
-      code.should eq(0)
-      err.should eq("")
-      out.should contain("json_pure-2.8.1")
+      code.should eq(7)
+      out.should eq("")
+      err.should eq("Could not find json_pure-2.8.1 in locally installed gems\n")
     end
   end
 
-  it "show --paths resolves a gem dir without a specifications file" do
+  it "show --paths reports a gem dir without a specifications file as missing" do
     with_project(project_files(LOCKFILE_TEXT, {
       "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
     })) do
       code, out, err = capture_command { |o, e| Celerite::Commands.show_info("show", o, e, ["--paths", "json_pure"]) }
+      code.should eq(7)
+      out.should eq("")
+      err.should eq("Could not find json_pure-2.8.1 in locally installed gems\n")
+    end
+  end
+
+  it "check treats a specifications file without its gem dir as installed" do
+    with_project(project_files(LOCKFILE_TEXT, {
+      "vendor/bundle/ruby/3.4.0/specifications/json_pure-2.8.1.gemspec" => "Gem::Specification.new\n",
+    })) do
+      code, out, err = capture_command { |o, e| Celerite::Commands.check(o, e, [] of String) }
       code.should eq(0)
+      out.should eq("The Gemfile's dependencies are satisfied\n")
       err.should eq("")
-      out.should contain("json_pure-2.8.1")
+    end
+  end
+
+  it "show warns when the specification exists but the gem dir was deleted" do
+    with_project(project_files(LOCKFILE_TEXT, {
+      "vendor/bundle/ruby/3.4.0/specifications/json_pure-2.8.1.gemspec" => "Gem::Specification.new\n",
+    })) do
+      code, out, err = capture_command { |o, e| Celerite::Commands.show_info("show", o, e, ["json_pure"]) }
+      code.should eq(0)
+      out.should eq("")
+      err.should contain("The gem json_pure is missing. It should be installed at ")
+      err.should contain("/vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1, but was not found\n")
     end
   end
 
@@ -147,9 +170,9 @@ describe "M7 installed gem discovery" do
     end
   end
 
-  it "check still reports a missing gem when only the specification file exists" do
+  it "check does not accept a specification for a different platform full_name" do
     with_project(project_files(LOCKFILE_TEXT, {
-      "vendor/bundle/ruby/3.4.0/specifications/json_pure-2.8.1.gemspec" => "Gem::Specification.new\n",
+      "vendor/bundle/ruby/3.4.0/specifications/json_pure-2.8.1-x64-mingw-ucrt.gemspec" => "Gem::Specification.new\n",
     })) do
       code, _out, err = capture_command { |o, e| Celerite::Commands.check(o, e, [] of String) }
       code.should eq(1)
@@ -287,7 +310,8 @@ describe "M7 group/with-without filtering" do
   it "check rejects the reference-unknown --without-group switch" do
     with_bridge_server do
       with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
-        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb"  => "",
+        "vendor/bundle/ruby/3.4.0/specifications/json_pure-2.8.1.gemspec" => "Gem::Specification.new\n",
       })) do
         code, out, err = capture_command { |o, e| Celerite::Commands.check(o, e, ["--without-group", "test"]) }
         code.should eq(15)
@@ -300,7 +324,8 @@ describe "M7 group/with-without filtering" do
   it "check rejects the reference-unknown --only-group switch" do
     with_bridge_server do
       with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
-        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb"  => "",
+        "vendor/bundle/ruby/3.4.0/specifications/json_pure-2.8.1.gemspec" => "Gem::Specification.new\n",
       })) do
         code, _out, err = capture_command { |o, e| Celerite::Commands.check(o, e, ["--only-group", "test"]) }
         code.should eq(15)
@@ -312,7 +337,8 @@ describe "M7 group/with-without filtering" do
   it "check rejects --only-group even when the selected group is installed" do
     with_bridge_server do
       with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
-        "vendor/bundle/ruby/3.4.0/gems/rake-13.4.2/lib/rake.rb" => "",
+        "vendor/bundle/ruby/3.4.0/gems/rake-13.4.2/lib/rake.rb"       => "",
+        "vendor/bundle/ruby/3.4.0/specifications/rake-13.4.2.gemspec" => "Gem::Specification.new\n",
       })) do
         code, _out, err = capture_command { |o, e| Celerite::Commands.check(o, e, ["--only-group", "test"]) }
         code.should eq(15)
@@ -324,8 +350,9 @@ describe "M7 group/with-without filtering" do
   it "check honors BUNDLE_WITH=test and reports the missing optional gem" do
     with_bridge_server do
       with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
-        ".bundle/config"                                                 => "---\nBUNDLE_PATH: \"vendor/bundle\"\nBUNDLE_WITH: \"test\"\n",
-        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
+        ".bundle/config"                                                  => "---\nBUNDLE_PATH: \"vendor/bundle\"\nBUNDLE_WITH: \"test\"\n",
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb"  => "",
+        "vendor/bundle/ruby/3.4.0/specifications/json_pure-2.8.1.gemspec" => "Gem::Specification.new\n",
       })) do
         code, _out, err = capture_command { |o, e| Celerite::Commands.check(o, e, [] of String) }
         code.should eq(1)
@@ -337,9 +364,11 @@ describe "M7 group/with-without filtering" do
   it "check honors BUNDLE_WITH=test when the optional gem is installed" do
     with_bridge_server do
       with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
-        ".bundle/config"                                                 => "---\nBUNDLE_PATH: \"vendor/bundle\"\nBUNDLE_WITH: \"test\"\n",
-        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
-        "vendor/bundle/ruby/3.4.0/gems/rake-13.4.2/lib/rake.rb"          => "",
+        ".bundle/config"                                                  => "---\nBUNDLE_PATH: \"vendor/bundle\"\nBUNDLE_WITH: \"test\"\n",
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb"  => "",
+        "vendor/bundle/ruby/3.4.0/specifications/json_pure-2.8.1.gemspec" => "Gem::Specification.new\n",
+        "vendor/bundle/ruby/3.4.0/gems/rake-13.4.2/lib/rake.rb"           => "",
+        "vendor/bundle/ruby/3.4.0/specifications/rake-13.4.2.gemspec"     => "Gem::Specification.new\n",
       })) do
         code, out, err = capture_command { |o, e| Celerite::Commands.check(o, e, [] of String) }
         err.should eq("")
@@ -352,8 +381,10 @@ describe "M7 group/with-without filtering" do
   it "list accepts a space-separated multi-group --only-group list" do
     with_bridge_server do
       with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
-        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
-        "vendor/bundle/ruby/3.4.0/gems/rake-13.4.2/lib/rake.rb"          => "",
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb"  => "",
+        "vendor/bundle/ruby/3.4.0/specifications/json_pure-2.8.1.gemspec" => "Gem::Specification.new\n",
+        "vendor/bundle/ruby/3.4.0/gems/rake-13.4.2/lib/rake.rb"           => "",
+        "vendor/bundle/ruby/3.4.0/specifications/rake-13.4.2.gemspec"     => "Gem::Specification.new\n",
       })) do
         code, out, err = capture_command { |o, e| Celerite::Commands.list(o, e, ["--only-group", "default", "test"]) }
         err.should eq("")
@@ -366,7 +397,8 @@ describe "M7 group/with-without filtering" do
   it "check rejects a space-separated multi-group --only-group list" do
     with_bridge_server do
       with_project(project_files_for(GROUP_LOCKFILE_TEXT, GROUP_GEMFILE, {
-        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb"  => "",
+        "vendor/bundle/ruby/3.4.0/specifications/json_pure-2.8.1.gemspec" => "Gem::Specification.new\n",
       })) do
         code, _out, err = capture_command { |o, e| Celerite::Commands.check(o, e, ["--only-group", "default", "test"]) }
         code.should eq(15)
@@ -378,7 +410,8 @@ describe "M7 group/with-without filtering" do
   it "list accepts a space-separated multi-group --without-group list" do
     with_bridge_server do
       with_project(project_files_for(MULTI_GROUP_LOCKFILE_TEXT, MULTI_GROUP_GEMFILE, {
-        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb" => "",
+        "vendor/bundle/ruby/3.4.0/gems/json_pure-2.8.1/lib/json_pure.rb"  => "",
+        "vendor/bundle/ruby/3.4.0/specifications/json_pure-2.8.1.gemspec" => "Gem::Specification.new\n",
       })) do
         code, out, err = capture_command { |o, e| Celerite::Commands.list(o, e, ["--without-group", "test", "development"]) }
         err.should eq("")
@@ -416,8 +449,10 @@ GEMFILE
 describe "M7 platform-specific installed gem discovery" do
   it "check and list resolve the platform-specific gem directory" do
     with_project(project_files_for(PLATFORM_LOCKFILE_TEXT, PLATFORM_GEMFILE, {
-      "vendor/bundle/ruby/3.4.0/gems/nokogiri-1.18.10-x64-mingw-ucrt/lib/nokogiri.rb" => "",
-      "vendor/bundle/ruby/3.4.0/gems/racc-1.8.1/lib/racc.rb"                          => "",
+      "vendor/bundle/ruby/3.4.0/gems/nokogiri-1.18.10-x64-mingw-ucrt/lib/nokogiri.rb"   => "",
+      "vendor/bundle/ruby/3.4.0/specifications/nokogiri-1.18.10-x64-mingw-ucrt.gemspec" => "Gem::Specification.new\n",
+      "vendor/bundle/ruby/3.4.0/gems/racc-1.8.1/lib/racc.rb"                            => "",
+      "vendor/bundle/ruby/3.4.0/specifications/racc-1.8.1.gemspec"                      => "Gem::Specification.new\n",
     })) do
       code, out, err = capture_command { |o, e| Celerite::Commands.check(o, e, [] of String) }
       err.should eq("")
@@ -433,8 +468,10 @@ describe "M7 platform-specific installed gem discovery" do
 
   it "info reports the platform-specific installed gem" do
     with_project(project_files_for(PLATFORM_LOCKFILE_TEXT, PLATFORM_GEMFILE, {
-      "vendor/bundle/ruby/3.4.0/gems/nokogiri-1.18.10-x64-mingw-ucrt/lib/nokogiri.rb" => "",
-      "vendor/bundle/ruby/3.4.0/gems/racc-1.8.1/lib/racc.rb"                          => "",
+      "vendor/bundle/ruby/3.4.0/gems/nokogiri-1.18.10-x64-mingw-ucrt/lib/nokogiri.rb"   => "",
+      "vendor/bundle/ruby/3.4.0/specifications/nokogiri-1.18.10-x64-mingw-ucrt.gemspec" => "Gem::Specification.new\n",
+      "vendor/bundle/ruby/3.4.0/gems/racc-1.8.1/lib/racc.rb"                            => "",
+      "vendor/bundle/ruby/3.4.0/specifications/racc-1.8.1.gemspec"                      => "Gem::Specification.new\n",
     })) do
       code, out, err = capture_command { |o, e| Celerite::Commands.show_info("info", o, e, ["nokogiri"]) }
       code.should eq(0)
