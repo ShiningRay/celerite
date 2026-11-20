@@ -5243,3 +5243,9 @@ spec 家族 `m7_git_source_reuse_spec`、`m7_source_lock_options_spec`、`m7_loc
 - spec `spec/m7_cache_path_spec.cr` 3 examples、`spec/m7_app_config_env_spec.cr` 4 examples；12 个 cache/config/plugin 家族 spec 文件逐个跑合计 60 examples / 0 failures（合并单进程运行时偶发崩溃，已改逐个跑）。
 - 回归：cache/config/plugin 夹具 4.0.24 42 passed/3 failed（`cache-all-platforms`、`plugin-git-local`、`plugin-git-local2` 为 msys `0xC0000022` 环境噪声；同批基线单独跑曾 PASS，失败签名一致），2.7.2 30 passed/0 failed/2 skipped。
 - 未验证：2.7.2 `cache --all`/`--path` 的废弃开关行为（探针被 4.0.24 BUNDLED WITH 污染）、`BUNDLE_APP_CONFIG` 下 deployment/exec 交互、全量 spec/差分未复跑。复选框保持 `[ ]`。
+### cache-all-platforms：宿主机原生扩展构建限制（非产品缺陷）
+
+- 同一份 HEAD 源码，从仓库长路径 `C:/Users/ShiningRay/projects/ShiningRay/celerite` 构建的二进制 11943198 字节，跑该夹具 3/3 FAIL：`Gem::Ext::BuildError` + `make.exe *** fatal error - NtCreateDirectoryObject(...): 0xC0000022`（Low-IL msys）。
+- 从短路径 worktree `C:/temp/celerite-rebuild` 构建的二进制 11939614 字节，连跑两次 PASS；旧版 `a4f918e` 二进制亦 PASS；手工沙箱里三个新旧二进制全部 FAIL（无 harness 时也失败）。
+- 结论：失败随构建路径/宿主环境变化，与源码改动无关，属宿主机原生扩展构建限制，不是产品缺陷。
+- 该夹具已标记 `deferred-4.0.24`/`deferred-2.7.2`；恢复条件：在能正常编译原生扩展的宿主（非 Low-IL msys）上重跑并移除标记。

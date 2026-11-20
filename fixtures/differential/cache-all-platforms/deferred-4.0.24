@@ -1,0 +1,1 @@
+racc native extension build fails with msys NtCreateDirectoryObject 0xC0000022 when the binary is built from a long path; same source built from a short path passes (see compat-report task-51)
