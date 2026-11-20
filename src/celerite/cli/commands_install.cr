@@ -12,6 +12,7 @@ require "../downloader"
 require "../plugin_hooks"
 require "../plugin_commands"
 require "../plugin_gemfile"
+require "../binstub_template"
 require "digest/sha256"
 
 module Celerite
@@ -1787,16 +1788,17 @@ module Celerite
               exists << executable
               next
             end
-            content = File.read(source)
-            shebang = if custom_shebang
-                        "#!/usr/bin/env #{custom_shebang}\n"
-                      else
-                        content.starts_with?("#!") ? "" : "#!/usr/bin/env ruby\n"
-                      end
-            File.write(stub, shebang + content)
+            # `Bundler::Binstub#write` (4.0.24 binstub.rb:20-27, 2.7.2 :14-22)
+            # renders `templates/Executable`, never the gem's own executable:
+            # the stub points at the Gemfile and re-runs `Gem.bin_path` inside
+            # `bundler/setup`. The gem's executable is only probed for presence.
+            profile = profile_2_x? ? "2.7.2" : "4.0.24"
+            relative = BinstubTemplate.relative_gemfile_path(target, definition.gemfile_path)
+            content = BinstubTemplate.render(profile, spec.name, executable, relative, custom_shebang || "ruby")
+            File.write(stub, content)
             # Windows: also emit `<exe>.cmd` with the wrapper preamble
             if {% if flag?(:windows) %}true{% else %}false{% end %} || rest.includes?("--all-platforms")
-              File.write(stub + ".cmd", "@ruby -x \"%~f0\" %*\n@exit /b %ERRORLEVEL%\n\n" + shebang + content)
+              File.write(stub + ".cmd", "@ruby -x \"%~f0\" %*\n@exit /b %ERRORLEVEL%\n\n" + content)
             end
           end
           # installer.rb:151-163: only the explicit form reports skipped stubs.
