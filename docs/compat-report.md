@@ -5424,3 +5424,15 @@ glob 归一化另测：`--glob "sub/*.gemspec"`、`--glob "{a,b}.gemspec"` 逐�
 - 实现：`src/celerite/cli/commands_surface.cr` 新增 `add_positional_arguments`（按 Thor 规则跳过 `--flag value`、`--flag=value`、短选项值，`--` 之后全为位置参数）；位置参数为空时输出 `Please specify gems to add.` 并返回 15（`cli/add.rb` `validate_options!`）。`src/celerite/cli/commands_install.cr` 在 `--target-rbconfig` 指向不存在的文件时于解析前中止：打印 ERROR REPORT 模板框架与 `LoadError: cannot load such file -- <path>`，返回 1，且不写锁（参考 `cli/install.rb:24` → `rubygems_integration.rb:34` → `rubygems/target_rbconfig.rb:37`）。
 - 测试与证据：夹具 `install-target-rbconfig-missing`（exit=1，`stderr-contains` 两行，`file-absent Gemfile.lock`）、`add-version-value-not-gem`（exit=15，`file-equals Gemfile`）、`add-glob-expand`（exit=0，`glob: "demo.gemspec"`）；4.0.24 与 2.7.2 均 3/0。`spec/m7_add_argument_parsing_spec.cr` 6 examples 0 failures。回归 `add-*` + `install-fresh` + `install-check`：4.0.24 17/6、2.7.2 17/5（失败均为既有 racc/git 的 `0xC0000022` 噪声，与 task-55 基线一致）。负向 `C:/temp/celerite-pre59`（`7420d99`）三夹具 0 passed / 3 failed（exit 1/15/7，多写 `gem "thor", "= thor"`、把 `*.gemspec` 当 gem 名）。
 - 声明差异：① 通配仅在宿主 shell/argv 层展开，celerite 不模拟 `ruby.exe` 的 cmdglob（`cmd.exe` 直调时会与参考不同，bash 差分一致）；② `--target-rbconfig` 指向存在文件时我方不加载该文件（仅在原生扩展构建时传给 bridge），参考会立即 `Kernel.load`；③ 错误模板只保留关键行，未逐字复刻 friendly-errors 的完整环境段。
+
+## 2026-11-20（M7(2) task-60：`update --redownload` 的 `Fetching` 行）
+
+- 参考：`update --redownload` 是 `method_option "force"` 的别名（`cli.rb:330`）。强制重装走缓存包（`source/rubygems.rb` 的 `cached_gem` → `rubygems_gem_installer`），不重新下载，因此输出只有 `Installing`，没有 `Fetching`。
+- oracle（4.0.24 与 2.7.2 一致；`file://` 索引，隔离 HOME/BUNDLE_PATH）：
+  - ① 已安装且 `<bundle>/ruby/4.0.0/cache` 内有包：`Fetching source index …` / `Resolving dependencies...` / `Installing json_pure 2.8.1` / `Bundle updated!`，无 `Fetching json_pure`。4.0.24 stderr 有 `[DEPRECATED] Pass --all to \`bundle update\` to update everything`，2.7.2 无。
+  - ② 缓存包被删：exit **5**；stderr `Bundler::GemNotFound: Could not find json_pure-2.8.1.gem for installation` 与 `An error occurred while installing json_pure (2.8.1), and Bundler cannot continue.`。
+  - ③ 无先前安装（bundle 目录与 lock 均删）：`Fetching json_pure 2.8.1` / `Installing json_pure 2.8.1` / `Bundle updated!`。
+- 实现：`src/celerite/installer.cr` 新增 `cached_package_path`；`src/celerite/cli/commands_surface.cr` 的 update 循环先查 `vendor/cache` 与 `<bundle>/ruby/<abi>/cache`，命中则跳过 `Fetching`，并把缓存包作为 `gem_file:` 传给 `installer.install`。
+- 测试与证据：夹具 `update-redownload-output`（`install --quiet` 后 `update --redownload`，stdout 全量比较）双 profile PASS；spec `spec/m7_update_redownload_spec.cr` 3 例（缓存 / 删缓存 / 首次）全过；回归 17 个 fixture 双 profile 全过；反假绿 worktree `a91759b` 上该夹具 FAIL，差异正是多出的 `Fetching json_pure 2.8.1`。
+- 声明差异：缓存包被删时参考 exit 5 `GemNotFound`，celerite 仍重新下载并 exit 0（本轮只改打印条件，未改下载行为）；`vendor/cache` 命中路径未单独设夹具；`install --redownload` 在两侧均不存在。
+- 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen src/cli.cr` 0、`git diff HEAD --check` 0、`crystal build src/cli.cr -o bin/celerite.exe` 0。
