@@ -79,7 +79,11 @@ module Celerite
                      @bridge_ruby_engine : String = "ruby",
                      @bridge_ruby_engine_version : String = "4.0.6",
                      @bridge_ruby_patchlevel : String? = nil,
-                     @source_descriptions : Hash(String, String)? = nil)
+                     @source_descriptions : Hash(String, String)? = nil,
+                     # `Resolver#raise_not_found!` appends " or in gems cached in
+                     # vendor/cache" when `Bundler.app_cache.exist?`
+                     # (resolver.rb:334-361); nil when the app cache is absent.
+                     @cache_note : String? = nil)
         @root = RootPackage.new(@root_name)
         @packages = {} of String => Package
         @all_versions = {} of Package => Array(Candidate)
@@ -155,16 +159,16 @@ module Celerite
         if matching.any?
           if platforms.size > 1
             raise GemNotFoundError.new(
-              "Could not find gems matching '#{label}' valid for all resolution platforms (#{platforms.join(", ")}) in #{source_description(package)}." + listing
+              "Could not find gems matching '#{label}' valid for all resolution platforms (#{platforms.join(", ")}) in #{source_description(package)}#{@cache_note}." + listing
             )
           end
           raise GemNotFoundError.new(
-            "Could not find gem '#{label}' with platform '#{platforms.first}' in #{source_description(package)}." + listing
+            "Could not find gem '#{label}' with platform '#{platforms.first}' in #{source_description(package)}#{@cache_note}." + listing
           )
         end
 
         raise GemNotFoundError.new(
-          "Could not find gem '#{label}' in #{source_description(package)}." + listing
+          "Could not find gem '#{label}' in #{source_description(package)}#{@cache_note}." + listing
         )
       end
 

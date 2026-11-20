@@ -707,9 +707,9 @@ module Celerite
     end
 
     # `install --local` candidates: gems already visible to RubyGems plus
-    # `<Gemfile dir>/vendor/cache/*.gem`. file:// sources count as local, so
-    # their index is still consulted (oracle: `--local` + file:// resolves
-    # through the index).
+    # `<Gemfile dir>/vendor/cache/*.gem`. The reference never enables remote
+    # sources for `--local` (`setup_domain!`, definition.rb:190-203), so the
+    # index is not consulted at all.
     # `<install root>/specifications` of this project's bundle path, when it
     # exists: gems installed there are invisible to the bare bridge's RubyGems,
     # while Bundler's local-only sources see them because `bundle` rewires
@@ -792,6 +792,24 @@ module Celerite
         @vendor_cache_paths[full_name] = path
       end
       specs
+    end
+
+    # `Bundler.app_cache.exist?` — `Pathname.new(custom_path || root).join(cache_path)`
+    # (bundler.rb:340-343) with `cache_path` defaulting to "vendor/cache"
+    # (settings.rb:304-306). Only its existence matters here: `Source::Rubygems#cached!`
+    # returns early unless the directory exists (source/rubygems.rb:69-76).
+    def app_cache_present? : Bool
+      root = File.dirname(@definition.gemfile_path)
+      Dir.exists?(File.expand_path(app_cache_label, root))
+    end
+
+    # `Bundler.settings.app_cache_path` = `self[:cache_path] || "vendor/cache"`
+    # (settings.rb:304-306); the not-found message spells it verbatim.
+    def app_cache_label : String
+      case value = @definition.config["cache_path"]
+      when String then value
+      else             "vendor/cache"
+      end
     end
 
     private def index_specs_for(name : String) : Array(Resolver::IndexSpec)
@@ -1380,7 +1398,17 @@ module Celerite
       # with `@allow_remote` off the source only describes installed gems, which
       # is what `fund`/`clean`/`binstubs` report for a missing gem.
       description = if @local_only
-                      "locally installed gems"
+                      # `setup_domain!` calls `sources.cached!` before `local!`
+                      # (definition.rb:190-203), and `cached!` is a no-op unless
+                      # the app cache exists (source/rubygems.rb:69-76). So an
+                      # `--local` source with `vendor/cache` present describes
+                      # itself as "cached gems or installed locally"
+                      # (rubygems.rb:122-136).
+                      if app_cache_present?
+                        "cached gems or installed locally"
+                      else
+                        "locally installed gems"
+                      end
                     elsif @remote_only
                       "rubygems repository #{primary_remote}, cached gems or installed locally"
                     else
@@ -1416,6 +1444,9 @@ module Celerite
         env.engine_version,
         env.patchlevel,
         source_descriptions,
+        # `Resolver#raise_not_found!` adds this suffix whenever the app cache
+        # directory exists (resolver.rb:334-361).
+        app_cache_present? ? " or in gems cached in #{app_cache_label}" : nil,
       )
       prerelease_exceptions.each { |name| source.package_consider_prereleases(name) }
       source
