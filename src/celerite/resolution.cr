@@ -1017,6 +1017,13 @@ module Celerite
 
       lockfile = @definition.lockfile!
       return false unless lockfile.valid?
+      # The setting changes which spec row is materialized, so a lock written
+      # for the native platform cannot be reused as-is (`definition.rb:662`
+      # only short-circuits the EXTRA-platform pass; the resolver still runs
+      # against the ruby platform). Measured on 4.0.24/2.7.2: `install` with
+      # the setting re-resolves, fetches `platdemo 1.0.0` and keeps the native
+      # row in the lockfile.
+      return false if force_ruby_platform?
 
       locked_deps = lockfile.dependencies
       return false unless locked_deps.size == deps.size
@@ -1537,7 +1544,16 @@ module Celerite
         same_version = index[name]?.try(&.select { |s| s.version == candidate_version.version }) ||
                        locked_index[name]?.try(&.select { |s| s.version == candidate_version.version })
         chosen =
-          if candidate_version.priority == 1 || platform_mergeable?(same_version)
+          if force_ruby_platform?
+            # `Gemfile.lock` under `BUNDLE_FORCE_RUBY_PLATFORM` lists the generic
+            # variant only: `MatchPlatform.select_best_platform_match` runs
+            # against `Gem::Platform::RUBY` (`match_platform.rb:28`,
+            # `lazy_specification.rb:221`). Measured 4.0.24/2.7.2: the lock holds
+            # `platdemo (1.0.0)` and install fetches `platdemo 1.0.0`.
+            ruby_only = index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? }) ||
+                        locked_index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? })
+            ruby_only ? [ruby_only] : [] of Resolver::IndexSpec
+          elsif candidate_version.priority == 1 || platform_mergeable?(same_version)
             # Platform-variant candidate, or a ruby candidate whose group carries
             # merged platform variants: materialize the local-platform variant
             # (reference `Materialization#specs` +
@@ -1585,7 +1601,7 @@ module Celerite
         end
       end
       specs.sort_by!(&.full_name)
-      @lock_extra_specs = variants_out.sort_by(&.full_name)
+      @lock_extra_specs = variants_out.uniq { |spec| spec.full_name }.sort_by(&.full_name)
       specs
     end
 
@@ -1769,7 +1785,13 @@ module Celerite
 
     # Resolution platform set: local + existing lockfile platforms + added.
     def resolution_platforms : Array(Gem::Platform)
-      platforms = [Gem::Platform.local]
+      # `BUNDLE_FORCE_RUBY_PLATFORM` resolves against the generic platform only
+      # (`settings.rb:21` lists the key in `BOOL_KEYS`, `definition.rb:662`
+      # short-circuits the extra-platform pass, `lazy_specification.rb:221` and
+      # `match_platform.rb:28` force the ruby variant). Measured on 4.0.24 and
+      # 2.7.2: the lock holds `platdemo (1.0.0)` and `PLATFORMS` has only
+      # `  ruby`.
+      platforms = [force_ruby_platform? ? Gem::Platform.new("ruby") : Gem::Platform.local]
       if @definition.lockfile_exists?
         @definition.lockfile!.platforms.each do |p|
           platform = Gem::Platform.new(p)
@@ -1785,6 +1807,15 @@ module Celerite
         platforms.reject!(&.==(platform))
       end
       platforms
+    end
+
+    # `BUNDLE_FORCE_RUBY_PLATFORM` (`settings.rb:21`): resolution materializes
+    # the generic variants only. A locked native row is not reused as the
+    # installed spec — measured: a `platdemo (1.0.0-x64-mingw-ucrt)` lock plus
+    # the setting makes the reference re-resolve, install `platdemo 1.0.0` and
+    # keep the native row in the lockfile.
+    private def force_ruby_platform? : Bool
+      @definition.config["force_ruby_platform"] == true
     end
 
     # Lockfile-only platform variants (see `decisions_to_specs`): rows the
@@ -1985,7 +2016,11 @@ module Celerite
           platforms << p unless platforms.includes?(p)
         end
       end
-      platforms << Gem::Platform.local.to_s unless platforms.includes?(Gem::Platform.local.to_s)
+      # `BUNDLE_FORCE_RUBY_PLATFORM` records the generic platform instead of the
+      # local one (measured: `PLATFORMS\n  ruby`, and a pre-existing native row
+      # is kept next to it).
+      platforms << Gem::Platform.local.to_s unless force_ruby_platform? || platforms.includes?(Gem::Platform.local.to_s)
+      platforms << "ruby" if force_ruby_platform?
       # Reference `should_add_extra_platforms?`: a fresh resolution on a host
       # whose generic local platform is `ruby` records the ruby platform too
       # (Linux/macOS lockfiles list `ruby`; Windows lists the mingw platform).
