@@ -857,7 +857,10 @@ module Celerite
         name = key.lchop("BUNDLE_").gsub("__", ".").downcase
         next if name.empty?
         if value = config.local_config[key]?
-          file = config.local_config_file.to_s.gsub(/\\/, "/")
+          # Reference prints `local_config_file.to_s` verbatim: a raw absolute
+          # BUNDLE_APP_CONFIG keeps its native separators before the `/config`
+          # join (settings.rb local_config_file message).
+          file = config.local_config_file.to_s
           sections << [name, "  Set for your local app (#{file}): #{value.inspect}"]
         elsif value = ENV[key]?
           sections << [name, "  Set via #{key}: #{value.inspect}"]
@@ -1328,12 +1331,26 @@ module Celerite
         install_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi)
         # `licenses` reads the materialized bundle without touching the index
         # (`cli/licenses.rb`), so a missing lockfile re-resolves locally.
-        materialize_lockfile(definition, stdout, local_only: true).specs.each do |spec|
-          next if spec.name == "bundler"
-          license = spec_license(bridge, install_root, spec)
-          stdout.puts "#{spec.name}: #{license}"
+        # `cli.rb:570-583`: `Bundler.load.specs.sort_by {|s| s.license.to_s }
+        # .reverse_each`. Bundler's own spec is part of `Bundler.load.specs`
+        # (license MIT) and equal keys keep `Bundler.load` order, which the
+        # lockfile order mirrors; ties are therefore keyed by full_name here
+        # to stay deterministic.
+        entries = materialize_lockfile(definition, stdout, local_only: true).specs.map do |spec|
+          {spec.full_name, spec.name, spec_license(bridge, install_root, spec)}
         end
-        stdout.puts "bundler: MIT"
+        entries << {"bundler", "bundler", "MIT"}
+        entries.sort! do |a, b|
+          by_license = b[2] <=> a[2]
+          by_license == 0 ? (a[0] <=> b[0]) : by_license
+        end
+        entries.each do |(_full_name, name, license)|
+          if license.empty? || license == "Unknown"
+            stderr.puts "#{name}: Unknown"
+          else
+            stdout.puts "#{name}: #{license}"
+          end
+        end
       ensure
         bridge.close
       end
@@ -1945,9 +1962,6 @@ module Celerite
         end
         write_plugin_index(index_path, index, removed) unless removed.empty?
         0
-      when "new"
-        stderr.puts "The 'plugin new' command is not implemented yet."
-        1
       else
         # `plugin` is a Thor subcommand; an unknown subcommand is reported
         # without the parent command prefix (`cli.rb` subcommand dispatch).

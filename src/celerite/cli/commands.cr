@@ -184,9 +184,6 @@ module Celerite
           # Reference PATH fallback: hand the invocation to `bundler-<name>`
           # found on PATH (or report the bare command when missing).
           run_fallback_command(command, rest, stdout, stderr)
-        elsif known_unimplemented?(command)
-          stderr.puts "The '#{command}' command is not implemented yet."
-          1
         else
           # Thor's `UndefinedCommandError` carries the command table as its
           # did_you_mean dictionary (`base.rb:614-615`,
@@ -532,13 +529,6 @@ module Celerite
         end
       end
       3
-    end
-
-    def self.known_unimplemented?(command : String) : Bool
-      {
-        "update", "add", "remove", "outdated", "init", "gem", "pristine",
-        "doctor", "env", "licenses", "fund", "open", "console",
-      }.includes?(command)
     end
 
     # PATH fallback plumbing (pinned `Bundler::CLI` behavior): `bundler-<name>`

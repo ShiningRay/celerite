@@ -121,10 +121,14 @@ module Celerite
       root = project_root || Dir.current
       if configured = ENV["BUNDLE_APP_CONFIG"]?
         unless configured.empty?
-          return File.expand_path(configured, root)
+          # Pathname#expand_path returns an already-absolute path unchanged,
+          # so the reference keeps the user's spelling (native separators)
+          # and only expands relative values against the project root.
+          return configured if Config.absolute_path?(configured)
+          return File.expand_path(configured, root).gsub('\\', "/")
         end
       end
-      File.expand_path(File.join(root, ".bundle"))
+      File.expand_path(File.join(root, ".bundle")).gsub('\\', "/")
     end
 
     def initialize(project_root : String? = nil, temporary : Hash(String, Value) = {} of String => Value)
@@ -134,7 +138,7 @@ module Celerite
 
       local_root = @app_config_root = Config.app_config_path(@project_root)
 
-      local_file = ignore ? nil : File.join(local_root, "config")
+      local_file = ignore ? nil : Config.join_config(local_root)
       @local_config_file = local_file
       @local_config = local_file ? Config.load_config(local_file) : {} of String => Value
 
@@ -160,7 +164,9 @@ module Celerite
         locations << "Set for the current command: #{Config.display_value(name, v)}"
       end
       if v = @local_config[key]?
-        locations << "Set for your local app (#{Config.display_path(@local_config_file || "")}): #{Config.display_value(name, v)}"
+        # The reference prints `local_config_file.to_s` verbatim, so an
+        # absolute BUNDLE_APP_CONFIG keeps its native separators.
+        locations << "Set for your local app (#{@local_config_file || ""}): #{Config.display_value(name, v)}"
       end
       if v = @env[key]?
         locations << "Set via #{key}: #{Config.display_value(name, v)}"
@@ -178,6 +184,16 @@ module Celerite
     # `C:\Users\...` and no longer match the reference byte for byte.
     def self.display_path(path : String) : String
       path.gsub(/\\/, "/")
+    end
+
+    # `Pathname#join("config")` always inserts a forward slash, even when the
+    # base keeps native separators: `C:\appcfg` -> `C:\appcfg/config`.
+    def self.join_config(root : String) : String
+      root.ends_with?("/") || root.ends_with?("\\") ? "#{root}config" : "#{root}/config"
+    end
+
+    def self.absolute_path?(path : String) : Bool
+      path.starts_with?("/") || path.starts_with?("\\") || path.matches?(/\A[A-Za-z]:[\\\/]/)
     end
 
     # Reference `STRING_KEYS` (settings.rb:59-77): values printed as-is instead
