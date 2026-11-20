@@ -162,6 +162,40 @@ module Celerite
       false
     end
 
+    # Reference `Definition#converge_dependencies` (definition.rb:1051-1086)
+    # decides `@dependency_changes`, the only trigger for `check!`'s
+    # `resolve_remotely!` (definition.rb:172-182). A Gemfile dependency counts
+    # as changed when its name is absent from the locked `DEPENDENCIES`, or when
+    # the requirement no longer matches the locked spec
+    # (`Gem::Dependency#matches_spec?` → name + `requirement.satisfied_by?(version)`).
+    # A requirement *string* change that the locked version still satisfies
+    # (`= 2.6.0` → `>= 2.6`) is NOT a change: the reference keeps the locked
+    # resolve (no index fetch) and only rewrites `DEPENDENCIES` via
+    # `cli/check.rb:33 definition.lock(true)`.
+    #
+    # A dependency listed in `DEPENDENCIES` without a locked spec is
+    # `@missing_lockfile_dep` in the reference (definition.rb:1068-1069), not a
+    # dependency change; `check` reports it through the locked-spec path.
+    def gemfile_dependency_changes?(deps : Array(Bridge::EvaluatedDependency)) : Bool
+      return false unless lockfile_exists?
+
+      data = lockfile!
+      locked = data.dependencies_section.try(&.dependencies) || [] of Lockfile::Dependency
+      specs = data.sources.flat_map(&.specs)
+      deps.any? do |dep|
+        next true if locked.none? { |entry| entry.name == dep.name }
+        locked_specs = specs.select { |spec| spec.name == dep.name }
+        next false if locked_specs.empty?
+
+        requirement = Gem::Requirement.new(dep.requirements)
+        !requirement.satisfied_by?(Gem::Version.new(locked_specs.first.version))
+      end
+    rescue
+      # A lockfile that cannot be parsed has no dependency view; the locked
+      # path reports it through the ordinary missing-spec logic instead.
+      false
+    end
+
     # Port of `Bundler::Definition#validate_platforms!` (definition.rb:524-530),
     # part of `validate_runtime!`: refuse to continue when the lockfile does
     # not list the local platform (and does not fall back to the `ruby`

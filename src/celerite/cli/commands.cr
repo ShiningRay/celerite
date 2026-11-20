@@ -1397,9 +1397,10 @@ module Celerite
       # inspection; reproduce that ordering. Bridge statuses 4/15 are the
       # Gemfile/Dsl errors and must reach friendly-errors unchanged; a missing
       # bridge only narrows the check back to locked specs.
+      gemfile_evaluation : Bridge::GemfileEvaluation? = nil
       if definition.lockfile_exists?
         begin
-          Bridge::Client.new.evaluate_gemfile(definition.gemfile_path)
+          gemfile_evaluation = Bridge::Client.new.evaluate_gemfile(definition.gemfile_path)
         rescue ex : Bridge::BridgeError
           raise ex if {4, 15}.includes?(ex.status_code)
         rescue
@@ -1443,9 +1444,23 @@ module Celerite
       # the resolver announces the source-index fetch and the resolve, and the
       # lockfile is written only once every gem turns out to be installed
       # (bundler/cli/check.rb:18-34 `definition.check!` + `definition.lock(true)`).
+      #
+      # With a lockfile present, `check!` still calls `resolve_remotely!`
+      # whenever `@dependency_changes` is set (definition.rb:172-182): a
+      # Gemfile dependency the lock does not cover (added, or a requirement the
+      # locked spec no longer satisfies) is resolved against the source index
+      # first, and `missing_specs` then reports the gems that resolution needs
+      # but the bundle does not have (cli/check.rb:19-31, exit 1, lock left
+      # untouched). Frozen mode has already refused the change in
+      # `validate_frozen_lockfile!`.
       resolved_from_gemfile = !definition.lockfile_exists?
+      re_resolved_for_dependency_change = false
+      if !resolved_from_gemfile && !config.frozen? && (evaluation = gemfile_evaluation) &&
+         definition.gemfile_dependency_changes?(evaluation.dependencies)
+        re_resolved_for_dependency_change = true
+      end
       generated_text : String? = nil
-      lockfile = if resolved_from_gemfile
+      lockfile = if resolved_from_gemfile || re_resolved_for_dependency_change
                    resolution = Resolution.new(definition, false)
                    begin
                      resolution.progress = stdout
@@ -1539,16 +1554,15 @@ module Celerite
       # reference `lockfiles_equal?` early-return when only the bundler version
       # differs (definition.rb:413-419).
       if !config.frozen? && !rest.includes?("--dry-run") && bridge_available?
-        text = if resolved_from_gemfile
-                 generated_text
-               else
-                 rewrite = Resolution.new(definition, false)
-                 begin
-                   rewrite.lockfile_rewrite_text
-                 ensure
-                   rewrite.close
-                 end
-               end
+        text = generated_text
+        unless text
+          rewrite = Resolution.new(definition, false)
+          begin
+            text = rewrite.lockfile_rewrite_text
+          ensure
+            rewrite.close
+          end
+        end
         if text
           text = with_profile_indent(text)
           existing = File.file?(definition.lockfile_path) ? File.read(definition.lockfile_path) : nil
