@@ -5455,3 +5455,23 @@ glob 归一化另测：`--glob "sub/*.gemspec"`、`--glob "{a,b}.gemspec"` 逐�
 - 文档修正：task-60 节末尾「`install --redownload` 在两侧均不存在」已过时——两侧都接受该别名（参考 `cli.rb:278`/`:330`），本轮 item 4 即为证。
 - 声明差异：`--print` 的行尾参考是 CRLF、我方是 LF（夹具按 N2 归一化，未对齐原始字节）；`--target-rbconfig` 对含原生扩展的 gem 仍不可观测（本轮只测纯 Ruby 的 `json_pure`）。
 - 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen src/cli.cr` 0、`crystal build src/cli.cr -o bin/celerite.exe` 0、`git diff HEAD --check` 0。
+
+## 2026-11-20（M7(2) task-63：`bundle binstubs` 渲染 Bundler 模板）
+
+- 根因：旧实现在 `src/celerite/cli/commands_install.cr` 里执行 `content = File.read(<gem>/bin/<exe>)`，把 gem 自带的 executable 原文当作 stub；参考 `Binstub#write`（4.0.24 `binstub.rb:20-27`、2.7.2 `:14-22`）渲染 `lib/bundler/templates/Executable`，stub 只负责把 `bundler/setup` 与 `Gem.bin_path` 重新接起来。
+
+| 项 | 参考 4.0.24 / 2.7.2（实测） |
+| --- | --- |
+| 默认 `bin/thor` | 347 B、LF、首行 `#!/usr/bin/env ruby`、`File.expand_path("../Gemfile", __dir__)`、`load Gem.bin_path("thor", "thor")` |
+| `bin/thor.cmd` | 389 B = `@ruby -x "%~f0" %*\n@exit /b %ERRORLEVEL%\n\n` + 同一 347 B 正文 |
+| `--shebang ruby3` | 首行 `#!/usr/bin/env ruby3`（348 B），正文不变；2.7.2 另写 `BUNDLE_SHEBANG: "ruby3"` 到 `.bundle/config`（本实现既有） |
+| `--path sub/dir` | 4.0.24 exit 15（已移除，改用 `config set bin`）；2.7.2 exit 0 + `[DEPRECATED]` 警告，产物落 `sub/dir/{thor,thor.cmd}`，相对路径 `../../Gemfile` |
+
+- 模板：`assets/bundler_templates/{4.0.24,2.7.2}/Executable`，各 473 B、LF（4.0.24 侧由 `.upstream-specs/v4.0.24/bundler/lib/bundler/templates/Executable` 的 CRLF 归一化而来，2.7.2 侧取本机 bundler-2.7.2 同路径；两版逐字相同，分开存放以便上游分化时可见）。
+- 实现：新增 `src/celerite/binstub_template.cr`——`BinstubTemplate.render(profile, spec_name, executable, relative_gemfile_path, shebang)` 替换四个占位符；`relative_gemfile_path(from_dir, gemfile)` 复刻 `Pathname#relative_path_from`（同盘取公共前缀后补 `..`，跨盘回退绝对路径）；`.cmd` 前缀沿用参考的 `@ruby -x "%~f0" %*` + `@exit /b %ERRORLEVEL%`。
+- 为什么此前没被发现：`script/differential:502` 的项目树比较用 `grep -v "^Files .* differ$"`，只报缺失/新增文件，**不比同名文件内容**；既有 `binstubs` 只比 bundle 内 `ruby/*/bin`、`binstubs-shebang` 只断首行。新夹具 `binstubs-template` 直接断 `bin/thor` 的三条正文与 `bin/thor.cmd` 前缀。
+- 测试与证据：新差分夹具 `binstubs-template` 双 profile PASS；`spec/m7_binstubs_template_spec.cr` 4 例（模板正文、`--shebang`、`bin` 子目录时的相对路径、`.cmd` 包装）全过。
+- 反假绿：`C:/temp/celerite-pre63`（`4b5a7f5`）上 `binstubs-template` FAIL，三条 needle 全缺（旧产物为 gem 自带 `require "thor/runner"` 原文）。
+- 回归：`binstubs`、`binstubs-shebang`、`install-fresh`、`install-check`、`plugin-install` 双 profile 全 PASS。
+- 声明差异：`binstubs-template` 依赖宿主机行为（Windows 才生成 `.cmd`），属既有 Windows-only 夹具族；模板两版暂时逐字相同，日后上游分化需各自更新。
+- 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen src/cli.cr` 0、`crystal build src/cli.cr -o bin/celerite.exe` 0、`git diff HEAD --check` 0。
