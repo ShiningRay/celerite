@@ -240,6 +240,10 @@ module Celerite
           return code
         end
 
+        # `cli/update.rb:84`: BUNDLE_CLEAN cleans after the install pass and
+        # before `Bundle updated!` (oracle: Removing precedes that line).
+        update_install_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, InstallPaths.ruby_abi(bridge))
+        clean_after_install(stdout, definition, resolution.generated_lockfile, update_install_root, bridge)
         stdout.puts "Bundle updated!"
         print_cooldown_summary(resolution, stdout)
         # `cli/update.rb:123`: same trailing funding hint as install, printed

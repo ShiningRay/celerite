@@ -788,6 +788,9 @@ module Celerite
             stdout.puts message
           end
           print_cooldown_summary(resolution, stdout)
+          # `cli/install.rb:69`: BUNDLE_CLEAN runs the cleaner after the
+          # cooldown summary and before the funding hint (`cli/install.rb:74`).
+          clean_after_install(stdout, definition, resolution.generated_lockfile, install_root, bridge)
           # `cli/install.rb:74`: the funding hint is the last line group of the
           # install summary, after post-install messages and the cooldown line.
           # The reference reads it off the freshly resolved definition, so use
@@ -1090,70 +1093,93 @@ module Celerite
         # (2026-11-15).
         keep_names = lockfile.specs.map(&.full_name).to_set
 
-        # Stale git checkouts: any <base>-* directory not holding a locked
-        # Git source checkout (locked git sources are kept for both profiles).
-        checkout_keep = Set(String).new
-        lockfile.sources.each do |section|
-          next unless section.type == "GIT"
-          base = GitSource.base_name(section.remote || "")
-          checkout_keep << base
-        end
-        git_root = File.join(install_root, "bundler", "gems")
-        git_removed = [] of String
-        stale_git_dirs = [] of String
-        if Dir.exists?(git_root)
-          stale_git_dirs = Dir.children(git_root).select do |name|
-            full = File.join(git_root, name)
-            Dir.exists?(full) && name != "extensions" && !checkout_keep.any? { |base| name.starts_with?("#{base}-") }
-          end
-        end
-        git_removed += stale_git_dirs
-
-        # Stale gem dirs, printed per entry (pinned: only gem/git dir removals
-        # announce with "Removing <dir name>"; cache/spec/bin go silently).
-        gems_dir = File.join(install_root, "gems")
-        stale_gem_dirs = [] of String
-        if Dir.exists?(gems_dir)
-          stale_gem_dirs = Dir.children(gems_dir).select do |full_name|
-            Dir.exists?(File.join(gems_dir, full_name)) && !keep_names.includes?(full_name)
-          end
-        end
-        unless dry_run
-          stale_gem_dirs.each do |full_name|
-            gem_bin_dir = File.join(gems_dir, full_name, "bin")
-            if Dir.exists?(gem_bin_dir)
-              Dir.children(gem_bin_dir).each do |exe|
-                {"", ".bat"}.each do |suffix|
-                  stub = File.join(File.join(install_root, "bin"), exe + suffix)
-                  File.delete(stub) if File.file?(stub)
-                end
-              end
-            end
-          end
-          stale_gem_dirs.each { |full_name| FileUtils.rm_rf(File.join(gems_dir, full_name)) }
-          stale_git_dirs.each { |name| FileUtils.rm_rf(File.join(git_root, name)) }
-          # Silent removals: stale specifications, cache .gem files,
-          # extension dirs and git cache mirrors.
-          specs_dir = File.join(install_root, "specifications")
-          Dir.children(specs_dir).reject { |f| keep_names.includes?(f.sub(/\.gemspec$/, "")) }
-            .each { |f| File.delete(File.join(specs_dir, f)) } if Dir.exists?(specs_dir)
-          cache_dir = File.join(install_root, "cache")
-          if Dir.exists?(cache_dir)
-            Dir.children(cache_dir).select(&.ends_with?(".gem")).reject { |f| keep_names.includes?(f.sub(/\.gem$/, "")) }
-              .each { |f| File.delete(File.join(cache_dir, f)) }
-          end
-        end
-        (stale_gem_dirs + stale_git_dirs).sort.each do |name|
-          # Pinned `Bundler::Runtime#remove_dir`: "name (version)" from the
-          # directory basename; dry-run announces "Would have removed".
-          parts = name.split("-")
-          label = "#{parts[0...-1].join("-")} (#{parts.last})"
-          stdout.puts "#{dry_run ? "Would have removed" : "Removing"} #{label}"
-        end
+        perform_clean(stdout, install_root, keep_names, lockfile, dry_run)
         0
       ensure
         bridge.close
       end
+    end
+
+    # Shared removal pass for `bundle clean` and the install/update tail
+    # (`Bundler::Cleaner#run`): keeps the locked specs, drops every other gem
+    # directory, specification, cached gem and stale git checkout. Only gem/git
+    # directory removals are announced, mirroring `Runtime#remove_dir`.
+    private def self.perform_clean(stdout : IO, install_root : String, keep_names : Set(String),
+                                   lockfile : Lockfile::Data, dry_run : Bool) : Nil
+      # Stale git checkouts: any <base>-* directory not holding a locked
+      # Git source checkout (locked git sources are kept for both profiles).
+      checkout_keep = Set(String).new
+      lockfile.sources.each do |section|
+        next unless section.type == "GIT"
+        checkout_keep << GitSource.base_name(section.remote || "")
+      end
+      git_root = File.join(install_root, "bundler", "gems")
+      stale_git_dirs = [] of String
+      if Dir.exists?(git_root)
+        stale_git_dirs = Dir.children(git_root).select do |name|
+          full = File.join(git_root, name)
+          Dir.exists?(full) && name != "extensions" && !checkout_keep.any? { |base| name.starts_with?("#{base}-") }
+        end
+      end
+
+      # Stale gem dirs, printed per entry (pinned: only gem/git dir removals
+      # announce with "Removing <dir name>"; cache/spec/bin go silently).
+      gems_dir = File.join(install_root, "gems")
+      stale_gem_dirs = [] of String
+      if Dir.exists?(gems_dir)
+        stale_gem_dirs = Dir.children(gems_dir).select do |full_name|
+          Dir.exists?(File.join(gems_dir, full_name)) && !keep_names.includes?(full_name)
+        end
+      end
+      unless dry_run
+        stale_gem_dirs.each do |full_name|
+          gem_bin_dir = File.join(gems_dir, full_name, "bin")
+          if Dir.exists?(gem_bin_dir)
+            Dir.children(gem_bin_dir).each do |exe|
+              {"", ".bat"}.each do |suffix|
+                stub = File.join(File.join(install_root, "bin"), exe + suffix)
+                File.delete(stub) if File.file?(stub)
+              end
+            end
+          end
+        end
+        stale_gem_dirs.each { |full_name| FileUtils.rm_rf(File.join(gems_dir, full_name)) }
+        stale_git_dirs.each { |name| FileUtils.rm_rf(File.join(git_root, name)) }
+        # Silent removals: stale specifications, cache .gem files,
+        # extension dirs and git cache mirrors.
+        specs_dir = File.join(install_root, "specifications")
+        Dir.children(specs_dir).reject { |f| keep_names.includes?(f.sub(/\.gemspec$/, "")) }
+          .each { |f| File.delete(File.join(specs_dir, f)) } if Dir.exists?(specs_dir)
+        cache_dir = File.join(install_root, "cache")
+        if Dir.exists?(cache_dir)
+          Dir.children(cache_dir).select(&.ends_with?(".gem")).reject { |f| keep_names.includes?(f.sub(/\.gem$/, "")) }
+            .each { |f| File.delete(File.join(cache_dir, f)) }
+        end
+      end
+      (stale_gem_dirs + stale_git_dirs).sort.each do |name|
+        # Pinned `Bundler::Runtime#remove_dir`: "name (version)" from the
+        # directory basename; dry-run announces "Would have removed".
+        parts = name.split("-")
+        label = "#{parts[0...-1].join("-")} (#{parts.last})"
+        stdout.puts "#{dry_run ? "Would have removed" : "Removing"} #{label}"
+      end
+    end
+
+    # `clean_after_install` (`cli/common.rb:150-156`): `bundle install` and
+    # `bundle update` run `Bundler::Cleaner.new(definition, false, false).run`
+    # after the install when `settings[:clean]` is set (BUNDLE_CLEAN), keeping
+    # the locked specs and removing everything else inside the bundle path.
+    def self.clean_after_install(stdout : IO, definition : Definition, lockfile : Lockfile::Data,
+                                 install_root : String, bridge : Bridge::Client) : Nil
+      return unless definition.config["clean"] == true
+      keep_names = lockfile.specs.map(&.full_name).to_set
+      # The running Bundler may live inside the bundle path (`bundle update`
+      # installs it on version switch); never clean it away.
+      gems_dir = File.join(install_root, "gems")
+      if Dir.exists?(gems_dir)
+        Dir.children(gems_dir).each { |name| keep_names << name if name.starts_with?("bundler-") }
+      end
+      perform_clean(stdout, install_root, keep_names, lockfile, false)
     end
 
     # ------------------------------------------------------------------
