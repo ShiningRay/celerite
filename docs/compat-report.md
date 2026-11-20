@@ -5878,3 +5878,26 @@ oracle 用同一份 `file://` 索引（`fixtures/gem-index`，预装并锁 `json
 **负对照**：`C:/temp/celerite-pre75` @ `d0b7c1a`（构建成功）→ **0 passed / 2 failed**：`exit code: reference=18 celerite=0`、`exit code: reference=18 celerite=17`，两条 needle 均缺失。
 
 **已声明差异**：只对齐「运行时 Ruby 校验」这一层；`Gemfile` 里 `patchlevel` 与锁文件/`CHECKSUMS` 的交互未另取 oracle。`BUNDLE_FROZEN`/`deployment` 与 patchlevel 同时出错时的优先级未逐组合测。
+## 2026-11-21（M7 task-76：`BUNDLE_FORCE_RUBY_PLATFORM`）
+
+**现象**：该设置此前不被识别（`BOOL_KEYS` 缺键），`install` 仍按本机平台解析并锁 `platdemo (1.0.0-x64-mingw-ucrt)`；参考在 `BUNDLE_FORCE_RUBY_PLATFORM=true` 下只锁 `platdemo (1.0.0)`、`PLATFORMS` 只有 `ruby`。
+
+**参考机制**：`settings.rb:21` 把 `force_ruby_platform` 列入布尔键；`definition.rb:662` `should_add_extra_platforms?` 在强制时短路（不再补本地平台）；`lazy_specification.rb:221` 与 `match_platform.rb:28` 在强制时取 ruby 变体。已存在的原生锁不会被复用：重新解析、安装 ruby 变体，同时把平台行留在锁里（`resolver.rb:88-89` + `spec_set.rb:301-309`）。
+
+**oracle 表**（`fixtures/gem-index-platform`，4.0.24 与 2.7.2 各测）
+
+| 场景 | 参考结果 |
+| --- | --- |
+| 无锁 + `true` | GEM `platdemo (1.0.0)`；`PLATFORMS` 仅 `ruby`；4.0.24 CHECKSUMS 带 `sha256=05ced368…`（ruby gem），2.7.2 无 CHECKSUMS |
+| 无锁 + `false` / 未设置 | `platdemo (1.0.0-x64-mingw-ucrt)`；`PLATFORMS` 仅 `x64-mingw-ucrt`；4.0.24 digest `sha256=f02daf29…` |
+| 已有原生锁 + `true` | 重新解析：两行 spec（ruby + mingw）、两行平台（`ruby`、`x64-mingw-ucrt`），只安装 `platdemo 1.0.0` |
+
+**实现**：`src/celerite/config.cr:17` 布尔键补 `force_ruby_platform`；`src/celerite/resolution.cr` `resolution_platforms` 在强制时以 ruby 起始、`force_ruby_platform?` 供各处判定、`reuse_locked_resolution?` 强制时不复用、`decisions_to_specs` 强制时选 ruby 变体、平台输出在强制时只加 `ruby`（并保留去重守卫，避免重复写 `x64-mingw-ucrt`）、`lock_extra_specs` 按 `full_name` 去重。
+
+**夹具**：`fixtures/differential/install-force-ruby-platform`（`env` 传 `BUNDLE_FORCE_RUBY_PLATFORM=true`，`file-equals-4.0.24`/`file-equals-2.7.2` 整锁逐字节）；`install-force-ruby-platform-locked`（预置原生锁 + 强制，`file-contains` 两行 spec 与两行平台）。2.7.2 的 locked 变体标 `deferred-2.7.2`：手写预置锁缺 `BUNDLED WITH`，2.7.2 参考会改走 `https://rubygems.org/` 并挂住，故降级为文档化 deferral。
+
+**spec**：`spec/m7_force_ruby_platform_spec.cr` 4 例（强制只锁 ruby 行、`false` 保留 mingw 行、未设置等价于 `false`、原生锁 + 强制保留两行），与 `m7_add_platform_spec.cr`、`m7_lock_options_spec.cr`、`m7_platform_validation_spec.cr`、`m7_platform_auto_add_spec.cr` 合并 24 例 0 失败。
+
+**负对照**：`C:/temp/celerite-pre76` @ `9f7d380` → **0 passed / 2 failed**（stdout 与整锁不一致；缺 `    platdemo (1.0.0)` 与 `  ruby` 两个 needle）。
+
+**已声明差异**：预置锁若缺 `CHECKSUMS` 段，4.0.24 参考会整段重建三行，我方仍略去该段（`checksums_enabled?` 参考锁内段落，属既有差异，未在本次修）。强制平台与 `clean`/`frozen` 的组合未逐项取 oracle。
