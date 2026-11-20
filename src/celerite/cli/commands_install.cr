@@ -684,7 +684,14 @@ module Celerite
             stdout.puts "Resolving dependencies..."
             stdout.puts "Resolving dependencies..."
           end
-          if repaired_edges && resolution.bridge_bundler_version.starts_with?("2.")
+          # The reference's parallel installer prints all Fetching lines first
+          # and the Installing lines as workers finish, so the order inside a
+          # batch depends on thread scheduling. With `jobs = 1` it installs one
+          # spec at a time and prints that spec's Fetching/Installing pair
+          # before moving on (`parallel_installer.rb`), which is deterministic.
+          # 2.7 repairs the lockfile one spec at a time and always interleaves.
+          sequential = config["jobs"] == 1
+          if (repaired_edges && resolution.bridge_bundler_version.starts_with?("2.")) || sequential
             # 2.7 repairs the lockfile one spec at a time, so each gem's
             # Fetching line is immediately followed by its Installing line;
             # 4.0 keeps the batched order (pinned stdout of
