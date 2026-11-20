@@ -298,7 +298,26 @@ module Celerite
         installer.gemfile_name = File.basename(definition.gemfile_path)
         installers_by_remote = {resolution.primary_remote => installer}
         if target_rbconfig = flag_value(rest, "--target-rbconfig")
-          installer.target_rbconfig = File.expand_path(target_rbconfig, Dir.current)
+          expanded = File.expand_path(target_rbconfig, Dir.current)
+          unless File.file?(expanded)
+            # `cli/install.rb:24` passes the path straight to
+            # `Gem.set_target_rbconfig` (rubygems_integration.rb:34 →
+            # rubygems/target_rbconfig.rb:37), which loads it immediately. A
+            # missing file raises LoadError before anything is resolved or
+            # written, so stdout stays empty, no lockfile is produced, and
+            # friendly-errors prints the ERROR REPORT TEMPLATE (exit 1).
+            stderr.puts "--- ERROR REPORT TEMPLATE -------------------------------------------------------"
+            stderr.puts ""
+            stderr.puts "```"
+            stderr.puts "LoadError: cannot load such file -- #{target_rbconfig}"
+            stderr.puts "```"
+            stderr.puts ""
+            stderr.puts "--- TEMPLATE END ----------------------------------------------------------------"
+            stderr.puts ""
+            stderr.puts "Unfortunately, an unexpected error occurred, and Bundler cannot continue."
+            return 1
+          end
+          installer.target_rbconfig = expanded
         end
 
         # --no-lock: resolve from scratch every run (no reuse, no write).

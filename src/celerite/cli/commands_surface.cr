@@ -350,10 +350,16 @@ module Celerite
         stderr.puts "You cannot specify `--strict` and `--optimistic` at the same time."
         return 15
       end
-      name = rest.reject(&.starts_with?("--")).first?
+      # Thor only treats the operands it parses as values of the preceding
+      # `--option` as option values (`cli/add.rb` then requires at least one
+      # positional gem). `rest.reject(&.starts_with?("--"))` wrongly promoted
+      # every option value to a gem name, e.g. `add --version thor` looked like
+      # gem "thor" with requirement "= thor", and `add --glob x.gemspec thor`
+      # injected a gem literally named "x.gemspec".
+      name = add_positional_arguments(rest).first?
       if name.nil?
-        stderr.puts "`add` requires at least 1 argument"
-        return 1
+        stderr.puts "Please specify gems to add."
+        return 15
       end
 
       # `cli/add.rb:57-59` validates every `--version` pattern before the
@@ -539,6 +545,38 @@ module Celerite
         filtered << arg
       end
       filtered
+    end
+
+    # Thor gives an operand to the preceding `--option` when that option takes a
+    # value (`--version 1.2`, `--glob "*.gemspec"`, `-g dev`); only the
+    # remaining operands are gem names. `--option=value` and a trailing `--`
+    # (everything after it is positional) are honoured too.
+    private def self.add_positional_arguments(rest : Array(String)) : Array(String)
+      positionals = [] of String
+      index = 0
+      while index < rest.size
+        token = rest[index]
+        if token == "--"
+          positionals.concat(rest[(index + 1)..]? || [] of String)
+          break
+        elsif token.starts_with?("--")
+          flag = token.split('=', 2).first
+          inline_value = token.includes?('=')
+          index += 1
+          if !inline_value && ADD_SWITCH_VALUES.includes?(flag)
+            index += 1 if index < rest.size && !rest[index].starts_with?("-")
+          end
+        elsif token.starts_with?("-") && token.size > 1
+          index += 1
+          if ADD_SWITCH_VALUES.includes?(token)
+            index += 1 if index < rest.size && !rest[index].starts_with?("-")
+          end
+        else
+          positionals << token
+          index += 1
+        end
+      end
+      positionals
     end
 
     # Gemfile options added by `bundle add` (--path/--git/--branch/--ref/
