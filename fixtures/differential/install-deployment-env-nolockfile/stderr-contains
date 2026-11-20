@@ -1,0 +1,2 @@
+The deployment setting requires a lockfile. Please make sure you have checked
+your Gemfile.lock into version control before deploying.
