@@ -1,0 +1,2 @@
+install --quiet
+lock --lockfile custom.lock --print

@@ -97,4 +97,75 @@ describe "bundle lock options" do
       out.should_not contain("Resolving dependencies")
     end
   end
+
+  # `--print` decides the destination before the write: the lock body goes to
+  # stdout and `--lockfile` never touches the disk (measured on 4.0.24 and
+  # 2.7.2 -- `lock --lockfile custom.lock --print` writes neither file).
+  it "prints the lock body without writing when --print is combined with --lockfile" do
+    pending! "ruby not available" unless ruby_available?
+    with_lock_project do |dir|
+      run_cli(["install"]).first.should eq(0)
+      original = File.read(File.join(dir, "Gemfile.lock"))
+      code, out, err = run_cli(["lock", "--lockfile", "custom.lock", "--print"])
+      code.should eq(0)
+      err.should eq("")
+      out.should_not contain("Writing lockfile to")
+      out.should start_with("GEM\n")
+      out.should contain("BUNDLED WITH")
+      Dir.exists?(File.join(dir, "custom.lock")).should be_false
+      File.read(File.join(dir, "Gemfile.lock")).should eq(original)
+    end
+  end
+
+  # A missing parent directory is not created: the reference announces the
+  # write target, then friendly-errors wraps `Errno::ENOENT` (definition.rb
+  # 437-438) and exits 1. Our report keeps the same template shape because a
+  # bare Crystal exception message is not the reference surface.
+  it "reports a friendly-errors crash when the lockfile directory is missing" do
+    pending! "ruby not available" unless ruby_available?
+    with_lock_project do |dir|
+      run_cli(["install"]).first.should eq(0)
+      code, out, err = run_cli(["lock", "--lockfile", "./nodir/x.lock"])
+      code.should eq(1)
+      target = File.expand_path(File.join(dir, "nodir", "x.lock")).gsub('\\', "/")
+      out.should contain("Writing lockfile to #{target}")
+      err.should contain("--- ERROR REPORT TEMPLATE")
+      err.should contain("Errno::ENOENT: No such file or directory @ rb_sysopen - #{target}")
+      err.should contain("--- TEMPLATE END")
+      err.should contain("Unfortunately, an unexpected error occurred")
+      Dir.exists?(File.join(dir, "nodir")).should be_false
+      err.should_not contain("celerite internal error")
+    end
+  end
+
+  # Both flags are regression guards: the reference accepts them and the exit
+  # code and lock stay unchanged, so there is nothing to discriminate.
+  it "accepts --redownload on install and leaves the lock untouched" do
+    pending! "ruby not available" unless ruby_available?
+    with_lock_project do |dir|
+      run_cli(["install"]).first.should eq(0)
+      original = File.read(File.join(dir, "Gemfile.lock"))
+      code, out, err = run_cli(["install", "--redownload"])
+      code.should eq(0)
+      out.should contain("Installing json_pure")
+      File.read(File.join(dir, "Gemfile.lock")).should eq(original)
+    end
+  end
+
+  # `install --target-rbconfig` loads the file through `Gem.set_target_rbconfig`
+  # before resolution (cli/install.rb:24). For a pure-Ruby gem the loaded
+  # rbconfig only refreshes `Gem::Platform.local`, so nothing is observable in
+  # stdout or the lockfile -- this example pins the accepted surface.
+  it "accepts an existing --target-rbconfig value" do
+    pending! "ruby not available" unless ruby_available?
+    with_lock_project do |dir|
+      run_cli(["install"]).first.should eq(0)
+      File.write(File.join(dir, "target-rbconfig.rb"), "TRIVIAL = 1\n")
+      original = File.read(File.join(dir, "Gemfile.lock"))
+      code, out, _ = run_cli(["install", "--target-rbconfig", "target-rbconfig.rb"])
+      code.should eq(0)
+      out.should contain("Bundle complete!")
+      File.read(File.join(dir, "Gemfile.lock")).should eq(original)
+    end
+  end
 end
