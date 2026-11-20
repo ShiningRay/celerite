@@ -5320,3 +5320,34 @@ spec 家族 `m7_git_source_reuse_spec`、`m7_source_lock_options_spec`、`m7_loc
   2. `--tls-version`/`--verify-mode` 已透传，但本机 OpenSSL 3.6 下只验证到错误类（如协议不可用），未与参考逐字比对错误文本。
   3. `check_home_permissions` 仍未实现（与本任务无关）。
   4. `doctor ssl` 默认主机路径的结语文本依赖真实连通性，未纳入夹具。
+## 2026-11-20（M7(2) task-55：`bundle add` 的 glob/version/path 选项面）
+
+范围：`bundle add` 的三个静默失败面，以及 `update --redownload` 别名。参考 Bundler 4.0.24，2.7.2 行为一致（`Invalid gem requirement pattern` 与 `PathError` 文本逐字相同）。
+
+| 场景 | 参考 4.0.24 | 修复前 | 修复后 |
+| --- | --- | --- | --- |
+| `add json_pure --glob sub/*.gemspec --skip-install` | exit 0，Gemfile 追加 `gem "json_pure", "~> 2.8", glob: "sub/*.gemspec"` | exit 0，`glob:` 被丢弃 | 逐字一致 |
+| `add thor --version --skip-install` | exit 15，stderr `Invalid gem requirement pattern 'version'\n`，Gemfile 未改 | exit 0，实际安装并写入 `~> 2.8` | exit 15，未写入 |
+| `add json_pure --path vendor/x --skip-install` | exit 13，stderr 三行（friendly errors 折行）`The path\n\`…/vendor/x\`\ndoes not exist.\n`，Gemfile 未改 | exit 7，且已写入 `path:` | exit 13，逐字一致，未写入 |
+| `update --redownload` | 接受（`cli.rb:330` 中 `force` 的别名），exit 0 | exit 15 `Unknown switches "--redownload"` | 接受，按 `--force` 处理 |
+
+glob 归一化另测：`--glob "sub/*.gemspec"`、`--glob "{a,b}.gemspec"` 逐字写入；唯独 `--glob "*.gemspec"` 参考写成 `glob: "celerite.gemspec"`（原因未查明，夹具只用逐字形式）。
+
+根因与实现：
+- `src/celerite/cli/commands_surface.cr` `add_option_suffix` 缺 `glob` 分支 → 补 `glob: #{glob.inspect}`（参考 `injector.rb:114`）。
+- `add()` 缺 `--version` 取值校验 → 在 `Definition.build` 前按 `cli/add.rb:57-59` 报 `Invalid gem requirement pattern 'version'`，exit 15。
+- `--path` 在注入前未校验 → 新增 `src/celerite/errors.cr` `PathError`（status 13，`wrap? true`，参考 `errors.rb:32`、`source/path.rb:198-204`），在 `add()` 中先展开路径并抛 `The path \`<abs>\` does not exist.` / `is not a directory.`，保证 Gemfile 不被改写。
+- `src/celerite/cli/commands.cr:931` `UPDATE_SWITCH_FLAGS` 增加 `--redownload`；`run_update` 的待装集合在 `--force`/`--redownload` 下不再剔除已安装 gem。
+
+证据：
+- 夹具 `fixtures/differential/add-glob-option`、`add-version-missing-value`、`add-path-missing`，4.0.24 与 2.7.2 均 3 passed / 0 failed。
+- 回归（21 个 `add-*` 夹具 + `install-fresh` + `install-check`）：4.0.24 15 passed / 6 failed，2.7.2 15 passed / 5 failed / 1 skipped。6 个失败全部是宿主机 msys 命名对象限制（`make`/`git` 的 `0xC0000022`：`add-group`、`add-optimistic`、`add-version`、`add-remove` 为 racc 原生扩展；`add-git`、`add-ref` 为 git clone），与改动无关；`cache-all-platforms` 的 deferred 标记记录同一类限制。旧二进制在短路径 worktree（`C:/temp/celerite-pre55`）下偶发通过同一批夹具，属路径长度相关噪声。
+- 反假绿：`C:/temp/celerite-pre55` @ `eca65ed` 旧二进制跑三条新夹具 0 passed / 3 failed（glob 未写入、version 实际安装、path 改写 Gemfile）。
+- 门禁：`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`crystal build src/cli.cr -o bin/celerite.exe`、`git diff HEAD --check` 全部 EXIT 0；目标 spec `spec/m7_add_options_spec.cr` 4 examples / 0 failures。
+
+声明差异 / 未验证：
+1. `--glob "*.gemspec"` 的 `celerite.gemspec` 归一化未复现，原因未查明；夹具不覆盖该形式。
+2. `--bundler <ver>` 仍是 accept-only（未实现 bundler 自重装）。
+3. `--strict --skip-install` 参考多一次 resolve 的问题未在本任务处理。
+4. `update --redownload` 按 `--force` 处理，未做缓存失效（不重新下载已有 cache）。
+5. 全量 `crystal spec` 与上游 64 例未重跑。
