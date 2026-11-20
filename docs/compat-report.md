@@ -5515,3 +5515,38 @@ glob 归一化另测：`--glob "sub/*.gemspec"`、`--glob "{a,b}.gemspec"` 逐�
 - 回归：`lock-*`、`install-*`、`platform-*`、`checksums-*` 共 66 例，双 profile 各 65 passed / 1 failed；唯一失败 `lock-missing-dependency-edges (install)` 为既有差异（Ruby 4.0.6 将 `net-protocol` 视为 default gem，任务 57 已记录），与本节无关。
 - 已声明差异：`--tls-version` 等与本节无关；本节未覆盖 `lock --add-platform` 与 `--normalize-platforms` 组合、`Gemfile.lock` 由 2.7.2 改写后再交 4.0.24 读取的跨版本序列。
 - 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen src/cli.cr` 0、`crystal build src/cli.cr -o bin/celerite.exe` 0、`git diff HEAD --check` 0。
+## 2026-11-20（M7(2) task-65：内建 gem 判据改为「来源」而非「同名同版本」）
+
+此前 `fixtures/differential/lock-missing-dependency-edges` 长期记为「环境差异」，实为产品缺陷，已修。
+
+| 场景（4.0.24 与 2.7.2 同） | 参考行为 | 修复前 celerite |
+| --- | --- | --- |
+| 索引 `fixtures/gem-index-locked-deps` 含 `net-protocol (0.2.2)`，锁钉 `net-protocol (0.2.2)` + `net-smtp (0.5.0)`，`install` | exit 0；`Fetching net-protocol 0.2.2` / `Installing net-protocol 0.2.2`；stderr 空 | exit 0；**不下载不安装**，stderr 打 `net-protocol-0.2.2 is built in to Ruby, and can't be cached because your Gemfile doesn't have any sources that contain it.` |
+| 同上，但索引内**没有** `net-protocol`（探针变体） | exit 0；`Local specification for net-protocol-0.2.2 has different dependencies than the remote gem, ignoring it`（stderr）；`2 gems now installed`；两次 `Resolving dependencies...` | exit 0；stderr 空；`1 gem now installed`；一次 `Resolving dependencies...`（**仍不一致，见已声明差异**） |
+
+机制：参考只在 `spec.default_gem?` 为真时走内建路径（`source/rubygems.rb:181`、`:206` 的 `spec.default_gem? && !cached_built_in_gem(...)`），而 `default_gem?` 只对「解释器自带的默认 gem 规格」成立；从锁或索引物化出来的规格不是默认 gem，因此即便与默认 gem 同名同版本也照样下载安装。celerite 原先在安装循环里向 bridge 询问「解释器是否自带该 名+版本」（`src/celerite/cli/commands_install.cr:455-459`），命中即跳过安装并告警——`net-protocol 0.2.2` 恰好是 Ruby 4.0.6 的默认 gem，于是误判。
+
+修复：`ResolvedSpec` 新增 `default_gem : Bool`（`src/celerite/resolution.cr:196-224`），只在 `decisions_to_specs` 由 `IndexSpec#default_gem_path` 非空时置真（即走 `index_specs_for` 的默认 gem 兜底，`src/celerite/resolution.cr:800-808`、`1534`），`refresh_locked_dependencies` 原样透传（`:1330-1336`）；安装循环改为按 `spec.default_gem` 过滤（`src/celerite/cli/commands_install.cr:450-466`），不再向 bridge 查询。
+
+验证：`lock-missing-dependency-edges` 双 profile PASS（4.0.24 / 2.7.2 各 1 passed）；task-41 回归 `lock-default-gem`、`info-default-gem`、`install-locked-ruby-incompatible` 双 profile PASS；`spec/m7_default_gem_spec.cr` 4 例 + 新增 `spec/m7_default_gem_origin_spec.cr` 2 例 + `m7_install_ruby_compat_spec.cr` + `m7_add_platform_spec.cr` 共 13 例 0 失败；成组回归 110 例（`lock-*`/`install-*`/`checksums-*`/`platform-*`/`plugin-*`/`update-*`）4.0.24 107 passed / 2 failed / 1 skipped，2.7.2 107 / 2 / 1，2 例失败均为 `plugin-git-local`、`plugin-git-local2` 的 msys Low IL `git clone` 失败（`0xC0000022` 家族，与本项无关）。
+
+反假绿：`C:/temp/celerite-pre65a`（`1789d17`）上该夹具 0 passed，差异行为 `< Fetching net-protocol 0.2.2`、`< Installing net-protocol 0.2.2`、`> net-protocol-0.2.2 is built in to Ruby…`。
+
+已声明差异：索引内缺 `net-protocol` 的探针变体仍不一致——参考会打 `Local specification … has different dependencies than the remote gem, ignoring it` 并计 `2 gems now installed`，celerite 静默且计 `1 gem now installed`。该变体未入夹具（参考输出依赖宿主默认 gem 的依赖边，跨机器不稳定），记录待后续任务。
+
+## 2026-11-20（M7(2) task-65：无锁时 frozen/deployment 的 `update --all`）
+
+| 场景（4.0.24 与 2.7.2 同） | 参考行为 | 修复前 celerite |
+| --- | --- | --- |
+| `BUNDLE_FROZEN=true update --all`，无 `Gemfile.lock` | exit 16；stderr 三行 `Your bundle only supports platforms [] but your local platform is` / `x64-mingw-ucrt. Add the current platform to the lockfile with` / `` `bundle lock --add-platform x64-mingw-ucrt` and try again. `` | exit 16；stderr `Frozen mode is set, but there's no lockfile` |
+| `BUNDLE_DEPLOYMENT=true update --all`，无锁 | 同上 | 同上 |
+| 两个变量同时 | 同上（无先后差异，走同一平台校验） | 同上 |
+| `BUNDLE_FROZEN=true update json_pure`，无锁 | exit 22；`This Bundle hasn't been installed yet. Run `` `bundle install` `` to update and install the bundled gems.` | exit 16；`Frozen mode is set, but there's no lockfile` |
+
+机制：参考 `Definition#validate_platforms!`（`definition.rb:471-473`）在无锁时平台列表为空，`current_platform_locked?` 为假，于是抛 add-platform 提示（`ProductionError`，status 16）；scoped update 更早停在 `cli/update.rb:26-38` 的「尚未安装」检查（status 22），所以两类必须分开。
+
+修复：`src/celerite/cli/commands_surface.cr:90-104` 只在 `full_update && config.frozen? && !definition.lockfile_exists?` 时抛平台提示，scoped 路径不再被 frozen 文案抢占，仍走原有的 status 22 分支。
+
+验证：夹具 `update-frozen-env-nolockfile`（`env` 传 `BUNDLE_FROZEN=true`，`file-absent Gemfile.lock`，`stderr-contains` 两行）双 profile PASS（exit 16）；scoped 变体手工对照参考 exit 22 一致。反假绿 `C:/temp/celerite-pre65a`：`update-frozen-env-nolockfile` 0 passed，两条 needle 均缺（`Your bundle only supports platforms [] but your local platform is`、`bundle lock --add-platform`）。
+
+已声明差异：`update --all` 与 `update <gem>` 之外的其他 frozen 组合（如 `update --ruby`、`update --group`）本轮未单独取 oracle。
