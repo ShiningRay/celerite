@@ -5766,3 +5766,48 @@ oracle 用同一份 `file://` 索引（`fixtures/gem-index`，预装并锁 `json
 - `info bundler` 的 `Path`/元数据取「正在运行的 bundler」：差分里参考跑的是已安装 gem，而我们的开发夹具经 `CELERITE_REFERENCE_BUNDLER_LIB` 加载检出树，缺少 `specifications/bundler-<v>.gemspec`；因此差分夹具只用 `info stringio`，bundler 的字段只在 spec 断言 `Summary`/`Homepage`，`Path` 不入断言。
 - 菜单的交互分支（输入序号选中）未做端到端夹具：差分以 stdin EOF 覆盖「不选即退出 0」；选中分支只有单元级构造，属未验证。
 - 参考 `gem_not_found_message` 的 `Did you mean …?` 建议未实现；当前所有 not-found 都只打一行 `Could not find gem '<name>'.`（本任务范围内的用例都不触发建议）。
+## 2026-11-21（M7(6) task-73：`plugin install --path` 冲突回滚与源目录删除）
+
+目标：把 roadmap L159 里「命令注册 / 自定义 source 冲突」两条从「已审计」推进到「有双 profile 端到端夹具」，并顺带核对失败路径的副作用。
+
+### oracle（参考 4.0.24 与 2.7.2，`.tmp-scratch/task73/oracle.sh`，隔离 HOME/GEM_HOME/BUNDLE_PATH，`ruby .upstream-specs/v4.0.24/bundler/exe/bundle`）
+
+| 场景 | 参考 stdout | 参考 stderr | 参考退出码 | 参考副作用 |
+| --- | --- | --- | --- | --- |
+| `plugin install plug_a --path plug_a`（注册 `source "conflict-type"`） | `Resolving dependencies...` + `Installed plugin plug_a` | 空 | 0 | 源目录保留，index 写入 `sources: conflict-type: "plug_a"` |
+| 再 `plugin install plug_b --path plug_b`（同 source 类型） | `Resolving dependencies...` | `Failed to install plugin \`plug_b\`, due to Bundler::Plugin::Index::SourceConflict` / `(Source(s) \`conflict-type\` declared by plug_b are already registered.)` | 29 | index 仍只有 plug_a；**源目录 `plug_b` 被删除** |
+| 再 `plugin install plug_cb --path plug_cb`（同命令名） | `Resolving dependencies...` | `Failed to install plugin \`plug_cb\`, due to` / `Bundler::Plugin::Index::CommandConflict (Command(s) \`conflictcmd\` declared by` / `plug_cb are already registered.)`（80 列折行） | 29 | index 仍只有 plug_ca；**源目录 `plug_cb` 被删除** |
+
+- 两版参考逐字相同（Windows 下行尾 CRLF，差分按 N2 归一化）。
+- 删除机制：`plugin.rb:298-306` 的失败回滚走 `uninstall`，对 path source 而言 `spec.full_gem_path` 就是 `--path` 指定的源目录本身（`plugin/installer/path.rb`），因此注册失败会把该目录 `rm_rf`。
+- 同一机制也解释 MalformattedPlugin 路径：插件声明非法时源目录同样被删除（`plugin.rb:292-298`）。因此本任务把删除放在所有 `--path` 安装失败出口，而不是只放在两种冲突上。
+- 同源 hook 同名不算冲突（`plugin.rb:215-219` 追加、`index.rb:65-68` 对插件名去重），无第三类夹具。
+
+### 实现
+
+- `src/celerite/cli/commands_surface.cr`：新增 `private def self.remove_failed_plugin_source(root_dir : String)`（`FileUtils.rm_rf` + `Dir.exists?` 守卫，注释指向 `plugin.rb:298-306`、`plugin/installer/path.rb`），在 `--path` 分支的三处 `return 29` 之前调用：`declared[:error]`（MalformattedPlugin）、`CommandConflict`、`SourceConflict`。
+- 远端安装路径（`plugin_install_remote`）不动：那条路径没有源目录，参考也不会删除任何用户目录。
+
+### 夹具（`script/differential`，双 profile）
+
+- `fixtures/differential/plugin-conflict-source/`：`extra/plug_a`、`extra/plug_b` 各注册 `source "conflict-type"`；`command` 依次 `plugin install plug_a --path plug_a`、`plugin install plug_b --path plug_b`；`stderr-contains` 断 SourceConflict 两行。
+- `fixtures/differential/plugin-conflict-command/`：`extra/plug_ca`、`extra/plug_cb` 各注册 `command "conflictcmd", <Class>`；`command` 同上；`stderr-contains` 断 CommandConflict 两行。
+- 两者都依赖工程树比对发现「失败插件的源目录被删除」——这是参考唯一可观测的副作用，`stderr-contains` 只覆盖文案。
+- 结果：4.0.24 `5 passed, 0 failed`、2.7.2 `5 passed, 0 failed`（含回归 `plugin-install`、`plugin-source-typed`、`plugin-source-install`）。
+
+### 负对照
+
+- `C:/temp/celerite-pre73`（worktree @ `21d4db7`，重新构建）→ 4.0.24 `0 passed, 2 failed`，差异行：
+  - `FAIL plugin-conflict-source … project tree differs: Only in SANDBOX/project: plug_b`
+  - `FAIL plugin-conflict-command … project tree differs: Only in SANDBOX/project: plug_cb`
+- 说明两条夹具对「源目录删除」有区分力。
+
+### 测试
+
+- `spec/m7_plugin_conflicts_spec.cr` 4 例：source 冲突（exit 29 + 文案 + index 仅 plug_a + plug_b 目录消失 + plug_a 保留）、command 冲突（同上 + index 仅 plug_ca）、成功安装保留源目录、失败后 index 与安装前逐字相同。
+- 注意：spec 进程需要把 `TEMP`/`TMP` 指到工作区内（`with_project` 会在 `TEMP` 下建工程目录，沙箱拒绝在工作区外写 `.bundle/plugin`），并显式设置 `CELERITE_BRIDGE_SERVER`。
+
+### 已声明差异
+
+- 交互式冲突之外的失败退出码未逐一取证：本次只固定 MalformattedPlugin / CommandConflict / SourceConflict 三条，其他 `--path` 失败分支（如 `invalid gemspec`）未取 oracle。
+- 插件源目录删除是参考的破坏性副作用，我们按参考实现；若将来参考改掉，这里需要同步。
