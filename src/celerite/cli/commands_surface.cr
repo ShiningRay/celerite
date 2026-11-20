@@ -2083,6 +2083,7 @@ module Celerite
           # friendly_errors wraps to the terminal width (friendly_errors.rb:31-35
           # passes `wrap: true`).
           put_plugin_install_failure(stderr, info.name, error)
+          remove_failed_plugin_source(root_dir)
           return 29
         end
         conflict_command = declared[:commands].find do |command|
@@ -2093,6 +2094,7 @@ module Celerite
           message = "Failed to install plugin `#{info.name}`, due to Bundler::Plugin::Index::CommandConflict " \
                     "(Command(s) `#{conflict}` declared by #{info.name} are already registered.)"
           stderr.puts Commands.word_wrap(message, CLI.terminal_width)
+          remove_failed_plugin_source(root_dir)
           return 29
         end
         merged_commands = registered.dup
@@ -2105,6 +2107,7 @@ module Celerite
           message = "Failed to install plugin `#{info.name}`, due to Bundler::Plugin::Index::SourceConflict " \
                     "(Source(s) `#{conflict}` declared by #{info.name} are already registered.)"
           stderr.puts Commands.word_wrap(message, CLI.terminal_width)
+          remove_failed_plugin_source(root_dir)
           return 29
         end
         # Source types a plugin registers through `Bundler::Plugin::API.source`
@@ -2228,6 +2231,18 @@ module Celerite
     private def self.put_plugin_install_failure(stderr : IO, name : String, cause : String) : Nil
       message = "Failed to install plugin `#{name}`, due to Bundler::Plugin::MalformattedPlugin (#{cause})"
       stderr.puts Commands.word_wrap(message, CLI.terminal_width)
+    end
+
+    # `plugin.rb:298-306` rolls a failed install back through `uninstall`, and
+    # for a `--path` plugin the spec's `full_gem_path` is the source directory
+    # itself, so the reference deletes the directory it was asked to install
+    # from whenever registration fails (`plugin/installer/path.rb`). Observed
+    # for MalformattedPlugin, CommandConflict and SourceConflict on both
+    # reference versions; the differential fixtures `plugin-conflict-source`
+    # and `plugin-conflict-command` pin that removal through the project tree.
+    private def self.remove_failed_plugin_source(root_dir : String) : Nil
+      FileUtils.rm_rf(root_dir) if Dir.exists?(root_dir)
+    rescue
     end
 
     # `local_only` mirrors `Plugin::Installer#install_definition` for a typed
