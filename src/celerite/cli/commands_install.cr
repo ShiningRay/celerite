@@ -202,7 +202,19 @@ module Celerite
         config.set_temporary("path", "bundle")
       end
       if config.frozen? && !definition.lockfile_exists?
-        raise ProductionError.new("Frozen mode is set, but there's no lockfile")
+        # `cli/install.rb:29-35` (4.0.24) / `:27-34` (2.7.2) name the setting that
+        # forced frozen mode: 4.x lets `frozen` override `deployment`, 2.x uses
+        # `flag ||=`, so `deployment` wins there.
+        deployment = config["deployment"] == true
+        frozen = config["frozen"] == true
+        flag = if profile_2_x?
+                 deployment ? "deployment setting" : "frozen setting"
+               else
+                 frozen ? "frozen setting" : "deployment setting"
+               end
+        raise ProductionError.new(
+          "The #{flag} requires a lockfile. Please make sure you have checked " \
+          "your #{relative_lockfile_path(definition)} into version control before deploying.")
       end
       # M7(4): fail fast on explicitly configured unsupported settings
       # (and warn-but-continue for proxy env vars).
@@ -971,6 +983,19 @@ module Celerite
         filtered << arg
       end
       filtered
+    end
+
+    # `SharedHelpers.relative_lockfile_path` (shared_helpers.rb:223-232): the
+    # lockfile path relative to the process cwd; an absolute path is the
+    # fallback when cwd and lockfile sit on different drives.
+    private def self.relative_lockfile_path(definition : Definition) : String
+      fallback = File.join(File.dirname(definition.gemfile_path), "Gemfile.lock").gsub('\\', "/")
+      lockfile = definition.lockfile_path || fallback
+      begin
+        Path[lockfile].relative_to(Path[Dir.current]).to_s.gsub('\\', "/")
+      rescue ArgumentError
+        lockfile
+      end
     end
 
     private def self.run_cache(stdout : IO, stderr : IO, rest : Array(String)) : Int32
