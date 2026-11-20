@@ -32,7 +32,8 @@
 #      "compiled and loadable", not byte-identical output.
 #   N10 an optional `env` fixture file (one KEY=VALUE per line) is exported for
 #      BOTH sides on top of the isolated defaults; spaces/empty values allowed,
-#      fixtures without it are unchanged.
+#      values are placeholder-substituted like fixture files, and fixtures
+#      without it are unchanged.
 # Note (build PATH): build the CLI with the ORIGINAL PATH (Git/msys64/Ruby
 #   order), NOT the N8-normalized PATH: prepending the Ruby-bundled toolchain
 #   makes `cc` fail with "liblto_plugin.dll not found" (toolchain resolution,
@@ -236,7 +237,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
       sandbox="$ref_sandbox"; [ "$side" = "cel" ] && sandbox="$cel_sandbox"
       while IFS= read -r ef; do
         sed -i -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@PLUGIN_INDEX_DIR@|$plugin_index_dir|g" -e "s|@LOCKED_RUBY_INDEX_DIR@|$locked_ruby_index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@PLUGIN_GEM_INDEX_DIR@|$plugin_gem_index_dir|g" -e "s|@LEGACY_INDEX_DIR@|$legacy_index_dir|g" -e "s|@RUBY_VERSIONS_INDEX_DIR@|$ruby_versions_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g" "$ef"
-      done < <(find "$sandbox/project" -type f \( -name "*.rb" -o -name "*.txt" -o -name "*.gemfile" \) 2>/dev/null)
+      done < <(find "$sandbox/project" -type f \( -name "*.rb" -o -name "*.txt" -o -name "*.gemfile" -o -path "*/.bundle/config" \) 2>/dev/null)
     done
   fi
 
@@ -320,6 +321,9 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
   if [ -f "$fixture_dir/env" ]; then
     while IFS= read -r line <&9; do
       [ -z "$line" ] && continue
+      # Environment values may point at fixture indexes
+      # (`BUNDLE_MIRROR__HTTPS://RUBYGEMS.ORG=file:///@INDEX_DIR@`).
+      line="$(printf '%s' "$line" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
       fixture_env+=("$line")
     done 9< "$fixture_dir/env"
   fi

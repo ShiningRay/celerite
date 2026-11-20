@@ -23,6 +23,21 @@ module Celerite
     # ------------------------------------------------------------------
     # update: resolve with the named gems (or all) unlocked
     # ------------------------------------------------------------------
+    # `cli/update.rb:14-16` forwards `--bundler` to the self-manager: a bare
+    # flag asks for everything `>= #{Bundler::VERSION}`, an explicit value is
+    # used verbatim. Returns nil when the flag is absent, "" when it is bare.
+    private def self.update_bundler_target(rest : Array(String)) : String?
+      rest.each_with_index do |arg, i|
+        if arg == "--bundler"
+          value = rest[i + 1]?
+          return "" if value.nil? || value.starts_with?("-")
+          return value
+        end
+        return arg.split("=", 2)[1] if arg.starts_with?("--bundler=")
+      end
+      nil
+    end
+
     def self.update(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       with_gemfile_overrides(rest) do
         run_update(stdout, stderr, rest)
@@ -54,7 +69,10 @@ module Celerite
       sources = flag_values(rest, "--source")
       group_values = flag_values(rest, "--group") + flag_values(rest, "-g")
       ruby_flag = rest.includes?("--ruby")
-      update_bundler = flag_value(rest, "--bundler")
+      # A bare `--bundler` is a truthy option in the reference (empty string),
+      # so it must count as a scoped update and not trigger the bare-update
+      # deprecation notice.
+      update_bundler = !update_bundler_target(rest).nil?
       all_flag = rest.includes?("--all")
       full_update = gems.empty? && sources.empty? && group_values.empty? && !ruby_flag && !update_bundler
       if !full_update && all_flag
@@ -126,6 +144,55 @@ module Celerite
         resolution = Resolution.new(definition, unlock, bridge)
         resolution.progress = stdout
         resolution.ruby_update = rest.includes?("--ruby")
+        # `SelfManager#update_bundler_and_restart_with_it_if_needed`
+        # (self_manager.rb:33-46): resolve the target against the rubygems
+        # remote before any update work; a missing target is a hard error
+        # (cli/update.rb:111-116). We record the target instead of exec'ing a
+        # different bundler (declared divergence).
+        emit_bundler_fetch = false
+        if target = update_bundler_target(rest)
+          current = resolution.bridge_bundler_version
+          current_version = Gem::Version.new(current)
+          bare = target.empty?
+          # 4.x defaults a bare flag to `>= #{Bundler::VERSION}`; 2.7.2 uses
+          # the `lazy_default` `> 0.a` (cli.rb:332 vs :266).
+          requirement_text = if bare
+                               current.starts_with?("2.") ? "> 0.a" : ">= #{current}"
+                             else
+                               target
+                             end
+          requirement = begin
+            Gem::Requirement.new(requirement_text)
+          rescue
+            stderr.puts "The `bundle update --bundler` target version (#{requirement_text}) does not exist"
+            return 15
+          end
+          # `SelfManager#find_latest_matching_spec` (self_manager.rb:140-153)
+          # always consults the remote; 2.7.2 falls back to the installed
+          # bundler for its non-specific `> 0.a` default, 4.x does not.
+          candidate = resolution.bundler_versions(requirement).last?
+          if bare && current.starts_with?("2.")
+            candidate = current_version if candidate.nil? || candidate < current_version
+          elsif !bare && candidate.nil? && requirement.satisfied_by?(current_version)
+            candidate = current_version
+          end
+          if candidate.nil?
+            stderr.puts "The `bundle update --bundler` target version (#{requirement_text}) does not exist"
+            return 15
+          end
+          needs_update = requirement.specific? ? candidate != current_version : current_version < candidate
+          if needs_update
+            stdout.puts "Updating bundler to #{candidate}."
+            resolution.bundler_version_to_lock = candidate.to_s
+          end
+          # The reference's self-manager and the update resolution each own a
+          # source instance, so both print the index line; our resolution
+          # caches the fetch, so replay the second line here.
+          emit_bundler_fetch = true
+        end
+        if emit_bundler_fetch
+          stdout.puts "Fetching source index from #{resolution.primary_remote}"
+        end
         lock = ProcessLock.lock(InstallPaths.install_path(config))
         unless cooldown_flag_valid?(rest, stderr, resolution.bridge_bundler_version)
           return 15

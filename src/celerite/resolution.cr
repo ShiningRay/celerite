@@ -257,6 +257,23 @@ module Celerite
       @bundler_cache_path = query_bundler_cache_path
     end
 
+    # `bundle update --bundler <target>` records the target in BUNDLED WITH
+    # without switching the interpreter profile (the reference execs a new
+    # bundler; we keep the running one). Kept separate from
+    # `bridge_bundler_version`, which drives 2.x vs 4.x lockfile formatting.
+    property bundler_version_to_lock : String? = nil
+
+    # `SelfManager#resolve_update_version_from` (self_manager.rb:47-65) asks
+    # the rubygems remote for published `bundler` versions; installed or
+    # default gems are not candidates for an update target.
+    def bundler_versions(requirement : Gem::Requirement) : Array(Gem::Version)
+      index_specs_from_remote("bundler")
+        .map(&.version)
+        .select { |version| requirement.satisfied_by?(version) }
+        .uniq
+        .sort
+    end
+
     @non_gem_sources : Hash(String, SourceInfo)?
     @locked_specs : Array(LockedSpec)?
     @locked_by_name : Hash(String, Array(LockedSpec))?
@@ -1923,7 +1940,7 @@ module Celerite
         if !profile_is_2_x? && (path = @bundler_cache_path)
           if File.file?(path)
             sha = Digest::SHA256.hexdigest(File.read(path))
-            checksum_section.entries << Lockfile::ChecksumEntry.new("bundler", @bridge_bundler_version, nil, ["sha256=#{sha}"])
+            checksum_section.entries << Lockfile::ChecksumEntry.new("bundler", (@bundler_version_to_lock || @bridge_bundler_version), nil, ["sha256=#{sha}"])
           end
         end
         # Dedupe defense: collapse any duplicate (name, version, platform)
@@ -1946,7 +1963,7 @@ module Celerite
         sections << Lockfile::TypedSection.new(Lockfile::RubySection.new(ruby_line, indent))
       end
 
-      sections << Lockfile::TypedSection.new(Lockfile::BundledWithSection.new(@bridge_bundler_version, indent))
+      sections << Lockfile::TypedSection.new(Lockfile::BundledWithSection.new(@bundler_version_to_lock || @bridge_bundler_version, indent))
 
       Lockfile::Data.new(sections, @definition.lockfile_path, true)
     end
