@@ -5436,3 +5436,22 @@ glob 归一化另测：`--glob "sub/*.gemspec"`、`--glob "{a,b}.gemspec"` 逐�
 - 测试与证据：夹具 `update-redownload-output`（`install --quiet` 后 `update --redownload`，stdout 全量比较）双 profile PASS；spec `spec/m7_update_redownload_spec.cr` 3 例（缓存 / 删缓存 / 首次）全过；回归 17 个 fixture 双 profile 全过；反假绿 worktree `a91759b` 上该夹具 FAIL，差异正是多出的 `Fetching json_pure 2.8.1`。
 - 声明差异：缓存包被删时参考 exit 5 `GemNotFound`，celerite 仍重新下载并 exit 0（本轮只改打印条件，未改下载行为）；`vendor/cache` 命中路径未单独设夹具；`install --redownload` 在两侧均不存在。
 - 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen src/cli.cr` 0、`git diff HEAD --check` 0、`crystal build src/cli.cr -o bin/celerite.exe` 0。
+
+## 2026-11-20（M7(2) task-62：四个「已声明未取 oracle」的组合收口）
+
+本轮把 task-54/58/59/60 里声明为「未验证」的四个组合逐一取双侧 oracle：两处已对齐、一处本该修（已修）、一处不可观测。
+
+| 组合 | 参考（4.0.24 / 2.7.2） | celerite 修前 | 判定 |
+| --- | --- | --- | --- |
+| `lock --lockfile custom.lock --print` | exit 0；stdout 即整份锁体（无 `Writing lockfile` 行）；不写 `custom.lock`；默认 `Gemfile.lock` 不变；输出 CRLF | 同左（LF） | 已对齐（仅行尾差异，夹具走 N2 归一化） |
+| `lock --lockfile ./nodir/x.lock` | exit 1；stdout 先打 `Writing lockfile to <abs>/nodir/x.lock`；不建目录、不写锁；stderr 为 `--- ERROR REPORT TEMPLATE` + `Errno::ENOENT: No such file or directory @ rb_sysopen - <abs>` + 回溯 + `--- TEMPLATE END` + 「Unfortunately…」段 | exit 1、stdout 相同，但 stderr 只有一行 `celerite internal error: Error opening file with mode 'w': …` | **已修**：改为与参考同形的崩溃报告 |
+| `install --target-rbconfig <存在的文件>` | exit 0；stdout 与锁均与不带该选项一致（纯 Ruby gem） | 同左 | 不可观测，无产品改动 |
+| `install --redownload` | exit 0；`Installing json_pure 2.8.1`；锁不变 | 同左 | 已对齐（回归护栏） |
+
+- 参考锚点：`cli/lock.rb:81-93`（`--lockfile` 只改写入路径）、`definition.rb:437-438`（4.0.24）/ `:408-409`（2.7.2）（`write_lock` 直接 `File.open`，异常交给 friendly errors）、`shared_helpers.rb:106`/`:105`、`cli.rb:278`/`:330`（4.0.24）与 `cli.rb:223`/`:264`（2.7.2）的 `aliases: "--redownload"`、`rubygems.rb:446-450` 与 `rubygems/platform.rb:13-20`（`Gem.set_target_rbconfig` 只刷新 `Gem::Platform.local` / `Gem.platforms`）。
+- 实现：`src/celerite/cli/commands.cr` 的 `run_lock` 两处写入改走 `lockfile_write_result(path, text, stderr)`；失败时由 `errno_header` 把 Crystal 的 `File::NotFoundError` / `File::AccessDeniedError` 映射成参考的 `Errno::ENOENT` / `Errno::EACCES` 头，再输出 `--- ERROR REPORT TEMPLATE … --- TEMPLATE END ---` 与「Unfortunately, an unexpected error occurred, and Bundler cannot continue.」并返回 1。
+- 测试与证据：新增夹具 `lock-lockfile-print`、`lock-lockfile-missing-dir`、`install-target-rbconfig-present`、`install-redownload-alias`，双 profile PASS；`spec/m7_lock_options_spec.cr` 由 4 例扩到 8 例（`--print` 不落盘、缺目录的崩溃报告、两条回归护栏）；回归 `lock-*` 18 项与 `install-fresh` / `install-check` / `install-target-rbconfig-missing` 双 profile 全过。
+- 反假绿：`C:/temp/celerite-pre62`（`1d23b4f`）上只有 `lock-lockfile-missing-dir` FAIL（两条 `stderr-contains` needle 都不满足）；其余三例旧二进制同样 PASS，属纯回归护栏，无区分力。
+- 文档修正：task-60 节末尾「`install --redownload` 在两侧均不存在」已过时——两侧都接受该别名（参考 `cli.rb:278`/`:330`），本轮 item 4 即为证。
+- 声明差异：`--print` 的行尾参考是 CRLF、我方是 LF（夹具按 N2 归一化，未对齐原始字节）；`--target-rbconfig` 对含原生扩展的 gem 仍不可观测（本轮只测纯 Ruby 的 `json_pure`）。
+- 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen src/cli.cr` 0、`crystal build src/cli.cr -o bin/celerite.exe` 0、`git diff HEAD --check` 0。
