@@ -1,0 +1,21 @@
+Gemfile.lock
+GEM
+  remote: file:///@PLATFORM_INDEX_DIR@/
+  specs:
+    platdemo (1.0.0)
+    platdemo (1.0.0-x64-mingw-ucrt)
+
+PLATFORMS
+  x64-mingw-ucrt
+  x64-mingw32
+
+DEPENDENCIES
+  platdemo
+
+CHECKSUMS
+  bundler (@BUNDLER_VERSION@) sha256=16ca64e20816a0cf151a948fb141d788602996d2b4d73577b74388fe84fa98bc
+  platdemo (1.0.0)
+  platdemo (1.0.0-x64-mingw-ucrt)
+
+BUNDLED WITH
+  @BUNDLER_VERSION@

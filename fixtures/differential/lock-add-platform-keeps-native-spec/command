@@ -1,0 +1,2 @@
+lock
+lock --add-platform x64-mingw32

@@ -1,0 +1,15 @@
+GEM
+  remote: file:///@PLATFORM_INDEX_DIR@/
+  specs:
+    platdemo (1.0.0)
+    platdemo (1.0.0-x64-mingw-ucrt)
+
+PLATFORMS
+  x64-mingw-ucrt
+  x64-mingw32
+
+DEPENDENCIES
+  platdemo
+
+BUNDLED WITH
+   @BUNDLER_VERSION@
