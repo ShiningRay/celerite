@@ -1,0 +1,2 @@
+Your bundle only supports platforms [] but your local platform is
+bundle lock --add-platform

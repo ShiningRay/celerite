@@ -90,8 +90,18 @@ module Celerite
       definition = Definition.build
       Commands.validate_runtime!(definition)
       config = definition.config
-      if config.frozen? && !definition.lockfile_exists?
-        raise ProductionError.new("Frozen mode is set, but there's no lockfile")
+      # A full update in frozen/deployment mode with no lockfile stops in
+      # `Definition#validate_platforms!` (definition.rb:471-473): the platform
+      # list is empty, so `current_platform_locked?` is false and the
+      # add-platform error fires (measured on 4.0.24 and 2.7.2, exit 16). A
+      # scoped update instead fails later with "This Bundle hasn't been
+      # installed yet." (exit 22), so it must not be preempted here.
+      if full_update && config.frozen? && !definition.lockfile_exists?
+        local_platform = Gem::Platform.local.to_s
+        raise ProductionError.new(
+          "Your bundle only supports platforms [] but your local platform is " \
+          "#{local_platform}. Add the current platform to the lockfile with\n" \
+          "`bundle lock --add-platform #{local_platform}` and try again.")
       end
       # M7(4): fail fast on explicitly configured unsupported settings
       # (and warn-but-continue for proxy env vars).
