@@ -5689,3 +5689,44 @@ oracle 用同一份 `file://` 索引（`fixtures/gem-index`，预装并锁 `json
 **夹具**：`fixtures/differential/install-local-index-unreachable/`（`source "file:///@INDEX_DIR@"` + `gem "json_pure", "2.6.0"` + `extra/vendor/cache/.keep`，`command` = `install --local`，`stderr-contains` 钉 `in cached gems or installed locally`），双 profile exit 7 PASS；`install-local` / `install-local-vendor-cache` / `outdated-local` 回归 PASS。
 
 **声明**：`--local` 与 `--prefer-local` 组合、`cache_path` 自定义为绝对路径时的文案未单独取值；`Gem::Specification.stubs` 与桥接侧 `installed_specs` 的差异仍靠 `GEM_HOME` 过滤（宿主装有同名 gem 时以 spec 的 `GEM_HOME` 隔离为准）。
+
+## 2026-11-21（M7 task-70：`pristine` 缺缓存、`info`/`show`/`list` 的多余位置参数）
+
+三条同族输出面分歧，oracle 用 `.tmp-scratch/task70/oracle.sh` 在双 profile 上同时取参考与实现两测结果（`file://` 索引用 `cygpath -m` 形式）。
+
+| 场景 | 参考（4.0.24 / 2.7.2） | 修前实现 | 修后实现 |
+| --- | --- | --- | --- |
+| `pristine`，缓存包已删 | exit 0；stdout 空；stderr `Failed to pristine json_pure (2.6.0). Cached gem C:/…/cache/json_pure-2.6.0.gem does not exist.` | exit 0；stdout `Installing json_pure 2.6.0`；stderr 同上但路径为 `C:\…` | exit 0；stdout 空；stderr 与参考逐字相同（正斜杠） |
+| `info json_pure extra` | exit 15；`ERROR: "bundle info" was called with arguments ["json_pure", "extra"]` + `Usage: "bundle info GEM [OPTIONS]"` | exit 0；打印该 gem 的元信息块 | exit 15；两行与参考逐字相同 |
+| `show json_pure extra` | exit 15；`ERROR: "bundle show" …` + `Usage: "bundle show GEM [OPTIONS]"` | exit 0；打印 gem 路径 | exit 15；两行与参考逐字相同 |
+| `list extra` | exit 15；`ERROR: "bundle list" was called with arguments ["extra"]` + `Usage: "bundle list"` | exit 15；但 usage 为 `Usage: "bundle list [OPTIONS]"` | usage 改为无后缀，与参考逐字相同 |
+
+### N1 `pristine` 缺缓存包
+
+- 参考 `cli/pristine.rb:26-30`：`unless File.exist?(cached_gem)` → `ui.error("Failed to pristine #{gem_label}. Cached gem #{cached_gem_path} does not exist.")` → `next`；路径来自 `Bundler.bundle_path.join("cache", spec.full_name + ".gem")`，打印时为正斜杠。
+- 实现：`src/celerite/cli/commands_surface.cr:2674-2684` 的 `unless File.file?(gem_file)` 分支补 `next`（不再落到 `Installing` / `installer.reinstall`），消息里的路径改为 `gem_file.gsub('\\', "/")`。
+- 夹具 `pristine-missing-cache`：`install --quiet` + `pristine`，`bundle-preset` 只预置 `gems/` 与 `specifications/` 而不预置 `cache/`，`stderr-contains` 钉 `does not exist`；stdout 走整段比较，因此多出的 `Installing` 行必然使夹具失败。
+
+### N2 `info`/`show` 的多余位置参数
+
+- 参考 `cli.rb` 的 `desc "info GEM [OPTIONS]"` / `desc "show GEM [OPTIONS]"`：Thor 在 `run` 之前按参数表拒绝第二个位置参数（`Thor::UnknownArgumentError` → exit 15），横幅用命令自己的 usage 串。
+- 实现：`src/celerite/cli/commands.cr:661-674` 的 `NO_ARG_USAGE` 新增 `"info" => "GEM [OPTIONS]"`、`"show" => "GEM [OPTIONS]"`，并在 `show_info` 于 `verbose_listing` 之前调用既有的 `reject_positional_arguments(..., max_positionals: 1)`；文案生成与 `clean`/`platform`/`env` 走同一套。
+- 夹具 `info-extra-argument`、`show-extra-argument`：exit=15 + `stderr-contains` 两行（ERROR 与 usage）。
+
+### N3 `list` 的 usage 串
+
+- 参考 `cli.rb:364`：`bundle list` 无语义位置参数，拒绝多余参数时打印 `Usage: "bundle list"`（无 `[OPTIONS]`）。
+- 实现：`src/celerite/cli/commands.cr:669` 的 `NO_ARG_USAGE["list"]` 由 `"[OPTIONS]"` 改为 `""`；其它命令未动。
+- 夹具 `list-extra-argument`：exit=15 + `stderr-contains` 两行（含 `Usage: "bundle list"`，并以 `should_not contain("[OPTIONS]")` 在 spec 侧锁定）。
+
+### 证据
+
+- 差分：四个新夹具 4.0.24 **4 passed 0 failed**、2.7.2 **4 passed 0 failed**；`pristine|info|show|list` 家族 32 个夹具 4.0.24 **31 passed 0 failed 1 skipped**（`show-outdated-verbose-272` documented deferral）、2.7.2 **32 passed 0 failed**。
+- spec `spec/m7_extra_arguments_spec.cr` 4 例 0 失败。
+- 反假绿：`C:/temp/celerite-pre70` @ `5e7239d` → **0 passed / 4 failed**，失败行为 `> Installing json_pure 2.6.0`（pristine）、`stderr-contains differs: needle=was called with arguments ["json_pure", "extra"]`（info/show）、`stderr-contains differs: needle=Usage: "bundle list"`（list）。
+
+### 已声明差异
+
+- `pristine <name>`（指定 gem 名）路径未单独取 oracle，只有全量 `pristine` 有夹具。
+- `info`/`show` 的多余参数与 `--version`/`--paths` 组合未逐一取 oracle（当前行为：未知开关先报，再报参数个数）。
+- 参考在 `pristine` 缺缓存时仍会处理后续 gem；夹具只覆盖单 gem 项目，多 gem 时逐条 `next` 的行为未 fixture 化。
