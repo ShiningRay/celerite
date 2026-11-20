@@ -5475,3 +5475,43 @@ glob 归一化另测：`--glob "sub/*.gemspec"`、`--glob "{a,b}.gemspec"` 逐�
 - 回归：`binstubs`、`binstubs-shebang`、`install-fresh`、`install-check`、`plugin-install` 双 profile 全 PASS。
 - 声明差异：`binstubs-template` 依赖宿主机行为（Windows 才生成 `.cmd`），属既有 Windows-only 夹具族；模板两版暂时逐字相同，日后上游分化需各自更新。
 - 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen src/cli.cr` 0、`crystal build src/cli.cr -o bin/celerite.exe` 0、`git diff HEAD --check` 0。
+
+## 2026-11-20（M7(3) task-64 项 1：`BUNDLE_FROZEN`/`BUNDLE_DEPLOYMENT` 无锁时的 install 文案）
+
+- 参考 `.upstream-specs/v4.0.24/bundler/lib/bundler/cli/install.rb:29-35`：`flag = "deployment setting"` / `"frozen setting"`，抛 `ProductionError`：
+  `The <flag> requires a lockfile. Please make sure you have checked <relative Gemfile.lock> into version control before deploying.`，80 列折行，写 stderr，exit 16。
+- 版本差异：4.0.24 先判 `deployment` 再判 `frozen`，两者同设时 **frozen 胜**；2.7.2 用 `flag ||=`，**deployment 胜**。
+- oracle（两侧各三格，均 exit 16、stdout 空、stderr 逐字节相同）：
+
+| 环境 | 4.0.24 | 2.7.2 |
+| --- | --- | --- |
+| `BUNDLE_FROZEN=true` | `The frozen setting requires a lockfile. Please make sure you have checked\nyour Gemfile.lock into version control before deploying.` | 同 4.0.24 |
+| `BUNDLE_DEPLOYMENT=true` | `The deployment setting requires a lockfile. …`（首行折在 `checked` 后） | 同 |
+| 两者同设 | frozen 文案 | deployment 文案 |
+| `BUNDLE_FROZEN=true bundle check` | 仍是 `Frozen mode is set, but there's no lockfile` | 同 |
+
+- 实现：仅改 install 路径（`src/celerite/cli/commands_install.cr`），按 profile 选取 flag，并用新增的 `self.relative_lockfile_path(definition)` 复刻 `shared_helpers.rb:223-232`（`Path#relative_to` 仅跨盘抛 `ArgumentError`，此时回退绝对路径）。`check`（`src/celerite/cli/commands.cr:1410`）与 `update`（`src/celerite/cli/commands_surface.cr:94`）的旧文案**刻意保留**——实测参考在这两条路径上仍是旧行为。
+- 测试：夹具 `install-frozen-env-nolockfile`、`install-deployment-env-nolockfile`（`env` 文件传 `BUNDLE_*`，`stderr-contains` 断两行原话），双 profile PASS；`spec/m7_frozen_nolockfile_message_spec.cr` 5 例（含两种写法、两版同设取舍、check 回归）。
+- 反假绿：`C:/temp/celerite-pre64a`（`38e42b6`）上两夹具均 FAIL（旧文案 `Frozen mode is set, but there's no lockfile`）。
+- 已声明差异：`BUNDLE_FROZEN=true update --all` 且无锁时，参考 exit 16 打平台缺项与 `bundle lock --add-platform x64-mingw-ucrt` 提示，我方仍打旧 frozen 文案；本条未修，留作后续条目。
+
+## 2026-11-20（M7(3) task-64 项 2：`lock --add-platform` 保留原生 spec 行与 CHECKSUMS）
+
+- 复现口径：`Gemfile` = `source "file:///…/fixtures/gem-index-platform"` + `gem "platdemo"`（`platdemo` 同时有 `1.0.0`（ruby）与 `1.0.0-x64-mingw-ucrt` 两个 gem）。
+- oracle（`.tmp-scratch/task64-platform/`，两侧均隔离 `HOME`/`BUNDLE_PATH`/`BUNDLE_APP_CONFIG`）：
+
+| 命令 | 4.0.24 | 2.7.2 |
+| --- | --- | --- |
+| `lock` | 一行 `platdemo (1.0.0-x64-mingw-ucrt)`；PLATFORMS 仅 `x64-mingw-ucrt`；CHECKSUMS 该行无 digest | 同行同 PLATFORMS；无 CHECKSUMS |
+| `lock --add-platform x64-mingw32` | **两行** `platdemo (1.0.0)` + `platdemo (1.0.0-x64-mingw-ucrt)`；PLATFORMS 两平台；CHECKSUMS 两行均无 digest | 同行；无 CHECKSUMS |
+| 其后 `install` | `Bundle complete! 1 Gemfile dependency, 1 gem now installed.`，只 `Fetching/Installing platdemo 1.0.0 (x64-mingw-ucrt)`；stderr `[DEPRECATED] Found x64-mingw32 in lockfile, which is deprecated and will be removed in the future.`；锁中 mingw 行获 `sha256=f02daf29…`，ruby 行仍无 digest | `2 gems now installed`（计入 bundler）；stderr `… which is deprecated. Removing it. Support for x64-mingw32 will be removed in Bundler 4.0.`；重写锁时删去 `x64-mingw32`，两行 spec 保留 |
+| `--add-platform ruby` | 同上两行（ruby 行来自该路径） | 同上 |
+
+- 机制：参考解析只产出一个可安装变体，多出的 ruby 行由 `resolver.rb:88-89` 的 `SpecSet.new(resolved_specs).specs_with_additional_variants_from(@base.locked_specs)` 从**已锁 spec 集**补入（`spec_set.rb:184-185`、`:301-309`）；补入行不进安装列表，`cli/install.rb:89-96` 的计数取 `definition.specs`，因此不计入 “gems now installed”。
+- 实现：`src/celerite/resolution.cr` 新增 `best_match_variants`（逐平台取最匹配变体、按 name/version/platform 去重）与 `lock_extra_specs`；`decisions_to_specs` 与 `materialize_locked` 都填充它，`generated_lockfile` 的 GEM 段与 CHECKSUMS 段各并入一行，安装工作列表与汇总计数只取 `@resolved_specs`，故不受影响。`x64-mingw32` 与 `x64-mingw-ucrt` 互不 `match?`（`platform.cr:150-167` 要求 os 相等），这正是参考回退到 ruby 行的原因。
+- 弃用告警属**锁解析副作用**（`lockfile_parser.rb:157-159` / `:144-155`），由 `src/celerite/definition.cr` 的 `normalize_legacy_mingw_platform` 复刻：4.x 每次解析都告警；2.7.x 非 frozen 时改写平台并告警，frozen 不动。告警经 `Definition.default_warning_sink`（`CLI.run` 绑定到命令 stderr）输出。
+- 测试：新夹具 `lock-add-platform-keeps-native-spec`（`file-equals-4.0.24`/`file-equals-2.7.2` 断整份锁）与 `install-deprecated-platform-warning`（`stderr-contains` 断告警；stderr 为 contains-only，属既有 N10 归一化）；`spec/m7_add_platform_spec.cr` 4 例（两行锁、只装一个且计数不变、2.7.2 复用路径与平台删减、二次 lock 不重复）。
+- 反假绿：`C:/temp/celerite-pre64b`（`89492db`）上两夹具均 FAIL——锁缺 `platdemo (1.0.0)` 行，`install` 多出 `Fetching/Installing platdemo 1.0.0` 且计数为 2，stderr 无 `[DEPRECATED]` needle。
+- 回归：`lock-*`、`install-*`、`platform-*`、`checksums-*` 共 66 例，双 profile 各 65 passed / 1 failed；唯一失败 `lock-missing-dependency-edges (install)` 为既有差异（Ruby 4.0.6 将 `net-protocol` 视为 default gem，任务 57 已记录），与本节无关。
+- 已声明差异：`--tls-version` 等与本节无关；本节未覆盖 `lock --add-platform` 与 `--normalize-platforms` 组合、`Gemfile.lock` 由 2.7.2 改写后再交 4.0.24 读取的跨版本序列。
+- 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen src/cli.cr` 0、`crystal build src/cli.cr -o bin/celerite.exe` 0、`git diff HEAD --check` 0。
