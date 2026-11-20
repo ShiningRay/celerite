@@ -1125,9 +1125,21 @@ module Celerite
         return code
       end
       dry_run = rest.includes?("--dry-run")
+      force = rest.includes?("--force")
       definition = Definition.build
       bridge = Bridge::Client.new
       begin
+        # `cli/clean.rb:11-24` refuses to prune a system-wide gem set without
+        # `--force`: with no `path` configured the install root IS the RubyGems
+        # directory, so cleaning would delete every gem outside this bundle.
+        # `--dry-run` never reaches the guard in the reference.
+        if !dry_run && !force &&
+           InstallPaths.use_system_gems?(definition.config, bridge.ruby_environment.default_gem_dir)
+          raise InvalidOptionError.new(
+            "Cleaning all the gems on your system is dangerous! If you're sure " \
+            "you want to remove every system gem not in this bundle, run " \
+            "`bundle clean --force`.")
+        end
         begin
           evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
           RubyRuntime.validate!(evaluation.ruby, bridge.ruby_environment) if evaluation.ruby
