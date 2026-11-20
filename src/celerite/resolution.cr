@@ -1897,6 +1897,14 @@ module Celerite
           version.to_i? || next p
           platform.cpu && platform.os ? "#{platform.cpu}-#{platform.os}" : p
         end.uniq
+        # `SpecSet#normalize_platforms!` also calls `add_extra_platforms!`
+        # (`spec_set.rb:38-40`, `:66-89`): every platform the sources can
+        # completely satisfy whose generic form is `ruby` joins the list. A
+        # pure-Ruby gem therefore adds `ruby` next to the local platform
+        # (measured on 4.0.24 and 2.7.2).
+        if !platforms.includes?("ruby") && @resolved_specs.any? { |spec| spec.platform.nil? || spec.platform == "ruby" }
+          platforms << "ruby"
+        end
       end
       platforms = platforms.reject(&.==("ruby")) + (platforms.select(&.==("ruby")))
       platforms.sort!

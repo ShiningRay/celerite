@@ -963,9 +963,14 @@ module Celerite
     # (`Definition.find_gemfile`/`resolve_lockfile` already prefer the ENV
     # vars). Scope the override to the command body and restore on every exit
     # path, including exceptions.
-    private def self.with_gemfile_overrides(rest : Array(String), &)
+    # `--lockfile` means two different things: `install`/`check` promote it to
+    # `BUNDLE_LOCKFILE` so the definition reads and writes that file, while
+    # `lock` only redirects where the lockfile is *written* and keeps reading
+    # `Bundler.default_lockfile` (`cli.rb:69-77` skips the promotion for
+    # `lock`; `cli/lock.rb:81-93` expands the option for the write path only).
+    private def self.with_gemfile_overrides(rest : Array(String), lockfile_env : Bool = true, &)
       gemfile = flag_value_ornext(rest, "--gemfile")
-      lockfile = flag_value_ornext(rest, "--lockfile")
+      lockfile = lockfile_env ? flag_value_ornext(rest, "--lockfile") : nil
       # The reference validates the switch after Thor but before the definition
       # is built, so a missing file raises `GemfileNotFound` (exit 10) with the
       # expanded path and `not found` on its own line.
@@ -2428,7 +2433,10 @@ module Celerite
       end
       # `--gemfile` validation lives in `with_gemfile_overrides` so every
       # command that accepts the switch reports the same GemfileNotFound.
-      with_gemfile_overrides(rest) do
+      # `--lockfile` is *not* promoted to `BUNDLE_LOCKFILE` here: the reference
+      # reads `Bundler.default_lockfile` and only redirects the write target
+      # (`cli.rb:69-77`, `cli/lock.rb:81-93`).
+      with_gemfile_overrides(rest, lockfile_env: false) do
         run_lock(stdout, stderr, rest)
       end
     end
@@ -2511,6 +2519,11 @@ module Celerite
 
       definition = Definition.build
       unlock : Bool | Array(String) = update_names.empty? ? update : update_names
+      # `lock --lockfile PATH` only redirects where the lockfile is written:
+      # the definition keeps reading the default lockfile, so an existing
+      # `Gemfile.lock` still short-circuits the no-op path (`cli/lock.rb:81-93`
+      # prints `Writing lockfile to <expanded path>` and then writes there).
+      lockfile_write_path = flag_value_ornext(rest, "--lockfile").try { |path| File.expand_path(path) } || definition.lockfile_path
       add_checksums = rest.includes?("--add-checksums")
       normalize_platforms = rest.includes?("--normalize-platforms")
 
@@ -2556,8 +2569,8 @@ module Celerite
         if print_mode
           stdout.print text
         else
-          stdout.puts "Writing lockfile to #{File.expand_path(definition.lockfile_path).gsub(/\\/, "/")}"
-          Lockfile.write(definition.lockfile_path, text, preserve_crlf: preserve_lockfile_crlf?)
+          stdout.puts "Writing lockfile to #{lockfile_write_path.gsub(/\\/, "/")}"
+          Lockfile.write(lockfile_write_path, text, preserve_crlf: preserve_lockfile_crlf?)
         end
         return 0
       end
@@ -2634,9 +2647,9 @@ module Celerite
           # Reference re-resolves BEFORE writing for these flags.
           data = resolution.generated_lockfile
           text = data.to_lock
-          stdout.puts "Writing lockfile to #{File.expand_path(definition.lockfile_path).gsub(/\\/, "/")}"
+          stdout.puts "Writing lockfile to #{lockfile_write_path.gsub(/\\/, "/")}"
         else
-          stdout.puts "Writing lockfile to #{File.expand_path(definition.lockfile_path).gsub(/\\/, "/")}"
+          stdout.puts "Writing lockfile to #{lockfile_write_path.gsub(/\\/, "/")}"
           data = resolution.generated_lockfile
           text = data.to_lock
         end
@@ -2655,7 +2668,7 @@ module Celerite
       if print_mode
         stdout.print text
       else
-        Lockfile.write(definition.lockfile_path, text, preserve_crlf: preserve_lockfile_crlf?)
+        Lockfile.write(lockfile_write_path, text, preserve_crlf: preserve_lockfile_crlf?)
       end
       # 4.0.24: report versions skipped by the cooldown setting (stderr in
       # --print mode, stdout in write mode --pinned reference stream split).
