@@ -1,0 +1,17 @@
+GEM
+  remote: file:///@PLATFORM_INDEX_DIR@/
+  specs:
+    platdemo (1.0.0-x64-mingw-ucrt)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  platdemo
+
+CHECKSUMS
+  bundler (4.0.24) sha256=16ca64e20816a0cf151a948fb141d788602996d2b4d73577b74388fe84fa98bc
+  platdemo (1.0.0-x64-mingw-ucrt) sha256=f02daf2996ea7ff8b3bdbb3ee90e575138a5628b9299edc5dbd43ce4ab81ecd6
+
+BUNDLED WITH
+  4.0.24

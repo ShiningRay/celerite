@@ -1,0 +1,18 @@
+Gemfile.lock
+GEM
+  remote: file:///@PLATFORM_INDEX_DIR@/
+  specs:
+    platdemo (1.0.0)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  platdemo
+
+CHECKSUMS
+  bundler (4.0.24) sha256=16ca64e20816a0cf151a948fb141d788602996d2b4d73577b74388fe84fa98bc
+  platdemo (1.0.0) sha256=05ced368ae1ab4727ec4944aebae1eb40fa4700e7b1d2119826032c8befa941c
+
+BUNDLED WITH
+  4.0.24
