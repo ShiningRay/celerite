@@ -2674,7 +2674,10 @@ module Celerite
             gem_file = File.join(cache_dir, "#{spec.full_name}.gem")
             unless File.file?(gem_file)
               gem_label = "#{spec.name} (#{spec.version})" + (spec.platform && !spec.platform_ruby? ? " (#{spec.platform})" : "")
-              stderr.puts "Failed to pristine #{gem_label}. Cached gem #{gem_file} does not exist."
+              # `cli/pristine.rb:26-30`: report and skip the gem; the resolved
+              # path is printed with forward slashes regardless of platform.
+              stderr.puts "Failed to pristine #{gem_label}. Cached gem #{gem_file.gsub('\\', "/")} does not exist."
+              next
             end
             checksum = lockfile.checksums.find do |c|
               c.name == spec.name && c.version == spec.version

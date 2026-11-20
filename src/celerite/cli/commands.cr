@@ -666,7 +666,9 @@ module Celerite
       "cache"    => "[OPTIONS]",
       "platform" => "[OPTIONS]",
       "fund"     => "[OPTIONS]",
-      "list"     => "[OPTIONS]",
+      "list"     => "",
+      "info"     => "GEM [OPTIONS]",
+      "show"     => "GEM [OPTIONS]",
       "lock"     => "",
       "env"      => "",
       "licenses" => "",
@@ -1763,6 +1765,12 @@ module Celerite
       # object is constructed, so the header and index lines come first.
       # `--verbose` is a class option: `dispatch` strips it from `rest` before
       # the command runs, so the flag arrives through the `verbose` argument.
+      # Thor validates the argument count before `run`, so `bundle info GEM extra`
+      # exits 15 with its own banner (`cli.rb` desc "info GEM [OPTIONS]").
+      if code = reject_positional_arguments(stderr, command, rest, allowed_flags, [] of String, max_positionals: 1)
+        return code
+      end
+
       verbose_listing = command == "show" && (verbose || outdated_deprecated)
 
       names = rest.reject { |a| a.starts_with?("-") }
