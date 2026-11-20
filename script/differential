@@ -318,14 +318,41 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
   # Optional `env` marker: one `KEY=VALUE` per line, exported for BOTH sides
   # (spaces and empty values allowed; absent file keeps the isolated defaults).
   fixture_env=()
+  # `unset:<NAME>` removes a variable from the isolated defaults, which
+  # `=with-empty-value` cannot: Bundler treats an empty `BUNDLE_PATH` as an
+  # explicit path, so a fixture that needs the system-gems branch has to drop
+  # the harness default entirely.
+  fixture_unset=()
   if [ -f "$fixture_dir/env" ]; then
     while IFS= read -r line <&9; do
       [ -z "$line" ] && continue
       # Environment values may point at fixture indexes
       # (`BUNDLE_MIRROR__HTTPS://RUBYGEMS.ORG=file:///@INDEX_DIR@`).
       line="$(printf '%s' "$line" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
+      case "$line" in
+        unset:*)
+          fixture_unset+=(-u "${line#unset:}")
+          continue
+          ;;
+      esac
       fixture_env+=("$line")
     done 9< "$fixture_dir/env"
+  fi
+  # Drop the matching `NAME=…` words from the isolated defaults as well, or the
+  # later assignment simply re-adds the variable we were asked to remove.
+  if [ "${#fixture_unset[@]}" -gt 0 ]; then
+    kept_env=()
+    for entry in "${isolated_env[@]}"; do
+      skip=""
+      for one in "${fixture_unset[@]}"; do
+        [ "$one" = "-u" ] && continue
+        case "$entry" in
+          "$one"=*) skip=1 ;;
+        esac
+      done
+      [ -z "$skip" ] && kept_env+=("$entry")
+    done
+    isolated_env=("${kept_env[@]}")
   fi
 
   # `deploy` exercises deployment mode: same guard, but the "remove the freeze"
@@ -393,7 +420,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
     ref_n=$((ref_n + 1))
     (
       cd "$ref_sandbox/project" || exit 99
-      env "${isolated_env[@]}" "${fixture_env[@]+"${fixture_env[@]}"}" ruby "$bundler_exe" $cmd
+      env "${fixture_unset[@]+"${fixture_unset[@]}"}" "${isolated_env[@]}" "${fixture_env[@]+"${fixture_env[@]}"}" ruby "$bundler_exe" $cmd
     ) > "$work/ref.part.$ref_n.out" 2> "$work/ref.part.$ref_n.err"
     ref_code=$?
   done 3< "$fixture_dir/command"
@@ -410,15 +437,23 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
 
   # Celerite run(s) — same per-command capture.
   : > "$work/cel.out"; : > "$work/cel.err"; cel_code=0; cel_n=0
+  # The isolated defaults assign BUNDLE_PATH inline rather than through
+  # `isolated_env`, so a fixture that asks for `unset:BUNDLE_PATH` has to drop
+  # this word too (an empty value is still an explicit path for Bundler).
+  cel_bundle_env="BUNDLE_PATH=$cel_sandbox/bundle"
+  for one in "${fixture_unset[@]+"${fixture_unset[@]}"}"; do
+    [ "$one" = "BUNDLE_PATH" ] && cel_bundle_env=""
+  done
   while IFS= read -r cmd <&4; do
     [ -z "$cmd" ] && continue
     cmd="$(printf '%s' "$cmd" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@PLUGIN_INDEX_DIR@|$plugin_index_dir|g" -e "s|@LOCKED_RUBY_INDEX_DIR@|$locked_ruby_index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@PLUGIN_GEM_INDEX_DIR@|$plugin_gem_index_dir|g" -e "s|@LEGACY_INDEX_DIR@|$legacy_index_dir|g" -e "s|@RUBY_VERSIONS_INDEX_DIR@|$ruby_versions_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
     cel_n=$((cel_n + 1))
     (
       cd "$cel_sandbox/project" || exit 99
-      env HOME="$cel_sandbox/home" USERPROFILE="$cel_sandbox/home" \
+      env "${fixture_unset[@]+"${fixture_unset[@]}"}" \
+        HOME="$cel_sandbox/home" USERPROFILE="$cel_sandbox/home" \
         GEM_HOME="$cel_sandbox/gems" GEM_PATH="$cel_sandbox/gems" \
-        BUNDLE_PATH="$cel_sandbox/bundle" RUBYOPT="" \
+        ${cel_bundle_env} RUBYOPT="" \
         TMP="$work_tmp_win" TEMP="$work_tmp_win" TMPDIR="$work/tmp" \
         ${frozen_env:+BUNDLE_FROZEN=true} \
         ${deploy_env:+BUNDLE_DEPLOYMENT=true} \

@@ -1,0 +1,2 @@
+Cleaning all the gems on your system is dangerous! If you're sure you want to
+remove every system gem not in this bundle, run `bundle clean --force`.
