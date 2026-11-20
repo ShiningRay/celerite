@@ -5296,3 +5296,27 @@ spec 家族 `m7_git_source_reuse_spec`、`m7_source_lock_options_spec`、`m7_loc
 - `check_home_permissions` 无法在本机取得干净的参考 oracle（`BUNDLE_PATH` 缺 `ruby/<abi>` 时参考自身抛 `Errno::ENOENT`），未实现。
 - `doctor --verbose`、Windows 信号转发未测。
 - 反假绿中 `install-clean-disabled` 类无判别力的情况不适用于本轮三个夹具（旧二进制均 FAIL）。
+## 2026-11-20（M7(3) task-54：`doctor ssl` 与 `diagnose --ssl`）
+
+- 范围：`bundle doctor ssl`（`--host`/`--tls-version`/`--verify-mode`）与 `doctor diagnose --ssl`。参考 `cli/doctor.rb:13-31` 定义 `ssl` 子命令及其三个选项、`diagnose` 的 `--ssl` 布尔开关；`cli/doctor/diagnose.rb:77-79` 在依赖检查之后、dylib 扫描之前以**空选项**调用 `SSL.new({}).run`，因此 diagnose 的 SSL 报告恒指向默认主机 `rubygems.org`。`cli/doctor/ssl.rb:14-24` 先打印解释器 OpenSSL 版本，再依次探测 Bundler（`Bundler::Fetcher`）、RubyGems（`Gem::RemoteFetcher`）、Ruby `net/http`，最后按三条探测结果给出四选一结语；探测失败只 warn，子命令退出码恒 0。
+- oracle（参考 4.0.24 与 2.7.2，隔离 HOME/BUNDLE_PATH）：
+
+| 场景 | 参考 stdout | 参考 stderr | exit |
+| --- | --- | --- | --- |
+| `doctor ssl --help` | 空 | `ERROR: "bundle help" was called with arguments ["doctor", "ssl"]` + `Usage: "bundle help [COMMAND]"` | 15 |
+| `doctor ssl --host no-such-host.invalid` | `Here's your OpenSSL environment:` 空行、`OpenSSL:       4.0.2`、`Compiled with: OpenSSL 3.6.3 9 Jun 2026`、`Loaded with:   OpenSSL 3.6.3 9 Jun 2026`、空行、`Trying connections to https://no-such-host.invalid:` | `Bundler:       failed …`、`RubyGems:      failed …`、`Ruby net/http: failed` + `Unfortunately…` + 完整错误块 | 0 |
+| `doctor ssl`（默认 rubygems.org） | 同上 + `Bundler:       success`、`Ruby net/http: success` + 结语 | 视网络/CA 而定 | 0 |
+| `doctor diagnose --ssl --host x` | 空 | `ERROR: "bundle doctor diagnose" was called with arguments ["--host", "x"]` + `Usage: "bundle doctor diagnose [OPTIONS]"` | 15 |
+| `doctor diagnose --ssl` | `Resolving dependencies...`、`The Gemfile's dependencies are satisfied`、SSL 报告、结语 | 沙箱内参考自身触发 `--- ERROR REPORT TEMPLATE`（`check_home_permissions` 的 `Errno::ENOENT`） | 1（沙箱伪影） |
+
+- 实现：`src/celerite/cli/commands_surface.cr` 新增 `doctor_ssl`（解析三个选项；三个版本行取自 bridge 返回的 Ruby `OpenSSL::VERSION`/`OPENSSL_VERSION`/`OPENSSL_LIBRARY_VERSION`，不用 Crystal 自身常量；Bundler 与 `net/http` 探测走 bridge `ssl_probe`，RubyGems 探测由 Crystal `HTTP::Client` 以默认 CA 校验完成；失败措辞与四选一结语照 `ssl.rb:148-231`；`quiet` 只压 info，不压 warn）；`doctor` 在 `arguments.first? == "ssl"` 时分派，`diagnose --ssl` 在依赖检查后调用同一函数；`--help` 仍由 `commands.cr:91-104` 统一转成 `bundle help doctor ssl`，故 help 语义与 task-53 一致。
+- bridge 协议：`assets/bridge/server.rb` 新增 `ssl_openssl_versions`（返回 Ruby 侧三个 OpenSSL 常量）与 `ssl_probe`（`Net::HTTP` + 可选 `min_version`/`max_version`/`verify_mode`，失败返回异常 class/message/backtrace）；`src/celerite/bridge/client.cr` 对应 `ssl_openssl_versions`/`ssl_probe`，探测超时 10s + 5s RPC 余量。
+- 测试：`fixtures/differential/doctor-ssl-help`（exit 15、两行 stderr 逐字）、`doctor-ssl-bad-host`（stdout 逐字比对 env 块与 `Trying connections…` 行；stderr 用 `stderr-contains` 只断言 `Bundler:       failed` 与 `Ruby net/http: failed`，因为 RubyGems 探测在两侧分别由 Ruby/Crystal 发起，异常措辞不同）、`doctor-diagnose-ssl-host`（exit 15、两行逐字）；4.0.24 与 2.7.2 均 3 passed/0 failed。`spec/m7_doctor_ssl_spec.cr` 5 examples（help、不可达主机的 env 块与 exit 0、`--tls-version`/`--verify-mode` 透传、diagnose 拒绝 `--host`、`diagnose --ssl` 的 OpenSSL 块位于 satisfied 之后且仍以 `No issues found…` 收尾），0 failures；与 `m7_doctor_diagnose_spec.cr` 合并 10 examples/0 failures。
+- 反假绿：`C:/temp/celerite-pre54`（`7116b6c`）构建 EXIT 0；三个新夹具 2 passed/1 failed——`doctor-ssl-bad-host` 失败（缺整段 stdout），`doctor-ssl-help` 与 `doctor-diagnose-ssl-host` 在旧二进制上本就一致（help 走 task-53 的统一路由），因此这两条无判别力，属回归网。
+- 回归：`doctor-diagnose-windows`、`doctor-quiet`、`doctor-help-subcommands`、`issue-satisfied` 两 profile 各 4 passed/0 failed。
+- 门禁：`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`crystal build src/cli.cr -o bin/celerite.exe`、`git diff HEAD --check` 均 EXIT 0（仅既有两处 `Deprecated File.executable?` 警告）。
+- 未验证 / 声明差异：
+  1. `doctor diagnose --ssl` 的结语分支与退出码取决于网络与 CA；参考在本沙箱因 `check_home_permissions` 的 `Errno::ENOENT` 退出 1，我方退出 0，故该路径不做差分夹具，仅 spec 断言结构。
+  2. `--tls-version`/`--verify-mode` 已透传，但本机 OpenSSL 3.6 下只验证到错误类（如协议不可用），未与参考逐字比对错误文本。
+  3. `check_home_permissions` 仍未实现（与本任务无关）。
+  4. `doctor ssl` 默认主机路径的结语文本依赖真实连通性，未纳入夹具。
