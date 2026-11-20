@@ -215,4 +215,4 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 1. 修复兼容报告、上游测试退出码与归一化声明，保留可复核的失败基线。**（进行中，2026-11-10 iteration 1：已推送既有 `8e91a2f`；`script/upstream-specs` 移除吞错 `|| true` 使 rspec 失败传播非零退出码，保留 64 failures 基线记录但未重跑 rspec；文档对齐 `ruby_requirement_satisfied?` 现状为“有版本检查实现/未达 M7(1) 验收”，快照项标未验证；diff/spec/differential 未重跑。）**
 2. 用参考 Ruby 生成 Ruby/RubyGems 约束 oracle，实现候选过滤并覆盖不满足、平台变体和安装复核。
 3. 修复安装后 `check/list/show`，再运行双 profile 全部检查。
-4. 之后才实现 M8 的批次求值和完整指纹；每个阶段独立提交、独立 benchmark，不把正确性修复与大型性能重构混为一个变更。
+4. 之后才实现 M8 的批次求值和完整指纹；每个阶段独立提交、独立 benchmark，不把正确性修复与大型性能重构混为一个变更。 **2026-11-20（task-53 补记）：`doctor` 子命令面（`diagnose` 默认、`ssl` 面、help/错误文案、`--quiet`、`--gemfile`）与 Windows dylib 警告对齐参考，见 compat-report task-53 小节。**

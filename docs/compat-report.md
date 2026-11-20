@@ -5259,3 +5259,40 @@ spec 家族 `m7_git_source_reuse_spec`、`m7_source_lock_options_spec`、`m7_loc
 - spec：`spec/m7_clean_after_install_spec.cr` 4 examples（install 清理与位置、未设/显式 false 不清理、update 在 `Bundle updated!` 前清理）。
 - 反假绿：`C:/temp/celerite-pre52`（cb410b6）构建成功，正例夹具 0 passed/1 failed（`Only in SANDBOX/bundle/ruby/4.0.0/specifications: thor-1.3.2.gemspec`），反例夹具 PASS（无判别力，仅回归）。
 - 门禁：`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`git diff HEAD --check` 均 EXIT 0；目标 spec 4/0；差分正反两例双 profile PASS。
+## 2026-11-20（M7(3) task-53：`bundle doctor` 子命令面与 Windows dylib 警告）
+
+**范围**：`doctor`（默认 `diagnose` 子命令）的 help/参数错误文案、`--quiet`、`--gemfile`，以及非 darwin/linux 主机上的 `*.bundle` 警告。`doctor ssl` 的 TLS 诊断仍属下一任务，本轮只保留命令面（不解析 `--ssl` 参数）。
+
+**oracle（4.0.24 与 2.7.2 逐字一致，隔离 HOME/BUNDLE_PATH）**
+
+| 场景 | 参考行为 |
+| --- | --- |
+| `doctor --help` | exit 0，2490 字节 manpage（CRLF），两版本文本相同 |
+| `doctor diagnose --help` | exit 15，stderr `ERROR: "bundle help" was called with arguments ["doctor", "diagnose"]` + `Usage: "bundle help [COMMAND]"` |
+| `doctor nosuchsub` | exit 15，stderr `ERROR: "bundle doctor diagnose" was called with arguments ["nosuchsub"]` + `Usage: "bundle doctor diagnose [OPTIONS]"` |
+| `doctor`（依赖已满足） | exit 0，stdout `The Gemfile's dependencies are satisfied` + `No issues found with the installed bundle` |
+| `doctor --quiet` | exit 0，stdout 为空 |
+| `doctor --gemfile other.rb` | exit 0，输出同默认 |
+| 已装 gem 含 `lib/fake.bundle` | stdout 不变，stderr 每个文件一行 `Dynamic library check not supported on this platform.`；`--quiet` 抑制 stdout 但保留警告 |
+
+**根因与实现**
+
+- `--help` 原在 `src/celerite/cli/commands.cr:91` 被统一截获，`doctor` 看不到子命令 token，导致 `doctor diagnose --help` 直接打印 manpage。参考 `bundler/cli.rb:589-602`：Thor 子命令类的 `--help` 会把子命令名并入 `bundle help` 参数，`doctor diagnose --help` 实为 `bundle help doctor diagnose`，参数过多而报错。现对 `doctor` 收集 `--help` 之前的非开关 token 一并交给 `help`（`commands.cr:91-104`）。
+- `src/celerite/cli/commands_surface.cr:841-865`：`doctor` 去掉自实现的 help 分支；`diagnose` 为默认，其余 token 报参考同款错误；`--gemfile` 临时设置 `BUNDLE_GEMFILE`（`ensure` 恢复）。
+- `doctor_report`（`commands_surface.cr:883-925`）新增 `quiet` 参数：满足时只跳过 stdout；随后对每个已装 gem 扫描 `**/*.bundle`，命中即输出上述警告。`check_home_permissions` 未实现（本机无法构造可触发的 oracle，见“未验证”）。
+- Crystal 的 `File.join` 在 Windows 用 `\`，而 `Dir.glob` 只认 `/`；此处用 `"#{gem_dir.gsub('\\', "/")}/**/*.bundle"` 构造模式（此前的 `File.join` 写法永远匹配不到）。
+
+**测试与证据**
+
+- 夹具：`fixtures/differential/doctor-diagnose-windows/`（预置 json_pure + `lib/fake.bundle`，`command=doctor`）、`doctor-quiet/`、`doctor-help-subcommands/`（`doctor --help`、`doctor diagnose --help`、`doctor nosuchsub`）；4.0.24 与 2.7.2 均 1 passed/0 failed。
+- spec：`spec/m7_doctor_diagnose_spec.cr` 5 examples（manpage 首尾与 `## SYNOPSIS`、子命令 help 报错、未知参数报错、`--quiet` 空输出、dylib 每文件一警告且仍报 clean），0 failures。
+- 反假绿：`C:/temp/celerite-pre53`（`6bb6965`）构建 EXIT 0；三个新夹具全部 FAIL（缺 dylib 警告 / `--help` 段重复 77 行）。
+- 回归差分（`doctor-*`、`issue-*`、`env-*` 10 个夹具）：4.0.24 9 passed/0 failed/1 skipped（`issue-no-gemfile` 既有 deferred），2.7.2 同；相关 spec 文件 9+10+9+3+5 = 36 examples，0 failures。
+- 门禁：`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`crystal build src/cli.cr -o bin/celerite.exe`、`git diff HEAD --check` 均 EXIT 0（仅两处既有 `Deprecated File.executable?` 警告）。
+
+**未验证 / 声明差异**
+
+- `doctor ssl` 仅命令面：`doctor ssl` 仍报 `bundle doctor diagnose ... ["ssl"]` exit 15；参考的 `--host`/`--tls-version` 与真实 TLS 诊断未实现（下一任务）。
+- `check_home_permissions` 无法在本机取得干净的参考 oracle（`BUNDLE_PATH` 缺 `ruby/<abi>` 时参考自身抛 `Errno::ENOENT`），未实现。
+- `doctor --verbose`、Windows 信号转发未测。
+- 反假绿中 `install-clean-disabled` 类无判别力的情况不适用于本轮三个夹具（旧二进制均 FAIL）。
