@@ -1,0 +1,2 @@
+Bundler::Plugin::Index::CommandConflict (Command(s) `conflictcmd` declared by
+plug_cb are already registered.)

@@ -1,0 +1,2 @@
+plugin install plug_ca --path plug_ca
+plugin install plug_cb --path plug_cb

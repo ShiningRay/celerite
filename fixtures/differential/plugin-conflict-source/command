@@ -1,0 +1,2 @@
+plugin install plug_a --path plug_a
+plugin install plug_b --path plug_b

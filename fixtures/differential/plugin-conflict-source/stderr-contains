@@ -1,0 +1,2 @@
+Failed to install plugin `plug_b`, due to Bundler::Plugin::Index::SourceConflict
+(Source(s) `conflict-type` declared by plug_b are already registered.)
