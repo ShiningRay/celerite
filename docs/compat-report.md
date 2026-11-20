@@ -5560,3 +5560,32 @@ stability: 10/10 runs（4.0.24 连跑 10 次、2.7.2 连跑 10 次，全 PASS；
 验证：夹具 `update-frozen-env-nolockfile`（`env` 传 `BUNDLE_FROZEN=true`，`file-absent Gemfile.lock`，`stderr-contains` 两行）双 profile PASS（exit 16）；scoped 变体手工对照参考 exit 22 一致。反假绿 `C:/temp/celerite-pre65a`：`update-frozen-env-nolockfile` 0 passed，两条 needle 均缺（`Your bundle only supports platforms [] but your local platform is`、`bundle lock --add-platform`）。
 
 已声明差异：`update --all` 与 `update <gem>` 之外的其他 frozen 组合（如 `update --ruby`、`update --group`）本轮未单独取 oracle。
+## 2026-11-20（M7(2) task-66：上游 lockfile 套件第三次重采集与候选去向）
+
+命令原文（MSYS bash，`bin/celerite.exe` 于 HEAD `502f4b5` 构建；`TMPDIR=/c/temp`、`CELERITE_SKIP_TEST_DEPS=1`、PATH 前置 `C:\msys64\usr\bin;C:\msys64\ucrt64\bin;C:\Ruby40-x64\bin;`）：
+
+```
+bash script/upstream-specs
+```
+
+墙上时间 **430 s**（START `2026-11-20T12:59:03Z`，rspec duration 423.27 s，seed 39077）。`summary` 原始字段：`{"duration" => 423.2732939, "example_count" => 64, "failure_count" => 53, "pending_count" => 0, "errors_outside_of_examples_count" => 0}`；real-drive 57 次 celerite 调用；产物 `.upstream-specs/upstream-lockfile-v4.0.24-20261120T125904Z.md`。
+
+| 桶 | 数量 | 判定口径 |
+|---|---|---|
+| `env:artifice-unreachable` | 38 | 上游进程内 artifice / `https://gem.repo2` 不可达 |
+| `env:low-il-shm` | 9 | Low-IL 下 msys `sh`/`git` 子进程 `NtCreateDirectoryObject` → `0xC0000022` |
+| `fixture:fetch-failed` | 6 | 同上类宿主不可达，失败点在 Fetching |
+| `fixture:missing-gem-files` | 0 | task-23 修复后保持 0 |
+| `product:candidates` | **0** | 无剩余产品候选 |
+
+三个候选逐条：
+
+1. ① `fills empty CHECKSUMS entries when not frozen, even if every gem is already installed` — **仍失败（env:artifice-unreachable），与 task-32 同桶**。`Invoking \`…/bin/celerite install\` failed with output:` / `Could not reach host gem.repo2. Check your network connection and try again.`
+2. ② `is conservative with dependencies of git gems` — **仍失败，product → env:low-il-shm**。`git command failed: git clone --mirror …/libs/ckeditor_remote-1.0 …` / `0 [main] sh (30280) … NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0S5-…): 0xC0000022`。断言 diff 未到达 ⇒ 产品差异本机不可判定，但已不属产品桶。
+3. ③ `keeps existing platforms in the lockfile` — **仍失败，product → env:artifice-unreachable**。`Could not reach host gem.repo2. …`。task-32 记录的旧报错 `Your bundle only supports platforms ["java"] …` 本次未出现 ⇒ 平台门禁已被 task-33/task-64 越过；端到端仍因宿主不可达未验证。
+
+与 task-32 的差：失败 54 → 53，新增通过 `serializes pinned path sources to the lockfile even when packaging`（task-44a/44b 路径源序列化）；`low-il` 8 → 9（吸收 ②），`artifice` 38 不变，product 2 → 0。
+
+本机不可转绿的桶：`env:artifice-unreachable`、`env:low-il-shm`、`fixture:fetch-failed`。三者均由宿主条件决定（进程内 artifice / `gem.repo2` 不可路由、当前完整性级别下的 msys 子进程拒绝），不是产品行为；换机或在非 Low-IL 环境复采才可能变化。
+
+未验证：② 的真实产品差异（断言未到达）；③ 的平台保留在可达宿主下的端到端结果；① 的 sha256 回填上游例（语义已由 task-25/26 差分覆盖）。
