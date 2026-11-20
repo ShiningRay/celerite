@@ -2760,19 +2760,21 @@ module Celerite
         return code
       end
       definition = Definition.build
-      # `outdated` materializes the bundle before consulting the index
-      # (`cli/outdated.rb` -> DependencyAPI/`Bundler.load`), so a missing
-      # lockfile surfaces the local-only resolution error first.
-      materialize_lockfile(definition, nil, local_only: true) unless definition.lockfile_exists?
       bridge = Bridge::Client.new
       begin
         evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
-        RubyRuntime.validate!(evaluation.ruby, bridge.ruby_environment) if evaluation.ruby
+        if requested = Commands.requested_ruby_version(evaluation)
+          RubyRuntime.validate_version!(requested, bridge.ruby_environment)
+        end
       rescue ex : Error
         bridge.close
         raise ex
       rescue
       end
+      # `cli/outdated.rb:26-33` runs `validate_runtime!` before it resolves the
+      # bundle, so a patchlevel mismatch outranks the local-only resolution
+      # error a missing lockfile would otherwise raise.
+      materialize_lockfile(definition, nil, local_only: true) unless definition.lockfile_exists?
       begin
         parseable = rest.includes?("--parseable") || rest.includes?("--porcelain")
         local_flag = rest.includes?("--local")

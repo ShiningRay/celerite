@@ -244,7 +244,13 @@ module Celerite
           evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
           gemfile_dependencies = evaluation.dependencies
           gemfile_sources = evaluation.sources
-          RubyRuntime.validate!(evaluation.ruby, bridge.ruby_environment) if evaluation.ruby
+          # `evaluation.ruby` is the human-readable requirement string and drops
+          # the option fields, so patchlevel would be lost
+          # (`ruby_version.cr:64-71`); validate the structured declaration
+          # instead, before any resolution touches the network.
+          if requested = Commands.requested_ruby_version(evaluation)
+            RubyRuntime.validate_version!(requested, bridge.ruby_environment)
+          end
           # `validate_runtime!` also runs `validate_platforms!`
           # (definition.rb:494-530); a frozen lockfile that does not list the
           # local platform fails here, before the lockfile-changes summary.
@@ -1142,7 +1148,9 @@ module Celerite
         end
         begin
           evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
-          RubyRuntime.validate!(evaluation.ruby, bridge.ruby_environment) if evaluation.ruby
+          if requested = Commands.requested_ruby_version(evaluation)
+            RubyRuntime.validate_version!(requested, bridge.ruby_environment)
+          end
         rescue ex : Error
           raise ex
         rescue
@@ -1330,7 +1338,9 @@ module Celerite
         if current_definition = definition
           begin
             evaluation = bridge.evaluate_gemfile(current_definition.gemfile_path)
-            RubyRuntime.validate!(evaluation.ruby, env) if evaluation.ruby
+            if requested = Commands.requested_ruby_version(evaluation)
+              RubyRuntime.validate_version!(requested, env)
+            end
           rescue ex : Error
             raise ex
           rescue
