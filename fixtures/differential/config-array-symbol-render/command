@@ -1,0 +1,3 @@
+config set --local without "test,dev"
+config get without
+config list --parseable
