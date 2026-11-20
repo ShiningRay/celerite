@@ -5832,4 +5832,23 @@ oracle 用同一份 `file://` 索引（`fixtures/gem-index`，预装并锁 `json
 已声明差异 / 未验证：
 
 - `unset:BUNDLE_PATH` 依赖本轮给 `script/differential` 新增的 `unset:` env 指令；`BUNDLE_PATH=`（空值）不触发参考护栏——空串仍被当作显式 path，实测参考会走另一条 `Could not find json_pure-2.8.1 in locally installed gems` 分支。
-- 护栏只看 `use_system_gems?`，`path.system` 等其他 system 判定组合未逐一端到端取证。
+- 护栏只看 `use_system_gems?`，未覆盖「`bundle config set --local path.system true` 之外的其他 system 判定组合」的端到端取证；`path.system` 分支仅由单元判据覆盖。
+
+## 2026-11-21（M7(2) task-74B：`config` 数组值的 `Symbol#inspect` 渲染）
+
+`bundle config set --local without "test,dev"` 存的是**一个**字符串元素 `test,dev`。参考打印的是 Ruby `Array#inspect`，元素为 Symbol，故走 `Symbol#inspect`：合法裸名 ``:foo``，其余加引号并转义——`[:"test,dev"]`。我方原实现直接 `":#{item}"`，输出 `[:test,dev]`，与参考不等价（会误导为两个元素）。
+
+| 写法 | `config get` | `config list --parseable` | 我方修前 |
+| --- | --- | --- | --- |
+| `set --local without "test,dev"` | `...: [:"test,dev"]` | `without=[:"test,dev"]` | `[:test,dev]` / `without=[:test,dev]` |
+| `set --local without2 test dev` | `...: "test dev"` | 同（字符串，非数组） | 一致 |
+| `set --local without3 '["a","b"]'` | `...: "[\\\"a\\\",\\\"b\\\"]"` | 同 | 一致 |
+
+实现：`src/celerite/config.cr` 新增 `self.symbol_inspect(name)`（裸名正则 `\A[A-Za-z_][A-Za-z0-9_]*[?!=]?\z` 走短式，否则 `:"…"` 并按 `String#inspect` 转义 `"`/`\`/换行/制表）与私有 `ruby_string_inspect`；`parseable_converted` 与 `display_value` 共用该 helper。
+
+夹具：`config-array-symbol-render`（`config set --local without "test,dev"` + `config get without` + `config list --parseable`，stdout 逐字比对）。双 profile PASS；负对照 `23cece6` 两个片段均差异。
+
+已声明差异 / 未验证：
+
+- 仅覆盖含逗号的元素；含空格、引号、反斜杠、空串的元素按 Ruby 规则实现但未逐字取证（`Symbol#inspect` 的非裸名分支只有一条实测样本）。
+- `config get` 的多来源优先级列表未新增用例；既有 `config-*` 回归全绿。
