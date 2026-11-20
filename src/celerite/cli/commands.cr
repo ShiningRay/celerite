@@ -87,9 +87,19 @@ module Celerite
       end
 
       # Thor prints the command's manpage for `--help` before the body runs
-      # (`bundle install --help` renders bundle-install(1)).
+      # (`bundle install --help` renders bundle-install(1)). For a subcommand
+      # class such as `doctor`, the tokens before `--help` become additional
+      # `bundle help` arguments, i.e. `doctor diagnose --help` is rendered as
+      # `bundle help doctor diagnose` and rejected (cli.rb:589-602).
       if command != "exec" && (rest.includes?("--help") || rest.includes?("-h"))
-        return help(stdout, [command], stderr)
+        help_args = [command]
+        if command == "doctor"
+          rest.each do |arg|
+            break if arg == "--help" || arg == "-h"
+            help_args << arg unless arg.starts_with?("-")
+          end
+        end
+        return help(stdout, help_args, stderr)
       end
 
       case command

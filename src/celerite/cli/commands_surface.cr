@@ -839,14 +839,40 @@ module Celerite
     # doctor
     # ------------------------------------------------------------------
     def self.doctor(stdout : IO, stderr : IO, rest : Array(String)) : Int32
-      # `subcommand("doctor", Doctor)` makes Thor report unknown options as
-      # leftover arguments of `diagnose` (cli.rb:669-671).
-      unless (arguments = subcommand_arguments(rest, DOCTOR_SUBCOMMAND_FLAGS, DOCTOR_SUBCOMMAND_VALUES)).empty?
+      quiet = rest.includes?("--quiet")
+      # `--help` is routed by `Commands.run` to `bundle help` before this body
+      # runs (Thor class option, cli.rb:589-602). `subcommand("doctor", Doctor)`
+      # makes Thor report unknown options as leftover arguments of `diagnose`
+      # (cli.rb:669-671); `diagnose` is the default command.
+      arguments = subcommand_arguments(rest, DOCTOR_SUBCOMMAND_FLAGS, DOCTOR_SUBCOMMAND_VALUES)
+      arguments = arguments.reject { |arg| arg == "diagnose" }
+      unless arguments.empty?
         stderr.puts %(ERROR: "bundle doctor diagnose" was called with arguments #{arguments.inspect})
         stderr.puts %(Usage: "bundle doctor diagnose [OPTIONS]")
         return 15
       end
-      doctor_report(stdout, stderr)
+      gemfile = option_value(rest, "--gemfile")
+      previous_gemfile = ENV["BUNDLE_GEMFILE"]?
+      begin
+        ENV["BUNDLE_GEMFILE"] = gemfile if gemfile
+        doctor_report(stdout, stderr, quiet: quiet)
+      ensure
+        if previous_gemfile
+          ENV["BUNDLE_GEMFILE"] = previous_gemfile
+        else
+          ENV.delete("BUNDLE_GEMFILE")
+        end
+      end
+    end
+
+    # `bundle doctor --help` (cli/doctor.rb manpage, identical in 4.0.24 and
+    # 2.7.2; Thor renders it at 80 columns for non-TTY output).
+    private def self.option_value(rest : Array(String), name : String) : String?
+      rest.each_with_index do |arg, index|
+        return arg.split("=", 2)[1] if arg.starts_with?("#{name}=")
+        return rest[index + 1]? if arg == name
+      end
+      nil
     end
 
     # The `## Bundle Doctor` body shared by `doctor` and `issue`
@@ -854,7 +880,7 @@ module Celerite
     # missing lockfile writes it (reference Diagnose#run leaves the definition
     # locked), which is why `issue` on a Gemfile-only project must not fail with
     # the old `Could not locate Gemfile`.
-    def self.doctor_report(stdout : IO, stderr : IO) : Int32
+    def self.doctor_report(stdout : IO, stderr : IO, quiet : Bool = false) : Int32
       definition = Definition.build
       Commands.validate_ruby_runtime!(definition)
       # `doctor` resolves like `check` (cli/doctor.rb): it may fetch the index,
@@ -864,12 +890,12 @@ module Celerite
 
       if locked_specs.empty?
         persist_generated_lockfile(definition, lockfile)
-        stdout.puts "The Gemfile's dependencies are satisfied"
+        stdout.puts "The Gemfile's dependencies are satisfied" unless quiet
       else
         missing = locked_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
         if missing.empty?
           persist_generated_lockfile(definition, lockfile)
-          stdout.puts "The Gemfile's dependencies are satisfied"
+          stdout.puts "The Gemfile's dependencies are satisfied" unless quiet
         else
           stderr.puts "The following gems are missing"
           missing.each { |spec| stderr.puts " * #{spec.name} (#{spec.version})" }
@@ -879,7 +905,22 @@ module Celerite
           return 1
         end
       end
-      stdout.puts "No issues found with the installed bundle"
+      # `diagnose.rb:86-96`: every `**/*.bundle` file makes `dylibs` warn on
+      # non-darwin/linux hosts (one warning per file) and return an empty list.
+      # Crystal's `File.join` uses `\` on Windows, which `Dir.glob` does not
+      # understand, so the pattern is built with forward slashes.
+      locked_specs.each do |spec|
+        gem_dir = installed_gem_dir(definition, spec, lockfile)
+        next unless gem_dir && Dir.exists?(gem_dir)
+        pattern = "#{gem_dir.gsub('\\', "/")}/**/*.bundle"
+        Dir.glob(pattern).each do
+          stderr.puts "Dynamic library check not supported on this platform."
+        end
+      end
+      # `check_home_permissions` warnings (broken links, foreign ownership,
+      # non-writable files) could not be triggered in this environment; see
+      # the compat report's task-53 section.
+      stdout.puts "No issues found with the installed bundle" unless quiet
       0
     end
 
