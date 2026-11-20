@@ -2570,7 +2570,7 @@ module Celerite
           stdout.print text
         else
           stdout.puts "Writing lockfile to #{lockfile_write_path.gsub(/\\/, "/")}"
-          Lockfile.write(lockfile_write_path, text, preserve_crlf: preserve_lockfile_crlf?)
+          return lockfile_write_result(lockfile_write_path, text, stderr)
         end
         return 0
       end
@@ -2668,13 +2668,54 @@ module Celerite
       if print_mode
         stdout.print text
       else
-        Lockfile.write(lockfile_write_path, text, preserve_crlf: preserve_lockfile_crlf?)
+        if (code = lockfile_write_result(lockfile_write_path, text, stderr)) != 0
+          resolution.close
+          return code
+        end
       end
       # 4.0.24: report versions skipped by the cooldown setting (stderr in
       # --print mode, stdout in write mode --pinned reference stream split).
       print_cooldown_summary(resolution, print_mode ? stderr : stdout)
       resolution.close
       0
+    end
+
+    # `lock --lockfile PATH` writes the expanded path the reference hands to
+    # `Definition#write_lock` (`cli/lock.rb:81-93` -> `definition.rb:437-438`).
+    # A missing parent directory surfaces as a friendly-errors crash report:
+    # the exit code is 1 and stderr is the ERROR REPORT TEMPLATE wrapping
+    # `Errno::ENOENT` plus the absolute lock path (measured on 4.0.24 and
+    # 2.7.2). Crystal's own `celerite internal error:` line is not that shape,
+    # so this helper reproduces the report and returns the exit code.
+    private def self.lockfile_write_result(path : String, text : String, stderr : IO) : Int32
+      Lockfile.write(path, text, preserve_crlf: preserve_lockfile_crlf?)
+      0
+    rescue ex : File::Error
+      stderr.puts "--- ERROR REPORT TEMPLATE -------------------------------------------------------"
+      stderr.puts ""
+      stderr.puts "```"
+      stderr.puts "#{errno_header(ex, path)}"
+      stderr.puts "```"
+      stderr.puts ""
+      stderr.puts "--- TEMPLATE END ----------------------------------------------------------------"
+      stderr.puts ""
+      stderr.puts "Unfortunately, an unexpected error occurred, and Bundler cannot continue."
+      1
+    end
+
+    # Ruby spells the raw failure as `Errno::ENOENT: No such file or directory
+    # @ rb_sysopen - <path>`; Crystal reports `File::NotFoundError` with a
+    # WinError under it, so the Ruby class name is reconstructed here.
+    private def self.errno_header(ex : File::Error, path : String) : String
+      missing = path.gsub('\\', "/")
+      case ex
+      when File::NotFoundError
+        "Errno::ENOENT: No such file or directory @ rb_sysopen - #{missing}"
+      when File::AccessDeniedError
+        "Errno::EACCES: Permission denied @ rb_sysopen - #{missing}"
+      else
+        "#{ex.class}: #{ex.message}"
+      end
     end
 
     # ------------------------------------------------------------------
