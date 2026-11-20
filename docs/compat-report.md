@@ -5589,3 +5589,64 @@ bash script/upstream-specs
 本机不可转绿的桶：`env:artifice-unreachable`、`env:low-il-shm`、`fixture:fetch-failed`。三者均由宿主条件决定（进程内 artifice / `gem.repo2` 不可路由、当前完整性级别下的 msys 子进程拒绝），不是产品行为；换机或在非 Low-IL 环境复采才可能变化。
 
 未验证：② 的真实产品差异（断言未到达）；③ 的平台保留在可达宿主下的端到端结果；① 的 sha256 回填上游例（语义已由 task-25/26 差分覆盖）。
+
+## 2026-11-21（M7 task-67：`check` 遇 Gemfile 新增未锁定依赖时的重解析）
+
+缺陷：Gemfile 新增一个锁里没有、也没安装的依赖（`gem "thor"`，本地索引只有 `thor-1.3.2`）后，参考侧 `bundle check` 走「依赖集变化 → 远程重解析 → 报缺失」，exit 1、不写锁；修复前 celerite 直接判「已满足」exit 0，并把 `thor` 写进锁的 `DEPENDENCIES`（`GEM specs` 仍只有 `json_pure`），锁被写成不自洽状态；其后再跑 `check --dry-run` 反而退化成 exit 1 + 两行 `Bundler can't satisfy your Gemfile's dependencies.` / `` `Install missing gems with `bundle install`. ``。
+
+oracle（同一 `file://` 索引，先 `install` 预装并锁 `json_pure 2.6.0`；`CELERITE_REFERENCE_BUNDLER_LIB=.upstream-specs/v4.0.24/bundler/lib`、`CELERITE_PROFILE_BUNDLER_VERSION=4.0.24`；锁基线 sha1 `9335939b8ffa…`）：
+
+| 场景 | 参考 4.0.24 | 修复前 celerite |
+| --- | --- | --- |
+| (a) `check`，Gemfile 追加 `gem "thor"` | exit 1；stdout `Fetching source index from <idx>/` + `Resolving dependencies...`；stderr 三行 `The following gems are missing` / ` * thor (1.3.2)` / `` `Install missing gems with `bundle install` ``；锁 sha1 不变 | exit 0；stdout `The Gemfile's dependencies are satisfied`；stderr 空；锁 `DEPENDENCIES` 新增 `thor` |
+| (b) `check --dry-run`（同场景） | 与 (a) 全等，锁不变 | 与 (a) 全等（同样误写锁） |
+| (c) 依赖已满足 | exit 0；stdout `The Gemfile's dependencies are satisfied`；stderr 空；锁不变 | 一致 |
+| (d) `gem "json_pure", ">= 2.6"`（放宽 requirement） | exit 0 + 同句；锁 `DEPENDENCIES` 改写为 `json_pure (>= 2.6)`（sha1 `bdc3ef78…`） | exit 0 + 同句；锁不改写 ⇒ **已声明偏差**（修复未触及，与 task-67 前一致） |
+| (e) 索引不可达（`source 'file:///C:/no-such-celerite-index'` + `gem "thor"`） | exit 17；stdout `Fetching source index from file:///C:/no-such-celerite-index/` + 空行；stderr 4 条 `Retrying fetcher due to error (n/4): Bundler::HTTPError Could not fetch specs from … due to underlying error <Errno::ENOENT … specs.4.8.gz>` + 末条同文不带 `Retrying`；锁不动 | exit 1；stdout 仅 Fetching 行；stderr 两行 can't-satisfy ⇒ **已声明偏差** |
+
+机制：参考 `Definition#check!`（`definition.rb:172-182`）在 `@dependency_changes` 为真时先 `resolve_remotely!`（`:216-225`），再 `sources.local_only!` + `resolve`；`missing_specs`（`:261-264`）= `resolve.missing_specs_for(requested_dependencies)`；`cli/check.rb:19-31` 只要 `missing_specs` 非空就打印三行并 exit 1，写锁在 `:33` 的 else 分支。`dependency_changes` 由 `converge_dependencies`（`definition.rb:1051-1086`）产出：Gemfile 依赖名不在锁的 `DEPENDENCIES` 里（`@locked_deps[name].nil?`）即算变化；锁里同名 spec 的版本不满足 Gemfile 要求（`!dep.matches_spec?(locked_specs.first)`）也算——故「放宽但仍满足」不算变化（对应 (d) 只重写 `DEPENDENCIES`）。
+
+修复：
+- `src/celerite/definition.cr:179` 新增 `gemfile_dependency_changes?(deps : Array(Bridge::EvaluatedDependency)) : Bool`，按上述两个判据比较 Gemfile 依赖集与锁；注释锚定 `definition.rb:1051-1086`、`cli/check.rb:33`。
+- `src/celerite/cli/commands.cr:1400` 在既有 bridge 探测内保存 `gemfile_evaluation`（`:1403` `evaluate_gemfile`）；`:1456-1463` 新增 `re_resolved_for_dependency_change`，与 `resolved_from_gemfile`（无锁）共用同一条 `Resolution#resolve!` 路径（progress 走 stdout，故打印 `Fetching source index from …` 与 `Resolving dependencies...`）；`:1540` 缺失判定沿用锁定 spec 与已安装 spec 目录比对；`:1561` 需要改写时仍走 `Resolution#lockfile_rewrite_text`。
+- 未改 `install`/`update` 语义；`--dry-run` 与 frozen 分支不触发重解析写锁。
+
+验证：
+- 新夹具 `fixtures/differential/check-gemfile-new-dependency`（`bundle-preset` 预装 `json_pure-2.6.0`、锁已锁、Gemfile 追加 `gem "thor"`、`command = check`；`file-equals-4.0.24`/`file-equals-2.7.2` 断言锁未新增 `thor`）：4.0.24 **PASS（exit=1）**、2.7.2 **PASS（exit=1）**。
+- 回归双 profile 各 10 条全 PASS：`check-rewrites-lock`(0)、`check-dry-run-keeps-lock`(0)、`check-missing`(1)、`check-unresolved`(1)、`check-triplet-missing-index`(1)、`check-installed-spec-without-gemdir`(0)、`check-gemdir-without-spec`(7)、`check-frozen-path-gemspec-bump`(16)、`lock-noop`(0)、`install-check`(0)。
+- spec `spec/m7_check_missing_dependency_spec.cr` 3 examples / 0 failures：缺失 → exit 1 且锁逐字节不变、无 `thor`；`--dry-run` 同三行且不写；满足 → exit 0、不打印 `Resolving dependencies...`、锁含 `json_pure (2.6.0)` 且无 `thor`。
+- 反假绿（`C:/temp/celerite-pre67`，`502f4b5` 旧二进制）：新夹具双 profile `0 passed, 2 failed`，失败行 `exit code: reference=1 celerite=0`、`> The Gemfile's dependencies are satisfied`、`1,3d0 < The following gems are missing / <  * thor (1.3.2) / < Install missing gems with `bundle install``、`file-equals differs (Gemfile.lock, cel): 10a11 >   thor`。
+- 门禁 0/0/0/0（`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`crystal build src/cli.cr -o bin/celerite.exe`、`git diff HEAD --check`）。
+
+已声明差异：(d) 放宽 requirement 时参考重写 `DEPENDENCIES` 而 celerite 不改写；(e) 索引不可达时参考 exit 17 + 4 条 fetcher 重试文案，celerite 仍按解析失败映射为 exit 1 + 两行 can't-satisfy。未验证：全量 spec 与全量差分未复跑（本轮只跑与 check/lock/install 相关的子集）。
+## 2026-11-21（M7 task-68：`remove` 族的四条失败面）
+
+oracle 用同一份 `file://` 索引（`fixtures/gem-index`，预装并锁 `json_pure 2.6.0`，锁基线 sha1 `9335939b8ffa…`），4.0.24 走 `.upstream-specs/v4.0.24/bundler/lib`，2.7.2 走本机 `bundler-2.7.2`；每例都比 stdout、stderr、exit 与 Gemfile/锁的最终字节。
+
+| 场景 | 参考 4.0.24 | 修复前 celerite |
+| --- | --- | --- |
+| `remove --install json_pure` | exit 15；stderr 单行 ``The `--install` flag has been removed. `bundle install` is triggered by default.``；Gemfile 与锁不动 | exit 0；真删 gem；stdout 打 `Removing gems from …` 与 `json_pure (= 2.6.0) was removed.`；stderr 多出 `Unknown switches "--install"`（`--install` 被登记为合法开关后又原样转给内层 `install`） |
+| `remove nosuchgem` | exit 4（`GemfileError`）；stdout 先打 `Removing gems from <abs>/Gemfile`；stderr 按 80 列折行三行 `` `<name>` is not specified in`` / `<abs>/Gemfile` / `so it could not be removed.`；Gemfile 与锁不动 | exit 1；stdout 空；stderr 单行 `No gems were removed from the Gemfile` |
+| `remove`（无参） | exit 15；stderr `Please specify gems to remove.` | exit 1；stderr `` `remove` requires at least 1 argument`` |
+| `remove thor`（成功路径） | `Removing gems from …` 在**改文件前**打印（`injector.rb:138`）；随后 `thor was removed.` | 该行在写文件之后打印，故失败路径完全不打印 |
+| `remove thor`，thor 在 `group :dev do … end` 内 | 整块（含 `end`）一并删除，Gemfile 只剩 `source` 与 `json_pure` | 保留空 `group` 块（`group :dev do` + `end` 残留） |
+
+`remove --path` 两侧同为 exit 15 `Unknown switches "--path"`；`remove --install json_pure --bogus` 两侧同为 exit 15 `Unknown switches "--bogus"`（Thor 的未知开关检查先于命令体的 `--install` 判断）。2.7.2 侧 `remove --install` 不 raise 而是打 `[DEPRECATED] The `--install` flag has been deprecated. `bundle install` is triggered by default.` 后继续执行（`cli.rb:191-200` 的 `major_deprecation`），故 2.7.2 下 exit 0 且真的删除。
+
+机制（参考）：`cli.rb:240-253` 的 `remove` 在命令体开头 `raise InvalidOption` 拒绝 `--install`；`cli/remove.rb:10-15` 空参 `raise InvalidOption`，随后 `Injector.remove` + `Installer.install`；`injector.rb:63-76` 的 `remove` 先 `remove_deps` 再逐条 `confirm "#{pretty_dependency(dep)} was removed."`；`:135-159` 的 `remove_deps` 顺序是「读原文 → 打印 `Removing gems from` → eval Gemfile → 删依赖 → 写回（`:152`）→ `cross_check_for_errors`」，`:165-181` 在某个名字未被声明时 `raise GemfileError`（`:172`），且 `remove_gems_from_gemfile`（`:185-213`）末尾对 `group`/`source`/`env`/`install_if` 四种块调 `remove_nested_blocks`（`:210`），把被删空的块连同 `end` 一起去掉；写入走 `SharedHelpers.write_to_gemfile`（`shared_helpers.rb:215-217`）的 `file.puts`，等价「内容已含结尾换行则不重复追加」，且文本模式把 LF 落成 CRLF。
+
+修复：
+- `src/celerite/errors.cr:68-75` 给 `GemfileError` 加 `wrap? = true`（参考所有 `BundlerError` 走 `ui.error msg, wrap: true`，故折行由 `CLI.terminal_width` 决定、默认 80）；`:98-113` 给 `DSLError` 显式 `wrap? = false`，避免继承后被误折行。
+- `src/celerite/cli/commands_surface.cr:730-853` 重写 `Commands.remove`：`:733` 保留 Thor 的未知开关检查在最前；`:743-749` 再判 `--install`（4.x `raise InvalidOptionError` status 15 / 2.x 打 `[DEPRECATED]` 后继续），`:751` 构造不把 `--install` 转给内层 `install` 的 `install_rest`；`:753-757` 空参 `raise InvalidOptionError.new("Please specify gems to remove.")`；`:766` 在改文件前打印 `Removing gems from`；`:772-780` 逐个名字查声明（`within_gemfile_comment?` 排除注释行）否则 `raise GemfileError.new("`name` is not specified in … so it could not be removed.")`；`:785-801` 删行并跟随 `,` 续行；`:805-807` 对四种块调用 `remove_nested_blocks`；`:817-820` 用参考的 `join.chomp` + `puts` 语义落盘（`cleaned` 缺结尾换行才补，`\n` 统一转平台 eol）；`:824-836` 按 CLI 名字顺序打 `… was removed.`；`:838-842` 无 `gem` 行时 stderr `The Gemfile specifies no dependencies`；`:850-851` 收尾 `install(null, stderr, install_rest, summary: false, cli_arguments: false)`。新增私有 helper：`remove_pattern`（`:858-865`，`injector.rb:186` 的两条正则）、`within_gemfile_comment?`（`:869-873`）、`remove_nested_blocks`（`:879-896`，`injector.rb:224-243` 的固定点迭代）。
+- 未改 `add`/`update` 的开关表（`BARE_SWITCH_FLAGS` 与 `add` 共用，`--install` 只在 `REMOVE_SWITCH_FLAGS` 移除后按命令体语义单独判定）。
+
+验证：
+- 三个新夹具，双 profile 全 PASS：`remove-install-flag-removed`（4.0.24 exit=15 且 `file-equals-4.0.24` 断言 Gemfile 逐字节未变；2.7.2 exit=0 且 `file-contains` 断言 `source` 行仍在）、`remove-missing-gem`（exit=4，三行折行 stderr、`Removing gems from` 先行、Gemfile 未变）、`remove-no-arguments`（exit=15，Gemfile 未变）。4.0.24 **3 passed / 0 failed**，2.7.2 **3 passed / 0 failed**。
+- spec `spec/m7_remove_failure_modes_spec.cr` 5 examples / 0 failures：`--install` 拒绝、`--install … --bogus` 先报未知开关、无参、缺失 gem（含折行 stderr 与 `Removing gems from` 顺序）、group 内最后一个 gem 整块删除。Windows 下 Gemfile 重写为 CRLF（与参考的文本模式写入一致），group 用例经 `remove_gemfile_on_disk` 归一后比较，其余四例按逐字节断言（未触碰文件）。
+- 回归（4.0.24）：remove/add 面 21 passed（5 条失败见下）；update/lock/install 面 19 passed / 0 failed（含 `lock-noop`、`install-check`、`install-fresh`、`check-gemfile-new-dependency`）。
+- 2.7.2：全量拼接 40 passed / 5 failed / 1 skipped，失败与 4.0.24 同一族。
+- 装具限制导致的 5 条失败（`add-remove`、`add-git`、`add-ref`、`add-group`、`add-optimistic`、`add-version`）经定位为**宿主完整性级别**问题而非产品差异：二进制位于工作区内（Low IL）时 msys `sh`/`make`/`git` 子进程报 `fatal error - NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0S5-…): 0xC0000022`；同一二进制放到 `C:/temp` 路径（Medium IL）运行则全绿。逐一复核：同一份新代码从 `C:/temp` 运行，4.0.24 **6 passed / 0 failed**、2.7.2 **5 passed / 0 failed / 1 skipped**（2.7.2 无 `add-group` 夹具）。
+- 反假绿（`C:/temp/celerite-pre68`，`d0b9b7a` 旧二进制）：三夹具 4.0.24 `0 passed, 3 failed`，失败行为 `exit code: reference=15 celerite=0`、`< The `--install` flag has been removed. …` vs `> The Gemfile specifies no dependencies` / `> Unknown switches "--install"`、`file-equals differs (Gemfile, cel): 1,3c1,2`；`exit code: reference=4 celerite=1` 与 `< `nosuchgem` is not specified in …` vs `> No gems were removed from the Gemfile`；`exit code: reference=15 celerite=1` 与 `< Please specify gems to remove.` vs `> `remove` requires at least 1 argument`。
+- 门禁 0/0/0/0。
+
+已声明差异：`file-equals` 无法表达 CRLF 期望（装具用 `sed` 生成期望文件时吞掉 CR），故 2.7.2 侧的「Gemfile 未被删」改用 `file-contains` 断言。未验证：`cross_check_for_errors`（一个名字删到多个 gemspec 时的 `InvalidOption` 回滚路径，`injector.rb:249-272`）未建夹具；`remove` 指向多 gemspec / 多 Gemfile 的项目未覆盖；同一命令重复指定同名 gem 的参考行为未单独取 oracle。
