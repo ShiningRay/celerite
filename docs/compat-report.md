@@ -5811,3 +5811,25 @@ oracle 用同一份 `file://` 索引（`fixtures/gem-index`，预装并锁 `json
 
 - 交互式冲突之外的失败退出码未逐一取证：本次只固定 MalformattedPlugin / CommandConflict / SourceConflict 三条，其他 `--path` 失败分支（如 `invalid gemspec`）未取 oracle。
 - 插件源目录删除是参考的破坏性副作用，我们按参考实现；若将来参考改掉，这里需要同步。
+
+## 2026-11-21（M7(6) task-74A：`bundle clean` 的 system gems 护栏）
+
+参考 `cli/clean.rb:11-24`：`run` 先调 `require_path_or_force`（`--dry-run` 除外），当 `Bundler.use_system_gems?` 且未给 `--force` 时抛 `Bundler::InvalidOption`。判据来自 `settings.rb` 的 `Path#use_system_gems?`：未配置 `path` 且未走 deployment 即使用系统 gem 目录，此时全量清理会删掉 bundle 之外的所有系统 gem。
+
+我方 `src/celerite/cli/commands_install.cr` 的 `self.clean` 此前无条件进入 `perform_clean`，未设 `BUNDLE_PATH` 时会去删系统 gem。
+
+| 场景 | 参考 stdout/stderr | 参考 exit | 修前我方 |
+| --- | --- | --- | --- |
+| 无 `BUNDLE_PATH`、`clean` | stderr 两行：`Cleaning all the gems on your system is dangerous! If you're sure you want to` / `remove every system gem not in this bundle, run \`bundle clean --force\`.` | 15 | 直接清理，exit 0 |
+| 无 `BUNDLE_PATH`、`clean --dry-run` | 正常列出 Would have removed | 0 | 0（一致） |
+| 配了 `BUNDLE_PATH`、`clean` | 正常清理 | 0 | 0（一致） |
+| 无 `BUNDLE_PATH`、`clean --force` | 正常清理 | 0 | 0（一致） |
+
+实现：`clean` 在解析完开关后先取 `definition.config` 与 `bridge.ruby_environment.default_gem_dir`，用既有的 `InstallPaths.use_system_gems?` 判定；命中且非 `--dry-run`、非 `--force` 时抛 `InvalidOptionError`（status 15、`wrap?` 折行），文案与参考逐字一致，**不进入清理**。`perform_clean` 与 `clean_after_install` 未改动。
+
+夹具：`clean-system-gems-guard`（`env` 新增 `unset:BUNDLE_PATH`，`command` = `install --quiet` + `clean`，`stderr-contains` 两行）。差分 4.0.24 / 2.7.2 均 PASS（exit 15）。负对照 `23cece6` 上 exit 0 且无两行文案。
+
+已声明差异 / 未验证：
+
+- `unset:BUNDLE_PATH` 依赖本轮给 `script/differential` 新增的 `unset:` env 指令；`BUNDLE_PATH=`（空值）不触发参考护栏——空串仍被当作显式 path，实测参考会走另一条 `Could not find json_pure-2.8.1 in locally installed gems` 分支。
+- 护栏只看 `use_system_gems?`，`path.system` 等其他 system 判定组合未逐一端到端取证。
