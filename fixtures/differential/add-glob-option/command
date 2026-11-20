@@ -1,0 +1,1 @@
+add json_pure --glob sub/*.gemspec --skip-install
