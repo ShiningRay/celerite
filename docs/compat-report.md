@@ -5370,3 +5370,20 @@ glob 归一化另测：`--glob "sub/*.gemspec"`、`--glob "{a,b}.gemspec"` 逐�
 证据：新夹具 4.0.24 3/0、2.7.2 3/0；回归 13 例 4.0.24 13/0、2.7.2 11/0/2 skipped（既有 config 2.x deferral）；负向 `C:/temp/celerite-pre56`（`4c47ba5`）新夹具 1 passed / 2 failed（`plugin-new-unknown`、`licenses-order`）。
 
 未对齐/未验证：`licenses` 同 license 的并列顺序依赖 `Bundler.load` 顺序，这里按 full_name 固定，未构造同 license 不同装载顺序的对照；`plugin new` 在无 Gemfile 目录下的表现未单独取 oracle；全量 spec 与上游 64 例未重跑。
+## 2026-11-20（M7(3) task-57：`bundle update --bundler` 的目标解析与 `BUNDLED WITH`）
+
+- 参考链：`cli/update.rb:14` 读取 `--bundler`，`:16` 交给 `Bundler.self_manager.update_bundler_and_restart_with_it_if_needed`；`self_manager.rb:33-46` 解析目标 → 打印 `Updating bundler to <version>.` → 必要时安装 → `restart_with`（无条件 `Kernel.exec`）；解析失败由 `cli/update.rb:111-116` 抛 ``The `bundle update --bundler` target version (<target>) does not exist``（`InvalidOption`，exit 15）。`--bundler` 计入 scoped 更新，未安装项目先报 22。
+- 根因：我方只在 `UPDATE_SWITCH_VALUES`/`LOCK_SWITCH_VALUES` 白名单里接受 `--bundler`，没有任何目标解析；裸 `--bundler` 还会走进普通 `update` 的废弃提示路径。
+- oracle（4.0.24 / 2.7.2，`file://` 索引 + 项目内 `.bundle/config` 镜像；环境变量形式的 `BUNDLE_MIRROR__HTTPS://RUBYGEMS.ORG` 在参考实现里因 `settings.rb` 键名往返被改写为 `…RUBYGEMS__ORG/` 而失效，报 `ArgumentError: Gem sources must be absolute`）：
+
+  | 场景 | 4.0.24 | 2.7.2 |
+  | --- | --- | --- |
+  | `update --bundler`（裸） | exit 15，stderr `(>= 4.0.24)`；stdout 一行 `Fetching source index from …` | exit 0，正常更新；stdout **两行** `Fetching source index from …`，无 `Updating bundler` |
+  | `update --bundler 9.9.9`（索引无该版本） | exit 15，stderr `(9.9.9)` | exit 15，stderr `(9.9.9)` |
+  | 索引含伪 `bundler 9.9.9`，`update --bundler 9.9.9` | exit 0，`Updating bundler to 9.9.9.`，锁 `BUNDLED WITH` 变 9.9.9 | 参考会 `exec` 重启并无限循环，未作逐字对照 |
+  | `lock --bundler 4.0.20` | exit 0，锁不变（`BUNDLED WITH` 仍为 4.0.24） | 同左 |
+
+- 实现锚点：`src/celerite/resolution.cr` 新增 `bundler_versions(requirement)`（只查远端 `bundler` 版本，不回落本地/default gem）与 `bundler_version_to_lock`，后者只影响 `BUNDLED WITH` 与 bundler 的 CHECKSUMS 条目；`src/celerite/cli/commands_surface.cr` 新增 `update_bundler_target(rest)`（区分未出现/裸值/显式值），裸值时 4.x 目标 `>= 当前版本`、2.x 目标 `> 0.a`（对应 `cli.rb:332`/`:266` 的 `lazy_default`），解析失败按参考原文 exit 15，成功时打印 `Updating bundler to …` 并继续正常 update。参考的 self-manager 与 update 各自打印一次索引行，我方 resolution 只取一次，故在置位时补打第二行。
+- 夹具/测试：`fixtures/differential/update-bundler-missing-value`、`update-bundler-nonexistent`（`extra/.bundle/config` 项目镜像；`env` 值也支持占位符替换，`extra/**` 替换范围扩到 `.bundle/config`）；`spec/m7_update_bundler_spec.cr` 4 例（裸 4.x 报错、显式缺失、伪 9.9.9 成功写 `BUNDLED WITH`、2.x 裸值保持不变）。
+- 证据：新夹具 4.0.24 2/0、2.7.2 2/0；目标 spec 4/0；回归 `update-*`/`lock-*`/`install-fresh`/`install-check` 两 profile 各 33/1（唯一失败 `lock-missing-dependency-edges` 是既有差异：Ruby 4.0 把 `net-protocol` 当内置 gem，我方跳过下载而参考仍安装，基线二进制 `9e98ed8` 同样失败）；负向 `C:/temp/celerite-pre57`（`9e98ed8`）新夹具 0 passed / 2 failed（旧二进制 exit 0 且带废弃提示/正常更新，缺 15 与目标措辞）。
+- 未对齐/未验证：未实现 self-manager 的安装 + `Kernel.exec` 重启（我方只解析目标并继续一次普通 update，避免不可判定的重启循环）；伪 `bundler 9.9.9` 的 CHECKSUMS 复用 4.0.24 的 sha（合成索引，非真实包）；2.7.2 裸值补打的第二行索引是行为复刻，不作语义保证；环境变量镜像形态的失败属参考侧缺陷，未修；`gem-index-bundler` 仅用于测试，不进入产品路径。
