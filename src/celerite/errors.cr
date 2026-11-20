@@ -67,6 +67,19 @@ module Celerite
     end
   end
 
+  # bundler/errors.rb:32 (`PathError < BundlerError`, status 13). Raised when a
+  # `path:`/`--path` source directory is missing or not a directory
+  # (source/path.rb:198-204); the message is word-wrapped by friendly errors.
+  class PathError < Error
+    def status_code : Int32
+      13
+    end
+
+    def wrap? : Bool
+      true
+    end
+  end
+
   # bundler/dsl.rb:542-640 (`DSLError < GemfileError`). The reference frames the
   # offending DSL line between `#  from <path>:<line>` markers and subtracts one
   # from the trace line number, so the marker quotes line `n+1` while the

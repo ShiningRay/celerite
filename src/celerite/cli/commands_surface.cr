@@ -173,8 +173,12 @@ module Celerite
           stdout.puts "Resolving dependencies..."
         end
 
-        pending = specs.sort_by(&.full_name).select(&.source_type.==("GEM")).reject do |spec|
-          installer.installed?(spec.name, spec.version.to_s, spec.platform)
+        force_reinstall = rest.includes?("--force") || rest.includes?("--redownload")
+        pending = specs.sort_by(&.full_name).select(&.source_type.==("GEM"))
+        unless force_reinstall
+          pending = pending.reject do |spec|
+            installer.installed?(spec.name, spec.version.to_s, spec.platform)
+          end
         end
         previous_versions = definition.lockfile_exists? ? definition.lockfile!.specs.to_h { |s| {s.name, s.version} } : {} of String => String
         was_suffix = ->(spec : Resolution::ResolvedSpec) do
@@ -285,8 +289,29 @@ module Celerite
         return 1
       end
 
+      # `cli/add.rb:57-59` validates every `--version` pattern before the
+      # injector runs. Thor hands a value-less `--version` through as the
+      # literal option name, so the reference reports it as an invalid
+      # requirement instead of silently adding the gem.
+      if (rest.includes?("--version") || rest.includes?("-v")) &&
+         flag_value(rest, "--version").nil? && flag_value(rest, "-v").nil?
+        stderr.puts "Invalid gem requirement pattern 'version'"
+        return 15
+      end
+
       definition = Definition.build
       gemfile_path = definition.gemfile_path
+
+      # `source/path.rb:198-204` raises PathError (status 13) while the injector
+      # evaluates the new dependency, i.e. before `append_to` writes anything.
+      # Validate here so a missing `--path` leaves the Gemfile untouched.
+      if path = flag_value(rest, "--path")
+        expanded = File.expand_path(path, File.dirname(gemfile_path)).gsub('\\', "/")
+        unless Dir.exists?(expanded)
+          message = File.exists?(expanded) ? "is not a directory." : "does not exist."
+          raise PathError.new("The path `#{expanded}` #{message}")
+        end
+      end
 
       # `Bundler::Injector#inject` (injector.rb:25-58) evaluates the Gemfile and
       # then drops every requested dependency the Gemfile already declares
@@ -468,6 +493,10 @@ module Celerite
       end
       if source = flag_value(rest, "--source") || flag_value(rest, "-s")
         parts << "source: #{source.inspect}"
+      end
+      # `injector.rb:114` renders `glob: "..."` from the dependency options.
+      if glob = flag_value(rest, "--glob")
+        parts << "glob: #{glob.inspect}"
       end
       if require_path = flag_value(rest, "--require") || flag_value(rest, "-r")
         parts << (require_path == "false" ? "require: false" : "require: #{require_path.inspect}")

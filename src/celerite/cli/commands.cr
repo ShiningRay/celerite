@@ -928,7 +928,7 @@ module Celerite
     # (`Bundler::CLI.commands[name].options`, identical in 2.7.2 and 4.0.24
     # except `--cooldown`). Anything else must be rejected as an unknown switch
     # instead of being accepted and ignored.
-    UPDATE_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--all", "--local", "--full-index", "--force", "--patch", "--minor", "--major", "--pre", "--strict", "--conservative", "--ruby", "--quiet"]
+    UPDATE_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--all", "--local", "--full-index", "--force", "--redownload", "--patch", "--minor", "--major", "--pre", "--strict", "--conservative", "--ruby", "--quiet"]
     UPDATE_SWITCH_VALUES = SWITCH_VALUES_COMMON + ["--group", "-g", "--source", "--bundler", "--cooldown"]
 
     LOCK_SWITCH_FLAGS  = SWITCH_FLAGS_COMMON + ["--local", "--full-index", "--print", "--normalize-platforms", "--add-checksums", "--patch", "--minor", "--major", "--pre", "--strict", "--conservative", "--update"]
