@@ -5351,3 +5351,22 @@ glob 归一化另测：`--glob "sub/*.gemspec"`、`--glob "{a,b}.gemspec"` 逐�
 3. `--strict --skip-install` 参考多一次 resolve 的问题未在本任务处理。
 4. `update --redownload` 按 `--force` 处理，未做缓存失效（不重新下载已有 cache）。
 5. 全量 `crystal spec` 与上游 64 例未重跑。
+
+## 2026-11-20（M7(2) task-56：plugin new / licenses 顺序 / config 本地路径 / 死代码）
+
+四个小面收敛，参考 4.0.24 与 2.7.2 逐字节实测：
+
+| 面 | 参考行为 | 修复前 | 修复后 |
+| --- | --- | --- | --- |
+| `plugin new foo` | exit 15，stderr `Could not find command "new".` | exit 1，`The 'plugin new' command is not implemented yet.` | 与参考一致 |
+| `licenses` | `json_pure: Ruby` / `bundler: MIT` / `thor: MIT`（按 license 降序，含 bundler 自身） | `json_pure, thor, bundler` | 与参考一致 |
+| `config get` 本地路径 | 绝对 `BUNDLE_APP_CONFIG` 保留原生分隔符，后缀 `/config`；默认 `<app>/.bundle/config` 为 `/` | 全部统一 `/` | 绝对路径保留原样，默认仍 `/` |
+| `known_unimplemented?` | 参考无此集合 | 死代码，命令表里不可达 | 删除，未知命令走统一 `Could not find command` |
+
+实现锚点：`src/celerite/cli/commands_surface.cr` 插件分派删除 `new` 分支；`licenses` 取 `Bundler.load.specs` 语义（锁文件 specs + `bundler` 自身，按 license 降序、同 license 按 full_name 升序，参考 `cli.rb:570-583` 的 `sort_by {|s| s.license.to_s }.reverse_each`）；`src/celerite/config.cr` `app_config_path` 对绝对 `BUNDLE_APP_CONFIG` 原样返回（`Pathname#expand_path` 不改绝对路径），`join_config` 固定 `/`，`local_config_file` 原样打印。
+
+测试/夹具：`fixtures/differential/plugin-new-unknown`、`licenses-order`、`config-local-app-path`（`config-local-app-path` 为回归护栏：默认 `<app>/.bundle/config` 两侧本就一致，旧二进制也 PASS，无区分力；绝对反斜杠路径的区分性由 `spec/m7_micro_divergences_spec.cr` 覆盖）；`spec/m7_micro_divergences_spec.cr` 5 例。
+
+证据：新夹具 4.0.24 3/0、2.7.2 3/0；回归 13 例 4.0.24 13/0、2.7.2 11/0/2 skipped（既有 config 2.x deferral）；负向 `C:/temp/celerite-pre56`（`4c47ba5`）新夹具 1 passed / 2 failed（`plugin-new-unknown`、`licenses-order`）。
+
+未对齐/未验证：`licenses` 同 license 的并列顺序依赖 `Bundler.load` 顺序，这里按 full_name 固定，未构造同 license 不同装载顺序的对照；`plugin new` 在无 Gemfile 目录下的表现未单独取 oracle；全量 spec 与上游 64 例未重跑。
