@@ -5380,10 +5380,29 @@ glob 归一化另测：`--glob "sub/*.gemspec"`、`--glob "{a,b}.gemspec"` 逐�
   | --- | --- | --- |
   | `update --bundler`（裸） | exit 15，stderr `(>= 4.0.24)`；stdout 一行 `Fetching source index from …` | exit 0，正常更新；stdout **两行** `Fetching source index from …`，无 `Updating bundler` |
   | `update --bundler 9.9.9`（索引无该版本） | exit 15，stderr `(9.9.9)` | exit 15，stderr `(9.9.9)` |
-  | 索引含伪 `bundler 9.9.9`，`update --bundler 9.9.9` | exit 0，`Updating bundler to 9.9.9.`，锁 `BUNDLED WITH` 变 9.9.9 | 参考会 `exec` 重启并无限循环，未作逐字对照 |
+  | 索引含伪 `bundler 9.9.9`，`update --bundler 9.9.9`（**须在项目 `.bundle/config` 镜像前置下观察**：项目内配置 `BUNDLE_MIRROR__HTTPS://RUBYGEMS.ORG` 指向该索引） | exit 0，`Updating bundler to 9.9.9.`，锁 `BUNDLED WITH` 变 9.9.9；随后参考 `exec` 重启并挂起（45 秒强杀，锁未写完） | 参考同样先 `exec` 重启，未作逐字对照 |
   | `lock --bundler 4.0.20` | exit 0，锁不变（`BUNDLED WITH` 仍为 4.0.24） | 同左 |
 
 - 实现锚点：`src/celerite/resolution.cr` 新增 `bundler_versions(requirement)`（只查远端 `bundler` 版本，不回落本地/default gem）与 `bundler_version_to_lock`，后者只影响 `BUNDLED WITH` 与 bundler 的 CHECKSUMS 条目；`src/celerite/cli/commands_surface.cr` 新增 `update_bundler_target(rest)`（区分未出现/裸值/显式值），裸值时 4.x 目标 `>= 当前版本`、2.x 目标 `> 0.a`（对应 `cli.rb:332`/`:266` 的 `lazy_default`），解析失败按参考原文 exit 15，成功时打印 `Updating bundler to …` 并继续正常 update。参考的 self-manager 与 update 各自打印一次索引行，我方 resolution 只取一次，故在置位时补打第二行。
 - 夹具/测试：`fixtures/differential/update-bundler-missing-value`、`update-bundler-nonexistent`（`extra/.bundle/config` 项目镜像；`env` 值也支持占位符替换，`extra/**` 替换范围扩到 `.bundle/config`）；`spec/m7_update_bundler_spec.cr` 4 例（裸 4.x 报错、显式缺失、伪 9.9.9 成功写 `BUNDLED WITH`、2.x 裸值保持不变）。
 - 证据：新夹具 4.0.24 2/0、2.7.2 2/0；目标 spec 4/0；回归 `update-*`/`lock-*`/`install-fresh`/`install-check` 两 profile 各 33/1（唯一失败 `lock-missing-dependency-edges` 是既有差异：Ruby 4.0 把 `net-protocol` 当内置 gem，我方跳过下载而参考仍安装，基线二进制 `9e98ed8` 同样失败）；负向 `C:/temp/celerite-pre57`（`9e98ed8`）新夹具 0 passed / 2 failed（旧二进制 exit 0 且带废弃提示/正常更新，缺 15 与目标措辞）。
 - 未对齐/未验证：未实现 self-manager 的安装 + `Kernel.exec` 重启（我方只解析目标并继续一次普通 update，避免不可判定的重启循环）；伪 `bundler 9.9.9` 的 CHECKSUMS 复用 4.0.24 的 sha（合成索引，非真实包）；2.7.2 裸值补打的第二行索引是行为复刻，不作语义保证；环境变量镜像形态的失败属参考侧缺陷，未修；`gem-index-bundler` 仅用于测试，不进入产品路径。
+**补记（task-58 复核）**：上表伪 `bundler 9.9.9` 一行必须在项目 `.bundle/config` 镜像前置下观察。无此前置时参考会先向 `https://rubygems.org` 解析目标版本，沙箱下大概率拿到网络错误或与本地 `>= 4.0.24` 不同的目标，不会稳定得到 exit 0；且参考命中目标后会 `exec` 重启同一条命令并挂起（本机 45 秒后强杀，`Gemfile.lock` 未写完），故该行不能作为「无镜像也能 exit 0」的证据。
+## 2026-11-20（M7(2) task-58：`bundle lock` 的 `--normalize-platforms` 与 `--lockfile`）
+
+- 参考链：`cli/lock.rb:74-75` → `definition.rb:532-533 normalize_platforms` → `spec_set.rb:38-40 normalize_platforms!`，后者先 `remove_invalid_platforms!`（`:52-63`）再 `add_extra_platforms!`（`:66-89`），最后把带版本号的平台降到通用形态。`add_extra_platforms!` 对「所有源都能完整满足、且 `Gem::Platform.generic == ruby`」的平台补齐；纯 Ruby 依赖因此新增 `ruby`。
+- `--lockfile` 语义：`cli.rb:69-77` 对 `lock` **不做** `BUNDLE_LOCKFILE` 提升，`cli/lock.rb:81-93` 只把该选项展开成写出的目标路径；读入仍走 `Bundler.default_lockfile`（`shared_helpers.rb:25-36`）。
+- 我方根因：①`src/celerite/resolution.cr` 的 normalize 分支只做「去版本号」，缺 `add_extra_platforms!` 的补 `ruby`；②`src/celerite/cli/commands.cr` 的 `with_gemfile_overrides` 把 `lock --lockfile` 提升成 `BUNDLE_LOCKFILE`，于是 `Definition#lockfile_exists?` 对 `custom.lock` 为假，绕过 no-op 短路，多出一次解析。
+
+  | 场景 | 4.0.24 | 2.7.2 |
+  | --- | --- | --- |
+  | 装好 `json_pure` 后 `lock --normalize-platforms` | exit 0；`PLATFORMS` 由 `x64-mingw-ucrt` 变为 `ruby` + `x64-mingw-ucrt`（按名字排序，`ruby` 在前）；先打 `Fetching source index …` 再 `Writing lockfile …` | 同左（仅 `BUNDLED WITH` 缩进 3 空格） |
+  | 连续两次 `lock --normalize-platforms` | 第二次锁文件逐字节不变（幂等） | 同左 |
+  | `lock --normalize-platforms --print` | 正文走 stdout、`Fetching source index` 走 stderr；`PLATFORMS` 同样含 `ruby` | 同左 |
+  | 装好后 `lock --lockfile custom.lock` | exit 0；stdout 仅一行 `Writing lockfile to …/custom.lock`（无 `Fetching`、无 `Resolving`）；`custom.lock` 与 `Gemfile.lock` 内容一致，原 `Gemfile.lock` 不被改写 | 同左 |
+  | `lock --lockfile` 指向已存在的 `Gemfile.lock` | 走 no-op，无解析行 | 同左 |
+
+- 实现要点：`Resolution` 的 normalize 分支在「解析结果里存在无平台/`ruby` 平台的 spec」时补 `ruby`；`Commands.lock` 改用 `with_gemfile_overrides(rest, lockfile_env: false)`（`--gemfile` 仍照旧提升），`run_lock` 单独算出 `lockfile_write_path`（`--lockfile` 展开，否则沿用定义路径），全部「Writing lockfile」与 `Lockfile.write` 都走该路径，no-op 判断仍基于 `definition.lockfile_path`。`check` 的改写路径（`commands.cr:1556`）仍写定义路径，未受牵连。
+- 夹具/测试：`fixtures/differential/lock-normalize-platforms`（`install --quiet` 后 `lock --normalize-platforms`，`file-contains` 断言 `  ruby` 行）、`lock-lockfile-option`（`install --quiet` 后 `lock --lockfile custom.lock`，断言 `custom.lock` 段落）；`spec/m7_lock_options_spec.cr` 4 例（补 `ruby`、幂等、读默认锁写自定义路径、`--lockfile` 指向当前锁不重解析）。
+- 证据：新夹具 4.0.24 2/0、2.7.2 2/0；spec 4/0；回归 `lock-*` + `install-fresh` + `install-check` + `update-fund-summary` 两 profile 各 25/1（唯一失败 `lock-missing-dependency-edges` 为既有环境差异，见 task-57 记录）；负向 `C:/temp/celerite-pre58`（`a567e5a`）两夹具 0 passed / 2 failed（normalize 缺 `  ruby`；`--lockfile` 多出 `Fetching source index` 与 `Resolving dependencies...`）。
+- 未对齐/未验证：`add_extra_platforms!` 的「平台泛化后是否删除本地平台」分支（`spec_set.rb:82-88`）未构造 oracle；`--lockfile` 与 `--print` 同时使用时参考不写文件，我方同样不写，但未单独取 oracle；`--lockfile` 指向不存在的目录等错误面未测。
