@@ -267,6 +267,14 @@ def op_default_gem_spec(payload)
     "required_ruby_version" => spec.required_ruby_version.to_s,
     "required_rubygems_version" => spec.required_rubygems_version.to_s,
     "full_gem_path" => spec.full_gem_path,
+    # `cli/info.rb:50-73` renders the default gem from its own specification
+    # (`Bundler::CLI::Common.default_gem_spec` returns a `Gem::Specification`),
+    # so the fields the info block prints come along with the identity.
+    "full_name" => spec.full_name,
+    "loaded_from" => spec.loaded_from,
+    "summary" => spec.summary,
+    "homepage" => spec.homepage,
+    "metadata" => (spec.respond_to?(:metadata) ? (spec.metadata || {}) : {}),
   }
 end
 

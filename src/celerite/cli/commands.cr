@@ -1738,6 +1738,81 @@ module Celerite
     # ------------------------------------------------------------------
     # show / info
     # ------------------------------------------------------------------
+    # `cli/common.rb:98-101` returns a real `Gem::Specification`; the info
+    # block prints its identity and gemspec metadata, so the bridge hands
+    # those fields over together with the identity.
+    record DefaultGemInfo,
+      name : String,
+      version : String,
+      full_name : String,
+      path : String,
+      summary : String?,
+      homepage : String?,
+      metadata : Hash(String, String)
+
+    # `cli/common.rb:68-71`: the gem argument is also matched as a regex, and an
+    # invalid pattern falls back to the plain missing-gem message.
+    private def self.parse_spec_name_regex(name : String) : Regex?
+      Regex.new(name)
+    rescue ArgumentError
+      nil
+    end
+
+    private def self.lookup_default_gem(name : String) : DefaultGemInfo?
+      return nil unless bridge_available?
+      bridge = Bridge::Client.new
+      begin
+        spec = bridge.default_gem_spec(name)
+        return nil unless spec
+        DefaultGemInfo.new(
+          name: spec[:name],
+          version: spec[:version],
+          full_name: spec[:full_name],
+          path: spec[:full_gem_path],
+          summary: spec[:summary],
+          homepage: spec[:homepage],
+          metadata: spec[:metadata],
+        )
+      rescue
+        nil
+      ensure
+        bridge.close
+      end
+    end
+
+    private def self.installed_bundler_dir(version : String) : String?
+      # `Bundler.definition.specs` reports the RUNNING bundler's installed gem
+      # directory; in development the loaded lib is the checkout's copy, so the
+      # installed gem of the same version gives the faithful path.
+      return nil unless bridge_available?
+      bridge = Bridge::Client.new
+      begin
+        bridge.installed_specs.as_a.each do |entry|
+          next unless entry["name"]?.try(&.as_s?) == "bundler"
+          next unless entry["version"]?.try(&.as_s?) == version
+          next if entry["from_dir"]?.try(&.as_bool?)
+          path = entry["full_gem_path"]?.try(&.as_s?)
+          return path if path && Dir.exists?(path)
+        end
+        nil
+      rescue
+        nil
+      ensure
+        bridge.close
+      end
+    end
+
+    private def self.append_gemspec_metadata(info : String::Builder, metadata : Hash(String, String)) : Nil
+      # `cli/info.rb:55-66` field order.
+      info << "\tDocumentation: #{metadata["documentation_uri"]}\n" if metadata.has_key?("documentation_uri")
+      info << "\tSource Code: #{metadata["source_code_uri"]}\n" if metadata.has_key?("source_code_uri")
+      info << "\tFunding: #{metadata["funding_uri"]}\n" if metadata.has_key?("funding_uri")
+      info << "\tWiki: #{metadata["wiki_uri"]}\n" if metadata.has_key?("wiki_uri")
+      info << "\tChangelog: #{metadata["changelog_uri"]}\n" if metadata.has_key?("changelog_uri")
+      info << "\tBug Tracker: #{metadata["bug_tracker_uri"]}\n" if metadata.has_key?("bug_tracker_uri")
+      info << "\tMailing List: #{metadata["mailing_list_uri"]}\n" if metadata.has_key?("mailing_list_uri")
+    end
+
     def self.show_info(command : String, stdout : IO, stderr : IO, rest : Array(String),
                        verbose : Bool = false) : Int32
       # `show` and `info` expose different switches in the reference: show
@@ -1912,7 +1987,45 @@ module Celerite
       name = names.first
 
       spec = locked_specs.find(&.name.==(name))
-      if spec.nil?
+      default_info : DefaultGemInfo? = nil
+      if spec.nil? && name != "bundler"
+        # `cli/common.rb:68-96`: after the exact-name miss the argument is used
+        # as a regex over the bundle's specs, then the interpreter's default
+        # gem for the bare name is appended; several candidates open a menu.
+        candidates = [] of Lockfile::Spec
+        if regexp = parse_spec_name_regex(name)
+          candidates = locked_specs.select { |candidate| regexp.matches?(candidate.name) }
+        end
+        default_info = lookup_default_gem(name)
+        total = candidates.size + (default_info ? 1 : 0)
+        if total == 1 && default_info.nil?
+          spec = candidates.first
+        elsif total > 1
+          # `cli/common.rb:103-111` ask_for_spec_from: numbered menu, then a
+          # single `> ` prompt. EOF or an out-of-range answer selects nothing
+          # and the command exits 0 without printing a gem block.
+          candidates.each_with_index { |candidate, index| stdout.puts "#{index + 1} : #{candidate.name}" }
+          if remaining = default_info
+            stdout.puts "#{candidates.size + 1} : #{remaining.name}"
+          end
+          stdout.puts "0 : - exit -"
+          stdout.print "> "
+          stdout.flush
+          answer = STDIN.gets
+          # `cli/common.rb:104-108`: `Bundler.ui.ask` writes the prompt and, at
+          # EOF, one more space before the command exits without a selection.
+          stdout.print " " if answer.nil?
+          index = ((answer || "").to_i? || 0) - 1
+          if index >= 0 && index < candidates.size
+            spec = candidates[index]
+            default_info = nil
+          elsif index != candidates.size
+            return 0
+          end
+        end
+      end
+
+      if spec.nil? && name != "bundler" && default_info.nil?
         # Reference `Bundler::CLI::Common.select_spec`: when the gem is a
         # dependency whose every group was filtered out it raises `GemNotFound`
         # (exit 7) naming those groups instead of the generic missing message.
@@ -1929,6 +2042,61 @@ module Celerite
         # `Bundler::CLI::Common.select_spec` (`cli/common.rb:68-101`) raises
         # `GemNotFound` with the bare spec name; both `info` and `show` render
         # it through the same path.
+        stderr.puts "Could not find gem '#{name}'."
+        return 7
+      end
+
+      if spec.nil? && (info_gem = default_info)
+        # `cli/info.rb:50-73` print_gem_info for the interpreter's default gem;
+        # `cli/info.rb:36-48` handles the two single-field switches first.
+        if rest.includes?("--version")
+          stdout.puts info_gem.version
+          return 0
+        end
+        if rest.includes?("--path")
+          stdout.puts info_gem.path.gsub('\\', "/")
+          return 0
+        end
+        info = String::Builder.new
+        info << "  * #{info_gem.name} (#{info_gem.version})\n"
+        info << "\tSummary: #{info_gem.summary}\n" if summary = info_gem.summary
+        info << "\tHomepage: #{info_gem.homepage}\n" if homepage = info_gem.homepage
+        append_gemspec_metadata(info, info_gem.metadata)
+        info << "\tPath: #{info_gem.path.gsub('\\', "/")}\n"
+        info << "\tDefault Gem: yes\n"
+        stdout.print info.to_s
+        return 0
+      end
+
+      if spec.nil? && name == "bundler"
+        # `Bundler.definition.specs` includes the running Bundler itself, so the
+        # exact-name match hits the profile version before any regex fallback.
+        gem_dir = installed_bundler_dir(profile_bundler_version) || bundler_gem_dir
+        if gem_dir
+          if rest.includes?("--version")
+            stdout.puts profile_bundler_version
+            return 0
+          end
+          if rest.includes?("--path")
+            # `cli/info.rb:36-48` print_gem_path special-cases bundler.
+            stdout.puts display_path(File.expand_path("../../..", File.join(gem_dir, "lib", "bundler")))
+            return 0
+          end
+          summary, homepage, metadata = read_gemspec_info(gem_dir, "bundler-#{profile_bundler_version}")
+          info = String::Builder.new
+          info << "  * bundler (#{profile_bundler_version})\n"
+          info << "\tSummary: #{summary}\n" if summary
+          info << "\tHomepage: #{homepage}\n" if homepage
+          append_gemspec_metadata(info, metadata)
+          info << "\tPath: #{display_path(gem_dir)}\n"
+          stdout.print info.to_s
+          return 0
+        end
+      end
+
+      if spec.nil?
+        # Neither a bundled spec nor a bundler/default-gem fallback matched, so
+        # `cli/common.rb:68-101` raises `GemNotFound` for the bare name.
         stderr.puts "Could not find gem '#{name}'."
         return 7
       end

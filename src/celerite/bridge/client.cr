@@ -300,12 +300,18 @@ module Celerite
       def default_gem_spec(name : String) : NamedTuple(
         name: String, version: String, platform: String, full_gem_path: String,
         dependencies: Array(NamedTuple(name: String, requirements: Array(String))),
-        required_ruby_version: String, required_rubygems_version: String)?
+        required_ruby_version: String, required_rubygems_version: String,
+        full_name: String, loaded_from: String?,
+        summary: String?, homepage: String?, metadata: Hash(String, String))?
         result = request("default_gem_spec", {"name" => name})
         return nil if result.raw.nil?
         dependencies = (result["dependencies"]?.try(&.as_a) || [] of JSON::Any).map do |dep|
           requirements = (dep["requirements"]?.try(&.as_a) || [] of JSON::Any).map(&.as_s)
           {name: dep["name"].as_s, requirements: requirements}
+        end
+        metadata = {} of String => String
+        result["metadata"]?.try(&.as_h?).try &.each do |key, value|
+          metadata[key] = value.as_s? || value.to_s
         end
         {
           name:                      result["name"].as_s,
@@ -315,6 +321,11 @@ module Celerite
           dependencies:              dependencies,
           required_ruby_version:     result["required_ruby_version"].as_s,
           required_rubygems_version: result["required_rubygems_version"].as_s,
+          full_name:                 result["full_name"]?.try(&.as_s?) || "#{result["name"].as_s}-#{result["version"].as_s}",
+          loaded_from:               result["loaded_from"]?.try(&.as_s?),
+          summary:                   result["summary"]?.try(&.as_s?),
+          homepage:                  result["homepage"]?.try(&.as_s?),
+          metadata:                  metadata,
         }
       end
 
