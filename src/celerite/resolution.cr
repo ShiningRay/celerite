@@ -1192,14 +1192,42 @@ module Celerite
         # reuse path never re-groups them, and the existing emission logic
         # already falls back to `primary_remote` there.
         source_remote = source.type == "PLUGIN SOURCE" ? source.remote : nil
-        source.specs.each do |spec|
-          checksum = lockfile.checksums.find { |c| c.name == spec.name && c.version == spec.version }
-          specs << ResolvedSpec.new(spec.name, Gem::Version.new(spec.version), spec.platform,
-            spec.dependencies, checksum.try(&.checksums.first?), 0,
-            locked_source_type(source.type), source_info, source_remote)
+        type = locked_source_type(source.type)
+        rows = source.specs.map do |spec|
+          # Checksums are per platform row: the ruby row of a gem that also has
+          # a native row stays digestless (measured 4.0.24 lock output).
+          checksum = lockfile.checksums.find do |c|
+            c.name == spec.name && c.version == spec.version &&
+              (c.platform.nil? || c.platform == "ruby") == (spec.platform.nil? || spec.platform == "ruby") &&
+              (spec.platform.nil? || spec.platform == "ruby" || c.platform == spec.platform)
+          end
+          ResolvedSpec.new(spec.name, Gem::Version.new(spec.version), spec.platform,
+            spec.dependencies, checksum.try(&.checksums.first?), 0, type, source_info, source_remote)
         end
+        rows.each { |row| specs << row }
       end
-      specs
+      # A lock written for several platforms can carry more than one row per
+      # gem. The reference installs and counts only the row materialized for the
+      # local platform (`definition.specs`), while the lockfile re-emits every
+      # variant (`resolver.rb:88-89`, `spec_set.rb:184-185`). Keep the surplus
+      # rows out of the install set but still emit them: measured `install` on a
+      # two-row `platdemo` lock installs one gem on both 4.0.24 and 2.7.2.
+      local = Gem::Platform.local
+      extras = [] of ResolvedSpec
+      specs.group_by { |spec| "#{spec.name}-#{spec.version}" }.each do |_, group|
+        gem_rows = group.select(&.source_type.==("GEM"))
+        next if gem_rows.size < 2
+        installable = gem_rows.select do |spec|
+          spec.platform_ruby? || Gem::Platform.new(spec.platform.not_nil!).match?(local)
+        end
+        best = installable.min_by? do |spec|
+          spec_platform = spec.platform_ruby? ? Gem::Platform.new("ruby") : Gem::Platform.new(spec.platform.not_nil!)
+          Gem::Platform.platform_specificity_match(spec_platform, local)
+        end || gem_rows.first
+        gem_rows.each { |spec| extras << spec unless spec.platform == best.platform }
+      end
+      @lock_extra_specs = extras.sort_by(&.full_name)
+      extras.empty? ? specs : specs.reject { |spec| spec.in?(extras) }
     end
 
     # Lock section type -> `ResolvedSpec#source_type`; `generated_lockfile`
@@ -1459,39 +1487,80 @@ module Celerite
                                    index : Hash(String, Array(Resolver::IndexSpec)),
                                    locked_index : Hash(String, Array(Resolver::IndexSpec))) : Array(ResolvedSpec)
       specs = [] of ResolvedSpec
+      variants_out = [] of ResolvedSpec
       decisions.each do |package, candidate_version|
         next if package.root? || package.meta?
         name = package.name
         same_version = index[name]?.try(&.select { |s| s.version == candidate_version.version }) ||
                        locked_index[name]?.try(&.select { |s| s.version == candidate_version.version })
-        spec =
+        chosen =
           if candidate_version.priority == 1 || platform_mergeable?(same_version)
             # Platform-variant candidate, or a ruby candidate whose group carries
             # merged platform variants: materialize the local-platform variant
             # (reference `Materialization#specs` +
             # `MatchPlatform.select_best_platform_match`), falling back to the
             # ruby spec when no local-platform variant is indexed.
-            Resolver::ResolutionSource.select_variant(index, name, candidate_version.version) ||
-              Resolver::ResolutionSource.select_variant(locked_index, name, candidate_version.version) ||
-              index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? }) ||
-              locked_index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? })
+            variant = Resolver::ResolutionSource.select_variant(index, name, candidate_version.version) ||
+                      Resolver::ResolutionSource.select_variant(locked_index, name, candidate_version.version) ||
+                      index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? }) ||
+                      locked_index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? })
+            variant ? [variant] : [] of Resolver::IndexSpec
           else
-            index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? }) ||
-              locked_index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? })
+            variant = index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? }) ||
+                      locked_index[name]?.try(&.find { |s| s.version == candidate_version.version && s.platform_ruby? })
+            variant ? [variant] : [] of Resolver::IndexSpec
           end
-        next unless spec
+        next if chosen.empty?
 
-        lock_deps = spec.dependencies.map do |dep|
-          Lockfile::SpecDependency.new(dep.name, dep.requirement.to_lock_requirements)
-        end
         source = non_gem_sources[name]?
         source_type = source ? source.type.upcase : "GEM"
         source_type = "PATH" if source_type == "GEMSPEC"
         source_remote = source ? (source.remote || "") : remote_for(name)
-        specs << ResolvedSpec.new(name, spec.version, spec.platform_ruby? ? nil : spec.platform.to_s, lock_deps, spec.checksum, 0, source_type, source, source_remote, spec.required_ruby_version, spec.required_rubygems_version)
+        chosen.each do |spec|
+          lock_deps = spec.dependencies.map do |dep|
+            Lockfile::SpecDependency.new(dep.name, dep.requirement.to_lock_requirements)
+          end
+          specs << ResolvedSpec.new(name, spec.version, spec.platform_ruby? ? nil : spec.platform.to_s, lock_deps, spec.checksum, 0, source_type, source, source_remote, spec.required_ruby_version, spec.required_rubygems_version)
+        end
+
+        # Lockfile-only variants: the reference materializes the graph against
+        # every `definition.platforms` entry (`definition.rb:813-819` →
+        # `resolver.rb:88-89` + `spec_set.rb:184-185`, `:301-309`), so a platform
+        # with no native variant falls back to the ruby spec and BOTH rows land in
+        # the lockfile (measured: `lock --add-platform x64-mingw32` on 4.0.24 and
+        # 2.7.2). They are not installed and not counted — the reference prints
+        # `Bundle complete! 1 Gemfile dependency, 1 gem now installed.` for such a
+        # lock (`cli/install.rb:93-96` counts `definition.specs`, i.e. the
+        # materialized local set).
+        next unless source_type == "GEM"
+        best_match_variants(same_version, resolution_platforms).each do |variant|
+          next if chosen.any? { |c| c.platform.to_s == variant.platform.to_s }
+          lock_deps = variant.dependencies.map do |dep|
+            Lockfile::SpecDependency.new(dep.name, dep.requirement.to_lock_requirements)
+          end
+          variants_out << ResolvedSpec.new(name, variant.version, variant.platform_ruby? ? nil : variant.platform.to_s, lock_deps, variant.checksum, 0, source_type, source, source_remote, variant.required_ruby_version, variant.required_rubygems_version)
+        end
       end
       specs.sort_by!(&.full_name)
+      @lock_extra_specs = variants_out.sort_by(&.full_name)
       specs
+    end
+
+    # Best platform match per resolution platform, mirroring
+    # `MatchPlatform.select_best_platform_match` (match_platform.rb:12-16) with
+    # the `platform.rb:326-348` specificity ordering. Ruby specs match every
+    # platform, so a platform without a native variant selects the ruby spec.
+    private def best_match_variants(specs : Array(Resolver::IndexSpec)?,
+                                    platforms : Array(Gem::Platform)) : Array(Resolver::IndexSpec)
+      return [] of Resolver::IndexSpec unless specs
+      chosen = [] of Resolver::IndexSpec
+      platforms.each do |platform|
+        installable = specs.select { |s| s.platform_ruby? || s.platform.match?(platform) }
+        next if installable.empty?
+        best = installable.min_by { |s| Gem::Platform.platform_specificity_match(s.platform, platform) }
+        chosen << best unless chosen.any? { |c| c.name == best.name && c.version == best.version && c.platform.to_s == best.platform.to_s }
+      end
+      chosen
     end
 
     def top_level_dependencies : Array(Resolver::DepSpec)
@@ -1675,6 +1744,12 @@ module Celerite
       platforms
     end
 
+    # Lockfile-only platform variants (see `decisions_to_specs`): rows the
+    # reference writes into the lockfile for platforms it materialized but does
+    # not install.
+    getter lock_extra_specs : Array(ResolvedSpec) = [] of ResolvedSpec
+    @lock_extra_specs = [] of ResolvedSpec
+
     # Install-time checksum overrides: the reference records the sha256 of
     # each downloaded package in the lockfile even for file:// sources.
     property install_checksums : Hash(String, String) = {} of String => String
@@ -1827,7 +1902,7 @@ module Celerite
       end
 
       gem_sections_by_remote = {} of String => Array(Lockfile::Spec)
-      @resolved_specs.select(&.source_type.==("GEM")).reject(&.name.==("bundler")).each do |spec|
+      (@resolved_specs.select(&.source_type.==("GEM")) + lock_extra_specs).reject(&.name.==("bundler")).each do |spec|
         next if @hidden_dependencies.includes?(spec.name)
         remote = spec.source_remote || primary_remote
         gem_sections_by_remote[remote] ||= [] of Lockfile::Spec
@@ -1939,6 +2014,16 @@ module Celerite
               (c.platform.nil? || c.platform == "ruby") && !c.checksums.empty?
           end
           raw = installed || existing.try(&.checksums.first?) || spec.checksum
+          checksum = raw.try { |c| c.starts_with?("sha256=") ? c : self.class.info_checksum_value(c) }
+          checksums = checksum ? [checksum.not_nil!] : [] of String
+          checksum_section.entries << Lockfile::ChecksumEntry.new(spec.name, spec.version.to_s, spec.platform, checksums)
+        end
+        # Lockfile-only rows carry their own index checksum and never inherit
+        # the installed digest of the local variant (`lockfile_generator.rb:69-76`
+        # maps `definition.resolve`, i.e. every materialized row).
+        lock_extra_specs.each do |spec|
+          next if @hidden_dependencies.includes?(spec.name)
+          raw = spec.checksum
           checksum = raw.try { |c| c.starts_with?("sha256=") ? c : self.class.info_checksum_value(c) }
           checksums = checksum ? [checksum.not_nil!] : [] of String
           checksum_section.entries << Lockfile::ChecksumEntry.new(spec.name, spec.version.to_s, spec.platform, checksums)

@@ -13,6 +13,11 @@ module Celerite
     getter config : Config
     getter lockfile : Lockfile::Data?
 
+    # Lockfile parsing can emit deprecation warnings (`lockfile_parser.rb:144-159`).
+    # They belong to the command's stderr, but parsing happens deep inside the
+    # definition, so `CLI.run` points this sink at the stderr it was given.
+    class_property default_warning_sink : IO = STDERR
+
     def self.build(args : Args = Args.new) : Definition
       new(args)
     end
@@ -78,7 +83,47 @@ module Celerite
     # Parses (and memoizes) the lockfile. Missing lockfiles are an error like
     # the reference; `check` etc. operate only on a parsed lockfile.
     def lockfile! : Lockfile::Data
-      @lockfile ||= Lockfile::Parser.parse(lockfile_text, @lockfile_path)
+      @lockfile ||= begin
+        data = Lockfile::Parser.parse(lockfile_text, @lockfile_path)
+        normalize_legacy_mingw_platform(data)
+        data
+      end
+    end
+
+    # `x64-mingw32` in `PLATFORMS` is deprecated. 4.0.24 warns on every parse
+    # (`lockfile_parser.rb:157-159` → `shared_helpers.rb:129-131`); 2.7.2
+    # rewrites the platform while parsing and warns with the removal wording
+    # (`lockfile_parser.rb:144-155`), except in frozen mode where it leaves the
+    # lockfile untouched. Measured: 4.0.24 `lock`/`check`/`install`/`update` all
+    # warn; 2.7.2 warns on the first command that parses and drops the platform,
+    # so later commands no longer see it.
+    LEGACY_MINGW_PLATFORM = "x64-mingw32"
+    MINGW_UCRT_PLATFORM   = "x64-mingw-ucrt"
+
+    private def normalize_legacy_mingw_platform(data : Lockfile::Data) : Nil
+      section = data.platforms_section
+      return unless section
+      return unless section.platforms.includes?(LEGACY_MINGW_PLATFORM)
+      return if config["silence_deprecations"] == true
+
+      if (ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")
+        return if config["frozen"] == true
+
+        if section.platforms.includes?(MINGW_UCRT_PLATFORM)
+          section.platforms.delete(LEGACY_MINGW_PLATFORM)
+          self.class.default_warning_sink.puts "[DEPRECATED] Found x64-mingw32 in lockfile, which is deprecated. " \
+                                               "Removing it. Support for x64-mingw32 will be removed in Bundler 4.0."
+        else
+          index = section.platforms.index(LEGACY_MINGW_PLATFORM).not_nil!
+          section.platforms[index] = MINGW_UCRT_PLATFORM
+          self.class.default_warning_sink.puts "[DEPRECATED] Found x64-mingw32 in lockfile, which is deprecated. " \
+                                               "Using x64-mingw-ucrt, the replacement for x64-mingw32 in modern rubies, instead. " \
+                                               "Support for x64-mingw32 will be removed in Bundler 4.0."
+        end
+        return
+      end
+
+      self.class.default_warning_sink.puts "[DEPRECATED] Found x64-mingw32 in lockfile, which is deprecated and will be removed in the future."
     end
 
     def lockfile_text : String

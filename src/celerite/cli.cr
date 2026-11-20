@@ -21,7 +21,13 @@ module Celerite
     # no Celerite-specific usage screen left to print.
 
     def self.run(args : Array(String), stdout : IO, stderr : IO) : Int32
-      Commands.dispatch(args, stdout, stderr)
+      previous_sink = Definition.default_warning_sink
+      Definition.default_warning_sink = stderr
+      begin
+        Commands.dispatch(args, stdout, stderr)
+      ensure
+        Definition.default_warning_sink = previous_sink
+      end
     rescue ex : Error
       friendly_error(ex, stderr)
       ex.status_code
