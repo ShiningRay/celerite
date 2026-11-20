@@ -244,9 +244,37 @@ module Celerite
     # form `[:test, :development]`, everything else converts without `inspect`.
     def self.parseable_converted(converted : ConvertedValue) : String
       if converted.is_a?(Array(String))
-        "[" + converted.map { |item| ":#{item}" }.join(", ") + "]"
+        "[" + converted.map { |item| symbol_inspect(item) }.join(", ") + "]"
       else
         converted.to_s
+      end
+    end
+
+    # `Symbol#inspect`: a bare name renders as `:name`; anything that is not a
+    # valid symbol literal (a comma, space, quote, empty name …) renders as a
+    # quoted symbol with String#inspect escaping, e.g. `:"test,dev"`.
+    def self.symbol_inspect(name : String) : String
+      if name.matches?(/\A[A-Za-z_][A-Za-z0-9_]*[?!=]?\z/)
+        ":#{name}"
+      else
+        ":\"#{ruby_string_inspect(name)}\""
+      end
+    end
+
+    # `String#inspect` for the characters that survive into a symbol name.
+    private def self.ruby_string_inspect(value : String) : String
+      String.build do |io|
+        value.each_char do |char|
+          case char
+          when '"'  then io << "\\\""
+          when '\\' then io << "\\\\"
+          when '\n' then io << "\\n"
+          when '\t' then io << "\\t"
+          when '\r' then io << "\\r"
+          else
+            io << char
+          end
+        end
       end
     end
 
@@ -255,7 +283,7 @@ module Celerite
     def self.display_value(name : String, value : Value) : String
       printable = printable_value(name, value)
       if printable.is_a?(Array(String))
-        return "[" + printable.map { |item| ":#{item}" }.join(", ") + "]"
+        return "[" + printable.map { |item| symbol_inspect(item) }.join(", ") + "]"
       end
       printable.inspect
     end
