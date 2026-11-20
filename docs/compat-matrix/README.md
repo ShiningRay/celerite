@@ -30,7 +30,7 @@ then implement, then differential-test.
 |---|---|---|
 | [cli-4.0.24.md](generated/cli-4.0.24.md) | `bundle <cmd> --help` text for 4.0.24 (`script/gen-cli-baseline`) | generated 2026-11-19 15:08:52 (mtime) |
 | [cli-2.7.2.md](generated/cli-2.7.2.md) | `bundle <cmd> --help` text for 2.7.2 (`script/gen-cli-baseline`) | generated 2026-11-19 15:09:17 (mtime) |
-| [differential-4.0.24-2026-11-11.md](generated/differential-4.0.24-2026-11-11.md) | Differential run logs and classification (run started 2026-11-11) | mtime 2026-11-20 14:45:46 (task-61 title edit) |
+| [differential-4.0.24-2026-11-11.md](generated/differential-4.0.24-2026-11-11.md) | Differential run logs and classification; the title carries the run's start date (2026-11-11), while later sections keep their own 2026-11-12 timestamps | mtime 2026-11-20 14:45:46 (task-61 title edit) |
 | [upstream-lockfile-v4.0.24.md](generated/upstream-lockfile-v4.0.24.md) | Upstream lockfile-spec evidence, manually maintained | mtime 2026-11-20 14:44:42 (task-61 note edit) |
 
 ## Reference version policy
