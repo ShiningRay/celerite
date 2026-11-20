@@ -733,44 +733,109 @@ module Celerite
       if (code = reject_unknown_switches(stderr, rest, REMOVE_SWITCH_FLAGS, REMOVE_SWITCH_VALUES))
         return code
       end
+
+      # `cli.rb:245-249` (4.0.24): the command body rejects `--install` with an
+      # `InvalidOption` (status 15) *after* Thor's unknown-switch check and
+      # *before* the empty-argument check, so `remove --install x --bogus`
+      # reports only `--bogus`. The 2.7.2 tree (`cli.rb:191-200`) runs
+      # `major_deprecation` instead and keeps going with the flag already
+      # consumed by Thor.
+      if rest.any? { |arg| arg.split("=", 2)[0] == "--install" }
+        if profile_2_x?
+          stderr.puts "[DEPRECATED] The `--install` flag has been deprecated. `bundle install` is triggered by default."
+        else
+          raise InvalidOptionError.new("The `--install` flag has been removed. `bundle install` is triggered by default.")
+        end
+      end
+      # Thor consumed the flag, so it never reaches the nested `install`.
+      install_rest = rest.reject { |arg| arg.split("=", 2)[0] == "--install" }
+
       names = rest.reject(&.starts_with?("--"))
       if names.empty?
-        stderr.puts "`remove` requires at least 1 argument"
-        return 1
+        # `cli/remove.rb:10-12` raises `InvalidOption` (status 15).
+        raise InvalidOptionError.new("Please specify gems to remove.")
       end
 
       definition = Definition.build
       gemfile_path = definition.gemfile_path
-      lines = File.read(gemfile_path).gsub(/\r\n/, "\n").chomp.split("\n")
+      display_path = gemfile_path.gsub(/\\/, "/")
+      initial_lines = File.read(gemfile_path).gsub(/\r\n/, "\n").lines(chomp: false)
 
-      removed = [] of String
-      kept = lines.select do |line|
-        matched = names.any? { |n| line.strip.matches?(/^gem\s+["']#{Regex.escape(n)}["']/) }
-        removed << line.strip if matched
-        !matched
+      # `Injector#remove_deps` (injector.rb:135-159) announces the file before
+      # evaluating it, so this line also precedes a missing-gem error.
+      stdout.puts "Removing gems from #{display_path}"
+
+      # `remove_gems_from_dependencies` (injector.rb:165-181): the first name
+      # the Gemfile does not declare aborts with a `GemfileError` (status 4)
+      # before anything is written. A commented-out declaration is not a
+      # dependency (`is_not_within_comment?`, injector.rb:217-220).
+      names.each do |name|
+        declared = initial_lines.any? do |line|
+          match = remove_pattern(name).match(line)
+          !match.nil? && !within_gemfile_comment?(line, match)
+        end
+        unless declared
+          raise GemfileError.new("`#{name}` is not specified in #{display_path} so it could not be removed.")
+        end
       end
 
-      if removed.empty?
-        stderr.puts "No gems were removed from the Gemfile"
-        return 1
+      # `remove_gems_from_gemfile` (injector.rb:185-213): drop every line whose
+      # `gem <name>` declaration matches, following `,`-terminated multiline
+      # declarations, then collapse the blocks the removal emptied.
+      patterns = remove_pattern(names)
+      new_gemfile = [] of String?
+      removed_lines = [] of String
+      multiline_removal = false
+      initial_lines.each do |line|
+        if (match = patterns.match(line)) && !within_gemfile_comment?(line, match)
+          multiline_removal = line.rstrip.ends_with?(",")
+          removed_lines << line
+          next
+        end
+        if multiline_removal
+          removed_lines[removed_lines.size - 1] += line
+          multiline_removal = line.rstrip.ends_with?(",")
+          next
+        end
+        new_gemfile << line
       end
 
-      stdout.puts "Removing gems from #{gemfile_path.gsub(/\\/, "/")}"
+      # injector.rb:210 — an emptied `group`/`source`/`env`/`install_if` block
+      # is dropped together with its `end` line.
+      {"group", "source", "env", "install_if"}.each do |block|
+        remove_nested_blocks(new_gemfile, block)
+      end
+
+      # `remove_gems_from_gemfile` ends with `new_gemfile.join.chomp`
+      # (injector.rb:212) — exactly one trailing newline is stripped — and
+      # `SharedHelpers.write_to_gemfile` (shared_helpers.rb:215-217) then does
+      # `File.open(path, "w") { |file| file.puts contents }`: `puts` appends a
+      # newline only when `contents` does not already end with one, and the
+      # file is opened in text mode, so every LF becomes the platform line
+      # separator (CRLF on Windows). Appending `eol` unconditionally would
+      # leave a blank line whenever the removed gem was preceded by one.
+      cleaned = new_gemfile.compact.join.chomp
+      cleaned += "\n" unless cleaned.ends_with?("\n")
       eol = {{ flag?(:windows) }} ? "\r\n" : "\n"
-      File.write(gemfile_path, kept.join(eol) + eol)
-      removed.each do |line|
+      File.write(gemfile_path, cleaned.gsub("\n", eol))
+
+      # `Injector#remove` (injector.rb:70-72) confirms each removed dependency
+      # in the order the CLI named them.
+      names.each do |name|
+        line = removed_lines.find { |candidate| remove_pattern(name).matches?(candidate) }
+        next if line.nil?
         # The message mirrors the Gemfile line: quoted tokens are the gem name
         # followed by the requirement(s) exactly as written (`~> 2.8`,
         # `= 2.8.1`, or several constraints). Options such as `group: :dev`
         # use bare symbols and are not quoted, so they are ignored here.
         quoted = line.scan(/"([^"]*)"|'([^']*)'/).map { |m| m[1]? || m[2]? }.compact
-        label = quoted.first? || line
+        label = quoted.first? || line.strip
         requirements = quoted.skip(1).map { |requirement| pretty_requirement(requirement) }
         display = requirements.empty? ? label : "#{label} (#{requirements.join(", ")})"
         stdout.puts "#{display} was removed."
       end
 
-      if kept.none? { |l| l.strip.starts_with?("gem ") }
+      if cleaned.lines.none? { |l| l.strip.starts_with?("gem ") }
         # Reference install reports this on stderr (the remove command still
         # exits 0 and prints the removal lines on stdout).
         stderr.puts "The Gemfile specifies no dependencies"
@@ -783,8 +848,51 @@ module Celerite
       # Pruning here used to be hidden by a stale `definition.lockfile!`
       # cache; reading the fresh lockfile made `clean` print nothing.
       null = IO::Memory.new
-      install(null, stderr, rest, summary: false, cli_arguments: false)
+      install(null, stderr, install_rest, summary: false, cli_arguments: false)
       0
+    end
+
+    # `Injector#remove_gems_from_gemfile`'s matcher (injector.rb:186):
+    # `gem\s+(['"])NAME\1|gem\s*\((['"])NAME\2.*\)`. `Regexp.union` wraps the
+    # gem list in a group, so the backreference still points at the quote.
+    private def self.remove_pattern(names : Array(String)) : Regex
+      union = "(?:" + names.map { |name| Regex.escape(name) }.join("|") + ")"
+      Regex.new("gem\\s+(['\"])#{union}\\1|gem\\s*\\((['\"])#{union}\\2.*\\)")
+    end
+
+    private def self.remove_pattern(name : String) : Regex
+      remove_pattern([name])
+    end
+
+    # injector.rb:217-220 — a `gem` line that is commented out is not a
+    # declaration, so it survives the removal.
+    private def self.within_gemfile_comment?(line : String, match : Regex::MatchData) : Bool
+      offset = match.begin(0)
+      return false if offset <= 0
+      line[0..(offset - 1)].includes?("#")
+    end
+
+    # injector.rb:224-243 — drop a block header line together with the `end`
+    # line directly after it, repeating until the pass stops changing anything
+    # (the reference counts adjacent block headers to bound its loop; iterating
+    # to a fixed point drops the same lines).
+    private def self.remove_nested_blocks(gemfile : Array(String?), block_name : String) : Nil
+      loop do
+        changed = false
+        gemfile.each_with_index do |line, index|
+          current = line
+          next if current.nil?
+          next unless current.strip.starts_with?(block_name)
+          following = gemfile[index + 1]?
+          next if following.nil?
+          next unless following.matches?(/^\s*end\s*$/)
+          gemfile[index] = nil
+          gemfile[index + 1] = nil
+          changed = true
+        end
+        gemfile.compact!
+        break unless changed
+      end
     end
 
     # Reference `pretty_dependency` renders `Gem::Dependency#to_s`, whose

@@ -61,9 +61,17 @@ module Celerite
   end
 
   # bundler/errors.rb:20 (`GemfileError < BundlerError`, `status_code(4)`).
+  # `friendly_errors.rb:31-36` renders every BundlerError through
+  # `ui.error error.message, wrap: true`, so the message is word-wrapped at the
+  # terminal width: `bundle remove <unknown>` prints the three-line form
+  # measured from the 4.0.24 oracle.
   class GemfileError < Error
     def status_code : Int32
       4
+    end
+
+    def wrap? : Bool
+      true
     end
   end
 
@@ -95,6 +103,13 @@ module Celerite
 
     def initialize(@description : String, @dsl_path : String, @contents : String, @line_number : Int32)
       super(nil)
+    end
+
+    # `friendly_errors.rb:26-27` prints a DSLError's already-framed message
+    # verbatim (the indentation is load-bearing), so it opts out of the
+    # BundlerError word-wrapping inherited from GemfileError.
+    def wrap? : Bool
+      false
     end
 
     def message : String
