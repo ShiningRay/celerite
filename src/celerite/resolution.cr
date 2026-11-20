@@ -208,12 +208,23 @@ module Celerite
       getter required_ruby_version : Gem::Requirement? = nil
       getter required_rubygems_version : Gem::Requirement? = nil
 
+      # True only when this row came from the interpreter's default gem (the
+      # `index_specs_for` last-resort fallback), i.e. a `Gem::Specification`
+      # whose `default_gem?` is true. A lock/index row that merely shares the
+      # name and version with a default gem is a normal remote spec: the
+      # reference keys its built-in handling on `spec.default_gem?`
+      # (`source/rubygems.rb:181`, `:206`), and a materialized lock spec is
+      # never a default gem, so it is fetched and installed from the remote
+      # (measured: `net-protocol 0.2.2` in `lock-missing-dependency-edges`).
+      getter default_gem : Bool = false
+
       def initialize(@name : String, @version : Gem::Version, @platform : String?,
                      @dependencies : Array(Lockfile::SpecDependency), @checksum : String?,
                      @source_index : Int32, @source_type : String = "GEM",
                      @source_info : SourceInfo? = nil, @source_remote : String? = nil,
                      @required_ruby_version : Gem::Requirement? = nil,
-                     @required_rubygems_version : Gem::Requirement? = nil)
+                     @required_rubygems_version : Gem::Requirement? = nil,
+                     @default_gem : Bool = false)
       end
 
       def platform_ruby? : Bool
@@ -1320,7 +1331,8 @@ module Celerite
         next spec if dependencies == spec.dependencies
         changed = true
         ResolvedSpec.new(spec.name, spec.version, spec.platform, dependencies, spec.checksum,
-          spec.source_index, spec.source_type, spec.source_info, spec.source_remote)
+          spec.source_index, spec.source_type, spec.source_info, spec.source_remote,
+          spec.required_ruby_version, spec.required_rubygems_version, spec.default_gem)
       end
       changed
     end
@@ -1520,7 +1532,7 @@ module Celerite
           lock_deps = spec.dependencies.map do |dep|
             Lockfile::SpecDependency.new(dep.name, dep.requirement.to_lock_requirements)
           end
-          specs << ResolvedSpec.new(name, spec.version, spec.platform_ruby? ? nil : spec.platform.to_s, lock_deps, spec.checksum, 0, source_type, source, source_remote, spec.required_ruby_version, spec.required_rubygems_version)
+          specs << ResolvedSpec.new(name, spec.version, spec.platform_ruby? ? nil : spec.platform.to_s, lock_deps, spec.checksum, 0, source_type, source, source_remote, spec.required_ruby_version, spec.required_rubygems_version, !spec.default_gem_path.nil?)
         end
 
         # Lockfile-only variants: the reference materializes the graph against

@@ -452,10 +452,14 @@ module Celerite
         # cannot be cached (`rubygems_integration.rb` source cache), and still
         # counts the dependency in the summary. Keep them in `specs` (counts)
         # while removing them from the download/install worklist.
+        #
+        # The test is the spec's ORIGIN, not "the interpreter ships a gem with
+        # this name and version": `source/rubygems.rb:181`, `:206` gate the
+        # built-in path on `spec.default_gem?`, and a lock/index spec that
+        # happens to match a shipped default gem (e.g. `net-protocol 0.2.2`) is
+        # a normal remote spec that must still be fetched and installed.
         default_gems = specs.select do |spec|
-          next false unless spec.source_type == "GEM"
-          info = bridge.default_gem_spec(spec.name)
-          !info.nil? && info[:version] == spec.version.to_s
+          spec.source_type == "GEM" && spec.default_gem
         end
         unless default_gems.empty?
           default_gems.each do |spec|
