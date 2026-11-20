@@ -5249,3 +5249,13 @@ spec 家族 `m7_git_source_reuse_spec`、`m7_source_lock_options_spec`、`m7_loc
 - 从短路径 worktree `C:/temp/celerite-rebuild` 构建的二进制 11939614 字节，连跑两次 PASS；旧版 `a4f918e` 二进制亦 PASS；手工沙箱里三个新旧二进制全部 FAIL（无 harness 时也失败）。
 - 结论：失败随构建路径/宿主环境变化，与源码改动无关，属宿主机原生扩展构建限制，不是产品缺陷。
 - 该夹具已标记 `deferred-4.0.24`/`deferred-2.7.2`；恢复条件：在能正常编译原生扩展的宿主（非 Low-IL msys）上重跑并移除标记。
+## 2026-11-20（M7(3) task-52：安装后自动清理）
+
+- 语义：`BUNDLE_CLEAN=true` 时，`install`/`update` 在安装结束后按参考 `Bundler::Cleaner.new(definition, false, false).run` 清理 bundle 路径内不属于锁文件的 gem（`cli/common.rb:150-156`、`cli/install.rb:69`、`cli/update.rb:84`）。
+- oracle（4.0.24 与 2.7.2，file:// 索引 + 已装 thor/json_pure，Gemfile 删去 thor）：`install` 输出 `Removing thor (1.3.2)` 位于 `Bundle complete!`/`Bundled gems are installed into …` 之后；同时删两个 gem 时按名称序输出 `Removing json_pure (2.8.1)`、`Removing thor (1.3.2)`；未设 `BUNDLE_CLEAN` 无该行且目录保留；`update --all` 在 `Bundle updated!` 之前输出；两版措辞一致（gem 计数按各自版本）。
+- 差异声明：参考 `install` 不接受 `--dry-run`（`Unknown switches "--dry-run"`，exit 15）；`clean --dry-run` 仍输出 `Would have removed <name> (<version>)` 且不删除，与本实现一致。本轮按此实测实现，未自创 `install --dry-run` 语义。
+- 实现：`src/celerite/cli/commands_install.cr` 抽出 `perform_clean` 供 `clean` 与新增 `clean_after_install` 共用；`install` 在 cooldown 摘要后、funding 提示前调用，`update` 在 `Bundle updated!` 前调用；清理对象为 `<bundle>/gems`、`specifications`、`cache` 与 stale git checkout，仅 gem/git 目录删除打印 `Removing`。
+- 夹具：`fixtures/differential/install-clean-after-install/`（`env` 设 `BUNDLE_CLEAN=true`，`bundle-preset` 预置 json_pure+thor，`installed-tree` 断言 thor 目录消失）与 `install-clean-disabled/`（无 env，目录保留）；双 profile PASS。
+- spec：`spec/m7_clean_after_install_spec.cr` 4 examples（install 清理与位置、未设/显式 false 不清理、update 在 `Bundle updated!` 前清理）。
+- 反假绿：`C:/temp/celerite-pre52`（cb410b6）构建成功，正例夹具 0 passed/1 failed（`Only in SANDBOX/bundle/ruby/4.0.0/specifications: thor-1.3.2.gemspec`），反例夹具 PASS（无判别力，仅回归）。
+- 门禁：`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`git diff HEAD --check` 均 EXIT 0；目标 spec 4/0；差分正反两例双 profile PASS。
