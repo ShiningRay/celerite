@@ -5650,3 +5650,42 @@ oracle 用同一份 `file://` 索引（`fixtures/gem-index`，预装并锁 `json
 - 门禁 0/0/0/0。
 
 已声明差异：`file-equals` 无法表达 CRLF 期望（装具用 `sed` 生成期望文件时吞掉 CR），故 2.7.2 侧的「Gemfile 未被删」改用 `file-contains` 断言。未验证：`cross_check_for_errors`（一个名字删到多个 gemspec 时的 `InvalidOption` 回滚路径，`injector.rb:249-272`）未建夹具；`remove` 指向多 gemspec / 多 Gemfile 的项目未覆盖；同一命令重复指定同名 gem 的参考行为未单独取 oracle。
+
+## 2026-11-21（M7 task-69A：`outdated --parseable` 的 `, requested` 段）
+
+**结论**：`Bundler::CLI::Outdated#print_gem`（`.upstream-specs/v4.0.24/bundler/lib/bundler/cli/outdated.rb:210-226`）只在依赖是「特定版本」时才追加 `, requested <req>`：`if dependency&.specific?` 为真才拼 `, requested #{dependency.requirement}`。表格模式不受影响：`gem_column_for`（`:248-263`）的 Requested 列取 `dependency.to_s`，非特定依赖显示 `>= 0`。
+
+**Oracle（4.0.24 + 2.7.2，`fixtures/gem-index`）**
+
+| 形状 | 参考 stdout（parseable） | 我方（修前） |
+| --- | --- | --- |
+| Gemfile `gem "json_pure"`，锁钉 2.6.0 | `json_pure (newest 2.8.1, installed 2.6.0, released 2024-11-05)` | 末尾多 `, requested >= 0` |
+| Gemfile `gem "json_pure", "2.6.0"` | `json_pure (newest 2.8.1, installed 2.6.0, requested = 2.6.0, released 2024-11-05)` | 一致（本就对齐） |
+| 表格模式（两者） | `json_pure  2.6.0  2.8.1  >= 0  default  2024-11-05` | 一致 |
+
+**实现**：`src/celerite/cli/commands_surface.cr` 在行循环里按锁文件 `DEPENDENCIES` 的 requirement 记 `requested_specific[name]`（`Gem::Requirement#specific?`，语义同 `rubygems/requirement.rb:253-257`：约束多于一条，或单条约束的操作符不是 `>` / `>=`），parseable 分支仅在该标志为真时拼 `, requested …`。表格单元格逻辑不变。
+
+**夹具**：`fixtures/differential/outdated-parseable-nonspecific/`（非特定 `Gemfile` + 预置 `Gemfile.lock` 钉 2.6.0，`command` = `install --quiet` 后 `outdated --parseable`），双 profile exit 1 逐字一致；既有 `outdated-parseable` / `outdated-parseable-current` / `outdated-strict` / `outdated-list` / `outdated-local` 全 PASS。
+
+**声明**：`original_cli_command` / `default_cli_command` 弃用提示未纳入断言；`--parseable` 与 `--groups` 的组合未单独取值。
+
+## 2026-11-21（M7 task-69B：`install --local` 的 source 描述与缓存后缀）
+
+**结论**：`install --local` 在参考实现里从不启用远程源——`Definition#setup_domain!`（`.upstream-specs/v4.0.24/bundler/lib/bundler/definition.rb:190-203`）先 `sources.cached!`，再按 `options[:local]` 走 `sources.local!`；`Source::Rubygems#cached!`（`source/rubygems.rb:69-76`）在 `cache_path` 目录不存在时直接返回，因此 `to_s`（`:122-136`）只有在 `@allow_cached && @allow_local` 同时成立时才说 `cached gems or installed locally`，否则说 `locally installed gems`。找不到时的文案由 `Resolver#raise_not_found!`（`resolver.rb:334-361`）决定：`Bundler.app_cache.exist?` 时追加 ` or in gems cached in <app_cache_path>`（`settings.rb:304-306`，默认 `vendor/cache`）。
+
+**Oracle（4.0.24 + 2.7.2，`fixtures/gem-index`，BUNDLE_PATH 隔离、宿主无该 gem）**
+
+| 形状 | 参考 stderr | 我方（修前） |
+| --- | --- | --- |
+| `install --local`，存在 `vendor/cache` 目录，gem 未安装 | `Could not find gem 'json_pure (= 2.6.0)' in cached gems or installed locally or` / `in gems cached in vendor/cache.`（exit 7，80 列折行） | 解析成功并安装（exit 0） |
+| `install --local`，无 `vendor/cache` 目录 | `Could not find gem 'json_pure (= 2.6.0)' in locally installed gems.`（exit 7） | 同上 |
+| `install --local`，`vendor/cache` 内有该 gem | 从缓存安装，逐字一致 | 一致（`install-local-vendor-cache` 既有夹具） |
+
+**实现**：
+- `src/celerite/resolution.cr` 新增 `app_cache_present?` / `app_cache_label`（`BUNDLE_APP_CONFIG` 无关，路径按 `definition.config["cache_path"]` 或默认 `vendor/cache` 相对 Gemfile 目录展开），`make_source` 在 `@local_only` 下据此选择 `cached gems or installed locally` 或 `locally installed gems`；并把 `" or in gems cached in <label>"` 作为 `cache_note` 传给解析器。
+- `src/celerite/resolver/source.cr` `ResolutionSource` 新增 `@cache_note` 参数，三条 not-found 文案在其后、句号之前拼接，与参考的 `"#{not_found_message} in #{source}#{cache_message}."` 同形。
+- `index_specs_for` 中 `@local_only` 直接返回本地候选的注释改为「参考在 `--local` 下不启用远程源」，删掉原先与 oracle 相反的 file:// 说法。
+
+**夹具**：`fixtures/differential/install-local-index-unreachable/`（`source "file:///@INDEX_DIR@"` + `gem "json_pure", "2.6.0"` + `extra/vendor/cache/.keep`，`command` = `install --local`，`stderr-contains` 钉 `in cached gems or installed locally`），双 profile exit 7 PASS；`install-local` / `install-local-vendor-cache` / `outdated-local` 回归 PASS。
+
+**声明**：`--local` 与 `--prefer-local` 组合、`cache_path` 自定义为绝对路径时的文案未单独取值；`Gem::Specification.stubs` 与桥接侧 `installed_specs` 的差异仍靠 `GEM_HOME` 过滤（宿主装有同名 gem 时以 spec 的 `GEM_HOME` 隔离为准）。
