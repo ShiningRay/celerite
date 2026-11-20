@@ -13,6 +13,8 @@ require "../git_source"
 require "../glob"
 require "../gem_template"
 require "yaml"
+require "http/client"
+require "openssl"
 
 module Celerite
   # M5 CLI surface commands (pinned against the 4.0.24 oracle): update,
@@ -845,6 +847,12 @@ module Celerite
       # makes Thor report unknown options as leftover arguments of `diagnose`
       # (cli.rb:669-671); `diagnose` is the default command.
       arguments = subcommand_arguments(rest, DOCTOR_SUBCOMMAND_FLAGS, DOCTOR_SUBCOMMAND_VALUES)
+      # `doctor ssl` is a real subcommand (cli/doctor.rb:25-31) with its own
+      # `--host`/`--tls-version`/`--verify-mode` options.
+      if arguments.first? == "ssl"
+        return doctor_ssl(stdout, stderr, arguments[1..], quiet: quiet)
+      end
+      ssl = rest.includes?("--ssl")
       arguments = arguments.reject { |arg| arg == "diagnose" }
       unless arguments.empty?
         stderr.puts %(ERROR: "bundle doctor diagnose" was called with arguments #{arguments.inspect})
@@ -855,7 +863,7 @@ module Celerite
       previous_gemfile = ENV["BUNDLE_GEMFILE"]?
       begin
         ENV["BUNDLE_GEMFILE"] = gemfile if gemfile
-        doctor_report(stdout, stderr, quiet: quiet)
+        doctor_report(stdout, stderr, quiet: quiet, ssl: ssl)
       ensure
         if previous_gemfile
           ENV["BUNDLE_GEMFILE"] = previous_gemfile
@@ -880,7 +888,7 @@ module Celerite
     # missing lockfile writes it (reference Diagnose#run leaves the definition
     # locked), which is why `issue` on a Gemfile-only project must not fail with
     # the old `Could not locate Gemfile`.
-    def self.doctor_report(stdout : IO, stderr : IO, quiet : Bool = false) : Int32
+    def self.doctor_report(stdout : IO, stderr : IO, quiet : Bool = false, ssl : Bool = false) : Int32
       definition = Definition.build
       Commands.validate_ruby_runtime!(definition)
       # `doctor` resolves like `check` (cli/doctor.rb): it may fetch the index,
@@ -905,6 +913,10 @@ module Celerite
           return 1
         end
       end
+      # `doctor/diagnose.rb:77-79`: `--ssl` runs the SSL report right after the
+      # dependency check and before the dylib scan. Diagnose has no `--host`, so
+      # the report always targets the default host.
+      doctor_ssl(stdout, stderr, [] of String, quiet: quiet) if ssl
       # `diagnose.rb:86-96`: every `**/*.bundle` file makes `dylibs` warn on
       # non-darwin/linux hosts (one warning per file) and return an empty list.
       # Crystal's `File.join` uses `\` on Windows, which `Dir.glob` does not
@@ -922,6 +934,152 @@ module Celerite
       # the compat report's task-53 section.
       stdout.puts "No issues found with the installed bundle" unless quiet
       0
+    end
+
+    # `cli/doctor/ssl.rb`: prints the interpreter's OpenSSL build, probes
+    # Bundler, RubyGems and Ruby's net/http against https://<host>/, and
+    # summarizes. Probe failures are reported as warnings; the subcommand
+    # itself always exits 0 (cli/doctor/ssl.rb:14-24).
+    def self.doctor_ssl(stdout : IO, stderr : IO, rest : Array(String), quiet : Bool = false) : Int32
+      host = option_value(rest, "--host") || "rubygems.org"
+      tls_version = option_value(rest, "--tls-version")
+      verify_mode = option_value(rest, "--verify-mode")
+      timeout = 10
+
+      bridge = Bridge::Client.new
+      begin
+        versions = bridge.ssl_openssl_versions
+        unless quiet
+          stdout.print "Here's your OpenSSL environment:\n\n"
+          stdout.print "OpenSSL:       #{versions[:version]}\n"
+          stdout.print "Compiled with: #{versions[:compiled]}\n"
+          stdout.print "Loaded with:   #{versions[:loaded]}\n"
+          stdout.print "\nTrying connections to https://#{host}:\n"
+        end
+
+        bundler = bridge.ssl_probe(host, timeout, tls_version, verify_mode)
+        bundler_ok = bundler[:success]
+        if bundler_ok
+          stdout.puts "Bundler:       success" unless quiet
+        else
+          message = bundler[:error_message] || bundler[:error_class] || "unknown error"
+          stderr.puts "Bundler:       failed     (#{ssl_probe_explanation(message)})"
+        end
+
+        rubygems_error = ssl_rubygems_probe(host, timeout)
+        rubygems_ok = rubygems_error.nil?
+        if rubygems_ok
+          stdout.puts "RubyGems:      success" unless quiet
+        else
+          stderr.puts "RubyGems:      failed     (#{ssl_probe_explanation(rubygems_error || "")})"
+        end
+
+        net_http = bridge.ssl_probe(host, timeout, tls_version, verify_mode)
+        unless net_http[:success]
+          message = net_http[:error_message] || net_http[:error_class] || "unknown error"
+          error_class = net_http[:error_class] || "StandardError"
+          stderr.print "Ruby net/http: failed\n\n"
+          stderr.print "Unfortunately, this Ruby can't connect to #{host}.\n\n"
+          stderr.print ssl_net_http_explanation(message, error_class, net_http[:backtrace], host, tls_version)
+          return 0
+        end
+        stdout.puts "Ruby net/http: success" unless quiet
+
+        unless quiet
+          stdout.print "\n#{ssl_summary(bundler_ok, rubygems_ok, host)}\n"
+        end
+      ensure
+        bridge.close
+      end
+      0
+    end
+
+    # `cli/doctor/ssl.rb:88-97`: the RubyGems probe uses Ruby's remote fetcher;
+    # a peer-verifying TLS GET is the same check on our side.
+    private def self.ssl_rubygems_probe(host : String, timeout : Int32) : String?
+      uri = URI.parse("https://#{host}/")
+      client = HTTP::Client.new(uri)
+      client.connect_timeout = timeout.seconds
+      client.read_timeout = timeout.seconds
+      begin
+        client.get("/")
+        nil
+      ensure
+        client.close
+      end
+    rescue ex
+      ex.message
+    end
+
+    # `cli/doctor/ssl.rb:148-159`.
+    private def self.ssl_probe_explanation(message : String) : String
+      case message
+      when /certificate verify failed/
+        "certificate verification"
+      when /read server hello A/
+        "SSL/TLS protocol version mismatch"
+      when /tlsv1 alert protocol version/
+        "requested TLS version is too old"
+      else
+        message
+      end
+    end
+
+    # `cli/doctor/ssl.rb:161-197`.
+    private def self.ssl_net_http_explanation(message : String, error_class : String,
+                                              backtrace : Array(String), host : String,
+                                              tls_version : String?) : String
+      if message.matches?(/certificate verify failed/)
+        cert_file = ENV["SSL_CERT_FILE"]? || "/usr/lib/ssl/cert.pem"
+        cert_dir = ENV["SSL_CERT_DIR"]? || "/usr/lib/ssl/certs"
+        file_state = File.file?(cert_file) ? "exists     " : "is missing "
+        dir_state = Dir.exists?(cert_dir) ? "exists     " : "is missing "
+        return "Below affect only Ruby net/http connections:\n" \
+               "SSL_CERT_FILE: #{file_state}#{cert_file}\n" \
+               "SSL_CERT_DIR:  #{dir_state}#{cert_dir}\n" \
+               "Your Ruby can't connect to #{host} because you are missing the certificate files " \
+               "OpenSSL needs to verify you are connecting to the genuine #{host} servers.\n"
+      end
+      if message.matches?(/read server hello A/) || message.matches?(/tlsv1 alert protocol version/)
+        if tls_version == "TLS1_3"
+          return "Your Ruby can't connect to #{host} because #{tls_version} isn't supported yet.\n"
+        end
+        return "Your Ruby can't connect to #{host} because your version of OpenSSL is too old.\n" \
+               "You'll need to upgrade your OpenSSL install and/or recompile Ruby to use a newer OpenSSL.\n"
+      end
+      if message.matches?(/unknown SSL method/)
+        return "Your Ruby can't connect because #{tls_version} isn't supported by your version of OpenSSL.\n"
+      end
+      trace = backtrace.map { |line| "  #{line}" }.join('\n')
+      "Even worse, we're not sure why.\n\n" \
+      "Here's the full error information:\n" \
+      "#{error_class}: #{message}\n" \
+      "#{trace}\n\n" \
+      "You might have more luck using Mislav's SSL doctor.rb script. You can get it here:\n" \
+      "https://github.com/mislav/ssl-tools/blob/8b3dec4/doctor.rb\n\n" \
+      "Read more about the script and how to use it in this blog post:\n" \
+      "https://mislav.net/2013/07/ruby-openssl/\n"
+    end
+
+    # `cli/doctor/ssl.rb:199-231`.
+    private def self.ssl_summary(bundler_ok : Bool, rubygems_ok : Bool, host : String) : String
+      guide = "http://ruby.to/ssl-check-failed"
+      if bundler_ok && rubygems_ok
+        "Hooray! This Ruby can connect to #{host}.\nYou are all set to use Bundler and RubyGems."
+      elsif !bundler_ok && !rubygems_ok
+        "For some reason, your Ruby installation can connect to #{host}, but neither RubyGems nor Bundler can.\n" \
+        "The most likely fix is to manually upgrade RubyGems by following the instructions at #{guide}.\n" \
+        "After you've done that, run `gem install bundler` to upgrade Bundler, and then run this script again to make sure everything worked."
+      elsif !bundler_ok
+        "Although your Ruby installation and RubyGems can both connect to #{host}, Bundler is having trouble.\n" \
+        "The most likely way to fix this is to upgrade Bundler by running `gem install bundler`.\n" \
+        "Run this script again after doing that to make sure everything is all set.\n" \
+        "If you're still having trouble, check out the troubleshooting guide at #{guide}."
+      else
+        "It looks like Ruby and Bundler can connect to #{host}, but RubyGems itself cannot.\n" \
+        "You can likely solve this by manually downloading and installing a RubyGems update.\n" \
+        "Visit #{guide} for instructions on how to manually upgrade RubyGems."
+      end
     end
 
     # `Definition#resolve` in the reference resolves into the lockfile object

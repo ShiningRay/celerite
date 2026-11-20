@@ -318,6 +318,33 @@ module Celerite
         }
       end
 
+      # `cli/doctor/ssl.rb:61-69`: the interpreter's OpenSSL versions, so
+      # `bundle doctor ssl` reports the same build as the reference.
+      def ssl_openssl_versions : NamedTuple(version: String, compiled: String, loaded: String)
+        result = request("ssl_openssl_versions", {} of String => String)
+        {
+          version:  result["version"].as_s,
+          compiled: result["compiled"].as_s,
+          loaded:   result["loaded"].as_s,
+        }
+      end
+
+      # `cli/doctor/ssl.rb:99-121`: Net::HTTP connectivity probe with the
+      # requested TLS bounds and verification mode.
+      def ssl_probe(host : String, timeout : Int32, tls_version : String?, verify_mode : String?) : NamedTuple(
+        success: Bool, error_class: String?, error_message: String?, backtrace: Array(String))
+        payload = {"host" => host, "timeout" => timeout.to_s} of String => String
+        payload["tls_version"] = tls_version if tls_version
+        payload["verify_mode"] = verify_mode if verify_mode
+        result = request("ssl_probe", payload, limit: (timeout + 5).seconds)
+        {
+          success:       result["success"].as_bool,
+          error_class:   result["class"]?.try(&.as_s?),
+          error_message: result["message"]?.try(&.as_s?),
+          backtrace:     (result["backtrace"]?.try(&.as_a) || [] of JSON::Any).map(&.as_s),
+        }
+      end
+
       def write_installed_spec(gem_path : String, destination : String, gem_dir : String, unpack : Bool = false) : JSON::Any
         request("write_installed_spec", {"gem_path" => gem_path, "destination" => destination, "gem_dir" => gem_dir, "unpack" => unpack ? "true" : ""})
       end

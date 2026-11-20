@@ -270,6 +270,52 @@ def op_default_gem_spec(payload)
   }
 end
 
+# `cli/doctor/ssl.rb:61-69`: the reference prints the interpreter's OpenSSL
+# build. The values must come from the same Ruby the reference would run, not
+# from the Crystal side's OpenSSL.
+def op_ssl_openssl_versions(_payload)
+  require "openssl"
+  {
+    "version" => OpenSSL::VERSION,
+    "compiled" => OpenSSL::OPENSSL_VERSION,
+    "loaded" => OpenSSL::OPENSSL_LIBRARY_VERSION,
+  }
+end
+
+# `cli/doctor/ssl.rb:99-121`: probe https://<host> with Net::HTTP, honoring the
+# requested TLS bounds and verification mode. Failures return the exception
+# so the CLI can mirror `Explanation.explain_net_http_error`.
+def op_ssl_probe(payload)
+  require "net/http"
+  require "uri"
+  require "openssl"
+  host = payload["host"].to_s
+  timeout = payload["timeout"].to_i
+  timeout = 10 if timeout <= 0
+  uri = URI("https://#{host}")
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.use_ssl = true
+  http.open_timeout = timeout
+  http.read_timeout = timeout
+  if (tls = payload["tls_version"])
+    version = :"TLS#{tls.to_s.sub(".", "_")}"
+    http.min_version = version
+    http.max_version = version
+  end
+  mode = (payload["verify_mode"] || "peer").to_s.upcase
+  http.verify_mode = OpenSSL::SSL.const_get("VERIFY_#{mode}")
+  http.start
+  http.finish
+  { "success" => true }
+rescue Exception => e # rubocop:disable Lint/RescueException — mirror Explanation's StandardError rescue
+  {
+    "success" => false,
+    "class" => e.class.name.to_s,
+    "message" => e.message.to_s,
+    "backtrace" => Array(e.backtrace),
+  }
+end
+
 def op_read_gem_spec(payload)
   require "rubygems/package"
   path = payload["path"]
@@ -773,6 +819,8 @@ def bridge_dispatch(id, op, payload)
            when "plugin_source_install" then op_plugin_source_install(payload)
   when "installed_specs" then op_installed_specs(payload)
     when "default_gem_spec" then op_default_gem_spec(payload)
+    when "ssl_openssl_versions" then op_ssl_openssl_versions(payload)
+    when "ssl_probe" then op_ssl_probe(payload)
            else
              return bridge_error(id, "UnknownOp", "unknown bridge op #{op.inspect}")
            end
