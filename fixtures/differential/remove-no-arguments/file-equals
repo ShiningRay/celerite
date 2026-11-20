@@ -1,0 +1,4 @@
+Gemfile
+source "file:///@INDEX_DIR@"
+
+gem "json_pure", "= 2.6.0"
