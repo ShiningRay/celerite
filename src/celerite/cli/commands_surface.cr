@@ -2815,6 +2815,7 @@ module Celerite
         cooldown_now = resolution.cooldown_now || Time.utc.to_unix
         cooldown_notes = {} of String => Int32
         cooldown_adoptable = {} of String => Gem::Version
+        requested_specific = {} of String => Bool
         stdout.puts "Resolving dependencies..." if local_flag && !parseable
         # A named-gem request makes the reference build and resolve a
         # second (gem-scoped) definition for output.
@@ -2874,6 +2875,16 @@ module Celerite
                      end
           dep = lockfile.try(&.dependencies.find(&.name.==(spec.name)))
           reqs = dep.try(&.requirements)
+          # `print_gem` only appends `, requested <req>` for a SPECIFIC
+          # dependency (`dependency&.specific?`, cli/outdated.rb:218-220); the
+          # table cell always shows the requirement (`gem_column_for`, :257-259).
+          if dep
+            begin
+              requested_specific[spec.name] = Gem::Requirement.new(reqs || [] of String).specific?
+            rescue ArgumentError
+              requested_specific[spec.name] = false
+            end
+          end
           if strict && reqs && !reqs.empty?
             requirement = Gem::Requirement.new(reqs)
             versions = versions.select { |v| requirement.satisfied_by?(v) }
@@ -2956,7 +2967,8 @@ module Celerite
           # line per gem (release date only on the 4.0.24 profile).
           stdout.puts
           rows.each do |row|
-            message = "#{row[0]} (newest #{row[2]}, installed #{row[1]}, requested #{row[3]}"
+            message = "#{row[0]} (newest #{row[2]}, installed #{row[1]}"
+            message += ", requested #{row[3]}" if requested_specific[row[0]]?
             if date = row[5]?
               message += ", released #{date}" unless date.strip.empty?
             end
