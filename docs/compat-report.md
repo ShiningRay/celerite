@@ -5331,7 +5331,7 @@ spec 家族 `m7_git_source_reuse_spec`、`m7_source_lock_options_spec`、`m7_loc
 | `add json_pure --path vendor/x --skip-install` | exit 13，stderr 三行（friendly errors 折行）`The path\n\`…/vendor/x\`\ndoes not exist.\n`，Gemfile 未改 | exit 7，且已写入 `path:` | exit 13，逐字一致，未写入 |
 | `update --redownload` | 接受（`cli.rb:330` 中 `force` 的别名），exit 0 | exit 15 `Unknown switches "--redownload"` | 接受，按 `--force` 处理 |
 
-glob 归一化另测：`--glob "sub/*.gemspec"`、`--glob "{a,b}.gemspec"` 逐字写入；唯独 `--glob "*.gemspec"` 参考写成 `glob: "celerite.gemspec"`（原因未查明，夹具只用逐字形式）。
+glob 归一化另测：`--glob "sub/*.gemspec"`、`--glob "{a,b}.gemspec"` 逐字写入；唯独 `--glob "*.gemspec"` 参考写成 `glob: "celerite.gemspec"`（原因不是 Bundler 归一化，而是宿主 `ruby.exe` 的 argv cmdglob；机制见 task-59 节 `docs/compat-report.md:5422`。夹具只用逐字形式）。
 
 根因与实现：
 - `src/celerite/cli/commands_surface.cr` `add_option_suffix` 缺 `glob` 分支 → 补 `glob: #{glob.inspect}`（参考 `injector.rb:114`）。
@@ -5346,7 +5346,7 @@ glob 归一化另测：`--glob "sub/*.gemspec"`、`--glob "{a,b}.gemspec"` 逐�
 - 门禁：`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`crystal build src/cli.cr -o bin/celerite.exe`、`git diff HEAD --check` 全部 EXIT 0；目标 spec `spec/m7_add_options_spec.cr` 4 examples / 0 failures。
 
 声明差异 / 未验证：
-1. `--glob "*.gemspec"` 的 `celerite.gemspec` 归一化未复现，原因未查明；夹具不覆盖该形式。
+1. `--glob "*.gemspec"` 写成 `celerite.gemspec` 来自宿主 `ruby.exe` argv 的 cmdglob（见 task-59 节 `docs/compat-report.md:5422`），不是 Bundler 归一化；夹具不覆盖该形式。
 2. `--bundler <ver>` 仍是 accept-only（未实现 bundler 自重装）。
 3. `--strict --skip-install` 参考多一次 resolve 的问题未在本任务处理。
 4. `update --redownload` 按 `--force` 处理，未做缓存失效（不重新下载已有 cache）。

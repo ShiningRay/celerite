@@ -1,4 +1,4 @@
-# Differential 4.0.24/2.7.2 run — 2026-11-12 (task-2: M7(1) boundary metadata + full 4.0.24 suite refresh + matrix strengthening)
+# Differential 4.0.24/2.7.2 run — 2026-11-11 (task-2: M7(1) boundary metadata + full 4.0.24 suite refresh + matrix strengthening)
 
 ## Provenance
 

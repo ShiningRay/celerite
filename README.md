@@ -18,6 +18,15 @@ compatibility boundary. Performance is a measured goal, not an unconditional cla
 > `src/celerite/resolution.cr:1362`, `:1371`, `:1494`). The S3 install path is
 > covered by `plugin-source-install` on both reference profiles.
 >
+> Tasks 52–60 added native coverage for the after-install clean-up
+> (`BUNDLE_CLEAN`), the `doctor` subcommands with the Windows dylib warning,
+> `doctor ssl` and `diagnose --ssl`, the `add` option and operand surface,
+> `plugin new` / `licenses` / local `config` wording, `update --bundler`,
+> `lock --normalize-platforms` and `--lockfile`, the missing
+> `install --target-rbconfig` failure surface, and cache-based
+> `update --redownload` output. Details and declared gaps are in the
+> corresponding `docs/compat-report.md` sections.
+>
 > The current roadmap prioritizes correctness and trustworthy upstream evidence
 > (M7), then batch bridge calls and no-Ruby cache hits (M8), native install plans
 > and a lightweight runtime (M9). Embedding Crystal as a Ruby native extension is
@@ -38,7 +47,7 @@ compatibility boundary. Performance is a measured goal, not an unconditional cla
 - Verify behavior with differential tests and the upstream Bundler test suite
   (current v4.0.24 lockfile baseline: 64 examples, 54 failed / 10 passed;
   buckets artifice 38 / low-IL 8 / fetch 6 / product 2, collected 2026-11-19
-  16:32 by task-32; not recollected after tasks 33–40; see
+  16:32 by task-32; not recollected after tasks 33–59; see
   `docs/compat-report.md` task-32).
 
 ## Non-goals
@@ -58,7 +67,7 @@ explicit, opt-in installation step; it will never be overwritten automatically.
 - [实施计划](docs/roadmap.md)
 - [兼容矩阵基线](docs/compat-matrix/README.md) — hand-collected per-version
   feature lists pinned to the upstream manifest ([manifest](vendor/reference/MANIFEST.md));
-  collection dates are recorded in each generated file header
+  collection dates are recorded in the matrix index (docs/compat-matrix/README.md)
 
 ## Install
 
@@ -100,6 +109,8 @@ Requires Crystal 1.21.1 or newer. On this Windows host, run specs with `HOME`,
 `.tmp-scratch/spectmp`); otherwise environment-related sandbox errors appear and
 are not product failures (see `docs/compat-report.md`). The differential harness
 also needs the msys64 tool directories on `PATH` and `CELERITE_BIN` set.
+Release binaries do not carry the differential harness, so runtime conclusions
+do not cover development-time differential runs.
 
 ```console
 shards build          # build bin/celerite
@@ -118,12 +129,24 @@ gem install bundler -v 2.7.2
 
 The harness runs each fixture in its own sandbox. Most fixtures are offline, but
 `http-index` fixtures start a loopback HTTP server on `127.0.0.1`. Known limits:
-Low-IL Windows hosts block some git-source fixtures (`0xC0000022`), and two
-fixtures are deferred for the 2.7.2 profile (`gem-default`, `gem-no-git`; marker
-`deferred-2.7.2`, `script/differential:622-624`). It compares exit codes,
+Low-IL Windows hosts block some git-source fixtures (`0xC0000022`). Deferrals are
+per profile: 12 fixtures are deferred for the 2.7.2 profile (`add-group`,
+`cache-all-platforms`, `cache-path-removed`, `check-path-removed`,
+`config-deprecated-get`, `config-get-user-cache`, `gem-default`, `gem-no-git`,
+`git-submodules`, `issue-no-gemfile`, `plugin-source-disabled`, `removed-viz`)
+and 5 for 4.0.24 (`cache-all-platforms`, `git-submodules`, `issue-no-gemfile`,
+`plugin-source-disabled`, `show-outdated-verbose-272`); marker
+`deferred-<version>`, `script/differential:638-639`. It compares exit codes,
 stdout/stderr, the project tree, and optional content probes —
-`file-contains` (`:535-547`), `file-absent` (`:549-566`), `file-equals`
-(`:513-533`), `installed-tree` (`:491-500`) and `first-line` (`:502-512`).
+`installed-tree` (`:509`), `first-line` (`:520`), `file-equals` (`:528-535`),
+`file-contains` (`:553`) and `file-absent` (`:569`).
+
+Glob patterns such as `*.gemspec` are expanded by the Windows `ruby.exe` argv
+layer before Bundler sees them; Bundler itself stores the `glob` option verbatim
+(`dependency.rb:55-59`) and writes it back verbatim (`injector.rb:119`).
+Celerite does not emulate that argv-level expansion, so `cmd.exe` invocations of
+`celerite add --glob *.gemspec` differ from the reference, while
+`script/differential` expands in bash first and both sides agree.
 
 ## License
 
