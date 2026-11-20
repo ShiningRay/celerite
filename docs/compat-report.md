@@ -5852,3 +5852,29 @@ oracle 用同一份 `file://` 索引（`fixtures/gem-index`，预装并锁 `json
 
 - 仅覆盖含逗号的元素；含空格、引号、反斜杠、空串的元素按 Ruby 规则实现但未逐字取证（`Symbol#inspect` 的非裸名分支只有一条实测样本）。
 - `config get` 的多来源优先级列表未新增用例；既有 `config-*` 回归全绿。
+## 2026-11-21（M7 task-75：install/clean/exec/outdated 的结构化 Ruby 校验）
+
+**现象**：`Gemfile` 写 `ruby "4.0.6", patchlevel: "999"` 时，`install` 完全无视 patchlevel（exit 0，正常 Fetching/Installing），`check` 却 exit 18；参考两侧一致 exit 18。把 source 换成不可达 https 后参考仍先 exit 18，我方先死在 SSL（exit 17）。
+
+**根因**：四处运行时校验传的是 `evaluation.ruby`——`GemfileEvaluation#ruby` 是 `RubyVersion#to_s` 的人类可读串（`src/celerite/ruby_version.cr:64-71`），不含 patchlevel/engine 选项字段。`check` 走的是正确入口 `Commands.requested_ruby_version`（`src/celerite/cli/commands.cr:1122`，用 `ruby_version`/`ruby_patchlevel`/`ruby_engine`/`ruby_engine_version` 构造结构化 `Celerite::RubyVersion`），所以只有 `check` 报了 patchlevel。锚点：`cli/install.rb:24` `Bundler.validate_runtime!`、`cli/clean.rb`（`Bundler.load.clean` 前 `Bundler.definition` 触发同一校验）、`cli/exec.rb`/`cli/outdated.rb:26-33`（先 `validate_runtime!` 再 resolve）。
+
+**修法**：四处（`commands_install.cr` install / clean / exec，`commands_surface.cr` outdated）改用 `Commands.requested_ruby_version(evaluation)` + `RubyRuntime.validate_version!`（已有重载，未复制任何 patchlevel 解析）。`outdated` 另外把校验移到 `materialize_lockfile` **之前**——参考先校验再 resolve，故无锁且未安装时参考给 18 而非 `Could not find gem … in locally installed gems`（exit 7）。
+
+**oracle 表**（4.0.24 与 2.7.2 各测一遍）
+
+| 场景 | 修前 | 修后 | 参考 |
+| --- | --- | --- | --- |
+| `install`（file:// 索引，patchlevel 999） | exit 0，正常安装 | exit 18 + `Your Ruby patchlevel is 0, but your Gemfile specified 999` | exit 18，同句 |
+| `install`（`https://example.invalid`，无 mirror） | exit 17（SSL） | exit 18 + 同句 | exit 18 + 同句 |
+| `check` | exit 18 + 同句 | exit 18 + 同句 | exit 18 + 同句 |
+| `clean`（配置了 BUNDLE_PATH） | exit 0 | exit 18 + 同句 | exit 18 + 同句 |
+| `exec ruby -e 'puts :ran'` | 未校验，跑子进程 | exit 18 + 同句，无 `ran` | exit 18 + 同句 |
+| `outdated`（无锁、未安装） | exit 7 `… in locally installed gems` | exit 18 + 同句 | exit 18 + 同句 |
+
+**夹具**：`fixtures/differential/install-patchlevel-mismatch`（离线 `file://` 索引）、`fixtures/differential/install-patchlevel-mismatch-unreachable`（`https://example.invalid`，无 mirror；双 profile 均稳定 exit 18，未退化为 spec-only）。两条都断 exit 18 与关键行。
+
+**spec**：`spec/m7_ruby_patchlevel_spec.cr` 4 例（install / clean / exec / outdated），与 `m7_ruby_runtime_enforcement_spec.cr`、`m7_install_ruby_compat_spec.cr`、`m7_ruby_constraints_spec.cr`、`m7_clean_system_gems_spec.cr`、`m7_exec_spec.cr`、`m7_exec_env_spec.cr` 合并 36 例 0 失败。
+
+**负对照**：`C:/temp/celerite-pre75` @ `d0b7c1a`（构建成功）→ **0 passed / 2 failed**：`exit code: reference=18 celerite=0`、`exit code: reference=18 celerite=17`，两条 needle 均缺失。
+
+**已声明差异**：只对齐「运行时 Ruby 校验」这一层；`Gemfile` 里 `patchlevel` 与锁文件/`CHECKSUMS` 的交互未另取 oracle。`BUNDLE_FROZEN`/`deployment` 与 patchlevel 同时出错时的优先级未逐组合测。
