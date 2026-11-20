@@ -5730,3 +5730,39 @@ oracle 用同一份 `file://` 索引（`fixtures/gem-index`，预装并锁 `json
 - `pristine <name>`（指定 gem 名）路径未单独取 oracle，只有全量 `pristine` 有夹具。
 - `info`/`show` 的多余参数与 `--version`/`--paths` 组合未逐一取 oracle（当前行为：未知开关先报，再报参数个数）。
 - 参考在 `pristine` 缺缓存时仍会处理后续 gem；夹具只覆盖单 gem 项目，多 gem 时逐条 `next` 的行为未 fixture 化。
+
+## 2026-11-21（M7 task-71：`info`/`show` 的 `select_spec`——默认 gem 回退与正则多选菜单）
+
+### oracle（HEAD ab689f5，双 profile，隔离 HOME/BUNDLE_*，项目 `source "file://<gem-index>"` + `gem "json_pure"`，先 `install --quiet`，stdin `< /dev/null`）
+
+| 命令 | 参考 | 我方（修前） |
+| --- | --- | --- |
+| `info bundler` | exit 0；`  * bundler (4.0.24)`、`Summary:`、`Homepage:`、`Source Code:`、`Changelog:`、`Bug Tracker:`、`Path: …/gems/bundler-4.0.24`；**无** `Default Gem` | exit 7 `Could not find gem 'bundler'.` |
+| `info stringio` | exit 0；`  * stringio (3.2.0)`、`Summary: Pseudo IO on String`、`Changelog:`、`Path: …/gems/stringio-3.2.0`、`Default Gem: yes` | exit 7 `Could not find gem 'stringio'.` |
+| `info json` / `show json`（stdin EOF） | exit 0、stderr 空、stdout 恰为 `1 : json_pure` / `2 : json` / `0 : - exit -` / `>  `（两个空格，无换行） | exit 7 `Could not find gem 'json'.` |
+| `info zzzznotagem` | exit 7 `Could not find gem 'zzzznotagem'.`（无 Did-you-mean） | 一致 |
+
+### 机制（`.upstream-specs/v4.0.24/bundler/lib/bundler/`）
+
+- `cli/common.rb:68-96` `select_spec(name, regex_match)`：先遍历 `definition.specs` 做**精确名匹配**（命中即返回）；未命中则用 `Regexp.new(name)` 收窄候选；随后 `default_gem_spec(name)` 再追加一条；`case specs.count` 0 → not-found、1 → 直接取、>1 → 菜单。
+- `cli/common.rb:98-101` `default_gem_spec(name)`：`Gem::Specification.find_all_by_name(name).last`，仅当 `default_gem?` 才算命中。
+- `cli/common.rb:103-111` `ask_for_spec_from`：逐条 `ui.info "<n> : <name>"`、`0 : - exit -`、`ui.ask("> ")`；`num > 0 ? specs[num-1] : nil`——EOF 时 `num = 0`，于是不选、也不报错。
+- `cli/info.rb:11-30` 在 `ui.silence { validate_runtime!; Bundler.load.lock }` 之后调用 `Common.select_spec(gem_name, :regex_match)`，`spec` 为 nil 即静默退出 0；`:50-73` 的字段顺序为 `  * name (version)`、Summary、Homepage、Documentation、Source Code、Funding、Wiki、Changelog、Bug Tracker、Mailing List、`Path:`、`Default Gem: yes`、反向依赖。
+
+### 实现
+
+- `assets/bridge/server.rb` `op_default_gem_spec` 增补 `full_name`/`loaded_from`/`summary`/`homepage`/`metadata`；`src/celerite/bridge/client.cr` 对应 NamedTuple 加字段。
+- `src/celerite/cli/commands.cr`：新增 `DefaultGemInfo` 与 `parse_spec_name_regex`/`lookup_default_gem`/`installed_bundler_dir`/`append_gemspec_metadata`；`show_info` 在精确匹配失败后走「正则候选 + 默认 gem 追加」两段，候选数 >1 时打印菜单并从 `STDIN.gets` 取序号（EOF 时补一个空格以对齐 `">  "` 的字节），`spec` 仍为 nil 时按默认 gem / bundler 两条分支渲染，最后才落到 not-found。
+
+### 夹具与证据
+
+- `fixtures/differential/info-default-gem-fallback/`（`install --quiet` + `info stringio`）、`fixtures/differential/info-regex-menu/`（`install --quiet` + `info json`）：4.0.24 **2 passed / 0 failed**，2.7.2 **2 passed / 0 failed**。
+- 负对照 `C:/temp/celerite-pre71` @ `ab689f5`：两个夹具双 profile 全 FAIL（`exit code: reference=0 celerite=7`、`> Could not find gem 'stringio'.` / `> Could not find gem 'json'.`，且缺菜单四行）。
+- 回归 `info`/`show`/`list` 家族 32 例：4.0.24 31 passed / 0 failed / 1 skipped（`show-outdated-verbose-272` 既定延期），2.7.2 32 passed / 0 failed。
+- `spec/m7_info_select_spec.cr` 4 例：默认 gem 回退、bundler 渲染、唯一正则命中、缺失 gem 文案。
+
+### 已声明差异
+
+- `info bundler` 的 `Path`/元数据取「正在运行的 bundler」：差分里参考跑的是已安装 gem，而我们的开发夹具经 `CELERITE_REFERENCE_BUNDLER_LIB` 加载检出树，缺少 `specifications/bundler-<v>.gemspec`；因此差分夹具只用 `info stringio`，bundler 的字段只在 spec 断言 `Summary`/`Homepage`，`Path` 不入断言。
+- 菜单的交互分支（输入序号选中）未做端到端夹具：差分以 stdin EOF 覆盖「不选即退出 0」；选中分支只有单元级构造，属未验证。
+- 参考 `gem_not_found_message` 的 `Did you mean …?` 建议未实现；当前所有 not-found 都只打一行 `Could not find gem '<name>'.`（本任务范围内的用例都不触发建议）。
