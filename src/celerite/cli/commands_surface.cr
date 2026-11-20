@@ -257,6 +257,15 @@ module Celerite
         end
         cached_paths = {} of String => String
         pending.each do |spec|
+          # `update --redownload`/`--force` map to `method_option "force"` in
+          # the reference (`cli.rb:330`): gems that are already cached are
+          # reinstalled from `<bundle>/ruby/<abi>/cache` or `vendor/cache`, and
+          # the reference prints only the `Installing` line for them. A
+          # `Fetching` line is reserved for a real package download.
+          if cached = resolution.vendor_cache_path(spec.full_name) || installer.cached_package_path(spec.full_name)
+            cached_paths[spec.full_name] = cached
+            next
+          end
           stdout.puts "Fetching #{spec.name} #{spec.version}#{was_suffix.call(spec)}"
           cached_paths[spec.full_name] = downloader.fetch(
             spec.name, spec.version.to_s, spec.platform, spec.checksum
@@ -274,7 +283,7 @@ module Celerite
         (pure + ext).each do |spec|
           cached = cached_paths[spec.full_name]?
           stdout.puts "Installing #{spec.name} #{spec.version}#{was_suffix.call(spec)}#{native_suffix(bridge, cached)}"
-          installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum)
+          installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum, gem_file: cached)
           if cached && File.file?(cached)
             sha = Digest::SHA256.hexdigest(File.read(cached))
             resolution.install_checksums["#{spec.name}-#{spec.version}"] = "sha256=#{sha}"

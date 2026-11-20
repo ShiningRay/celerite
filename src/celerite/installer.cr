@@ -117,6 +117,14 @@ module Celerite
       install_file(file, name, version, platform, full_name)
     end
 
+    # `<install_root>/cache/<full_name>.gem` when the package is already cached
+    # (the reference's `cached_gem` lookup). Force reinstall paths use it
+    # instead of downloading the package again.
+    def cached_package_path(full_name : String) : String?
+      path = File.join(@install_root, "cache", "#{full_name}.gem")
+      File.file?(path) ? path : nil
+    end
+
     # Copies a package into `<install_root>/cache` without installing it.
     private def cache_package(gem_file : String, full_name : String) : Nil
       return unless File.file?(gem_file)
