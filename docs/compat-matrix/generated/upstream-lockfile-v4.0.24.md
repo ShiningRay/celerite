@@ -365,3 +365,48 @@ ruby -S rspec -r "$repo\script\upstream-specs-celerite-override.rb" spec/lock/lo
 3. ③ `keeps existing platforms in the lockfile`：**真产品候选；task-33 已修平台补全判据，端到端未复跑**。参考在 `PLATFORMS` 仅 `java` 时安装会保留 `java` 并补本地平台；celerite 直接失败：`Your bundle only supports platforms ["java"] but your local platform is x64-mingw-ucrt. Add the current platform to the lockfile with \`bundle lock --add-platform x64-mingw-ucrt\` and try again.`（`rspec-output.txt:3260-3261`）。上游锚点 `spec/lock/lockfile_spec.rb:1222`；最小复现：lock 的 `PLATFORMS` 只写 `java`，Gemfile 依赖 `myrack`，`celerite install`。
 
 复现与限制：`bash script/upstream-specs` 需 MSYS bash、`TMPDIR=/c/temp`、非 Low-IL 宿主；当前仍为 Low-IL，`install_test_deps` 完整链（sinatra/artifice）未安装，不能当作全绿声明。历史节不改。
+## 2026-11-20 三次重采集（task-66，HEAD 502f4b5）
+
+采集命令（MSYS bash、`TMPDIR=/c/temp`、`CELERITE_SKIP_TEST_DEPS=1`、PATH 前置 `C:\msys64\usr\bin;C:\msys64\ucrt64\bin;C:\Ruby40-x64\bin;`，`bin/celerite.exe` 于 HEAD `502f4b5` 构建）：
+
+```
+bash script/upstream-specs
+```
+
+墙上时间 430 s（START `2026-11-20T12:59:03Z`，rspec 自报 duration 423.27 s），rspec seed 39077。产物：`.upstream-specs/upstream-lockfile-v4.0.24-20261120T125904Z.md`（17 799 B）、`.upstream-specs/rspec-output.json`（L1 数字取自其 `summary` 字段，不取终端截断）。
+
+`summary` 原始字段：`{"duration" => 423.2732939, "example_count" => 64, "failure_count" => 53, "pending_count" => 0, "errors_outside_of_examples_count" => 0}`。
+
+| 指标 | 当前值 |
+|---|---|
+| 结果 | `64 examples, 53 failures`（11 passed），rspec exit 1 |
+| real-drive | 57 次 celerite 调用 |
+| 分桶 | artifice-unreachable 38 / low-il-shm 9 / fetch-failed 6 / product:candidates **0** / missing-gem 0 |
+| 采集时点 | 2026-11-20 20:59（task-33…65 之后） |
+
+逐桶对比：
+
+| 基线 | summary | artifice | low-il | fetch | missing-gem | product |
+|---|---|---|---|---|---|---|
+| 2026-11-16 | 64/55 | 34 | 8 | 1 | 11 | 0 |
+| task-23（11:10） | 64/54 | 37 | 8 | 6 | 0 | 3 |
+| task-32（16:32） | 64/54 | 38 | 8 | 6 | 0 | 2 |
+| **task-66（20:59）** | **64/53** | **38** | **9** | **6** | **0** | **0** |
+
+### 与 task-32 的差异
+
+- 失败 54 → 53；新增通过例 `the lockfile format serializes pinned path sources to the lockfile even when packaging`（task-44a/44b 的路径源序列化）。
+- `product:candidates` 2 → 0：两个候选都换了失败桶，不是「已修好」——
+  - ② git gems：`product` → `env:low-il-shm`；
+  - ③ keeps existing platforms：`product` → `env:artifice-unreachable`。
+- `env:low-il-shm` 8 → 9，正好吸收 ②；`env:artifice-unreachable` 38 不变（③ 进入、① 未动）。
+
+### 三个候选去向
+
+1. ① `fills empty CHECKSUMS entries when not frozen, even if every gem is already installed`：**仍失败，桶不变（env:artifice-unreachable）**。原文 `Invoking \`…/bin/celerite install\` failed with output:` / `Could not reach host gem.repo2. Check your network connection and try again.`。结论：本机无法判定，非产品证据。
+2. ② `is conservative with dependencies of git gems`：**仍失败，product → env:low-il-shm**。原文 `git command failed: git clone --mirror …/libs/ckeditor_remote-1.0 …` / `0 [main] sh (30280) … NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0S5-188ae32e00d56aa): 0xC0000022`。断言 diff 未到达，产品差异本机不可判定；**不再计入 product**。
+3. ③ `keeps existing platforms in the lockfile`：**仍失败，product → env:artifice-unreachable**。原文 `Invoking \`…/bin/celerite install\` failed with output:` / `Could not reach host gem.repo2. Check your network connection and try again.`。注意：task-32 记录的旧失败文本是 `Your bundle only supports platforms ["java"] but your local platform is x64-mingw-ucrt …`，本次已不再出现 ⇒ 平台门禁已被 task-33/task-64 越过，剩余失败属环境不可达，端到端仍未验证。
+
+### 本机永远不可转绿的桶
+
+`env:artifice-unreachable`、`env:low-il-shm`、`fixture:fetch-failed` 三者都是宿主条件而非产品行为：artifice 与 `https://gem.repo2` 由上游 RSpec 进程内提供，celerite 子进程不可路由；low-il 是当前完整性级别下 msys `sh`/`git` 子进程 `NtCreateDirectoryObject` 拒绝（`0xC0000022`）。除非提升完整性级别并提供可达的 gem.repo2，否则这三桶不应计入产品缺口。
