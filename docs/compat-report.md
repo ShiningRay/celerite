@@ -5406,3 +5406,21 @@ glob 归一化另测：`--glob "sub/*.gemspec"`、`--glob "{a,b}.gemspec"` 逐�
 - 夹具/测试：`fixtures/differential/lock-normalize-platforms`（`install --quiet` 后 `lock --normalize-platforms`，`file-contains` 断言 `  ruby` 行）、`lock-lockfile-option`（`install --quiet` 后 `lock --lockfile custom.lock`，断言 `custom.lock` 段落）；`spec/m7_lock_options_spec.cr` 4 例（补 `ruby`、幂等、读默认锁写自定义路径、`--lockfile` 指向当前锁不重解析）。
 - 证据：新夹具 4.0.24 2/0、2.7.2 2/0；spec 4/0；回归 `lock-*` + `install-fresh` + `install-check` + `update-fund-summary` 两 profile 各 25/1（唯一失败 `lock-missing-dependency-edges` 为既有环境差异，见 task-57 记录）；负向 `C:/temp/celerite-pre58`（`a567e5a`）两夹具 0 passed / 2 failed（normalize 缺 `  ruby`；`--lockfile` 多出 `Fetching source index` 与 `Resolving dependencies...`）。
 - 未对齐/未验证：`add_extra_platforms!` 的「平台泛化后是否删除本地平台」分支（`spec_set.rb:82-88`）未构造 oracle；`--lockfile` 与 `--print` 同时使用时参考不写文件，我方同样不写，但未单独取 oracle；`--lockfile` 指向不存在的目录等错误面未测。
+## 2026-11-20（M7(2) task-59：`bundle add` 位置参数解析与 `install --target-rbconfig`）
+
+- 范围：参考 4.0.24 / 2.7.2 实测的 `add` 参数语义与 `install --target-rbconfig` 失败面；两处均为我方静默成功或错位解析，参考一侧为显式失败/正确写入。
+- Oracle（两 profile 一致）：
+
+| 命令 | 参考 | 我方（修复前） |
+| --- | --- | --- |
+| `install --target-rbconfig nofile.rb` | exit 1；stdout 空；不写 `Gemfile.lock`；stderr 为 `--- ERROR REPORT TEMPLATE` 块，含 `LoadError: cannot load such file -- nofile.rb` | exit 0，继续安装并写锁 |
+| `add --version thor --skip-install` | exit 15；stderr `Please specify gems to add.`；Gemfile 不变 | exit 1（`Illformed requirement ["= thor"]`）并写入 `gem "thor", "= thor"` |
+| `add`（无位置参数） | exit 15；stderr `Please specify gems to add.` | exit 1；`` `add` requires at least 1 argument `` |
+| `add --glob "*.gemspec" thor --skip-install`（存在 `demo.gemspec`） | exit 0；写 `gem "thor", "~> 1.3", glob: "demo.gemspec"` | exit 7；把 `*.gemspec` 当作 gem 名 |
+| `add --glob "nomatch*.gemspec" thor --skip-install` | exit 0；`glob` 原样写入 | 同上错位 |
+
+- 机制（为什么 `*.gemspec` 会变成 `demo.gemspec`）：展开发生在 **Windows `ruby.exe` 的 argv 层**（Ruby 的 cmdglob），不在 Bundler。Bundler `dependency.rb:55-58` 原样保存 `glob` 选项，`injector.rb:119` 原样写 `d.glob`；`bundle` 是 Ruby 脚本，通配在进入 Bundler 前已被拆成多个 argv 词（第一个成为 `--glob` 的值，其余成为位置参数）。`ruby -e 'p ARGV' -- --glob "*.gemspec"` 可见 `["--glob", "demo.gemspec", "zzz.gemspec"]`；无命中时保持字面量。因此 `add --glob "*.gemspec" thor` 在两个匹配 gemspec 存在时，参考会因多出的第二个词被当成 gem 名而以 exit 7 失败——这不是“展开成命中文件名”的 Bundler 语义，而是宿主 argv 行为。
+- 差分夹具在 bash 层先做通配展开，故两侧拿到同一个 `demo.gemspec`；celerite 不自造展开，保持“选项值不进入位置参数”的 Bundler 语义。
+- 实现：`src/celerite/cli/commands_surface.cr` 新增 `add_positional_arguments`（按 Thor 规则跳过 `--flag value`、`--flag=value`、短选项值，`--` 之后全为位置参数）；位置参数为空时输出 `Please specify gems to add.` 并返回 15（`cli/add.rb` `validate_options!`）。`src/celerite/cli/commands_install.cr` 在 `--target-rbconfig` 指向不存在的文件时于解析前中止：打印 ERROR REPORT 模板框架与 `LoadError: cannot load such file -- <path>`，返回 1，且不写锁（参考 `cli/install.rb:24` → `rubygems_integration.rb:34` → `rubygems/target_rbconfig.rb:37`）。
+- 测试与证据：夹具 `install-target-rbconfig-missing`（exit=1，`stderr-contains` 两行，`file-absent Gemfile.lock`）、`add-version-value-not-gem`（exit=15，`file-equals Gemfile`）、`add-glob-expand`（exit=0，`glob: "demo.gemspec"`）；4.0.24 与 2.7.2 均 3/0。`spec/m7_add_argument_parsing_spec.cr` 6 examples 0 failures。回归 `add-*` + `install-fresh` + `install-check`：4.0.24 17/6、2.7.2 17/5（失败均为既有 racc/git 的 `0xC0000022` 噪声，与 task-55 基线一致）。负向 `C:/temp/celerite-pre59`（`7420d99`）三夹具 0 passed / 3 failed（exit 1/15/7，多写 `gem "thor", "= thor"`、把 `*.gemspec` 当 gem 名）。
+- 声明差异：① 通配仅在宿主 shell/argv 层展开，celerite 不模拟 `ruby.exe` 的 cmdglob（`cmd.exe` 直调时会与参考不同，bash 差分一致）；② `--target-rbconfig` 指向存在文件时我方不加载该文件（仅在原生扩展构建时传给 bridge），参考会立即 `Kernel.load`；③ 错误模板只保留关键行，未逐字复刻 friendly-errors 的完整环境段。
