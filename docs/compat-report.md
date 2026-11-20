@@ -5533,6 +5533,16 @@ glob 归一化另测：`--glob "sub/*.gemspec"`、`--glob "{a,b}.gemspec"` 逐�
 反假绿：`C:/temp/celerite-pre65a`（`1789d17`）上该夹具 0 passed，差异行为 `< Fetching net-protocol 0.2.2`、`< Installing net-protocol 0.2.2`、`> net-protocol-0.2.2 is built in to Ruby…`。
 
 已声明差异：索引内缺 `net-protocol` 的探针变体仍不一致——参考会打 `Local specification … has different dependencies than the remote gem, ignoring it` 并计 `2 gems now installed`，celerite 静默且计 `1 gem now installed`。该变体未入夹具（参考输出依赖宿主默认 gem 的依赖边，跨机器不稳定），记录待后续任务。
+### 稳定性补记（2026-11-20）
+
+`lock-missing-dependency-edges` 曾出现「跑几次绿、跑几次红」：同一二进制连跑 10 次，2 次差异为 `Installing net-protocol 0.2.2` 与 `Installing net-smtp 0.5.0` 顺序互换。定位结论：**非确定性在参考侧**——4.0.24 的并行安装在 worker 完成时打印 `Installing`，顺序随线程调度；同一命令连跑 10 次参考自身出现 3 次反序，而 celerite 每次输出一致。
+
+处置：夹具新增 `env` 文件 `BUNDLE_JOBS=1`。参考在 `jobs = 1` 时逐 gem 串行安装，按 `Fetching X` / `Installing X` 成对打印（10/10 稳定）；celerite 相应地在 `config["jobs"] == 1` 时按同一顺序输出（`src/celerite/cli/commands_install.cr` 的缓冲刷新分支，2026-11-20 补）。未放宽断言：stdout 仍逐字比较，`file-contains` 未改。
+
+stability: 10/10 runs（4.0.24 连跑 10 次、2.7.2 连跑 10 次，全 PASS；命令 `CELERITE_BIN="$PWD/bin/celerite.exe" TMPDIR=/c/temp bash script/differential lock-missing-dependency-edges`，2.7.2 追加 `BUNDLER_REF_VERSION=2.7.2`）。
+
+**该夹具对宿主 gem 目录敏感**：本机 `C:\Ruby40-x64\bin\ruby.exe` 上 `Gem::Specification.find_all_by_name` 同时包含 `net-protocol 0.2.2`（`default=true` 与 `default=false` 两条、同路径）以及 `net-smtp 0.5.0/0.5.1/0.5.2`、`net-protocol 0.3.0/0.4.0`（系统目录与 `~/.local/share/gem` 均有）。故安装期判据只能取 resolution 的规格集（`source_type`、`default_gem`），一旦改用宿主 `Gem::Specification`/`Gem.path` 查询，结论随机器变化、不能作差分依据。默认 gem 兜底也只在远端索引无候选时触发（`src/celerite/resolution.cr:811-819`），不与索引命中混用。
+
 
 ## 2026-11-20（M7(2) task-65：无锁时 frozen/deployment 的 `update --all`）
 
