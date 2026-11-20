@@ -1,0 +1,2 @@
+Gemfile	gem "thor"
+Gemfile	glob: "demo.gemspec"

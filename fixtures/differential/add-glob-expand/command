@@ -1,0 +1,1 @@
+add --glob *.gemspec thor --skip-install
