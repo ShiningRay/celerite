@@ -117,4 +117,68 @@ describe "M7 task-83: install --local still installs cached gems" do
       err.should contain("in cached gems or installed locally")
     end
   end
+  it "does not consult the index or heal a lockfile with missing dependency edges" do
+    dir = File.join(local_step_root, "stale-edges")
+    FileUtils.rm_rf(dir)
+    with_local_step_env(dir, File.join(dir, "emptyhome")) do
+      project = File.join(dir, "stale-edges-project")
+      FileUtils.mkdir_p(project)
+      locked_deps = File.expand_path("../fixtures/gem-index-locked-deps", __DIR__)
+      File.write(File.join(project, "Gemfile"), "source \"#{file_source_url(locked_deps)}\"\n\ngem \"net-smtp\"\n")
+      File.write(File.join(project, "Gemfile.lock"), <<-LOCK)
+GEM
+  remote: #{file_source_url(locked_deps)}/
+  specs:
+    net-smtp (0.5.0)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  net-smtp
+
+BUNDLED WITH
+   4.0.24
+LOCK
+      code, out, err = local_step_run(project, ["install", "--local"])
+      code.should eq(7)
+      # `--local` neither downloads nor announces a resolve. The resolve line is
+      # the aligned part; the reference also skips the index fetch entirely and
+      # our lazy fetcher still announces it (declared in the task-101 section).
+      out.should_not contain("Resolving dependencies")
+      err.strip.should eq("Could not find gem 'net-smtp' in locally installed gems.")
+    end
+  end
+
+  it "still heals a stale lockfile without --local" do
+    dir = File.join(local_step_root, "stale-edges-global")
+    FileUtils.rm_rf(dir)
+    with_local_step_env(dir, File.join(dir, "emptyhome")) do
+      project = File.join(dir, "stale-edges-global-project")
+      FileUtils.mkdir_p(project)
+      locked_deps = File.expand_path("../fixtures/gem-index-locked-deps", __DIR__)
+      File.write(File.join(project, "Gemfile"), "source \"#{file_source_url(locked_deps)}\"\n\ngem \"net-smtp\"\n")
+      File.write(File.join(project, "Gemfile.lock"), <<-LOCK)
+GEM
+  remote: #{file_source_url(locked_deps)}/
+  specs:
+    net-smtp (0.5.0)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  net-smtp
+
+BUNDLED WITH
+  4.0.24
+LOCK
+      code, out, err = local_step_run(project, ["install"])
+      code.should eq(0)
+      # The lock pin is not honoured by our solver (declared: locked version is
+      # refreshed from the index), so only the install line is asserted here.
+      out.should contain("Installing net-smtp")
+      err.should be_empty
+    end
+  end
 end

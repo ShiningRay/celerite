@@ -1538,8 +1538,8 @@ module Celerite
         # announced resolution, while missing/platform errors happen earlier
         # and do not print it (pinned oracle behavior).
         # `--local` never announces a resolve: the reference materializes from the
-      # installed specs only (`sources.local_only!`) and reports not-found.
-      @progress.puts "Resolving dependencies..." if @show_resolving && !@local_only
+        # installed specs only (`sources.local_only!`) and reports not-found.
+        @progress.puts "Resolving dependencies..." if @show_resolving && !@local_only
         raise ex
       end
       # `--local` announces the resolve only once it actually succeeded: the
