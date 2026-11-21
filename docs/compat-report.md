@@ -6085,3 +6085,41 @@ C（只记录，不修）：`add json_pure --github rails/thor --skip-install`�
 - `--prefer-local` 走同一安装路径，本轮未单独取 oracle（逻辑上不受本次删除影响：`prefer_local` 只影响版本选择）。
 - 远端 `install`（非 `--local`）无 `vendor/cache` 时的 `Fetching`/`Installing` 顺序未变，回归夹具覆盖。
 - `bundle package` / `cache --all` 与本次改动无关（那条仍在 roadmap L158 挂账）。
+
+## 2026-11-21（M7 task-84：`cache_all` 下的工程外 `path` 源复制）
+
+### oracle（4.0.24；`file://` 索引；隔离 HOME/BUNDLE_PATH/BUNDLE_APP_CONFIG；`gem "pgem", path: "../pgem"`）
+
+| 场景 | 参考 | 我方（修前） |
+|---|---|---|
+| `cache`，`BUNDLE_CACHE_ALL` 未设 | exit 0；stdout `Resolving dependencies...` / `Bundle complete! 1 Gemfile dependency, 1 gem now installed.` / `Bundled gems are installed into …` / `Updating files in vendor/cache`；落 `vendor/cache/pgem/{.bundlecache,lib/pgem.rb,pgem.gemspec}` | exit 0，输出一致，`vendor/cache/` 为空 |
+| `cache`，`BUNDLE_CACHE_ALL=false` | exit 0，不复制 | 一致（不复制） |
+| `cache`，`path: "vendor/pgem"`（工程内） | exit 0，不复制 | 一致 |
+| `cache`（2.7.2） | exit 0，**不复制**，并把 `BUNDLE_CACHE_ALL: "false"` 写进 `.bundle/config` | 一致 |
+
+机制：`runtime.rb:109-142` 逐 spec 调 `source.cache(spec, custom_path)`；`source/path.rb:84-96` `return unless Bundler.settings[:cache_all]` → 工程内源直接返回 → `FileUtils.rm_rf(app_cache_path)` → `cp_r("#{@original_path}/.", app_cache_path)` → `touch(app_cache_path.join(".bundlecache"))`，目录名取 `app_cache_dirname` = gem 名（`:110-112`）。`settings.rb:88` 把 `BUNDLE_CACHE_ALL` 默认设为 `true`，所以**默认即复制**，只有显式 `false` 才关。`git` 源有同形 `cache`。
+
+### 实现
+
+`src/celerite/cli/commands_install.cr` `run_cache`：在既有 `.gem` 复制之后，若 `definition.config["cache_all"] != false`，遍历锁文件的 `PATH` 源：`remote` 相对 Gemfile 根展开，落在根内（`starts_with?(root + "/")`，统一正斜杠）则跳过；否则 `rm_rf` 目标、逐子项复制（等价 `cp_r("src/.", dest)`），再 `File.touch(dest/.bundlecache)`。目录名取该源第一个 spec 的 `name`，回退为源目录 basename。2.7.2 分支此前已把 `cache_all` 写成 `false`，故自动不复制，与参考一致。
+
+### 装具
+
+`script/differential` 新增 `sibling/` 约定（在 `extra/` 之后、`bundle-preset/` 之前）：`fixtures/differential/<f>/sibling/<rel>` 复制到 `<sandbox>/<rel>`，两侧同做。用于「工程外的 path 源」——项目在 `<sandbox>/project`，`../pgem` 即 `<sandbox>/pgem`。未改动 `extra/`、`bundle-preset/` 语义。
+
+### 夹具与 spec
+
+- `fixtures/differential/cache-all-path/`：`Gemfile` = `source "file:///@INDEX_DIR@"` + `gem "pgem", path: "../pgem"`；`sibling/pgem/{pgem.gemspec,lib/pgem.rb}`；`command` = `cache`；`file-contains` 断言 `vendor/cache/pgem/lib/pgem.rb` 命中 `module Pgem`、`vendor/cache/pgem/pgem.gemspec` 命中 `pgem`；`deferred-2.7.2` 说明 2.7.2 固定写 `cache_all: false`、不复制。4.0.24 PASS。
+- `fixtures/differential/cache-no-all-path/`：同结构 + `env` `BUNDLE_CACHE_ALL=false`；`file-absent` = `vendor/cache/pgem/lib/pgem.rb`。双 profile PASS。
+- `spec/m7_cache_all_path_spec.cr` 3 例：默认复制且 `.bundlecache` 为空文件；显式 `false` 不复制；工程内 path 源不复制。
+
+### 反假绿
+
+负对照 `C:/temp/celerite-pre84` @ `dab70e3`（`bin/` 先建，build 0）：`FAIL cache-all-path`，差异行 `project tree differs: Only in SANDBOX/project/vendor/cache: pgem` 与两条 `file-contains differs`；`cache-no-all-path` 在该基线上 **PASS**（纯回归护栏，无区分力——刻意如此：它守的是「不要多复制」）。
+
+### 已声明差异 / 未验证
+
+- `glob:` 多 gemspec 的 `path` 源复制未取 oracle（本轮预算内未做）。
+- `git` 源的 `Source::Git#cache` 未实现（工程外 git 源整目录复制）——本机 git 子进程另受 `0xC0000022` 影响，无法端到端验证。
+- `package` 命令在本仓库与 `cache` 共用 `run_cache`，但未单独取 oracle。
+- `.bundlecache` 的存在性由 spec 断言，差分夹具只能断言非空文件内容（空文件无法用现有 `file-contains`/`file-absent` 表达）。
