@@ -7166,3 +7166,58 @@ PATH/GIT 源是目录复制安装，`<install>/cache/<full_name>.gem` 根本不�
 - `--all-platforms` 只生成 `.cmd` 的分支未单独取 oracle（沿用 task-63 的既有断言）。
 - spec 需短 `TEMP`：compact index 缓存目录名在深临时目录下会超 Windows 260 字符上限，
   报 `Unable to create directory: … 文件名或扩展名太长`。
+
+## 2026-11-22（M7 task-113：`install --prefer-local` 只把本 bundle 已装的 gem 当候选）
+
+### oracle（4.0.24 = 2.7.2；隔离 `HOME`/`BUNDLE_APP_CONFIG`/`BUNDLE_PATH`，`GEM_HOME`/`GEM_PATH` 未设）
+
+场景：`Gemfile` = `source "file:///<abs>/fixtures/gem-index/"` + `gem "json_pure"` + `gem "thor"`；
+先 `install`（得 2.6.0/1.3.2 并装进 bundle），删 `Gemfile.lock`，再跑 `install --prefer-local`。
+
+| 命令 | 参考 | 我方（修前） | 我方（修后） |
+|---|---|---|---|
+| 删锁后 `install --prefer-local` | exit 0；`Fetching source index …` / `Resolving dependencies...` / `Bundle complete! 2 Gemfile dependencies, 2 gems now installed.` / `` Bundled gems are installed into `./h/b` ``；锁钉 `json_pure (2.6.0)`、`thor (1.3.2)` | exit 1；`Fetching json_pure 2.8.1` / `Fetching thor 1.5.0`；stderr `gem file not found: thor-1.5.0.gem` | 与参考逐字一致（4 行 + 锁两行） |
+| 完整锁 + 无 bundle + `--prefer-local` | exit 0，按锁安装（`Fetching json_pure 2.6.0` / `Fetching thor 1.3.2`） | 同 | 同 |
+| 删锁后普通 `install` | exit 0，升到 `json_pure (2.8.1)` | 同 | 同（反向对照，未回归） |
+| 删锁后 `install --local` | exit 0 | exit 7 `Could not find json_pure-2.6.0 in locally installed gems` | 同（既有差异，见下） |
+
+### 机制与实现
+
+- 参考把 `Gem.path` 改写到 `BUNDLE_PATH`（`definition.rb:190-203 setup_domain!`、`source/rubygems.rb:148-178 specs`
+  的 `prefer_local` 分支），因此解释器自身的 gem 目录（本机 `json_pure 2.8.1`、`thor 1.5.0`）不进候选。
+- 我方 `Bridge.installed_specs` 聚合的是整个 RubyGems 视图，把宿主副本混进了候选集，于是选中 2.8.1/1.5.0
+  并去找并不存在的 `cache/thor-1.5.0.gem`。
+- 实现（`src/celerite/resolution.cr`）：新增 `prefer_local_candidates(name)`，从 `project_spec_dir`
+  下 `specifications/*.gemspec` 读每个 spec（`Bridge#load_installed_spec`），名称匹配者按
+  `Resolver::IndexSpec` 构造，再并入 `vendor_cache_specs(name)`；`index_specs_for` 的 `@prefer_local`
+  分支改为「先取远端（保留 `Fetching source index …` 行）→ 本地候选非空则用本地 → 否则用远端」。
+- **本机 Crystal `Dir.glob` 对绝对 Windows 路径返回 0 命中**（目录里确实有 3 个 `.gemspec`，
+  `Dir.glob(File.join(dir, "*.gemspec"))` 与正斜杠形式都为空），已改用既有 `Celerite::Glob.paths`
+  （`src/celerite/glob.cr:12-19`，`Dir.children` + `File.match?`）。
+
+### 夹具与测试
+
+- `spec/m7_prefer_local_spec.cr` 3 例：删锁后 `--prefer-local` 保留 2.6.0/1.3.2（且不打印 `Fetching json_pure 2.8.1`）；
+  无 flag 时仍升级到 2.8.1（反向对照）；完整锁 + 无 bundle 时按锁解析、锁不变。3 examples / 0 failures。
+  注意：spec 里第一次 `install` 必须用**手写的旧版本锁**（索引最高版是 2.8.1，直接 install 会得到 2.8.1，
+  那样 `--prefer-local` 就没有可保留的旧版）；且项目目录与 `BUNDLE_PATH` 需短路径。
+
+### 证据
+
+- 门禁：`crystal tool format --check src spec` 0、`crystal build --no-codegen src/cli.cr` 0、
+  `crystal build src/cli.cr -o bin/celerite.exe` 0、`git diff HEAD --check` 0。
+- 差分回归（双 profile）：`install-fresh`、`install-check`、`install-local`(7)、`install-local-vendored-install`、
+  `install-rerun`、`lock-noop`、`install-deployment-empty-checksums`(16) —— 4.0.24 **7 passed / 0 failed**，
+  2.7.2 **7 passed / 0 failed**。
+- 负对照（手工 oracle，`C:/temp/celerite-pre113` @ `4caf9ae`）：旧二进制同一场景
+  `EXIT=1`、`Fetching json_pure 2.8.1` / `Fetching thor 1.5.0`、stderr `gem file not found: thor-1.5.0.gem`、
+  锁未写出行；新二进制 `EXIT=0` 且锁为 2.6.0/1.3.2。
+  （该场景在 `script/differential` 沙箱里不可区分：沙箱 `GEM_HOME` 指向空目录，宿主副本不可见，两侧都会回退远端。）
+
+### 已声明差异 / 未验证
+
+- 删锁 + `--local`（无 `--prefer-local`）：参考 exit 0，我方 exit 7 `Could not find json_pure-2.6.0 in locally installed gems`
+  —— 沿用 task-101 结论，本次未改。
+- `prefer_local_candidates` 只读 `specifications/*.gemspec` 与 `vendor/cache`，不读宿主 `GEM_HOME`（与参考一致），
+  但 `@local_only` 与 `@prefer_local` 同时开启时的优先级未单独取 oracle。
+- 逐字锁比较不适用于本场景：夹具手写锁的 `remote` 无尾斜杠，运行后会被改写成带尾斜杠，故 spec 比较锁内行而非整字节。
