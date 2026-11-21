@@ -224,6 +224,20 @@ module Celerite
     end
   end
 
+  # `errors.rb:264-275` (`IncorrectLockfileDependencies < BundlerError`,
+  # `status_code(41)`): the lockfile records different dependencies than the
+  # spec materialized from the index. Raised from `lazy_specification.rb:259-270`
+  # and repaired by `definition.rb:699-708` unless frozen.
+  class IncorrectLockfileDependenciesError < Error
+    def status_code : Int32
+      41
+    end
+
+    def wrap? : Bool
+      true
+    end
+  end
+
   # Bundler::GitError — a `git` subprocess failed to run or reported failure.
   class GitError < Error
     def status_code : Int32

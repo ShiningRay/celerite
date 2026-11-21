@@ -599,6 +599,8 @@ module Celerite
 
     @path_specs_changed : Bool?
 
+    @fetch_replayed = false
+
     private def log_fetch_for(remote : String) : Nil
       return unless @fetch_logged_remotes.add?(remote)
       return if remote == primary_remote && @index_fetch_logged
@@ -943,6 +945,17 @@ module Celerite
         end
       end
 
+      # `definition.rb:699-708`: a frozen bundle re-raises the lockfile
+      # dependency mismatch (`lazy_specification.rb:259-270`) instead of
+      # re-resolving, so validate before the reuse decision is taken.
+      if @definition.config["frozen"] == true && @definition.lockfile_exists?
+        @resolved_specs = materialize_locked
+        if (stale = stale_locked_dependency_full_names).any?
+          announce_index_fetch_for(stale.first)
+          raise IncorrectLockfileDependenciesError.new("Bundler found incorrect dependencies in the lockfile for #{stale.first}")
+        end
+      end
+
       if reuse && reuse_locked_resolution?(deps)
         # Reference `Installer#ensure_specs_are_compatible!` only runs after
         # `setup_domain!` re-resolved (`installer.rb:79-82, 234-245`). A locked
@@ -953,7 +966,20 @@ module Celerite
         incompatible = verify_locked_compat ? incompatible_locked_spec_names : [] of String
         if incompatible.empty?
           @resolved_specs = materialize_locked
-          return @resolved_specs
+          # `lazy_specification.rb:259-270` compares the lockfile's recorded
+          # dependencies with the spec materialized from the index during a strict
+          # (install) materialization; a mismatch means the lock is missing a
+          # dependent spec. `definition.rb:699-708` raises when frozen and
+          # otherwise re-resolves `without` the offending spec.
+          stale = stale_locked_dependency_full_names
+          if stale.empty?
+            return @resolved_specs
+          end
+          if @definition.config["frozen"] == true
+            announce_index_fetch_for(stale.first)
+            raise IncorrectLockfileDependenciesError.new("Bundler found incorrect dependencies in the lockfile for #{stale.first}")
+          end
+          announce_index_fetch_for(stale.first)
         end
         unlocked = @unlock.is_a?(Array(String)) ? @unlock.as(Array(String)) : [] of String
         @unlock = (unlocked + incompatible).uniq
@@ -963,6 +989,56 @@ module Celerite
       @resolved_specs = run_resolution(deps)
       @root_dependency_names = deps.map(&.name)
       @resolved_specs
+    end
+
+    # Names (full names) whose index spec declares different dependencies than
+    # the lockfile row: the "missing dependent specs" case. Local-only
+    # resolutions cannot consult the index, and the reference skips validation
+    # for `StubSpecification` outside strict mode (`lazy_specification.rb:262-268`).
+    private def stale_locked_dependency_full_names : Array(String)
+      return [] of String if @local_only
+      specs = @resolved_specs
+      stale = [] of String
+      previous = @progress
+      @progress = IO::Memory.new
+      begin
+        specs.each do |spec|
+          next unless spec.source_type == "GEM"
+          index = begin
+            index_specs_for(spec.name)
+          rescue
+            next
+          end
+          candidate = index.find { |s| s.version == spec.version && (s.platform_ruby? ? spec.platform_ruby? : s.platform.to_s == spec.platform) } ||
+                      index.find { |s| s.version == spec.version }
+          next unless candidate
+          remote = candidate.dependencies.map(&.name).reject("bundler").sort
+          locked = spec.dependencies.map(&.name).reject("bundler").sort
+          stale << spec.full_name unless remote == locked
+        end
+      ensure
+        @progress = previous
+      end
+      stale
+    end
+
+    # The reference's fetch note is emitted by the resolution it then performs;
+    # our validation fetch above is silent, so replay the line here before the
+    # re-resolution or the frozen error.
+    private def announce_index_fetch_for(_name : String) : Nil
+      remote = primary_remote
+      return if remote.empty?
+      # The validation fetch above already registered the remote with
+      # `#log_fetch_for`, so replay the line exactly once here.
+      return if @fetch_replayed
+      @fetch_replayed = true
+      @index_fetch_logged = true
+      @fetch_logged_remotes << remote
+      if remote.starts_with?("file:")
+        @progress.puts "Fetching source index from #{remote}"
+      else
+        @progress.puts "Fetching gem metadata from #{remote}."
+      end
     end
 
     # Dependency path from a top-level Gemfile dependency down to `name`
