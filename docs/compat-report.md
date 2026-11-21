@@ -6123,3 +6123,47 @@ C（只记录，不修）：`add json_pure --github rails/thor --skip-install`�
 - `git` 源的 `Source::Git#cache` 未实现（工程外 git 源整目录复制）——本机 git 子进程另受 `0xC0000022` 影响，无法端到端验证。
 - `package` 命令在本仓库与 `cache` 共用 `run_cache`，但未单独取 oracle。
 - `.bundlecache` 的存在性由 spec 断言，差分夹具只能断言非空文件内容（空文件无法用现有 `file-contains`/`file-absent` 表达）。
+
+## 2026-11-21（M7 task-85：`~/.gemrc` 的 `:http_proxy`）
+
+### oracle（`fixtures/gem-index` 由 `script/http_index_server.js` 起在 8765 端口；隔离 HOME/BUNDLE_PATH/BUNDLE_APP_CONFIG）
+
+代理探测值 `http://127.0.0.1:9`（无监听）。
+
+| 场景 | 4.0.24 | 2.7.2 |
+|---|---|---|
+| 仅 `~/.gemrc` `:http_proxy` | exit 17，stderr `Could not reach host 127.0.0.1:8765…`，不写锁 | 同 |
+| `.gemrc` + `http_proxy` env（两个不同值） | gemrc 值胜出 | 同 |
+| 仅 env `http_proxy` | exit 17（env 被采用） | 同 |
+| 仅 `.bundle/config` `BUNDLE_HTTP_PROXY` | **exit 0**，正常写锁（该键不参与取代理） | 同 |
+| `.gemrc` `:http_proxy: :no_proxy` | exit 0，正常解析 | 同 |
+| 无 `.gemrc`、无 env | exit 0 | 同 |
+
+Ruby 侧直接取证：`Gem.configuration[:http_proxy]` 在「gemrc + env」下返回 gemrc 值（`"http://127.0.0.1:9"`），仅 env 时为 `nil`；`:no_proxy` 时返回符号 `:no_proxy`；字符串键 `http_proxy:` 同样被读入。
+
+### 机制
+
+`fetcher.rb:262` `GemRemoteFetcher.new Gem.configuration[:http_proxy]`，`:313-316` `if gem_proxy = Gem.configuration[:http_proxy]; con.proxy = Gem::URI.parse(gem_proxy) if gem_proxy != :no_proxy`。`Gem.configuration` 来自 `~/.gemrc`（RubyGems 的 `Gem::ConfigFile`），因此 gemrc 优先于 `http_proxy` 环境变量；`:no_proxy` 是「显式关闭」。`.bundle/config` 的 `proxy`/`http_proxy` 键不进这条链路。
+
+### 实现
+
+`src/celerite/proxy.cr`：新增 `gemrc_http_proxy`（读 `$HOME/.gemrc`，`HOME` 缺失时退回 `USERPROFILE`；YAML 解析，键接受 `:http_proxy` 与 `http_proxy`；值为 `:no_proxy` 时返回 disabled）与 `gemrc_path`；`resolve` 顺序改为 **gemrc → `.bundle/config`（`proxy` → `http_proxy`）→ 环境**，gemrc 的 `:no_proxy` 直接返回 nil 并短路后续来源。`src/celerite/cli/commands.cr:2650-2659` 的注释改正为「参考读 gemrc、`:sources` 不读」。
+
+装具：`script/differential` 新增 `home/` 约定（在 `sibling/` 之后）——`fixtures/differential/<f>/home/<rel>` 复制到两侧 `<sandbox>/home/<rel>`，即两侧 `HOME`。
+
+### 夹具与 spec
+
+- `fixtures/differential/lock-gemrc-proxy/`：`Gemfile` = `source "http://127.0.0.1:8765/"` + `gem "json_pure"`；`http-index` 指向 `fixtures/gem-index`；`home/.gemrc` = `:http_proxy: http://127.0.0.1:9`；`env` = `unset:http_proxy`/`unset:HTTP_PROXY`/`unset:no_proxy`；`command` = `lock`；`stderr-contains` = `Could not reach host 127.0.0.1:8765`；`file-absent` = `Gemfile.lock`。双 profile PASS（exit 17）。
+- `fixtures/differential/lock-gemrc-no-proxy/`：同结构但无 `home/`；`file-contains` = `Gemfile.lock` 内 `json_pure (2.8.1)`。双 profile PASS（exit 0）。
+- `spec/m7_gemrc_proxy_spec.cr` 5 例：gemrc 生效、字符串键、gemrc 胜 env、`:no_proxy` 关闭（即使 env 有值）、无 gemrc 时回退 env。
+
+### 实测
+
+差分新 2 条 + 回归（`network-unreachable`、`install-fresh`、`lock-noop`、`cache-path-env`）：4.0.24 6 passed / 0 failed；2.7.2 5 passed / 0 failed。负对照 `C:/temp/celerite-pre85` @ `37ede89`：`FAIL lock-gemrc-proxy`，差异行 `exit code: reference=17 celerite=0`、`stderr-contains differs: needle=Could not reach host 127.0.0.1:8765`、`file-absent violated (Gemfile.lock): ref_exists=no cel_exists=yes`；`lock-gemrc-no-proxy` 在该基线上 PASS（纯回归护栏，无区分力）。
+
+### 已声明差异 / 未验证
+
+- `.bundle/config` 的 `proxy`/`http_proxy` 参考不参与取代理，我方仍读（有意保留，属扩展）；若需要严格对齐，应删除该分支。
+- gemrc 的 `https_proxy`、`no_proxy`（除 `:http_proxy: :no_proxy` 这一特例）未对齐；参考只关心 `:http_proxy` 一个键。
+- 系统级 gemrc（`Gem::ConfigFile::SYSTEM_WIDE_CONFIG_FILE`）未读。
+- `~/.gemrc` 的 `:sources` 参考确实不读（全库仅 `plugin.rb:8` 文档串），不列为缺口。
