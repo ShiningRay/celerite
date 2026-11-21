@@ -6827,3 +6827,28 @@ materialization 判定缺 spec；`cli/check.rb:33` 满足时写锁（`--dry-run`
 
 **已声明差异**：① frozen 的 reason 列表与 Gemfile diff 文案未对齐（仍 exit 16）；② `GIT`/`PLUGIN`
 段不参与自愈（保持 task-44b 现状）；③ 无 bridge 环境下退化为"只重写不重解析"。
+
+### 回修（task-102 第二窗口）：只在真实漂移时才宣告解析
+
+首辅在自建沙箱抓到本窗口引入的过度打印与两处写盘缺失；按 A/B/C 三形态复跑后定位为：
+
+| 形状 | 参考 4.0.24 | 修后我方（同一沙箱，`GEM_HOME`/`GEM_PATH` unset） |
+|---|---|---|
+| A 缺 spec 行、gemspec 1.0.0 | 0；`Resolving dependencies...` + satisfied；锁 `pg (1.0.0)` | 0；同两行；锁同（`md5=106df5b4…`） |
+| B 锁 1.0.0、gemspec 2.0.0 | 0；同两行；锁 `pg (2.0.0)` | 0；同两行；锁同（`md5=c31e99ec…`） |
+| C 锁与源一致（含 `GEM` 段） | 0；**只** satisfied；锁不变 | 0；只 satisfied；锁不变 |
+
+**条件**：仅当 `PATH` 段 `specs` 为空，或 `Resolution#path_specs_changed?`（task-44b 的
+`stale_path_specs`，桥 op `load_gemspec_dir_specs`）为真时才打印 `Resolving dependencies...`
+并重解析写盘；一致时恢复旧行为（只 satisfied、不写锁）。写盘仍用
+`generated_lockfile.to_lock`，因此 B 取 gemspec 的 2.0.0（实测两侧锁 md5 相同）。
+
+**夹具**：`check-consistent-path-lock`（C，`file-equals-4.0.24` 断锁逐字不变；stdout 精确比对
+⇒ 多打 `Resolving dependencies...` 必失败）、`check-heals-path-version-bump`（B，断
+`    pg (2.0.0)`）、`check-heals-path-gemspec`（A）。**区分力**：A/B 在 `d78d665` 上 FAIL
+（`> Bundler can't satisfy…`、`file-contains differs: needle=    pg (1.0.0)`）；C 在 `d78d665`
+上 PASS（旧行为本就静默），但在引入过度打印的 `2c7558b` 上 FAIL
+（`stdout differs: > Resolving dependencies...`）——C 是防回归护栏。
+
+**仍未对齐**：锁缺整段 source（如缺 `GEM`）时参考会宣告解析而我不宣告（本窗口未处理，与前窗口
+同源）；frozen 的 reason 列表文案；`GIT`/`PLUGIN` 段不参与。
