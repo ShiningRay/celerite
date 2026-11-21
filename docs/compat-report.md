@@ -7011,3 +7011,31 @@ exit 7、stderr 为 installer 形态、stdout 无 `Installing Bundler`/`Fetching
 故不新增差分夹具（stdout 逐行比对会红）；② 非 `--local` 的 self-manager「安装 + `exec` 重启」
 仍未实现，仅保留既有打印与安装路径；③ `restart_with_locked_bundler_if_needed` 的
 「已安装即重启」分支未实现（我方不重启）。
+
+## 2026-11-21（M7 task-107：`install --local` 的 `Resolving dependencies...` 复核）
+
+任务假设是「缓存齐备时参考不打 `Resolving dependencies...`，我方多打一行」。复核未能复现：
+在隔离 `HOME`/`BUNDLE_APP_CONFIG`/`BUNDLE_PATH`、`GEM_HOME`/`GEM_PATH` 未设置的条件下，
+参考 4.0.24 在下列五个形状里**都**会打这一行（脚本 `.tmp-scratch/task107/oracle.sh`、
+`nc.sh`；锁 remote 三斜线与去冒号 `file://C/...` 两种写法均如此）。
+
+| 形状（`fixtures/gem-index-locked-deps`，`gem "net-smtp"`，锁含 `net-protocol (0.2.2)`+边） | 参考 stdout 首行 | 我方 |
+|---|---|---|
+| 完整锁 + `vendor/cache` 齐备 + `--local` | `Resolving dependencies...` | 同（6 行逐字相同，仅 Installing 顺序随并行 worker 变） |
+| 同上 + `BUNDLE_JOBS=1` | `Resolving dependencies...` | 同（6 行） |
+| 完整锁 + 无缓存 + `--local` | `Resolving dependencies...`；stderr `Could not find net-smtp-0.5.0 in locally installed gems` | stdout 为空；stderr 报 `net-protocol-0.2.2`（task-101 已声明的措辞/顺序差异） |
+| 陈旧锁（缺依赖边）+ 无缓存 + `--local` | `Resolving dependencies...`；stderr 同上 | stdout 为空；stderr `Could not find net-smtp-0.5.0 …` |
+| 完整锁 + 缓存齐备 + **无** `--local` | `Fetching source index from …` 后接 `Resolving dependencies...` | `Fetching source index from …` 后直接 `Installing …`（无 `Resolving`，另属既有差异） |
+
+结论：`--local` **不抑制** `Resolving dependencies...`；唯一被抑制的是远端 `Fetching source index`
+（上表第 1、2 行我方已无该行）。据此本轮**不改产品代码**，改为用 spec 固化可证的行为：
+`spec/m7_local_install_quiet_spec.cr` 3 例（缓存齐备 6 行含 `Resolving`；`BUNDLE_JOBS=1` 同；
+`--local` 不出现远端 `Fetching source index`）。
+
+已声明差异（本轮未动，均属 task-101 范围）：① 无缓存/陈旧锁形状下参考打 `Resolving` 而我方不打；
+② 参考该项缺包措辞指向 `net-smtp-0.5.0`，我方指向 `net-protocol-0.2.2`（遍历顺序不同）；
+③ 非 `--local` 形状参考打 `Resolving` 而我方不打。若任务方确认其 5 行捕获成立，需要其完整
+`Gemfile.lock`/`env`/`stdout` 原件以定位差异变量（本轮未见可复现路径）。
+
+未新增差分夹具：task-101 已证实该形状在 harness 沙箱里会 no-op（两侧退出 0、stdout 空），
+故用 spec + 手 oracle 覆盖。

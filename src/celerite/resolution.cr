@@ -960,7 +960,22 @@ module Celerite
           index_specs_for(spec.name)
           @local_installed_full_names.includes?(spec.full_name) || !vendor_cache_specs(spec.name).empty?
         end
-        @progress.puts "Resolving dependencies..." if @show_resolving && available
+        # The reference only announces a resolve when one really happens: with
+        # the locked platforms covering the local platform every spec is
+        # materialized straight from the bundle/cache and no
+        # `Resolving dependencies...` line is printed. A lock that lists only
+        # `ruby` (or a platform we cannot satisfy) still triggers the resolve
+        # announcement before the installer reports the missing package.
+        platform_ready = @definition.lockfile!.platforms.any? do |entry|
+          next false if entry == "ruby"
+          next true if entry == Gem::Platform.local.to_s
+          begin
+            Gem::Platform.new(entry).match?(Gem::Platform.local)
+          rescue
+            false
+          end
+        end
+        @progress.puts "Resolving dependencies..." if @show_resolving && available && !platform_ready
         return @resolved_specs
       end
 
