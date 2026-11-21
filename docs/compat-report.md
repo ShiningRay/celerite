@@ -6979,3 +6979,35 @@ spec `spec/m7_bundle_layout_spec.cr` 3 例（单元级：建目录、幂等保�
 已声明差异：① `doc`/`extensions` 无行号锚点，按实测目录实现；② 端到端 spec 未成
 （进程内 install 不落 `bundle/ruby/*`，env `BUNDLE_PATH` 在该搭法下不生效），改为单元级
 + 差分夹具覆盖；③ 2.7.2 的 `cache` 重跑多一行 `Fetching source index …`（task-104 已声明）。
+
+## 2026-11-21（M7 task-106：`install --local` 不做 self-install）
+
+参考在 `--local` 下完全不碰 `BUNDLED WITH` 的 self-install：走
+`Bundler.self_manager.restart_with_locked_bundler_if_needed`
+（`cli/install.rb:15-19`、`self_manager.rb:9-14`），只有该版本**已安装**时才 `exec` 重启，
+因此既不打 `Bundler … is running, but your lockfile was generated with …` 两行，也不
+`Fetching bundler <v>`、不联网。我方此前无条件走 `install_locked_bundler_and_restart…`
+等价实现，`--local` 下照样打印并去 rubygems.org 取包（实测 exit 17）。
+
+| 观测（隔离 HOME/BUNDLE_PATH/BUNDLE_APP_CONFIG，`GEM_HOME`/`GEM_PATH` unset，4.0.24 = 2.7.2） | 参考 | 修前我方 |
+|---|---|---|
+| 锁 `BUNDLED WITH 9.9.9`、包未装、`install --local` | exit 7；stdout `Resolving dependencies...`；stderr `Could not find json_pure-2.8.1 in locally installed gems` | exit 17；多两行提示 + `Fetching bundler 9.9.9` + CA 错误 |
+| 同形状但包已装（`install` 后改锁为 9.9.9）再 `--local` | exit 0；`Resolving dependencies...` / `Bundle complete! …` / `Bundled gems are installed into `./bable`` | 同样会打两行并尝试取包 |
+| 锁 `BUNDLED WITH 4.0.24` + `--local`（对照） | exit 7，无任何 bundler 提示 | 无提示（已一致） |
+| 锁 remote 写成 `file://C/...`（去冒号）| 无 stdout；resolver 形态 `Could not find gem 'json_pure' in locally installed gems.` | 形状不同，未对齐 |
+
+实现：`src/celerite/cli/commands_install.cr` 的 `BUNDLED WITH` 分支加 `&& !resolution.local_only`，
+`--local` 下跳过 `auto_switch_bundler`（不打印、不发请求），随后照常 materialize 并在缺包时
+报 installer 形态错误（exit 7）。
+
+验证：新增 `spec/m7_local_bundler_switch_spec.cr` 2 例（9.9.9 锁与 4.0.24 锁各一，均断言
+exit 7、stderr 为 installer 形态、stdout 无 `Installing Bundler`/`Fetching bundler`），
+`crystal spec spec/m7_local_bundler_switch_spec.cr` → 2 examples / 0 failures，`$LASTEXITCODE=0`。
+负对照：`git stash` 掉本处修改重建 `bin/celerite.exe` 后同一 spec → 1 of 2 失败（`Expected: 7`，
+旧代码 exit 17）；恢复后重建 EXIT 0。
+
+已声明差异：① `--local` 且锁 remote 为三斜线形态时，参考先打一行 `Resolving dependencies...`
+再报缺包，我方 stdout 为空 —— 该行属 task-101 的 `--local` 停顿语义，未在本次改动内，
+故不新增差分夹具（stdout 逐行比对会红）；② 非 `--local` 的 self-manager「安装 + `exec` 重启」
+仍未实现，仅保留既有打印与安装路径；③ `restart_with_locked_bundler_if_needed` 的
+「已安装即重启」分支未实现（我方不重启）。
