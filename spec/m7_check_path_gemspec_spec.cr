@@ -26,10 +26,10 @@ end
 private def check_path_files(version : String, lock_version : String?) : Hash(String, String)
   specs = lock_version ? "    pg (#{lock_version})\n" : ""
   files = {
-    "Gemfile"      => %(source "file:///#{check_path_index}"\n\ngem "pg", path: "./pg"\n),
-    "Gemfile.lock" => %(PATH\n  remote: pg\n  specs:\n#{specs}\nPLATFORMS\n  x64-mingw-ucrt\n\nDEPENDENCIES\n  pg!\n\nBUNDLED WITH\n   4.0.24\n),
-    "pg/pg.gemspec"  => check_path_gemspec(version),
-    "pg/lib/pg.rb"   => "module Pg; end\n",
+    "Gemfile"       => %(source "file:///#{check_path_index}"\n\ngem "pg", path: "./pg"\n),
+    "Gemfile.lock"  => %(PATH\n  remote: pg\n  specs:\n#{specs}\nPLATFORMS\n  x64-mingw-ucrt\n\nDEPENDENCIES\n  pg!\n\nBUNDLED WITH\n   4.0.24\n),
+    "pg/pg.gemspec" => check_path_gemspec(version),
+    "pg/lib/pg.rb"  => "module Pg; end\n",
   }
   files
 end
@@ -89,5 +89,4 @@ describe "check with a drifted PATH section" do
       File.read(File.join(project, "Gemfile.lock")).should eq(before)
     end
   end
-
 end
