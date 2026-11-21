@@ -7068,3 +7068,24 @@ exit 7、stderr 为 installer 形态、stdout 无 `Installing Bundler`/`Fetching
 已声明差异：① 「锁 `ruby` 平台 + 缓存齐备」两侧都会打 `Resolving`，但安装行顺序随并行 worker 变；
 ② 无缓存/陈旧锁形状参考打 `Resolving` 而我方不打（task-101 范围，未动）；③ 非 `--local` 形状参考在
 `Fetching source index` 后另有 `Resolving`，我方无（既有差异）。
+
+## 2026-11-22（M7(2) task-108：`lock --update` 的版本提升级别与级别互斥）
+
+`lock --update <gem>` 原先完全忽略 `--patch`/`--minor`/`--major`，且多个级别同给时不做互斥校验（`update` 同样缺校验）。参考在 `cli/lock.rb:47` 于 `--update` 时调用 `configure_gem_version_promoter`（`cli/common.rb:134-148`），解析前配置 promotion 级别（缺省 `:major`），并在 `summary` 前先做互斥校验（`cli/common.rb:137`）；我方 lock 分支从未接 `version_promotion`，update 分支用 if/elsif 取第一个而不报冲突。
+
+oracle（4.0.24，`fixtures/gem-index`，`Gemfile` = `json_pure` + `thor`，锁钉 `json_pure (2.6.0)`、`thor (1.3.2)`；2.7.2 两侧行为一致）：
+
+| 命令 | 参考 | 修前我方 | 修后 |
+|---|---|---|---|
+| `lock --patch --update json_pure` | exit 0，锁保持 `json_pure (2.6.0)` | exit 0，锁变 `2.8.1` | 与参考一致 |
+| `BUNDLE_PREFER_PATCH=true lock --update json_pure` | exit 0，升到 `2.8.1`（只偏好 patch，不封顶） | 同 | 同（无需改动） |
+| `lock --patch --minor --update json_pure` | exit 15，stderr `Provide only one of the following options: minor, patch`，锁不动 | exit 0，继续解析 | 与参考一致 |
+| `update --patch --minor json_pure` | exit 15，同一行 | exit 0 | 与参考一致 |
+
+实现：`src/celerite/cli/commands.cr` 新增 `Commands.promotion_level_conflicts(rest)`（按参考选项序返回冲突名）与 `Commands.requested_promotion_level(rest)`；`run_lock` 在构建 `Definition` 之前做互斥校验并返回 15，在 `Resolution.new` 之后、任何解析之前按 `--update` 设置 `version_promotion = 请求级别 || "major"` 与 `version_promotion_strict = --strict || config["prefer_patch"]`；`src/celerite/cli/commands_surface.cr` 的 update 分支改为同一组 helper（互斥校验前移到 `ProcessLock` 之前的解析配置阶段）。
+
+夹具：`lock-patch-update-level`（`file-contains` 断 `    json_pure (2.6.0)`）、`lock-level-conflict`（`stderr-contains` 断整行 + 锁保持 2.6.0）；spec `spec/m7_version_promotion_spec.cr` 4 例（lock 的 `--patch` 不升、`--minor` 升到 2.8.1、lock 互斥 exit 15、update 互斥 exit 15）。
+
+证据：差分 4.0.24 9/0（2 新 + `lock-normalize-platforms`、`lock-noop`、`lock-print`、`lock-lockfile-option`、`update-fund-summary`、`install-fresh`、`install-check`），2.7.2 两侧 2/0；负对照 `e2d1004` 旧二进制两条新夹具均 FAIL（见交付报告）。
+
+已声明差异：`BUNDLE_PREFER_PATCH` 仅作为 `version_promotion_strict` 传入，未单独实测“存在 patch 版本时优先 patch”的分支（本夹具的 2.6.0→2.8.1 场景两侧一致都升 minor）；`--strict` 与非 `--update` 的组合未单独取证。
