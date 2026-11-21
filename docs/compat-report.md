@@ -6534,3 +6534,41 @@ oracle（`fixtures/gem-index`；`BUNDLE_PATH` 隔离；4.0.24 与 2.7.2 同形�
 - `with`/`BUNDLE_WITH` 的「只装指定组」语义未取 oracle，本轮只实现 `without`。
 - 排除组里的 gem 若同时被默认组需要，我方与参考一样安装并照打通知（已测），但「通知只列承载依赖的组」这一细则只在两组都有依赖时验证过。
 - `update`/`add` 路径未接入分组过滤（参考的过滤发生在 `Definition.dependencies`，本轮未取这两条命令的 oracle）。
+
+## 2026-11-21（M7 task-96：`doctor` 的 settings 互斥通知行 + `options_to_lock` 锁段夹具）
+
+### A. `doctor` 先打互斥通知再失败
+
+`cli/doctor/diagnose.rb:79` 调用 `Bundler.settings.validate!`（`settings.rb:312-319`），先跑 `settings/validator.rb` 的全部规则，再进入 `Path#validate!`（`settings.rb:287-297`）。`path`/`path.system` 规则（`validator.rb:57-63`）对冲突项调用 `Rule#set`（`:31-41`）置 nil，且 `set` 用 `Bundler.ui.info` 把 `Setting `key` to nil, since <description>` 打到 **stdout**：
+
+| 形态 | 参考（4.0.24 与 2.7.2 同形） |
+|---|---|
+| `BUNDLE_PATH=<绝对或相对路径>` + `BUNDLE_PATH__SYSTEM=true` | stdout 两行：`Setting `path.system` to nil, since path and path.system are mutually exclusive`、`Setting `path` to nil, since path and path.system are mutually exclusive`；随后 stderr `Using a custom path while using system gems is unsupported.` + `path:`/`path.system:` 值块，exit 15 |
+| 仅 `BUNDLE_PATH` | 无通知行，`doctor` 正常继续 |
+| 旧写法 `BUNDLE_DISABLE_SHARED_GEMS=false` + `BUNDLE_PATH` | 与 `path.system` 相同（走同一条规则） |
+
+实现（`src/celerite/cli/commands_surface.cr`）：新增 `doctor_settings_notices(stdout, definition)`，在 `doctor_report` 里 `Commands.validate_ruby_runtime!` 之后、任何依赖检查之前调用；条件与 `InstallPaths.validate!` 一致（`path` 非空 且 `path.system == true` 或 `disable_shared_gems == false`），顺序照参考（先 `path.system`、后 `path`）。`install`/`update` 的 settings 校验路径未改动——本轮只对 `doctor` 取过 oracle。
+
+未实现并已声明：`validator.rb` 的另外两条规则（`with`/`without` 互斥、`default_cli_command` 取值）在 doctor 路径上未观测到触发形态，未实现。
+
+### B. `options_to_lock` 非空锁段（零产品改动）
+
+stub 插件 source 实现 `options_to_lock => {"depth" => "2", "mode" => "fast"}` 后，参考与我们写出的 `PLUGIN SOURCE` 段逐字相同：
+
+```
+PLUGIN SOURCE
+  remote: ./stub-path-gem
+  type: mpath
+  depth: 2
+  mode: fast
+  specs:
+    stub-gem (1.0.0)
+```
+
+实现早就在 `assets/bridge/server.rb:765`（`options_to_lock` 透传）与 `src/celerite/resolution.cr:2053`（锁段渲染）。夹具 `fixtures/differential/plugin-source-lock-options/` 复用 `plugin-source-typed` 的 stub 并加入该方法，断言三条 `PLUGIN SOURCE` 行（`file-contains`，而非整份 `file-equals`：2.7.2 的 `BUNDLED WITH` 与 CHECKSUMS 段本就不同，整份比对本轮不需要）。该夹具锁定既有正确行为，**无产品改动、无负对照**。
+
+### 证据
+
+- 夹具 `doctor-settings-conflict` 4.0.24 与 2.7.2 均 PASS（exit=15）；负对照 `C:/temp/celerite-pre96`@`4022586` FAIL，缺两行通知（`1,2d0`）。
+- 夹具 `plugin-source-lock-options` 双 profile PASS；回归 `plugin-source-typed`、`plugin-source-install`、`doctor-diagnose-windows`、`doctor-quiet`、`doctor-no-lockfile`、`doctor-ssl-bad-host`、`lock-noop`：4.0.24 8 passed/0 failed，2.7.2 4/0。
+- `spec/m7_doctor_settings_spec.cr` 3 例（两行顺序、仅 `path` 时沉默、`disable_shared_gems: false`）。
