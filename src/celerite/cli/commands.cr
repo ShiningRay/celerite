@@ -2918,7 +2918,7 @@ module Celerite
       # DEPENDENCIES already matches the Gemfile (`definition.rb:630-659`,
       # `empty_checksums_actionable?`); `--local` keeps the no-op path unless
       # `--add-checksums` explicitly asks to compute (`cli/lock.rb:70`).
-      checksum_refresh = definition.checksums_need_refresh?(rest.includes?("--local") && !add_checksums)
+      checksum_refresh = !definition.checksums_need_refresh?(rest.includes?("--local") && !add_checksums).nil?
 
       resolution = Resolution.new(definition, unlock)
       # `cli/lock.rb:47` calls `configure_gem_version_promoter` only when

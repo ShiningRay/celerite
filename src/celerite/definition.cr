@@ -525,18 +525,34 @@ module Celerite
       nil
     end
 
+    # Why the locked resolution cannot be reused for the CHECKSUMS entries: the
+    # reference distinguishes a *missing* store entry from an *empty* one
+    # (`definition.rb:984-1002` collects them separately) and the two behave
+    # differently downstream -- see `checksums_need_refresh?`.
+    enum ChecksumsRefreshReason
+      Missing
+      Empty
+    end
+
     # Reference `Definition#something_changed?` / `#empty_checksums_actionable?`
     # (definition.rb:630-659): a *missing* CHECKSUMS entry always forces the
     # lockfile to be refreshed; an *empty* one only when a remote fetch can fill
     # it (`Bundler.frozen_bundle? || !sources.local_mode?`). Without a remote
     # fetch a local resolution would repeat on every setup without changing the
     # lockfile, so `--local` keeps reusing the locked resolution.
-    def checksums_need_refresh?(local_only : Bool = false) : Bool
-      return false unless lockfile_exists?
+    #
+    # The reason matters beyond "refresh or not": a missing entry makes the
+    # reference run a real resolution, so it announces
+    # `Resolving dependencies...` (`resolver.rb:34`), while an empty entry only
+    # re-reads the index without resolving and stays silent (measured on
+    # 4.0.24). Callers that print progress must therefore branch on the reason
+    # instead of on a collapsed boolean.
+    def checksums_need_refresh?(local_only : Bool = false) : ChecksumsRefreshReason?
+      return nil unless lockfile_exists?
 
       data = lockfile!
       section = data.checksums_section
-      return false unless section
+      return nil unless section
 
       missing = false
       empty = false
@@ -552,7 +568,10 @@ module Celerite
           end
         end
       end
-      missing || (empty && (config.frozen? || !local_only))
+      return ChecksumsRefreshReason::Missing if missing
+      return ChecksumsRefreshReason::Empty if empty && (config.frozen? || !local_only)
+
+      nil
     end
 
     private def checksum_matches?(entry : Lockfile::ChecksumEntry, spec : Lockfile::Spec) : Bool
