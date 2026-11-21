@@ -410,3 +410,15 @@ bash script/upstream-specs
 ### 本机永远不可转绿的桶
 
 `env:artifice-unreachable`、`env:low-il-shm`、`fixture:fetch-failed` 三者都是宿主条件而非产品行为：artifice 与 `https://gem.repo2` 由上游 RSpec 进程内提供，celerite 子进程不可路由；low-il 是当前完整性级别下 msys `sh`/`git` 子进程 `NtCreateDirectoryObject` 拒绝（`0xC0000022`）。除非提升完整性级别并提供可达的 gem.repo2，否则这三桶不应计入产品缺口。
+
+## 2026-11-21 第三次重采集（task-86）
+
+- 采集命令：`CELERITE_SKIP_TEST_DEPS=1 bash script/upstream-specs`（`C:\msys64\usr\bin\bash.exe`，`TMPDIR=/c/temp`，PATH 前置 msys64/ucrt64/Ruby40，基线 `710e06e`）。
+- 墙上时间 326 s；rspec 自报 `duration=320.7532621`；seed `39771`；退出码 1（失败即非零，`pipefail` 生效）。
+- `summary`：`{"duration":320.7532621,"example_count":64,"failure_count":53,"pending_count":0,"errors_outside_of_examples_count":0}` ⇒ **64 examples / 53 failures / 11 passed**。
+- 产物：`.upstream-specs/upstream-lockfile-v4.0.24-20261121T041939Z.md`（17799 B）；`rspec-output.json` 377781 B，mtime 2026-11-21 12:25:04。
+- 分桶（按 `script/upstream-specs:194-235` 的规则重算）：`env:artifice-unreachable` 38、`env:low-il-shm` 9、`fixture:fetch-failed` 6、`env:network-policy` 0、`env:test-deps-skipped` 0、`fixture:missing-gem-files` 0、`product:candidates` 0。
+- 与 task-66（64 / 53 / 10，artifice 38 / low-il 9 / fetch 6 / product 0）对比：**逐 example 状态零变化**（按 example id 求差，`CHANGES=0`），分桶内 id 集合逐桶相同（`IDENTICAL_BUCKETS=true`）。本轮 task-19/41/58/63/64/67/84/85 的改动未改变该套件任何用例的结果。
+- 6 条 `fixture:fetch-failed` 人工复核：
+  - `[1:2]`、`[1:3]`、`[1:5]`：`Could not verify the SSL certificate for https://rubygems.org/` —— 我们的二进制在锁文件 `BUNDLED WITH 1.8.2` 时按 task-57 语义去装 `bundler 1.8.2`，沙箱无 CA ⇒ 环境（无 CA/网络），非产品。
+  - `[1:51]`、`[1:56:1:1]`、`[1:57:1:1]`（“missing dependent specs auto-heals”族）：分桶命中 `fixture:fetch-failed` 只是因为记录文本里出现 `Fetching source index …`；真实差异是锁正文少一行 `myrack (0.9.1)`（reference 期望 `specs:` 里保留该依赖行）。这是**产品候选**，但 task-66 同样存在，非本轮新增，且分桶规则把含 `Fetching ` 的失败一律归入 fixture 桶 —— 该规则对这类用例有系统性误分。
