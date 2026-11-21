@@ -6572,3 +6572,36 @@ PLUGIN SOURCE
 - 夹具 `doctor-settings-conflict` 4.0.24 与 2.7.2 均 PASS（exit=15）；负对照 `C:/temp/celerite-pre96`@`4022586` FAIL，缺两行通知（`1,2d0`）。
 - 夹具 `plugin-source-lock-options` 双 profile PASS；回归 `plugin-source-typed`、`plugin-source-install`、`doctor-diagnose-windows`、`doctor-quiet`、`doctor-no-lockfile`、`doctor-ssl-bad-host`、`lock-noop`：4.0.24 8 passed/0 failed，2.7.2 4/0。
 - `spec/m7_doctor_settings_spec.cr` 3 例（两行顺序、仅 `path` 时沉默、`disable_shared_gems: false`）。
+
+## 2026-11-21（M7 task-97：`BUNDLE_ONLY` 与 `update` 的排除组提示）
+
+### 参考行为（4.0.24 与 2.7.2 一致）
+
+| 场景 | 参考输出 | 改前我方 |
+|---|---|---|
+| `BUNDLE_ONLY=test` + `group :test { thor }`，`install` | `Bundle complete! 2 Gemfile dependencies, 1 gem now installed.`，只装 `thor`，锁仍含 `json_pure`/`thor` 两条 `DEPENDENCIES` | 两个都装 |
+| 同上，`list` | 只列 `thor (1.3.2)` | 列两个 |
+| 同上，`check` | exit 0 `The Gemfile's dependencies are satisfied`（`json_pure` 目录不存在也不报缺失） | exit 1 报缺 `json_pure` |
+| `BUNDLE_WITHOUT=test`，`update --all` | `Bundle updated!` 之后 `Gems in the group 'test' were not updated.`，且不 `Fetching thor` | 安装 `thor`，无提示 |
+
+机制：`definition.rb:1251-1254` 把请求组集合算成 `groups - without - optional + with`，再与 `settings[:only]` 求交；`dependency.rb#should_include?` 据此丢弃组外依赖，所以解析、安装、`list`/`show`/`check` 只看交集，而锁文件仍按 Gemfile 记录全部依赖。提示语来自 `cli/update.rb:119` → `common.rb:49-58`（`without` 非空、且这些组仍带 Gemfile 依赖时，用过去式逐组报出）。
+
+### 实现
+
+- `src/celerite/config.cr`：`only` 登记为数组设置（`:` 分隔，与 `with`/`without` 一致；逗号保持在单个符号内，与参考同）。
+- `src/celerite/cli/commands.cr`：`requested_groups_for` 在合并 `with` 之后与 `only` 求交；`locked_specs_for_groups` 把空交集视为「什么都没选」而不是「不过滤」。
+- `src/celerite/cli/commands_install.cr`：安装清单与 `gems_count` 改用请求组集合（此前只看 `without`）。
+- `src/celerite/cli/commands_surface.cr`：`update` 在 `Bundle updated!` 之后打印 `Gems in the group 'x' were not updated.`（单组/多组形态同 `install`），并把安装清单同样按请求组集合过滤。
+
+### 夹具与证据
+
+- `fixtures/differential/install-only-group/`（`env` `BUNDLE_ONLY=test`）、`list-only-group/`、`check-only-group/`、`update-without-group/`（`env` `BUNDLE_WITHOUT=test`，`install --quiet` 后 `update --all`）。
+- 差分：4.0.24 **6 passed / 0 failed**（另含 `install-without-group`、`install-without-none` 回归），2.7.2 **4 passed / 0 failed**。
+- `spec/m7_only_group_spec.cr` 4 例（`only` 安装 / 列表 / `check`、`update` 排除组提示）。
+- 负对照 `C:/temp/celerite-pre97` @ `3ee0e98`：4 个新夹具 **0 passed / 4 failed**——`install` 多装、`list` 多列、`check` 报缺；`update` 打出 `> Fetching thor 1.3.2` / `> Installing thor 1.3.2` 且缺 `Gems in the group 'test' were not updated.`。
+
+### 已声明差异
+
+- `only` 与 `with` 同时出现、`update --group` 与 `only` 的组合未取 oracle。
+- `add` 未接入组过滤。
+- `check` 的「已满足」判定依赖请求组集合；宿主若同时缺被排除的 gem，行为未单独测量。
