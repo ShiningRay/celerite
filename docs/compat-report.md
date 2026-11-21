@@ -6470,3 +6470,33 @@ oracle（工程含 `path "vendor/app_gem"` + `gem "app_gem"`，名字排在 `bun
 已声明差异：
 - `info bundler` 仍打印 7 行 info 块，参考的 `cli/info.rb` 对 bundler 走 `print_gem_info`，本轮未定性与未调整。
 - `show bundler` 的路径在 harness 下等价于「参考所用 Bundler 的根目录」；脱离 harness 时按安装形态回退到 `lib/bundler` 上溯三级，与参考「正在运行的 Bundler 自身的相对位置」语义一致，但不同安装布局下的字面值未逐形态取 oracle。
+
+## 2026-11-21（M7 task-94：非 frozen 的锁依赖表失配自动修复）
+
+task-92 只落了 frozen 的 exit 41（`definition.rb:699-708` 的 `raise if frozen`），非 frozen 的一半留了口子：`install` 要么原样复用锁，要么只从已装 `.gem` 刷依赖边，产出「有 `      net-protocol` 依赖行、没有 `net-protocol (0.2.2)` spec 行」的自相矛盾锁。参考在该形状下会 `reresolve_without([spec])` 后重试，因此有**两条** `Resolving dependencies...`。
+
+oracle（`fixtures/gem-index-locked-deps`；Gemfile `gem "net-smtp", "0.5.0"`；锁 `specs:` 只有 `net-smtp (0.5.0)`、`PLATFORMS ruby`；4.0.24 与 2.7.2 同形，隔离 HOME/GEM_HOME，`BUNDLE_JOBS=1`）：
+
+| 命令 | 参考（exit） | 修复前我方 |
+|---|---|---|
+| `install` | 0；`Fetching source index …`、两条 `Resolving dependencies...`、`Fetching/Installing net-protocol 0.2.2`、`Fetching/Installing net-smtp 0.5.0`、`Bundle complete! 1 Gemfile dependency, 2 gems now installed.`；锁补 `net-protocol (0.2.2)` 行 + `      net-protocol` 边 + `x64-mingw-ucrt` | 0；一条 `Resolving`、只装 net-smtp，锁里有边无行 |
+| `BUNDLE_FROZEN=true install` | 41；`Bundler found incorrect dependencies in the lockfile for net-smtp-0.5.0` | 41（task-92 已修） |
+| `lock` | 0；`Writing lockfile to …`、`Fetching source index …`、`Resolving dependencies...`；只补 `x64-mingw-ucrt`，**不补**依赖边与 spec 行 | 0；`Writing lockfile to …` 一行即返回（no-op 短路） |
+
+实现：
+- `src/celerite/cli/commands_install.cr`：`install` 在 `resolve!` 前设 `resolution.autoheal_locked_edges = true`，`lock` 不设 ⇒ 自愈只发生在 `install`。
+- `src/celerite/resolution.cr`：`resolve!` 在 `lockfile_exists? && (frozen || autoheal_locked_edges)` 时先 `materialize_locked` 再做 `stale_locked_dependency_full_names` 校验；命中且非 frozen ⇒ 这些名字并入 `@excluded_locked_names` 与 `@unlock`（让依赖从索引重新求解）、补打第二条 `Resolving dependencies...`、继续 `run_resolution`。frozen 分支保持 task-92 的 41。
+- `src/celerite/resolution.cr`：校验探针把 `@progress` 换成内存缓冲，并保存/恢复 `@index_fetch_logged` / `@fetch_logged_remotes` / `@fetch_replayed`，且在未命中时删除探针缓存的 `@index_specs_cache` 条目，使随后真正的解析仍按原顺序打印 `Fetching source index …`（否则 `install-platforms-add-local` 会少一行）。
+- `src/celerite/cli/commands.cr`：`lock` 的 no-op 短路新增 `lockfile_platforms_cover_local?`（`PLATFORMS` 必须含本地平台），对齐 `definition.rb:850-857` 的「解析前补当前平台」。
+
+装具/夹具：
+- `fixtures/differential/install-autoheals-locked-dependency-edges/`（`env` `BUNDLE_JOBS=1`；`file-contains` 锁内 `    net-protocol (0.2.2)`、`      net-protocol`、`  x64-mingw-ucrt`；stdout 由 harness 整段比对，覆盖两条 `Resolving` 与两条 `Installing`）。
+- `fixtures/differential/lock-does-not-heal-dependency-edges/`（同一锁，`command` = `lock`；`file-contains` 只断言 `  x64-mingw-ucrt`，明确不断言依赖边）。
+- `spec/m7_lock_autoheal_spec.cr` 4 例：自愈（两条 `Resolving`、两行 `Installing`、锁自洽）、frozen 41、`lock` 只补平台、已自愈的锁再跑不再重解析且锁字节稳定。
+
+证据：新夹具双 profile PASS（4.0.24 与 2.7.2，`PASS install-autoheals-locked-dependency-edges (exit=0)`、`PASS lock-does-not-heal-dependency-edges (exit=0)`）；回归 `install-platforms-add-local`、`lock-noop`、`lock-print`、`install-fresh`、`install-check`、`check-rewrites-lock`、`install-frozen` 4.0.24 9 passed/0 failed，2.7.2 5/0；负对照 `C:/temp/celerite-pre94`@`a142136` 两条新夹具全 FAIL（`> Bundle complete! 1 Gemfile dependency, 1 gem now installed.`、`file-contains differs (Gemfile.lock): needle=    net-protocol (0.2.2)`、`needle=  x64-mingw-ucrt`）。
+
+已声明差异/未验证：
+- `lock` 重解析时我方仍会写下 `      net-protocol` 依赖边（生成器从索引取依赖），参考保留锁内原依赖表；本轮只保证「不补 spec 行」，边差异沿用既有登记。
+- `install --local` 在该锁形状下仍是既有差异（参考 exit 7、我方从索引装），未在本轮改动。
+- `update` 未接入自愈（参考的 `reresolve_without` 也用于 update 路径，本轮未取 oracle）。
