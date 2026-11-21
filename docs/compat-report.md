@@ -7283,3 +7283,50 @@ task-91 状态 `failed`（产品桶）→ task-114 状态 `passed`。这是 task
 - `[1:51]` 转绿，说明 task-92/94 的锁边自愈确实关掉了一条产品候选。
 - env 两桶（artifice 38→37、low-il 9）与 fetch 桶（3）基本稳定，可继续视为本机不可关闭项。
 - 本结论**晚于** task-92…task-113 全部改动，**早于**任何针对 `[1:46]`/`[1:54]` 的后续修复。
+
+## 2026-11-22（M7 task-115：锁依赖边自愈保持锁定版本）
+
+起因：task-114 第四次复采把上游 `spec/lock/lockfile_spec.rb:2088`（"automatically fixes the lockfile when it has incorrect deps, keeping the locked version"）从通过集移入失败集，日志显示 `Fetching net-smtp 0.5.1 (was 0.5.0)`。本轮离线复现后的结论与首辅最初描述不同，先写明：
+
+**未复现「版本升级」这一形态在参考侧的对应行为；真实缺陷是自愈后缺依赖边、且我方自愈路径把行推入 `@unlock` 导致锁定版本丢失。** 首辅给出的 A/B 中「参考写出 `      net-protocol`、我方不写」是准确的部分——那是 `refresh_locked_dependencies`（task-44b/M7(8)④）落地后仍存在的边界：当锁定行与索引行的依赖集合不一致时，我方旧实现只把名字移出锁定索引，依赖边既不来自锁（已被移出）也不来自索引（未真正重解析），于是边消失。
+
+### oracle 表（offline，`fixtures/gem-index-locked-deps`，参考 4.0.24）
+
+| 形态 | 锁初态 | 参考 stdout | 参考锁 | 修复前我方锁 |
+| --- | --- | --- | --- | --- |
+| S1 边缺失 | 两行齐全，`net-smtp (0.5.0)` 下无 `      net-protocol`，`PLATFORMS x64-mingw-ucrt` | 1×`Resolving dependencies...` | 保持 `0.5.0`，补回边 | `net-smtp (0.5.1)` + 边 |
+| S2 行缺失 | 只有 `net-smtp (0.5.0)` 行，无 `net-protocol` 行 | 1×`Resolving dependencies...` | 补 `net-protocol (0.2.2)` 行 + 边，版本保持 `0.5.0` | `net-smtp (0.5.1)` + 边 |
+| S3 行缺失 + 显式钉版 | 同上，`gem "net-smtp", "0.5.0"`，`PLATFORMS ruby` | 2×`Resolving dependencies...` | 保持 `0.5.0` | `net-smtp (0.5.1)`（旧二进制） |
+
+修复后三形态的锁体逐字节相同（S1/S2 `sha256=EC5D59A2712B…`，S3 `sha256=6AF7A5A85B57…`），stdout 除沙箱路径外一致，stderr 两侧皆空。
+
+### 机制（参考锚点）
+
+- `definition.rb:699-708` `materialize` 捕获 `IncorrectLockfileDependencies` → 非 frozen 时 `reresolve_without([e.spec])`，
+  `definition.rb:782-785` `reresolve_without` 只做 `resolution_base.delete(incomplete_specs)`——**只删解析基座里的行**。
+- `definition.rb:1321-1328` `new_resolution_base` 仍把 `@originally_locked_specs` 交给 `Resolver::Base`
+  （`resolver/base.rb:10-33`），`@gems_to_unlock` 全程未被 `reresolve_without` 触碰，
+  因此 `Package#locked_version` 依旧指向锁定版本，`gem_version_promoter.rb:134-145` `post_sort` 把锁定版本提到首位。
+- `resolver.rb:28-37` `start` 每次 `setup_solver` 后打印一行 `Resolving dependencies...`：S1/S2 只需一次（锁平台覆盖本机，自愈前不解析），S3 需要两次。
+
+### 实现
+
+- `src/celerite/resolution.cr` 两处自愈分支（install 前置校验块与复用分支）不再写 `@unlock`，改为仅
+  `@excluded_locked_names << name` 并置 `@heal_locked_edges = true`（注释引 `definition.rb:782-785`、`:1323`）。
+- 新增 `preferred_locked_versions`（源自行级锁定版本表）经 `make_source` 第 16 个位置参数传入
+  `Resolver::ResolutionSource`，后者用 `locked_version_for` 同时服务 `package_for` 与 `to_dependency_hash`，
+  使被移出候选表的行仍然贡献 `locked_version`，`sort_versions_by_preferred` 的排序语义未改。
+- 新增 `locked_platform_covers_local?`：锁定平台里存在非 `ruby` 且匹配本机的条目时才抑制自愈前的那行
+  `Resolving dependencies...`，与 S1/S2（1 行）与 S3（2 行）的参考输出对齐。
+
+### 证据
+
+- `crystal spec spec/m7_lock_autoheal_spec.cr` → 6 examples, 0 failures（新增 task-115 两例：保持版本并补边、行也缺失时仍不升级）。
+- 差分 4.0.24 与 2.7.2 各 8 passed / 0 failed：`install-autoheals-locked-dependency-edges`、`lock-does-not-heal-dependency-edges`、`install-fresh`、`install-check`、`install-rerun`、`lock-noop`、`lock-add-checksums`、`install-platforms-add-local`。
+- 负对照 `C:/temp/celerite-pre115` @ `cda167e`：S1 形态旧二进制 `Fetching net-smtp 0.5.1 (was 0.5.0)`、锁 `net-smtp (0.5.1)` 且多一行 `Resolving dependencies...`（本报告前文速度段所记）——两处差异均被新夹具/规格捕获。
+
+### 已声明差异（仍未对齐）
+
+- **宿主 gem 可见形态下的多行 `Resolving dependencies...`**：当 `HOME` 指向真实用户目录（宿主已装 `net-smtp`/`net-protocol`）时，我等打印 3–4 行，参考 2 行。该形态依赖宿主安装状态，未做成夹具（沙箱隔离 `HOME`/`GEM_HOME` 后无法复现），仅记录。
+- 自愈只覆盖 GEM 源的锁定行；PATH/GIT 行的依赖边未纳入本轮的 `stale_locked_dependency_full_names` 判定。
+- `lock` 命令仍不补依赖边（task-94 已声明，本轮未改）。
