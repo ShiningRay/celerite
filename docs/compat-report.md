@@ -6768,3 +6768,35 @@ CEL exit=7 OUT=[] ERR=[Could not find gem 'net-smtp' in locally installed gems.]
 首辅环境测到的参考侧 `Could not find net-smtp-0.5.0 in locally installed gems`
 （installer 形态）**我无法复现**——同一 Gemfile/锁/隔离变量下参考走的是解析失败路径。
 在拿到该沙箱的完整锁与命令前，不改产品代码，以免按不可复现的形状把本已一致的行为改坏。
+
+### task-101 第四窗口：`--local` 不再解析，缺包走 installer 形态
+
+上一窗口我没能复现首辅的 installer 形态，原因是**参考侧 stderr 末尾是 CRLF 且我此前把
+`GEM_HOME` 指向空目录**；按首辅的脚本（`HOME`/`USERPROFILE` 同一目录、
+`BUNDLE_APP_CONFIG=<home>/cfg`、`BUNDLE_PATH=<home>/b`、`GEM_HOME`/`GEM_PATH` **unset**）
+两形态都稳定复现。
+
+**手工 oracle（非差分夹具；理由：harness 沙箱令该形状两侧 no-op）**，
+`Gemfile`/锁同首辅矩阵（`gem "net-smtp"`，锁内仅 `net-smtp (0.5.0)`）：
+
+| 变体 | 我方（修前） | 参考 | 我方（修后） |
+|---|---|---|---|
+| 尾斜杠 remote | `Fetching source index from …` + `Could not find gem 'net-smtp' … .` | `Could not find net-smtp-0.5.0 in locally installed gems`，stdout 空 | 同参考 |
+| 无尾斜杠 remote | `Resolving dependencies...` + 引号形态 | 同上 | 同参考 |
+
+两侧 exit 均 7；stderr 差仅为行尾（参考 `\r\n`、我方 `\n`，harness N2 归一化后一致）。
+
+**实现**：
+- `src/celerite/resolution.cr` `resolve!` 顶部新增 `--local` 早退分支：锁存在时只
+  `materialize_locked`，逐 GEM spec 调 `index_specs_for`（`@local_only` 下只查已装
+  spec 与 `vendor/cache`，`definition.rb:190-203`）；全部可得才打印一次
+  `Resolving dependencies...`，否则不打印任何解析行并直接返回。
+- `src/celerite/cli/commands_install.cr`：缺包抛 installer 形态
+  `Could not find <full_name> in locally installed gems`（无引号无句号，`installer.rb:81-96`）；
+  锁定安装的 `Fetching source index …` 重放行加 `!resolution.local_only` 条件。
+- `spec/m7_local_install_step_spec.cr` 断言改为参考原文，并新增
+  `out.should_not contain("Fetching source index")`。
+
+**回归**：双 profile 5/0（`install-local`、`install-local-vendored-install`、
+`install-autoheals-locked-dependency-edges`、`lock-does-not-heal-dependency-edges`、
+`install-refreshes-app-cache`）；spec 5/0；format/`build --no-codegen`/bin build 0。
