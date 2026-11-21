@@ -2002,21 +2002,25 @@ module Celerite
       end
       if command == "show" && names.empty?
         if paths
+          # `cli/show.rb:33-36` prints every spec of `Bundler.load.specs` in
+          # `sort_by(&:name)` order, and that list includes the running Bundler
+          # itself - so its position follows its name, not the front.
+          path_entries = [] of Tuple(String, String)
           if dir = bundler_gem_dir
-            stdout.puts display_path(dir)
+            path_entries << {"bundler", display_path(dir)}
           end
           locked_specs.each do |spec|
             path = installed_gem_dir(definition, spec, lockfile)
-            stdout.puts(path ? display_path(path) : spec.full_name)
+            path_entries << {spec.name, path ? display_path(path) : spec.full_name}
           end
+          path_entries.sort_by! { |entry| entry[0] }
+          path_entries.each { |entry| stdout.puts entry[1] }
         else
-          # Reference `bundle show` lists the running Bundler itself first
-          # (`Bundler.definition.specs` includes the bundler spec), which is the
-          # compatibility profile version here rather than the locked one.
           stdout.puts "Gems included by the bundle:"
           if verbose_listing
             # `cli/show.rb:60-74`: the verbose form drops the two-space indent
             # (`desc.lstrip`) and adds Summary/Homepage/Status rows.
+            verbose_entries = [] of Tuple(String, String, String?, String?, Gem::Version)
             bundler_dir = bundler_gem_dir
             bsummary : String? = nil
             bhomepage : String? = nil
@@ -2025,10 +2029,10 @@ module Celerite
               bsummary = bundler_info[0]
               bhomepage = bundler_info[1]
             end
-            print_show_verbose_entry(stdout, "* bundler (#{profile_bundler_version})",
-              bsummary || "The best way to manage your application's dependencies",
-              bhomepage || "https://bundler.io",
-              Gem::Version.new(profile_bundler_version), latest_versions["bundler"]?)
+            verbose_entries << {"bundler", "* bundler (#{profile_bundler_version})",
+                                bsummary || "The best way to manage your application's dependencies",
+                                bhomepage || "https://bundler.io",
+                                Gem::Version.new(profile_bundler_version)}
             locked_specs.each do |spec|
               gem_dir = installed_gem_dir(definition, spec, lockfile)
               summary : String? = nil
@@ -2038,15 +2042,24 @@ module Celerite
                 summary = spec_info[0]
                 homepage = spec_info[1]
               end
-              print_show_verbose_entry(stdout, "* #{spec_display_name(spec, lockfile)}",
-                summary, homepage, Gem::Version.new(spec.version), latest_versions[spec.name]?)
+              verbose_entries << {spec.name, "* #{spec_display_name(spec, lockfile)}",
+                                  summary, homepage, Gem::Version.new(spec.version)}
+            end
+            verbose_entries.sort_by! { |entry| entry[0] }
+            verbose_entries.each do |entry|
+              print_show_verbose_entry(stdout, entry[1], entry[2], entry[3], entry[4],
+                latest_versions[entry[0]]?)
             end
           else
-            # Reference `bundle show` lists the running Bundler itself first
-            # (`Bundler.definition.specs` includes the bundler spec), which is the
-            # compatibility profile version here rather than the locked one.
-            stdout.puts "  * bundler (#{profile_bundler_version})"
-            locked_specs.each { |spec| stdout.puts "  * #{spec_display_name(spec, lockfile)}" }
+            # `cli/show.rb:37-51` sorts the whole `Bundler.load.specs` by name;
+            # the running Bundler is one of them, so it is not pinned to the top.
+            entries = [] of Tuple(String, String)
+            entries << {"bundler", "  * bundler (#{profile_bundler_version})"}
+            locked_specs.each do |spec|
+              entries << {spec.name, "  * #{spec_display_name(spec, lockfile)}"}
+            end
+            entries.sort_by! { |entry| entry[0] }
+            entries.each { |entry| stdout.puts entry[1] }
           end
         end
         return 0
@@ -2141,6 +2154,14 @@ module Celerite
         # exact-name match hits the profile version before any regex fallback.
         gem_dir = installed_bundler_dir(profile_bundler_version) || bundler_gem_dir
         if gem_dir
+          if command == "show"
+            # `cli/show.rb:19-30`: `show bundler` short-circuits to a single path
+            # line before the `--paths`/`--version` options are considered. The
+            # reference expands `../../..` from its own `lib/bundler`, i.e. the
+            # directory of the Bundler it is running with.
+            stdout.puts display_path(show_bundler_path(gem_dir))
+            return 0
+          end
           if rest.includes?("--version")
             stdout.puts profile_bundler_version
             return 0
@@ -2297,6 +2318,20 @@ module Celerite
     # so resolve that directory from the configured reference lib (the
     # differential harness and the bridge both export
     # `CELERITE_REFERENCE_BUNDLER_LIB`).
+    # `cli/show.rb:20-21`: `show bundler` prints the directory the running
+    # Bundler expands `../../..` to from its own `lib/bundler`. Under the
+    # differential harness that is the reference checkout
+    # (`CELERITE_REFERENCE_BUNDLER_LIB` = `<checkout>/lib`); outside it, the
+    # installed gem's own layout decides.
+    private def self.show_bundler_path(gem_dir : String) : String
+      reference_lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]?
+      if reference_lib && !reference_lib.empty?
+        root = File.expand_path("..", reference_lib)
+        return root if (File.directory?(root) rescue false)
+      end
+      File.expand_path("../../..", File.join(gem_dir, "lib", "bundler"))
+    end
+
     private def self.bundler_gem_dir : String?
       reference_lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]?
       if reference_lib && !reference_lib.empty?
