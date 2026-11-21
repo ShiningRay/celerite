@@ -1,0 +1,1 @@
+2.7.2 does not copy out-of-project path sources on install: `cache_all` has no shared default there (source/path.rb:86 returns unless the setting is true), so neither side populates vendor/cache and the file-exists assertions cannot hold on that profile. Covered for 4.0.24; the 2.7.2 cache plumbing is fixtured by cache-no-all-path.

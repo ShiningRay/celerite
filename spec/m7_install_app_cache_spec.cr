@@ -99,4 +99,60 @@ describe "M7 install refreshes the app cache" do
       File.exists?(cached).should be_false
     end
   end
+
+  it "copies an out-of-project path source on the very first install" do
+    with_project({"Gemfile" => "source \"#{app_cache_index_url}\"\n"}) do |dir|
+      sibling = File.join(File.dirname(dir), "pgem-sibling-#{Process.pid}")
+      FileUtils.rm_rf(sibling)
+      Dir.mkdir_p(File.join(sibling, "lib"))
+      File.write(File.join(sibling, "lib", "pgem.rb"), "module Pgem\n  VERSION = \"1.0.0\"\nend\n")
+      File.write(File.join(sibling, "pgem.gemspec"), <<-GEMSPEC)
+        Gem::Specification.new do |spec|
+          spec.name = "pgem"
+          spec.version = "1.0.0"
+          spec.summary = "pgem"
+          spec.authors = ["celerite"]
+          spec.files = ["lib/pgem.rb"]
+        end
+        GEMSPEC
+      File.write(File.join(dir, "Gemfile"),
+        "source \"#{app_cache_index_url}\"\n\ngem \"pgem\", path: \"#{sibling.gsub('\\', '/')}\"\n")
+      Dir.mkdir_p(File.join(dir, "vendor", "cache"))
+
+      begin
+        code, out_text, _err = app_cache_install(dir)
+        code.should eq(0)
+        # `Runtime#cache` walks `definition.specs`, so the copy must not depend on
+        # a lockfile that the first install has not written yet.
+        out_text.should contain("Updating files in vendor/cache")
+        File.file?(File.join(dir, "vendor", "cache", "pgem", "lib", "pgem.rb")).should be_true
+        File.exists?(File.join(dir, "vendor", "cache", "pgem", ".bundlecache")).should be_true
+      ensure
+        FileUtils.rm_rf(sibling)
+      end
+    end
+  end
+
+  it "renders an absolute BUNDLE_PATH with native separators and keeps relative ones" do
+    with_project(app_cache_files) do |dir|
+      # Above the working directory, `settings.rb:253-285` keeps the configured
+      # spelling, so a backslash path stays a backslash path (task-88).
+      absolute = File.join(File.dirname(dir), "abs-bundle-#{Process.pid}")
+      code, out_text, _err = app_cache_install(dir, [] of String, {"BUNDLE_PATH" => absolute})
+      code.should eq(0)
+      out_text.should contain("Bundled gems are installed into `#{absolute}`")
+      out_text.should_not contain("Bundled gems are installed into `#{absolute.gsub('\\', "/")}`")
+
+      # Below the working directory the reference keeps the `./` form.
+      inside = File.join(dir, "abs-bundle")
+      inside_code, inside_out, _inside_err = app_cache_install(dir, [] of String, {"BUNDLE_PATH" => inside})
+      inside_code.should eq(0)
+      inside_out.should contain("Bundled gems are installed into `./abs-bundle`")
+
+      relative_code, relative_out, _relative_err =
+        app_cache_install(dir, [] of String, {"BUNDLE_PATH" => "./rel-bundle"})
+      relative_code.should eq(0)
+      relative_out.should contain("Bundled gems are installed into `./rel-bundle`")
+    end
+  end
 end
