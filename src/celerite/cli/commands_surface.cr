@@ -463,6 +463,14 @@ module Celerite
       # (the Gemfile keeps its bytes) while a different requirement surfaces as
       # a conflict inside the synthetic `injected gems` file — before any index
       # fetch line or Gemfile write.
+      # `Injector` resolves and installs the injected dependency BEFORE it
+      # appends the line, so a failed `add` leaves the Gemfile byte-identical
+      # (oracle: `add nosuchgem --skip-install` exits 7 with the source line
+      # only). We write first because the lock regeneration needs the new
+      # dependency, so restore the original bytes whenever anything after the
+      # append raises.
+      gemfile_backup = File.read(gemfile_path)
+      gemfile_appended = false
       bridge = Bridge::Client.new
       begin
         evaluation = bridge.evaluate_gemfile(gemfile_path)
@@ -490,6 +498,7 @@ module Celerite
           version_requirement = probe[:requirement]
           gem_line = "gem \"#{name}\"#{version_requirement}#{add_group_option(rest)}#{add_option_suffix(rest)}"
           append_gemfile(gemfile_path, gem_line)
+          gemfile_appended = true
           probe_printed = probe[:printed]
         end
 
@@ -506,6 +515,9 @@ module Celerite
         if rest.includes?("--skip-install")
           persist_add_lockfile(definition, bridge, stdout, probe_printed)
         end
+      rescue ex
+        File.write(gemfile_path, gemfile_backup) if gemfile_appended
+        raise ex
       ensure
         bridge.close
       end
@@ -520,8 +532,13 @@ module Celerite
       # resolution); install() repeats the second fetch when the lockfile
       # is (re)written. An unchanged Gemfile still runs the installer, which
       # reuses the lockfile resolution and therefore prints nothing.
-      install(stdout, stderr, install_args_from_add(rest, name),
-        summary: false, no_reuse: !already_declared)
+      begin
+        install(stdout, stderr, install_args_from_add(rest, name),
+          summary: false, no_reuse: !already_declared)
+      rescue ex
+        File.write(gemfile_path, gemfile_backup) if gemfile_appended
+        raise ex
+      end
     end
 
     # `Gem::Requirement#==` compares the sorted `as_list`; the Gemfile text
@@ -717,6 +734,7 @@ module Celerite
                                             bridge : Bridge::Client,
                                             explicit_parts : Array(String)?) : NamedTuple(requirement: String, printed: Bool)
       printed = false
+      announce_resolving = false
       begin
         resolution = Resolution.new(definition, false, bridge)
         # `--github` resolves against the source list like a plain add (the
@@ -731,7 +749,10 @@ module Celerite
           resolution.resolve!
           remote = resolution.primary_remote
           stdout.puts "Fetching source index from #{remote.chomp("/")}/" unless remote.empty?
-          stdout.puts "Resolving dependencies..."
+          # The resolver announcement is printed only once the index actually
+          # answers for this gem: with an unknown gem the reference stops after
+          # the fetch line and raises (oracle `add nosuchgem --skip-install`).
+          announce_resolving = true
           printed = true
         else
           resolution.progress = stdout # path/git probes use the local gemspec
@@ -745,6 +766,10 @@ module Celerite
         # `">= 1.0", "< 2"`.
         if explicit_parts
           dumped = explicit_parts.map { |part| "\"#{part}\"" }.join(", ")
+          # An explicit requirement does not need the index lookup, but the
+          # announcement still follows the fetch line (pinned by
+          # `add-version-requirement`).
+          stdout.puts "Resolving dependencies..." if announce_resolving
           return {requirement: ", #{dumped}", printed: printed}
         end
 
@@ -766,6 +791,11 @@ module Celerite
                      entries = client.info(name)
                      entries.map { |e| Gem::Version.new(e.version) }.reject(&.prerelease?)
                    end
+        # The resolver announcement follows the fetch line, but only when the
+        # index answered for this gem; an unknown gem stops after the fetch
+        # (oracle: `add nosuchgem --skip-install`).
+        stdout.puts "Resolving dependencies..." if announce_resolving && !versions.empty?
+
         return {requirement: "", printed: printed} if versions.empty?
         latest = versions.max
         # Pinned `Injector#conservative_version`: versions < 1.0 keep three
