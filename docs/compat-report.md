@@ -6275,3 +6275,33 @@ task-66：64 / 53 / 10 passed，artifice 38、low-il 9、fetch 6、product 0。�
 ### 已声明差异
 - `BUNDLE_PATH=`（空串）：参考渲染 `./.`，我方把空值当作未设置（`Config` 丢弃空值），打印 `bundle info` 提示；未修。
 - `Source::Git#cache` 仍未实现（msys `0xC0000022` 阻断 git 端到端）；`package` 与 `cache` 共用路径，未单独取 oracle。
+
+## 2026-11-21（M7 task-89：`install --standalone` 对非 GEM 源与 `require_paths` 的渲染）
+
+参考 `installer/standalone.rb:30-40` 对每个 spec（bundler 自身除外，PATH/GIT 也在内）按 `spec.require_paths` 逐条写 `$:.unshift`，路径来自 `:54-61` 的 `gem_path`：`File.join(spec.full_gem_path, path)`，且 PATH 源的声明路径非绝对时再经 `SharedHelpers.relative_path_to(full, from: Bundler.root.join(bundler_path))`。我方旧实现（`src/celerite/cli/commands_install.cr` 的 `render_standalone_setup`）跳过非 GEM 行并把需求路径写死成 `lib`，于是 `path:` 源在被 `require` 时报 `LoadError: cannot load such file -- pgem`。
+
+### oracle（参考 4.0.24，逐字节；`--standalone` 写在项目内）
+
+| 形态 | setup.rb 字节 | 非 GEM 行 |
+|---|---|---|
+| 纯 GEM（`json_pure 2.6.0`） | 1021 | 无（只有 `#{__dir__}/../#{RUBY_ENGINE}/#{Gem.ruby_api_version}/gems/json_pure-2.6.0/lib`） |
+| 工程外 path 源（`path: "../../pgem"`） | 1085 | `#{__dir__}/../../../../pgem/lib`，`require 'pgem'` → `REQUIRE=OK` |
+| 工程内 path 源（`path: "vendor/pgem"`） | 1086 | `#{__dir__}/../../vendor/pgem/lib` |
+| `--standalone=development`（path 源只在 dev 组） | 975 | 仅 pgem 行（json_pure 被排除） |
+| 夹具同形（`project/` + 同级 `pgem/`，未设 `BUNDLE_PATH`） | 两侧均 1082 | 两侧均 `#{__dir__}/../../../pgem/lib`，逐字节一致 |
+
+`require_paths` 取真实 gemspec（桥 `op_load_installed_spec` 新增 `require_paths` 字段），缺省回退 `["lib"]`；PATH 源的 `full_gem_path` 由 `source_declared`（锁里声明的原始路径）相对 Gemfile 目录展开。
+
+### 代码锚点
+
+- `assets/bridge/server.rb`：`op_load_installed_spec` 增 `require_paths`（注释指 `installer/standalone.rb:30-40`）。
+- `src/celerite/resolution.cr`：`ResolvedSpec#source_declared`（PATH/GIT 取锁内 `remote` 原文）；`materialize_locked` 赋值。
+- `src/celerite/cli/commands_install.cr`：`render_standalone_setup`（`next if name == "bundler"`、按 `require_paths` 逐条、PATH 用相对 bundler 目录的路径）与 `standalone_gem_root`/`standalone_require_paths`/`standalone_relative_path`。
+
+### 夹具与反假绿
+
+`fixtures/differential/standalone-path-source/`（`sibling/pgem/`、`command` = `install --standalone`、`file-contains` 于 `../bundle/bundler/setup.rb` 命中 `pgem/lib`）4.0.24 与 2.7.2 均 PASS；同轮 `install-standalone`、`install-fresh` 绿。负对照 `C:/temp/celerite-pre89`@`d042e54`：`FAIL standalone-path-source`，`file-contains differs (../bundle/bundler/setup.rb): needle=pgem/lib`。
+
+### 已声明差异
+
+同一驱动器上「声明路径为绝对」的 PATH 源，参考把绝对路径原样写进 `$:.unshift`，我方统一相对化（功能等价，`require` 均可）；跨盘时双方都只能写绝对路径。`--standalone` 与 `BUNDLE_PATH` 同时出现时 setup.rb 落在 `$BUNDLE_PATH/bundler/`（夹具的 `../bundle/...` 即此），未在参考侧单独取 oracle。
