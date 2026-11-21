@@ -5956,3 +5956,28 @@ oracle 用同一份 `file://` 索引（`fixtures/gem-index`，预装并锁 `json
 1. 全新安装路径下参考还打印 `Downloaded <name> in: 0.001s` / `Installed <name> in: 0.029s` 等计时行——数值非确定，未复现。
 2. 并行安装器的工作线程序号（如 `1:`、`3:`、`4:`）未复现：我方安装是串行的，固定打印 `0:`（与锁复用路径的参考输出一致）。
 3. `outdated` 的 `Re-resolving dependencies because …` 原因行未取 oracle，未实现。
+
+## 2026-11-21（M7 task-79：verbose 的「重解析原因行」）
+
+`definition.rb:866-876 resolve_needed_reason` 决定 debug 级别的那一行；`:886-902 unlocking_reason` 为空时整句以空格结尾，而 Thor 的 `say`（`shell/basic.rb#say`，`force_new_line` 默认 `message !~ /( |\t)\Z/`）对以空格结尾的消息**不换行**，于是紧随其后的 `fetcher.rb:273-276` 本地服务器行被并到同一行——这是参考的真实字节，不是我们的拼接。
+
+| 命令（`--verbose`） | 参考打印的那一行（4.0.24 与 2.7.2 逐字相同） |
+| --- | --- |
+| `update json_pure` | `Re-resolving dependencies because bundler is unlocking gems: (json_pure)`（独立一行，随后单独一行 `Using a local server, …`） |
+| `update --all` | `Re-resolving dependencies because bundler is unlocking Using a local server, bundler won't use the CompactIndex API`（同一行，`unlocking` 后有尾随空格） |
+| `outdated` | 同上（同一行） |
+| `check`（Gemfile 新增依赖后） | `Found changes from the lockfile, re-resolving dependencies because the dependencies in your gemfile changed`，随后单独一行本地服务器行 |
+| `install`（Gemfile 改动后） | 同上两行，再 `Fetching source index …` / `Resolving dependencies...` |
+| `install`（锁里 CHECKSUMS 条目被清空） | `Found no changes, using resolution from the lockfile` + 本地服务器行（**没有** CHECKSUMS 相关原因行） |
+
+实现：
+- `src/celerite/cli/commands.cr`：新增 `print_debug_reason`（结尾为空格时不换行，模拟 Thor `say`）、`debug_local_server`、`debug_reason_for`（无锁 / 依赖未变 / 依赖变化三种，其余 `lockfile_changed_reason` 条件无实测触发，不臆造）、`verbose_debug?`。
+- `src/celerite/cli/commands_install.cr`：原因行统一走 helper；本地服务器行只在**真的会取索引**时打印（锁复用路径不打印——该行来自 fetcher，不是解析器）。
+- `src/celerite/cli/commands_surface.cr`：`update` 按 `gems` 是否为空选择 `gems: (…)` 或空名（尾随空格）形态；`outdated` 固定空名形态；两者都在 `resolve!` 前打印。`outdated` 里 task-78 遗留的那条本地服务器行已删除（否则重复）。
+
+夹具：`fixtures/differential/outdated-verbose-unlock-reason`（`install --quiet` + `outdated --verbose`）、`check-verbose-changes-reason`（Gemfile 比锁多 `thor`，`check --verbose`）；双 profile PASS。负对照 `C:/temp/celerite-pre79` @ `c59c031` → **0 passed / 2 failed**（`< Re-resolving … unlocking Using a local server…` vs `> Using a local server…`；`< Found changes …`/`< Using a local server …` 缺失）。spec `spec/m7_resolve_reason_spec.cr` 4 例。
+
+已声明差异（未实现，无触发取证）：
+1. `lockfile_changed_reason` 的另外 12 个条件（sources 变更、缺平台、path/git gemspec 变更、缺依赖、CHECKSUMS 缺失/为空、bundler 自更新等）未逐条实现；`lockfile_changed_reason` 只实现了 oracle 命中的 `the dependencies in your gemfile changed`，未命中时回落到「不改写」。
+2. `update`/`outdated` 的 verbose `Using …` 与 `N:  … from …` 并行工作行未实现：参考的工作线程序号（实测出现 `3:`/`5:`/`7:`）依赖并行完成顺序，非确定，不宜进差分断言。
+3. `outdated` 的 `Re-resolving …` 只覆盖「有锁且解锁」形态；无锁时参考走 `Resolving dependencies because there's no lockfile`（已由 task-78 的 install 路径覆盖 install，未单独验 outdated）。
