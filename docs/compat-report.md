@@ -6949,3 +6949,33 @@ install 流水线新增 `refresh_cache : Bool = true` 形参并透传到 `run_in
 - `spec/m7_cache_rerun_spec.cr` 未能落地：in-process 下 `cache` 首跑返回 7
   （`Could not find gem 'json_pure' in rubygems repository`，source 未解析），窗口内未定位；
   该面由两个精确 stdout 夹具覆盖，未提交红测试。
+
+## 2026-11-21（M7 task-105：bundle 目录骨架与进程锁清理）
+
+参考在 `BUNDLE_PATH` 下建立 RubyGems 的簿记目录，并在命令结束后不留锁文件；我方此前
+只建 `cache/gems/specifications`，且把 `bundler.lock` 永久留在 bundle 根。
+
+| 观测（4.0.24，隔离 HOME/BUNDLE_PATH/BUNDLE_APP_CONFIG，纯 Ruby gem） | 参考 | 修前我方 |
+|---|---|---|
+| bundle 根 | `ruby` | `bundler.lock` + `ruby` |
+| `ruby/4.0.0` | `build_info cache doc extensions gems plugins specifications` | `cache gems specifications` |
+| 重跑 | 同上，仍无锁文件 | 锁文件仍在 |
+| `--deployment`（无锁） | exit 15 | exit 15 |
+
+机制锚点：`C:/Ruby40-x64/lib/ruby/4.0.0/rubygems/installer.rb:902-918`
+（`write_build_info_file`）与 `:475-484`（`generate_plugins` → `Gem.plugindir`，`:647`）；
+`doc`/`extensions` 未定位到具体行号，按上表实测目录名单实现。
+
+实现：`src/celerite/installer.cr` 新增 `Installer.ensure_layout(install_root)`
+（`mkdir_p` 四个簿记目录），`Installer#initialize` 与 `Commands.install` 建根之后各调一次；
+`Commands::ProcessLock` 记录锁文件路径，`close` 在解锁关闭后 `File.delete`（Windows 不允许
+删除仍打开的文件）。
+
+夹具 `fixtures/differential/install-bundle-layout/`：`installed-tree` 逐项对比整个
+`ruby/<abi>` 目录树，`file-absent` 断言 `bundle/bundler.lock` 不存在；双 profile PASS。
+spec `spec/m7_bundle_layout_spec.cr` 3 例（单元级：建目录、幂等保留内容、锁文件随 close 消失）。
+负对照 `8b9de5b` → FAIL：`Only in SANDBOX/bundle/ruby/4.0.0: build_info/doc/extensions/plugins`。
+
+已声明差异：① `doc`/`extensions` 无行号锚点，按实测目录实现；② 端到端 spec 未成
+（进程内 install 不落 `bundle/ruby/*`，env `BUNDLE_PATH` 在该搭法下不生效），改为单元级
++ 差分夹具覆盖；③ 2.7.2 的 `cache` 重跑多一行 `Fetching source index …`（task-104 已声明）。
