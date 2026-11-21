@@ -5929,3 +5929,30 @@ oracle 用同一份 `file://` 索引（`fixtures/gem-index`，预装并锁 `json
 **附带修正**：`spec/m7_app_config_env_spec.cr` 三处断言仍按 `File.join`（反斜杠）比较，而 task-56 起 `Config.app_config_path`/`join_config` 返回正斜杠形态，故该 spec 在 `544aea0` 上**本来就是红的**（已用 `git stash` 在基线复现）。本次只把期望串归一化，产品代码未动。
 
 **已声明差异**：多值 `BUNDLE_CACHE_PATH`（`first:second`）参考直接崩（exit 32 `Errno::ENOTDIR`），我方不刻意复刻该崩溃；`--cache-path` 与多值组合未测。
+## 2026-11-21（M7 task-78：`BUNDLE_VERBOSE` 与 verbose 调试行）
+
+参考 `settings.rb:21` 把 `verbose` 声明为 BOOL 设置，`cli.rb#initialize` 用 `Bundler.ui.level = "debug" if settings[:verbose]` 提升 UI 级别，因此 `BUNDLE_VERBOSE=true` 与 `--verbose` 等价；但 `CLI#print_command` 回显的是用户实际输入，设置驱动的 verbose 不会凭空多出 `--verbose`。
+
+| 形态 | 参考输出（4.0.24 / 2.7.2 一致） |
+| --- | --- |
+| `install --verbose` / `-V` | `Running \`bundle install --verbose\` with bundler <ver>` + 调试行 |
+| `BUNDLE_VERBOSE=true install` | `Running \`bundle install\` with bundler <ver>` + 相同调试行 |
+| `BUNDLE_VERBOSE=false install --verbose` | 仍 verbose（旗标优先） |
+| 已有锁、无变更 | `Found no changes, using resolution from the lockfile` / `Using bundler <ver>` / `0:  bundler (<ver>) from <gems>/gems/bundler-<ver>/../../specifications/…` / `Using <name> <ver>` / `0:  <name> (<ver>) from <bundle>/ruby/<abi>/specifications/<name>-<ver>.gemspec` |
+| 无锁 | `Resolving dependencies because there's no lockfile` / `Using a local server, bundler won't use the CompactIndex API` 先于 `Fetching source index …` |
+
+锚点：`definition.rb:868-875`（解决原因）、`fetcher.rb:273-276`（本地服务器）、`parallel_installer.rb:18`（`#{worker}:  #{spec.name} (#{spec.version}) from #{spec.loaded_from}`）、`cli.rb:777-791`（回显）。
+
+实现要点：
+- `src/celerite/cli/commands.cr`：`--verbose` 与 `-V` 同样置 `CELERITE_VERBOSE`；新增 `env_verbose?` 读取 `BUNDLE_VERBOSE`；`print_command_echo` 拆出 `flag_verbose`，只据实际旗标渲染 `--verbose` 片段。
+- `src/celerite/config.cr:17`：`BOOL_KEYS` 增 `verbose`。
+- `src/celerite/cli/commands_install.cr`：解析前按 `lockfile_exists?` 打印原因行与本地服务器行；安装结束后按 `Using` / `0:` 打印 bundler 与各 GEM spec。
+- `assets/bridge/server.rb` + `src/celerite/bridge/client.cr`：新增 `ruby_default_dir`（`Gem.default_dir`，不受 `GEM_HOME` 影响），因为沙箱把 `GEM_HOME` 指向 `SANDBOX/gems`，而默认 gem 的 `loaded_from` 仍属 Ruby 安装目录。
+- `src/celerite/cli/commands_surface.cr`：删除 `outdated` 里拼接而成的假行（`Re-resolving … Using a local server …`），只保留已取证的本地服务器行。
+
+夹具 `fixtures/differential/install-verbose-existing-lock`：`Gemfile` = `source "file:///@INDEX_DIR@"` + `gem "json_pure"`，`command` = `install` / `install --verbose`（首跑非 verbose 以避开下载计时行）。双 profile PASS。负对照 `C:/temp/celerite-pre78` @ `2d14f19` → 0 passed / 1 failed，五条调试行全缺。
+
+已声明差异（未复现）：
+1. 全新安装路径下参考还打印 `Downloaded <name> in: 0.001s` / `Installed <name> in: 0.029s` 等计时行——数值非确定，未复现。
+2. 并行安装器的工作线程序号（如 `1:`、`3:`、`4:`）未复现：我方安装是串行的，固定打印 `0:`（与锁复用路径的参考输出一致）。
+3. `outdated` 的 `Re-resolving dependencies because …` 原因行未取 oracle，未实现。
