@@ -632,6 +632,26 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
     done < "$fixture_dir/file-absent"
   fi
 
+  # Optional `file-exists` marker: each non-empty line names a project-relative
+  # path that must EXIST on BOTH sides (e.g. a gem package the install-time
+  # app-cache refresh copies into `vendor/cache`). `file-contains` cannot
+  # express this for binary payloads and the project-tree comparison only
+  # reports missing/extra paths, not that a specific file survived. An empty
+  # marker file equals "marker not provided": no check.
+  if [ -f "$fixture_dir/file-exists" ]; then
+    while IFS= read -r rel; do
+      rel="$(printf '%s' "$rel" | tr -d '\r')"
+      [ -z "$rel" ] && continue
+      ref_exists=no
+      cel_exists=no
+      [ -e "$ref_sandbox/project/$rel" ] && ref_exists=yes
+      [ -e "$cel_sandbox/project/$rel" ] && cel_exists=yes
+      if [ "$ref_exists" != "yes" ] || [ "$cel_exists" != "yes" ]; then
+        ok=0; detail+="  file-exists violated ($rel): ref_exists=$ref_exists cel_exists=$cel_exists"$'\n'
+      fi
+    done < "$fixture_dir/file-exists"
+  fi
+
   # Optional `file-crlf` marker: each line names a project file that must keep
   # at least one CRLF and no lone LF bytes on both sides (lockfile line-ending
   # parity; reference definition.rb:428-434 preserves the on-disk style).
