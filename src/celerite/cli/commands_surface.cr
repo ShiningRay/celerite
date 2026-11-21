@@ -1352,12 +1352,53 @@ module Celerite
     # message is `Setting `key` to nil, since <description>`. The reference
     # walks `path` first (silencing `path.system`), then `path.system`
     # (silencing `path`), which is the order seen in `doctor` output.
-    private def self.doctor_settings_notices(stdout : IO, definition : Definition) : Nil
+    private def self.doctor_settings_notices(stdout : IO, stderr : IO, definition : Definition) : Nil
       config = definition.config
-      return if config["path"].to_s.empty?
-      return unless config["path.system"] == true || config["disable_shared_gems"] == false
-      stdout.puts "Setting `path.system` to nil, since path and path.system are mutually exclusive"
-      stdout.puts "Setting `path` to nil, since path and path.system are mutually exclusive"
+      # `settings/validator.rb:57-63`.
+      unless config["path"].to_s.empty?
+        if config["path.system"] == true || config["disable_shared_gems"] == false
+          stdout.puts "Setting `path.system` to nil, since path and path.system are mutually exclusive"
+          stdout.puts "Setting `path` to nil, since path and path.system are mutually exclusive"
+        end
+      end
+      # `settings/validator.rb:65-76`: the `with`/`without` rule reports the
+      # overlap through `fail!`, which prints the header plus one indented line
+      # per argument on stderr and exits 15.
+      with_groups = group_setting(config["with"])
+      without_groups = group_setting(config["without"])
+      conflicting = with_groups & without_groups
+      unless conflicting.empty?
+        stderr.puts "Setting `with` to #{symbol_list(with_groups)} failed:"
+        stderr.puts " - a group cannot be in both `with` & `without` simultaneously"
+        stderr.puts " - `without` is current set to #{symbol_list(without_groups)}"
+        stderr.puts " - the `#{conflicting.join("`, `")}` groups conflict"
+        raise InvalidOptionError.new("")
+      end
+      # `settings/validator.rb:78-83` is 4.x-only (the 2.7.2 validator has no
+      # such rule: an invalid value there falls through to the normal run).
+      unless profile_2_x?
+        value = config["default_cli_command"]
+        unless value.nil? || {"install", "cli_help"}.includes?(value.to_s)
+          stderr.puts "Setting `default_cli_command` to #{value.to_s.inspect} failed:"
+          stderr.puts " - default_cli_command must be either 'install' or 'cli_help'"
+          stderr.puts " - must be one of: install, cli_help"
+          raise InvalidOptionError.new("")
+        end
+      end
+    end
+
+    # Group settings arrive either as arrays or as the `:`-separated string form.
+    private def self.group_setting(value : Config::ConvertedValue) : Array(String)
+      case value
+      when Array  then value.map(&.to_s)
+      when String then value.split(":").reject(&.empty?)
+      else             [] of String
+      end
+    end
+
+    # `[:test]` — the shape `fail!` produces for `settings.fetch(...).to_sym`.
+    private def self.symbol_list(groups : Array(String)) : String
+      "[:#{groups.join(", :")}]"
     end
 
     def self.doctor_report(stdout : IO, stderr : IO, quiet : Bool = false, ssl : Bool = false) : Int32
@@ -1368,7 +1409,7 @@ module Celerite
       # (`:57-63`) silences the loser with an info line on stdout, and only then
       # does `Path#validate!` (settings.rb:287-297) raise; the reference
       # therefore prints both notices before the conflict report.
-      doctor_settings_notices(stdout, definition)
+      doctor_settings_notices(stdout, stderr, definition)
       # `doctor` resolves like `check` (cli/doctor.rb): it may fetch the index,
       # unlike the local-only read commands.
       lockfile = materialize_lockfile(definition, stdout)

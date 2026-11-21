@@ -39,6 +39,8 @@ module Celerite
 
     private def self.friendly_error(ex : Error, stderr : IO) : Nil
       message = ex.message || ex.class.name
+      # A rule that already printed its own report raises with an empty message.
+      return if message.empty?
       if ex.wrap?
         stderr.puts Commands.word_wrap(message, terminal_width)
       else
