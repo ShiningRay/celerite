@@ -6605,3 +6605,36 @@ PLUGIN SOURCE
 - `only` 与 `with` 同时出现、`update --group` 与 `only` 的组合未取 oracle。
 - `add` 未接入组过滤。
 - `check` 的「已满足」判定依赖请求组集合；宿主若同时缺被排除的 gem，行为未单独测量。
+
+## 2026-11-21（M7 task-98：`doctor` 的 setting 校验余下两条规则）
+
+`settings.rb:312-319` 的 `validate!` 只在 `doctor` 里跑（`cli/doctor/diagnose.rb:79`），task-96 只实现了 `path`/`path.system` 互斥；本轮补齐 `settings/validator.rb` 的另两条规则。
+
+### oracle（逐字，4.0.24；2.7.2 见「已声明差异」）
+
+| 场景 | 参考（stdout / stderr / exit） |
+|---|---|
+| `BUNDLE_WITH=test BUNDLE_WITHOUT=test doctor` | stdout 空；stderr 四行：`Setting `with` to [:test] failed:` / ` - a group cannot be in both `with` & `without` simultaneously` / ` - `without` is current set to [:test]` / ` - the `test` groups conflict`；exit **15** |
+| `BUNDLE_DEFAULT_CLI_COMMAND=nosuch doctor` | stdout 空；stderr 三行：`Setting `default_cli_command` to "nosuch" failed:` / ` - default_cli_command must be either 'install' or 'cli_help'` / ` - must be one of: install, cli_help`；exit **15** |
+| 只设 `BUNDLE_WITH=test` | 无上述块，走正常 `doctor` 流程 |
+| `BUNDLE_DEFAULT_CLI_COMMAND=install` | 无报错，走正常流程 |
+
+无 Gemfile 时两条规则同样先触发（exit 15），说明校验发生在锁定/解析之前。`fail!` 的形态是「表头 + 每个实参一行缩进」：`GroupRule` 传了两个实参（另一侧集合、冲突组），`default_cli_command` 传了规则描述与 `must be one of:` 两段，所以分别是四行与三行。
+
+### 实现
+
+- `src/celerite/cli/commands_surface.cr:1354-1402` `doctor_settings_notices(stdout, stderr, definition)`：保留 path 互斥的通知行，追加 `with`/`without` 交集检查与（4.x 专属）`default_cli_command` 值域检查；命中时先按参考逐行打印到 stderr，再 `raise InvalidOptionError.new("")` 取得 exit 15。新增 `group_setting`（数组或 `:` 分隔字符串）与 `symbol_list`（`[:test]` 形态）。
+- `src/celerite/cli.cr:41-46` `friendly_error`：消息为空时不再补打一行空行——规则自身已输出完整块。
+
+### 夹具与证据
+
+- `fixtures/differential/doctor-without-conflict/`（`env` `BUNDLE_WITH=test` + `BUNDLE_WITHOUT=test`，`stderr-contains` 三行；stdout 空即精确比较）与 `doctor-default-cli-command/`（`env` `BUNDLE_DEFAULT_CLI_COMMAND=nosuch`，`stderr-contains` 三行；带 `deferred-2.7.2` 说明）。
+- 差分：4.0.24 **11 passed / 0 failed**，2.7.2 **10 passed / 0 failed / 1 skipped**（`doctor-default-cli-command`）。
+- `spec/m7_doctor_settings_spec.cr` 由 3 例扩到 6 例（新增冲突、只设 `with` 的反例、非法 `default_cli_command`）；`crystal spec spec/m7_doctor_settings_spec.cr spec/m7_doctor_diagnose_spec.cr spec/m7_only_group_spec.cr spec/m7_install_without_spec.cr` → **19 examples, 0 failures**，`crystal spec` 退出码 **0**。
+- 负对照 `C:/temp/celerite-pre98` @ `4673749`：两夹具 **0 passed / 2 failed**（`doctor-without-conflict` 打印 `Fetching source index …` / `Resolving dependencies...` 且缺三行；`doctor-default-cli-command` 缺三行）。
+
+### 已声明差异
+
+- 2.7.2 的 `settings/validator.rb` 只有 `path` 与 `with`/`without` 两条规则，没有 `default_cli_command` 规则：同一取值在 2.7.2 被忽略并走正常流程，故该夹具 `deferred-2.7.2`。
+- 只覆盖 `with`/`without` 的「交集非空」形态；`with` 或 `without` 单独取值不校验（参考同）。
+- 校验时机沿用 task-96：`doctor` 进入解析前；`install`/`check`/`config set` 不跑 `validate!`（参考同）。
