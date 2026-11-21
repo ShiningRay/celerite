@@ -241,6 +241,14 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
     done
   fi
 
+  # Sibling trees, if any: fixtures that need a path source OUTSIDE the
+  # project (e.g. `gem "pgem", path: "../pgem"`). `sibling/<rel>` lands at
+  # `<sandbox>/<rel>`, next to the project dir on both sides.
+  if [ -d "$fixture_dir/sibling" ]; then
+    cp -r "$fixture_dir/sibling/." "$ref_sandbox/"
+    cp -r "$fixture_dir/sibling/." "$cel_sandbox/"
+  fi
+
   # Bundle-path preset, if any: some fixtures need gems that are already
   # "installed" (e.g. `check` with satisfied dependencies). Each side gets its
   # own BUNDLE_PATH (see the run block below), so seed both from the same

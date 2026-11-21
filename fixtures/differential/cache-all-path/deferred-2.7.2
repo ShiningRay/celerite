@@ -1,0 +1,1 @@
+2.7.2 cache pins BUNDLE_CACHE_ALL: "false" in the local config and never copies path sources (cli/cache.rb remembers the options; source/path.rb:86 then returns early), so there is no cache tree to assert on that profile.
