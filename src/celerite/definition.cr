@@ -285,6 +285,14 @@ module Celerite
         section = data.sources.find { |candidate| candidate.specs.any? { |spec| spec.name == dep.name } }
         lock_label = locked_source_label(section)
         next if lock_label == gemfile_label
+        # A dependency served by the Gemfile's default rubygems source is locked
+        # in the plain `GEM` section, whose label is "no specified source"; the
+        # bridge may still attach that default source to the dependency, so the
+        # comparison has to fold it back (reference compares `Source` objects,
+        # and `file://C:/x` / `file:///C:/x` normalise to the same identifier).
+        if lock_label == "no specified source" && default_rubygems_source?(dep.source, data)
+          next
+        end
 
         changed << "* #{dep.name} from `#{lock_label}` to `#{gemfile_label}`"
       end
@@ -361,6 +369,21 @@ module Celerite
       section.option(key).as?(String)
     end
 
+    # True when the dependency's Gemfile source is one of the remote sources the
+    # lockfile lists in its default `GEM` section(s). Only the equality verdict
+    # uses this; the lockfile keeps its own spelling.
+    private def default_rubygems_source?(source : Bridge::EvaluatedSource?, data : Lockfile::Data) : Bool
+      return false unless source
+      return false if source.type == "Git" || source.type == "Path" || source.type == "Plugin"
+      remote = source.remote
+      return false unless remote
+      target = normalize_remote(remote)
+      data.sources
+        .select { |candidate| candidate.type == "GEM" }
+        .flat_map { |candidate| candidate.remotes.map { |candidate_remote| normalize_remote(candidate_remote) } }
+        .includes?(target)
+    end
+
     private def git_label(remote : String?, branch : String?, tag : String?, ref : String?, glob : String?,
                           submodules : String? = nil) : String
       label = remote || ""
@@ -389,7 +412,23 @@ module Celerite
     end
 
     private def trim_remote(value : String) : String
-      value.ends_with?("/") ? value[0...-1] : value
+      normalize_remote(value)
+    end
+
+    # `file://C:/x` and `file:///C:/x` denote the same local directory (task-19
+    # made the resolver accept both), so the frozen source comparison must not
+    # distinguish their spellings: only the equality verdict changes; the
+    # written lockfile still carries the original string. The bridge also
+    # round-trips the drive colon away (`C/Users/...`), which is folded back
+    # here so a `file://` default source compares equal.
+    private def normalize_remote(value : String) : String
+      return value unless value.downcase.starts_with?("file:")
+      body = value.sub(/\Afile:\/\//i, "")
+      body = body.sub(/\A\/+/, "")
+      body = body.sub(/\/+\z/, "")
+      body.sub(/\A([A-Za-z])\//) { "#{$1}:/" }
+    rescue
+      value
     end
 
     # `Definition#converge_sources` (definition.rb:152 and `:908`) compares the
