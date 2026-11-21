@@ -78,11 +78,15 @@ describe "M7(6) Gemfile-declared plugins" do
         code.should eq(7)
         out.should contain("Fetching source index from #{remote}")
         err.should contain("Could not find gem 'bundler-source-psource' in rubygems repository")
-        # `Plugin.gemfile_install` resolves remotely only, so the reference
-        # `Source::Rubygems#to_s` includes the cached branch
-        # (source/rubygems.rb:122-136; task-43 oracle).
-        err.should contain("gem-index/,")
-        err.should contain("cached gems or installed locally.")
+        # Gemfile-declared `type:` sources go through the normal install path,
+        # so the description is the plain "rubygems repository <remote> or
+        # installed locally." form (source/rubygems.rb:122-136 with only
+        # `@allow_local`); the "cached gems or installed locally" wording
+        # belongs to `plugin install --source` (task-47) and must not be
+        # asserted here. Verified against 4.0.24 on this Gemfile and index, and
+        # by the passing `plugin-gemfile-missing` fixture (task-81).
+        err.should contain("gem-index/ or")
+        err.should contain("installed locally.")
       end
     end
   end
