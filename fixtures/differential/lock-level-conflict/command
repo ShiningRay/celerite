@@ -1,0 +1,1 @@
+lock --patch --minor --update json_pure
