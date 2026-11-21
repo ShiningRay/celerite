@@ -432,15 +432,15 @@ module Celerite
         # `fetcher.rb:273-276` notes the local-server shortcut for `file://`
         # remotes. Both are `Bundler.ui.debug`, so `--verbose`/`BUNDLE_VERBOSE`
         # is the only way to see them.
-        verbose_output = ENV["CELERITE_VERBOSE"]? == "1"
+        verbose_output = Commands.verbose_debug?
         if verbose_output
-          if definition.lockfile_exists?
-            stdout.puts "Found no changes, using resolution from the lockfile"
-          else
-            stdout.puts "Resolving dependencies because there's no lockfile"
-            if (remote = resolution.primary_remote).starts_with?("file://")
-              stdout.puts "Using a local server, bundler won't use the CompactIndex API"
-            end
+          Commands.print_debug_reason(stdout, Commands.debug_reason_for(definition, resolution))
+          # The local-server note comes from the fetcher (`fetcher.rb:273-276`),
+          # so it only appears when an index fetch is unavoidable: not for the
+          # lockfile reuse path, but yes when an empty CHECKSUMS entry forces a
+          # refresh (`checksums_need_refresh?`). Measured both ways.
+          if !reuse || checksum_refresh
+            Commands.debug_local_server(stdout, resolution.primary_remote)
           end
         end
         specs = resolution.resolve!(reuse, verify_locked_compat: verify_locked_compat)

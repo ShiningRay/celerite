@@ -241,6 +241,19 @@ module Celerite
         if code = PluginHooks.run(bridge, definition, config, "before-install-all", stdout, stderr)
           return code
         end
+        # `definition.rb:866-902`: an unlocked update always re-resolves, and the
+        # debug reason names the gems for a scoped selection and stays a bare
+        # trailing space for `--all` (`@gems_to_unlock` empty), which Thor then
+        # prints without a newline so the local-server note shares the line.
+        if Commands.verbose_debug?
+          reason = if gems.empty?
+                     "Re-resolving dependencies because bundler is unlocking "
+                   else
+                     "Re-resolving dependencies because bundler is unlocking gems: (#{gems.sort.join(", ")})"
+                   end
+          Commands.print_debug_reason(stdout, reason)
+          Commands.debug_local_server(stdout, resolution.primary_remote)
+        end
         specs = resolution.resolve!
 
         # Reference prints "Resolving dependencies..." twice whenever a scoped
@@ -2783,20 +2796,11 @@ module Celerite
           return 15
         end
         verbose = ENV["CELERITE_VERBOSE"]? == "1"
-        if verbose
-          # The `Running ...` echo is emitted once by `Commands.dispatch`
-          # (`print_command_echo`); only the reference debug lines are printed
-          # here, so the two never duplicate. `fetcher.rb:273-276` is the only
-          # one measured for this command; the resolve-reason lines live in
-          # `definition.rb:868-875` and are not reproduced without an oracle.
-          primary = resolution.primary_remote
-          if primary.starts_with?("file://")
-            stdout.puts "Using a local server, bundler won't use the CompactIndex API"
-          end
-        end
-        # Pinned by the `outdated-parseable` differential: parseable mode
-        # sends resolution progress to stderr; table mode writes it to stdout.
-        # Local (cache-only) resolution prints Resolving but no index fetch.
+        # The `Running ...` echo is emitted once by `Commands.dispatch`
+        # (`print_command_echo`). The reference's only debug output here is the
+        # resolve-need reason, which `fetcher.rb:273-276` then merges with the
+        # local-server note; it is printed just before `resolve!` below
+        # (`definition.rb:866-902`).
         resolution.progress = local_flag && !parseable ? IO::Memory.new : (parseable ? stderr : stdout)
         # Option parsing for outdated selection flags (reference
         # `Bundler::CLI::Outdated#run`).
@@ -2831,6 +2835,13 @@ module Celerite
               raise GemNotFoundError.new("Could not find gem '#{gem_name}'.")
             end
           end
+        end
+        # `outdated` re-resolves without naming gems (`cli/outdated.rb:45-65`),
+        # so the reference's reason keeps the empty unlocking name and its
+        # trailing space, merging with the local-server note.
+        if Commands.verbose_debug?
+          Commands.print_debug_reason(stdout, "Re-resolving dependencies because bundler is unlocking ")
+          Commands.debug_local_server(stdout, resolution.primary_remote)
         end
         specs = resolution.resolve!
         cooldown_days = cooldown_flag_value(rest)

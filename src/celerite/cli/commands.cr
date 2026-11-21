@@ -251,6 +251,46 @@ module Celerite
       end
     end
 
+    # `Bundler.ui.debug` reaches Thor's `say`, whose `force_new_line` default is
+    # `(message.to_s !~ /( |\t)\Z/)` (`ui/shell.rb:53-57`, `shell/basic.rb#say`):
+    # a reason that ends with a space is printed WITHOUT a newline, so the next
+    # debug line continues on the same line. `definition.rb:886-902` returns
+    # exactly that shape when `@gems_to_unlock`/`@sources_to_unlock` are empty
+    # and only ruby is locked ("…bundler is unlocking ").
+    def self.print_debug_reason(stdout : IO, reason : String) : Nil
+      if reason.ends_with?(' ') || reason.ends_with?('\t')
+        stdout.print(reason)
+      else
+        stdout.puts(reason)
+      end
+    end
+
+    # Set by `--verbose`/`-V` or `BUNDLE_VERBOSE` in `CLI.run` before dispatch.
+    def self.verbose_debug? : Bool
+      ENV["CELERITE_VERBOSE"]? == "1"
+    end
+
+    # `fetcher.rb:273-276`: `file://` remotes never use the compact index.
+    def self.debug_local_server(stdout : IO, remote : String?) : Nil
+      return unless remote.try(&.starts_with?("file://"))
+
+      stdout.puts "Using a local server, bundler won't use the CompactIndex API"
+    end
+
+    # `definition.rb:866-876` / `:906-923`: which reason line the debug output
+    # carries. Only the shapes the oracle confirmed are produced here; the
+    # remaining `lockfile_changed_reason` conditions have no measured trigger.
+    def self.debug_reason_for(definition : Definition, resolution : Resolution) : String
+      unless definition.lockfile_exists?
+        return "Resolving dependencies because there's no lockfile"
+      end
+      if definition.lockfile_matches_dependencies?(resolution.evaluation.dependencies)
+        "Found no changes, using resolution from the lockfile"
+      else
+        "Found changes from the lockfile, re-resolving dependencies because the dependencies in your gemfile changed"
+      end
+    end
+
     private def self.dash_command_map : Hash(String, String)
       return DASH_COMMAND_MAP_4_X unless profile_2_x?
 
@@ -1490,6 +1530,10 @@ module Celerite
                    resolution = Resolution.new(definition, false)
                    begin
                      resolution.progress = stdout
+                     if ENV["CELERITE_VERBOSE"]? == "1"
+                       print_debug_reason(stdout, debug_reason_for(definition, resolution))
+                       debug_local_server(stdout, resolution.primary_remote)
+                     end
                      resolution.resolve!
                      data = resolution.generated_lockfile
                      generated_text = data.to_lock
