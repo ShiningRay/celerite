@@ -1583,19 +1583,35 @@ module Celerite
       # `PATH` section whose gemspecs drifted (or lost its spec rows) heals
       # here, announces the resolve, and `cli/check.rb:33` writes the refreshed
       # lock unless `--dry-run`.
+      # Only a genuine drift announces the resolve: a consistent `PATH` section
+      # keeps the plain satisfied transcript and leaves the lock byte-identical.
       path_heal_text : String? = nil
-      if !config.frozen? && lockfile.sources.any? { |source| source.type == "PATH" }
-        stdout.puts "Resolving dependencies..."
-        heal = Resolution.new(definition, false)
-        begin
-          heal.resolve!
-          path_heal_text = heal.generated_lockfile.to_lock
-        rescue ex : Error
-          # A path source that cannot be read keeps the pre-heal behavior (the
-          # unresolved/missing probes below report it).
-          path_heal_text = nil
-        ensure
-          heal.close
+      path_sections = lockfile.sources.select { |source| source.type == "PATH" }
+      unless config.frozen? || path_sections.empty?
+        drift = path_sections.any? { |section| section.specs.empty? }
+        unless drift
+          probe = Resolution.new(definition, false)
+          begin
+            drift = probe.path_specs_changed?
+          rescue
+            drift = false
+          ensure
+            probe.close
+          end
+        end
+        if drift
+          stdout.puts "Resolving dependencies..."
+          heal = Resolution.new(definition, false)
+          begin
+            heal.resolve!
+            path_heal_text = heal.generated_lockfile.to_lock
+          rescue ex : Error
+            # A path source that cannot be read keeps the pre-heal behavior (the
+            # unresolved/missing probes below report it).
+            path_heal_text = nil
+          ensure
+            heal.close
+          end
         end
       end
       if path_heal_text.nil? && unresolved_dep(definition, lockfile)
