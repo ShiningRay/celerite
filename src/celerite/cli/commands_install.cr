@@ -461,12 +461,13 @@ module Celerite
             installer.installed?(spec.name, spec.version.to_s, spec.platform)
           end
         end
-        # `--local`/`--prefer-local` can pick a gem that is already installed in
-        # this project's GEM_HOME; the reference then installs nothing and
-        # prints no Fetching line for it.
-        if resolution.local_only
-          pending = pending.reject { |spec| resolution.local_installed_full_names.includes?(spec.full_name) }
-        end
+        # `--local` restricts the SOURCES, not the install step: the reference
+        # still installs a cached/local gem into the bundle path
+        # (`cli/install.rb:33` `Installer#run` -> `install(spec)`; the skip is
+        # `installed?(spec)`, which only counts specs already in the bundle).
+        # Filtering by `local_installed_full_names` here wrongly treated a host
+        # copy (same name+version, different GEM_HOME) as installed and printed
+        # no `Installing` line at all, so the bundle stayed empty.
 
         # Default gems come from the interpreter, not from the declared
         # sources. The reference installs nothing for them but warns that they
