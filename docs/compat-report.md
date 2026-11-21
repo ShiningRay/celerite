@@ -6167,3 +6167,45 @@ Ruby 侧直接取证：`Gem.configuration[:http_proxy]` 在「gemrc + env」下�
 - gemrc 的 `https_proxy`、`no_proxy`（除 `:http_proxy: :no_proxy` 这一特例）未对齐；参考只关心 `:http_proxy` 一个键。
 - 系统级 gemrc（`Gem::ConfigFile::SYSTEM_WIDE_CONFIG_FILE`）未读。
 - `~/.gemrc` 的 `:sources` 参考确实不读（全库仅 `plugin.rb:8` 文档串），不列为缺口。
+
+## 2026-11-21（M7 task-86：上游 lockfile 套件第三次复采）
+
+### 采集
+
+- 命令：`CELERITE_SKIP_TEST_DEPS=1 bash script/upstream-specs`（`C:\msys64\usr\bin\bash.exe`；`TMPDIR=/c/temp`；PATH 前置 `C:\msys64\usr\bin;C:\msys64\ucrt64\bin;C:\Ruby40-x64\bin;`；基线 HEAD `710e06e`；先 `crystal build src/cli.cr -o bin/celerite.exe`，EXIT 0）。
+- 墙上时间 **326 s**，rspec `duration=320.7532621`，seed `39771`，退出码 1。
+- 产物：`.upstream-specs/upstream-lockfile-v4.0.24-20261121T041939Z.md`（17799 B）、`.upstream-specs/rspec-output.json`（377781 B，mtime 2026-11-21 12:25:04）。
+- `summary`：`example_count=64`、`failure_count=53`、`pending_count=0`、`errors_outside_of_examples_count=0` ⇒ **11 passed**。
+
+### 分桶（脚本规则重算，`script/upstream-specs:194-235`）
+
+| 桶 | 数量 |
+|---|---|
+| `env:artifice-unreachable` | 38 |
+| `env:low-il-shm` | 9 |
+| `fixture:fetch-failed` | 6 |
+| `env:network-policy` | 0 |
+| `env:test-deps-skipped` | 0 |
+| `fixture:missing-gem-files` | 0 |
+| `product:candidates` | 0 |
+
+### 与 task-66 对比
+
+task-66：64 / 53 / 10 passed，artifice 38、low-il 9、fetch 6、product 0。本轮：64 / 53 / 11 passed，分桶完全相同。
+
+- 逐 example 按 id 求差：**`CHANGES=0`** —— 没有任何用例 fail→pass 或 pass→fail；分桶内 id 集合逐桶相同（脚本断言 `IDENTICAL_BUCKETS=true`）。
+- 因此 task-19（canonical `file://`）、task-41/65（default gem 判据）、task-58（lock 选项）、task-63（binstubs 模板）、task-64（platform 变体保留）、task-67（check 重解析）、task-84（`cache_all`）、task-85（gemrc 代理）**均未改变该套件的任何用例结果**。这与套件性质一致：它驱动 `bundler/tmp/...` 下的上游夹具与 `gem.repo2`/`gem.repo4` 这类伪造源，命中环境护栏（artifice / low-IL）而非我们改动的路径。
+
+### 6 条 `fixture:fetch-failed` 的逐条定性
+
+| example | 失败原文首行 | 定性 |
+|---|---|---|
+| `[1:2]`、`[1:3]`、`[1:5]` | `Could not verify the SSL certificate for https://rubygems.org/.`（随后 `Fetching bundler 1.8.2`） | **环境**：锁文件 `BUNDLED WITH 1.8.2` 时按 task-57 语义去装 `bundler 1.8.2`，沙箱无 CA。非产品。 |
+| `[1:51]`、`[1:56:1:1]`、`[1:57:1:1]` | `expected: "GEM … specs:\n    myrack (0.9.1)\n    myrack_middleware (1.0)…"`，`got:` 少 `myrack (0.9.1)` | **产品候选（非新增）**：`missing dependent specs auto-heals` 族要求锁里保留未解析出的依赖行，我方只写解析结果。task-66 时同样存在，本轮状态未变。 |
+| 分桶失真 | — | 这三条命中 `fixture:fetch-failed` 仅因记录文本含 `Fetching source index …`；`script/upstream-specs` 把「文本含 `Fetching `」一律归入夹具桶，对这类锁正文断言有系统性误分。**未改脚本**（本轮 docs-only）。 |
+
+### 结论
+
+- 基线仍是 **64 examples / 53 failures / 11 passed**，与 task-66 逐条一致；本轮 8 项产品改动对上游 lockfile 套件零影响。
+- 真正的产品候选仍只有 `missing dependent specs auto-heals` 一族（3 条），被分桶规则掩藏在 `fixture:fetch-failed` 里；若要推进 L161，应先修分桶（把「含 `Fetching `」限定为命令失败而非任意文本），再单独处理该族。
+- 2.7.2 upstream profile 无 checkout，不可执行（沿用既有说明，本轮未尝试）。
