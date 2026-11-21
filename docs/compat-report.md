@@ -6003,3 +6003,32 @@ D2：参考 `cli/add.rb:41-52` 四条互斥校验（exit 15，Gemfile 不动）�
 已声明差异：`--github owner/repo --skip-install` 参考 exit 0 且不 clone，我方写完 `github: "rails/thor"` 后在 relock 阶段 clone 失败（exit 11）——写入行逐字一致，退出码不一致，未加差分夹具（仅 spec 层面覆盖 suffix 渲染）；D1 的 `--version` 与 `--path`/`--git` 组合未逐条 oracle。
 
 已知历史红：`spec/m7_gemfile_plugins_spec.cr` 的 `gem-index/,` 断言在 `9bda5f5` 上即失败（`git stash` 复现，7 examples/1 failure），与本任务无关，未修。
+
+## 2026-11-21（M7 task-81：`add` 失败后的 Gemfile 回滚、多余的重解析行、一条过期 spec）
+
+参考 `Injector` 是「先解析/安装注入的依赖，成功后才 append Gemfile」，所以任何失败路径退出时 Gemfile 逐字不变。我方因为锁重生成需要新依赖，先写后解析，于是失败时把注入行留在文件里。现在在 append 之后的所有失败路径（`--skip-install` 的重锁、普通安装）都恢复调用前的字节：
+
+| 场景（`file://` 索引） | 修前我方 | 参考 | 修后我方 |
+| --- | --- | --- | --- |
+| `add nosuchgem --skip-install` | exit 7，stdout 多一行 `Resolving dependencies...`，Gemfile 残留 `gem "nosuchgem"` | exit 7，stdout 仅 `Fetching source index …`，Gemfile 不变 | 逐字一致 |
+| `add json_pure --version bogus --skip-install` | exit 15，Gemfile 不变（本就正确） | 同 | 一致 |
+| `add json_pure --path vendor/nope --skip-install` | exit 13，Gemfile 不变 | 同 | 一致 |
+| `add json_pure --skip-install`（正常路径） | 一行 `Resolving dependencies...` | 同 | 一致（未回归） |
+
+实现（`src/celerite/cli/commands_surface.cr`）：
+- `add()` 在 `Bridge::Client` 建立前保存 `gemfile_backup = File.read(gemfile_path)`，`append_gemfile` 后置 `gemfile_appended`；`--skip-install` 的重锁与末尾 `install(...)` 都在 `rescue` 中恢复备份后重抛。
+- `latest_requirement_for` 的 `Resolving dependencies...` 从「取索引后无条件打印」改为「索引对该 gem 有答案（`versions` 非空）才打印」，并把显式 `--version` 分支的打印补上（否则 `add-version-requirement` 丢行）。解析顺序仍是 `Fetching source index …` → `Resolving dependencies...`。
+
+A（过期 spec，非产品缺陷）：`spec/m7_gemfile_plugins_spec.cr` 原断言 `gem-index/,` + `cached gems or installed locally.`，那是 `plugin install --source` 路径的措辞（task-47）。Gemfile 里声明 `type:` 型 source 走普通安装路径，参考实测逐字为：
+
+```
+Could not find gem 'bundler-source-psource' in rubygems repository
+file:///<abs>/fixtures/gem-index/ or
+installed locally.
+```
+
+（同 Gemfile、同索引，4.0.24 实测；差分夹具 `plugin-gemfile-missing` 一直是这个形态。）已把期望改为 `gem-index/ or` + `installed locally.` 并改写注释，产品未动。
+
+C（只记录，不修）：`add json_pure --github rails/thor --skip-install`，参考先 `Fetching https://github.com/rails/thor.git` 再 `Could not find gem 'json_pure' in https://github.com/rails/thor.git (at <rev>).`，Gemfile 不变；我方先查 rubygems 索引并报 `Could not find gem 'json_pure (~> 2.8)' …`，Gemfile 现在也会回滚（B 的修复顺带覆盖）。这是「先选源再选版本」与「先选版本再选源」的顺序差异，属 C 类，仅记录。
+
+夹具：`add-failure-keeps-gemfile`（`command` = `add nosuchgem --skip-install`，`file-equals` 断言 Gemfile 与初始一致，`stderr-contains` 断言 exit 7 的文案）。spec：`spec/m7_add_failure_rollback_spec.cr` 3 例（缺 gem、坏 requirement、`--path` 不存在）。
