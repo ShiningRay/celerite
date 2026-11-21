@@ -7039,3 +7039,32 @@ exit 7、stderr 为 installer 形态、stdout 无 `Installing Bundler`/`Fetching
 
 未新增差分夹具：task-101 已证实该形状在 harness 沙箱里会 no-op（两侧退出 0、stdout 空），
 故用 spec + 手 oracle 覆盖。
+
+## 2026-11-21（M7 task-107：`install --local` 只在真正解析时打 `Resolving dependencies...`）
+
+参考在锁的 `PLATFORMS` 已覆盖本机平台、且 spec 全部命中 bundle/`vendor/cache` 时，直接 materialize，
+不打 `Resolving dependencies...`；只有锁仍需解析（只列 `ruby` 平台、或平台不满足）时才打这一行。
+我方此前在 `--local` 可 materialize 分支无条件打印，多出一行。
+
+| 形状（`fixtures/gem-index-locked-deps`，`gem "net-smtp"`，锁含 `net-protocol (0.2.2)`+边） | 参考 stdout | 修前我方 |
+|---|---|---|
+| 锁 `PLATFORMS x64-mingw-ucrt` + `vendor/cache` 齐备 + `--local` | **5 行**，首行 `Installing net-protocol 0.2.2`，无 `Resolving` | 6 行，首行多 `Resolving dependencies...` |
+| 同上 + `BUNDLE_JOBS=1` | 5 行 | 6 行 |
+| 锁只列 `ruby` + 缓存齐备 + `--local` | 首行 `Resolving dependencies...` 后安装 | 同（本来就打） |
+| 锁 `x64-mingw-ucrt` + 无缓存 + `--local` | `Resolving dependencies...`；stderr `Could not find net-smtp-0.5.0 in locally installed gems` | stdout 空；stderr 同（task-101 既有形状，未改） |
+
+修后我方与参考逐字一致（5 行，`EXIT=0`）：`Installing net-protocol 0.2.2` / `Installing net-smtp 0.5.0` /
+`Updating files in vendor/cache` / `Bundle complete! 1 Gemfile dependency, 2 gems now installed.` /
+`` Bundled gems are installed into `./h/b` ``。
+
+实现：`src/celerite/resolution.cr` `resolve!` 的 `--local` materialize 分支——打印判据从
+「`available`」改为「`available && !platform_ready`」，`platform_ready` 表示锁里存在非 `ruby`
+且满足本机平台的条目（`Gem::Platform#match?`，解析失败按不满足）；缺包形状仍不打印（保持 task-101 行为）。
+
+测试：`spec/m7_local_install_quiet_spec.cr` 3 例（5 行且首行 `Installing`、无 `Resolving`；`ruby` 平台仍打
+`Resolving`；`--local` 不出现远端 `Fetching source index`）。负对照 `C:/temp/celerite-pre107`@`b6259bb`
+在同一沙箱给出 6 行、首行 `Resolving dependencies...`。
+
+已声明差异：① 「锁 `ruby` 平台 + 缓存齐备」两侧都会打 `Resolving`，但安装行顺序随并行 worker 变；
+② 无缓存/陈旧锁形状参考打 `Resolving` 而我方不打（task-101 范围，未动）；③ 非 `--local` 形状参考在
+`Fetching source index` 后另有 `Resolving`，我方无（既有差异）。
