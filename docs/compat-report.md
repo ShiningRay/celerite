@@ -7330,3 +7330,43 @@ task-91 状态 `failed`（产品桶）→ task-114 状态 `passed`。这是 task
 - **宿主 gem 可见形态下的多行 `Resolving dependencies...`**：当 `HOME` 指向真实用户目录（宿主已装 `net-smtp`/`net-protocol`）时，我等打印 3–4 行，参考 2 行。该形态依赖宿主安装状态，未做成夹具（沙箱隔离 `HOME`/`GEM_HOME` 后无法复现），仅记录。
 - 自愈只覆盖 GEM 源的锁定行；PATH/GIT 行的依赖边未纳入本轮的 `stale_locked_dependency_full_names` 判定。
 - `lock` 命令仍不补依赖边（task-94 已声明，本轮未改）。
+
+## 2026-11-22（M7 task-116：CHECKSUMS 缺行时补回 `Resolving dependencies...`）
+
+任务书把触发形态写作「空 CHECKSUMS 条目」，实测证伪：把 `sha256=<hex>` 删成空值后，参考 4.0.24 **同样不打印** `Resolving dependencies...`，两侧 stdout 逐字节一致、无差异；真正的分歧出现在 CHECKSUMS 段**整行缺失**（只剩 `bundler (…)`）时——参考会真解析并打印该行，我方缺。首辅复跑确认后裁定夹具取「缺行」形态（`fixtures/differential/checksums-refresh-cache-deleted/`）。
+
+### oracle 表（4.0.24，offline `fixtures/gem-index`，缓存包已删）
+
+| 形态 | 锁 CHECKSUMS 段 | 参考 stdout | 修复前我方 stdout |
+| --- | --- | --- | --- |
+| 空值 | `bundler (4.0.24)` + `json_pure (2.8.1)`（均无 sha） | 3 行，**无** `Resolving dependencies...` | 3 行，同参考（无差异） |
+| 缺行 | 只有 `bundler (4.0.24)`，无 `json_pure` 行 | 4 行，**有** `Resolving dependencies...` | 4 行，**缺**该行 |
+
+落锁：空值形态参考把 bundler 的 sha 补回、`json_pure (2.8.1)` 仍留空；缺行形态两侧都补回**裸** `json_pure (2.8.1)` 行。
+
+### 机制（参考锚点）
+
+- `definition.rb:190-203` `setup_domain!`：`install_needed? || @locked_spec_with_empty_checksums` 为真才 `sources.remote!`——两种形态都会去读索引，故两侧都打印 `Fetching source index …`。
+- 是否打印 `Resolving dependencies...` 由 `definition.rb:626-628 install_needed? = resolve_needed? || missing_specs?` → `:647-649 resolve_needed?` → `:630-645 something_changed?` 决定：
+  - `:641` 的 `@locked_spec_with_missing_checksums` 无条件参与判定，故**缺行**形态必然 `resolve_needed?`，`:342-363 resolve` 走 `start_resolution`，由 `resolver.rb:34 Bundler.ui.info "Resolving dependencies..."` 打印。
+  - `:642` 走 `:651-659 empty_checksums_actionable?`，该判定读 `sources.local_mode?`，而求值时机在 `Definition#initialize`/`something_changed?`，此时 `setup_domain!` 的 `remote!` 尚未执行、仍是 local，故**空值**形态为 false → `no_resolve_needed?` 命中 → 只 debug 一句 `Found no changes, using resolution from the lockfile`，不打印该行。
+- 实测（`install --verbose`）两种形态的 reason 分别为 `… your lockfile is missing a CHECKSUMS entry for "json_pure"` 与 `Found no changes, using resolution from the lockfile`，与上述路径一致。
+- `lockfile_parser.rb:259-288` 对缺行登记 store 值 nil ⇒ `checksum.rb:204-206 missing?` 为真；空值则 `checksum.rb:207-212 empty?` 为真。
+
+### 实现
+
+- `src/celerite/definition.cr:531-572`：新增 `enum ChecksumsRefreshReason { Missing, Empty }`，`checksums_need_refresh?` 由 `Bool` 改为 `ChecksumsRefreshReason?`，按成因返回 `Missing` / `Empty` / `nil`（原先两种成因被合成一个布尔，调用方无法区分，故只能一并静默）。
+- `src/celerite/cli/commands_install.cr:369`、`:376`：仅在**成因是 Empty 且 profile 非 2.x** 时抑制 `resolution.show_resolving`；缺行形态照常打印，与参考对齐。
+- `src/celerite/cli/commands.cr:2921`：`lock` 侧只关心「是否需要刷新」，改判 `.nil?`，行为不变。
+
+### 证据
+
+- `crystal spec spec/m7_checksums_trigger_spec.cr` → 8 examples, 0 failures（新增三例：缺行 ⇒ stdout 含 `Resolving dependencies...` 且回填 sha；空值 ⇒ 不含该行；`Missing`/`Empty` 分类双向钉住，防过度打印回归）。
+- 新夹具 `fixtures/differential/checksums-refresh-cache-deleted`（预置「缺行锁 + bundle 内无 `cache/*.gem`」，单条 `install`）双 profile PASS：4.0.24 与 2.7.2 各 `1 passed, 0 failed, 0 skipped`；stdout 除沙箱路径外逐字一致，落锁由 `file-equals-4.0.24` / `file-equals-2.7.2` 钉住。
+- 负对照 `C:/temp/celerite-pre116` @ `ff648c8`：4.0.24 `FAIL`（`stdout differs: 2d1 < Resolving dependencies...`，`0 passed, 1 failed, 0 skipped`）；2.7.2 `PASS`——2.7.2 本来就打印该行，故该夹具只在 4.0.24 上区分新旧二进制。
+
+### 已声明差异（仍未对齐）
+
+- **夹具用预置初态替代中间步骤**：harness 只能表达夹具初始文件树加命令序列，无法表达「先 install、再改锁、再删缓存」的中间态；故夹具预置「CHECKSUMS 缺行的锁 + 无缓存包」，等价于首辅步骤 ②③ 之后的机器状态（该形态下 `missing_specs?` 仍为 false，缓存包不参与判定）。
+- **`file://` 索引不给 `json_pure` 写 digest**：两种 profile 的落锁都只补回裸行，与 HTTP compact index 下会写 `sha256=` 的形态不同；两侧一致，差分仍成立。
+- **空值形态在 2.7.2 上未实测**：4.0.24 靠 `empty_checksums_actionable?`（`:651-659`）把空值形态挡在解析之外，而 2.7.2 的 `definition.rb:599-600` 把 `@locked_spec_with_empty_checksums` 直接并入 `resolve_needed?`，预计会真解析并打印该行；我方抑制逻辑也只作用于非 2.x（`commands_install.cr:376`），两侧应仍一致，但本轮未做成夹具，标未验证。
