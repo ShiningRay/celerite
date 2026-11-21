@@ -2738,6 +2738,15 @@ module Celerite
       end
     end
 
+    # `definition.rb:850-857` adds the current platform before resolving, so a
+    # lockfile whose `PLATFORMS` lacks the local one is never a no-op: the
+    # reference fetches the index, resolves and rewrites the list (measured on
+    # 4.0.24 and 2.7.2 with a lockfile that lists only `ruby`).
+    private def self.lockfile_platforms_cover_local?(platforms : Array(String)) : Bool
+      local = Gem::Platform.local.to_s
+      platforms.includes?(local)
+    end
+
     private def self.run_lock(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       if rest.includes?("--frozen")
         bundle_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
@@ -2849,7 +2858,7 @@ module Celerite
          !rest.includes?("--add-platform") && !rest.includes?("--remove-platform") &&
          !definition.dependency_sources_changed?(resolution.evaluation.dependencies, resolution.evaluation.sources) &&
          !resolution.path_specs_changed? &&
-         definition.lockfile_exists? && definition.lockfile_matches_dependencies?(resolution.evaluation.dependencies)
+         definition.lockfile_exists? && definition.lockfile_matches_dependencies?(resolution.evaluation.dependencies) && lockfile_platforms_cover_local?(definition.lockfile!.platforms)
         resolution.close
         text = with_profile_indent(definition.lockfile!.to_lock)
         # `definition.rb:401-418 write_lock` serializes `Bundler::VERSION`

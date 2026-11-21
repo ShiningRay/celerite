@@ -443,6 +443,7 @@ module Celerite
             Commands.debug_local_server(stdout, resolution.primary_remote)
           end
         end
+        resolution.autoheal_locked_edges = true
         specs = resolution.resolve!(reuse, verify_locked_compat: verify_locked_compat)
         installer.ensure_specs_are_compatible!(specs)
 

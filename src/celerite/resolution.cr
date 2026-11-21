@@ -601,6 +601,10 @@ module Celerite
 
     @fetch_replayed = false
 
+    # install asks for the eresolve_without heal of stale lockfile edges
+    # (definition.rb:699-708); lock deliberately keeps the edges as written.
+    property autoheal_locked_edges : Bool = false
+
     private def log_fetch_for(remote : String) : Nil
       return unless @fetch_logged_remotes.add?(remote)
       return if remote == primary_remote && @index_fetch_logged
@@ -948,11 +952,28 @@ module Celerite
       # `definition.rb:699-708`: a frozen bundle re-raises the lockfile
       # dependency mismatch (`lazy_specification.rb:259-270`) instead of
       # re-resolving, so validate before the reuse decision is taken.
-      if @definition.config["frozen"] == true && @definition.lockfile_exists?
+      if @definition.lockfile_exists? && (@definition.config["frozen"] == true || @autoheal_locked_edges)
         @resolved_specs = materialize_locked
         if (stale = stale_locked_dependency_full_names).any?
+          if @definition.config["frozen"] == true
+            announce_index_fetch_for(stale.first)
+            raise IncorrectLockfileDependenciesError.new("Bundler found incorrect dependencies in the lockfile for #{stale.first}")
+          end
+          # `definition.rb:699-708` heals by `reresolve_without([spec])`: the
+          # offending rows leave the locked index so their dependencies come
+          # back from the index, and the retry prints the second
+          # `Resolving dependencies...` line.
           announce_index_fetch_for(stale.first)
-          raise IncorrectLockfileDependenciesError.new("Bundler found incorrect dependencies in the lockfile for #{stale.first}")
+          stale_names = stale.compact_map do |full_name|
+            @resolved_specs.find { |spec| spec.full_name == full_name }.try(&.name)
+          end
+          pending = @unlock.is_a?(Array(String)) ? @unlock.as(Array(String)) : [] of String
+          stale_names.each do |name|
+            @excluded_locked_names << name
+            pending << name unless pending.includes?(name)
+          end
+          @unlock = pending
+          @progress.puts "Resolving dependencies..."
         end
       end
 
@@ -980,6 +1001,20 @@ module Celerite
             raise IncorrectLockfileDependenciesError.new("Bundler found incorrect dependencies in the lockfile for #{stale.first}")
           end
           announce_index_fetch_for(stale.first)
+          # `definition.rb:699-708` heals by `reresolve_without([spec])`: the
+          # offending rows leave the locked index, so their dependencies come
+          # back from the index instead of the lockfile row, and the retry emits
+          # the second `Resolving dependencies...` line.
+          stale_names = stale.compact_map do |full_name|
+            @resolved_specs.find { |spec| spec.full_name == full_name }.try(&.name)
+          end
+          unlocked_now = @unlock.is_a?(Array(String)) ? @unlock.as(Array(String)) : [] of String
+          stale_names.each do |name|
+            @excluded_locked_names << name
+            unlocked_now << name unless unlocked_now.includes?(name)
+          end
+          @unlock = unlocked_now
+          @progress.puts "Resolving dependencies..."
         end
         unlocked = @unlock.is_a?(Array(String)) ? @unlock.as(Array(String)) : [] of String
         @unlock = (unlocked + incompatible).uniq
@@ -1001,9 +1036,16 @@ module Celerite
       stale = [] of String
       previous = @progress
       @progress = IO::Memory.new
+      # The probe must not consume the fetch announcement the real resolution
+      # still owes the caller: save the fetch bookkeeping and restore it below.
+      logged = @index_fetch_logged
+      logged_remotes = @fetch_logged_remotes.dup
+      replayed = @fetch_replayed
+      probed = [] of String
       begin
         specs.each do |spec|
           next unless spec.source_type == "GEM"
+          probed << spec.name
           index = begin
             index_specs_for(spec.name)
           rescue
@@ -1018,6 +1060,15 @@ module Celerite
         end
       ensure
         @progress = previous
+        unless stale.any?
+          @index_fetch_logged = logged
+          @fetch_logged_remotes = logged_remotes
+          @fetch_replayed = replayed
+          # The probe cached these names, so the real resolution would reuse
+          # them silently; drop them and let it fetch and announce the index
+          # itself, keeping the original line order.
+          probed.each { |name| @index_specs_cache.try &.delete(name) }
+        end
       end
       stale
     end
