@@ -6029,7 +6029,7 @@ installed locally.
 
 （同 Gemfile、同索引，4.0.24 实测；差分夹具 `plugin-gemfile-missing` 一直是这个形态。）已把期望改为 `gem-index/ or` + `installed locally.` 并改写注释，产品未动。
 
-C（只记录，不修）：`add json_pure --github rails/thor --skip-install`，参考先 `Fetching https://github.com/rails/thor.git` 再 `Could not find gem 'json_pure' in https://github.com/rails/thor.git (at <rev>).`，Gemfile 不变；我方先查 rubygems 索引并报 `Could not find gem 'json_pure (~> 2.8)' …`，Gemfile 现在也会回滚（B 的修复顺带覆盖）。这是「先选源再选版本」与「先选版本再选源」的顺序差异，属 C 类，仅记录。
+C（只记录，不修）：`add json_pure --github rails/thor --skip-install`，参考先 `Fetching https://github.com/rails/thor.git` 再 `Could not find gem 'json_pure' in https://github.com/rails/thor.git (at <rev>).`，Gemfile 不变；我方先查 rubygems 索引并报 `Could not find gem 'json_pure (~> 2.8)' …`，Gemfile 现在也会回滚（B 的修复顺带覆盖）。这是「先选源再选版本」与「先选版本再选源」的顺序差异，属 C 类，仅记录。**（已被 task-82 更正）**当时据此记录为「选源顺序」差异；task-82 实测表明源选择已对齐——我方同样解析到 `git` 源与同一 rev `cb11e8e`。「先查 rubygems 索引」指的是注入前的版本探测，参考也先探测索引再按 git 源解析；残差只是「参考在解析阶段只读 mirror，我方在解析阶段就检出」，而检出被本机 msys `0xC0000022` 阻断（exit 11）。该段结论按历史标注保留，以 task-82 节为准。
 
 夹具：`add-failure-keeps-gemfile`（`command` = `add nosuchgem --skip-install`，`file-equals` 断言 Gemfile 与初始一致，`stderr-contains` 断言 exit 7 的文案）。spec：`spec/m7_add_failure_rollback_spec.cr` 3 例（缺 gem、坏 requirement、`--path` 不存在）。
 
