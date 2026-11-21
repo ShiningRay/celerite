@@ -24,7 +24,7 @@ module Celerite
 
     NUMBER_KEYS = ["jobs", "retry", "redirect", "timeout", "cooldown"]
 
-    ARRAY_KEYS = ["with", "without"]
+    ARRAY_KEYS = ["with", "without", "only"]
 
     DEFAULT_CONFIG = {
       "BUNDLE_SILENCE_DEPRECATIONS"  => false,

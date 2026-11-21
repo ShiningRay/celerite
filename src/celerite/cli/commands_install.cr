@@ -457,7 +457,8 @@ module Celerite
         # (`dependency.rb` `should_include?`), so an excluded group's specs sit
         # in the lockfile but are never installed. The lock stays complete.
         without_groups = without_group_names(definition)
-        installable = installable_specs(resolution, specs, without_groups)
+        requested_groups = requested_group_names(definition, resolution)
+        installable = installable_specs(resolution, specs, requested_groups)
         pending = installable.sort_by(&.full_name).select(&.source_type.==("GEM"))
         if force_reinstall
           force_install, pending = pending.partition do |spec|
@@ -1129,16 +1130,38 @@ module Celerite
       end
     end
 
+    # `definition.rb:1251-1254` computes the requested groups as
+    # `groups - without - optional + with`, then intersects with `only`. The
+    # Gemfile default group is spelled `default` in that list.
+    private def self.requested_group_names(definition : Definition, resolution : Resolution) : Array(String)?
+      all_groups = resolution.evaluation.dependencies.flat_map do |dep|
+        dep.groups.empty? ? ["default"] : dep.groups
+      end.uniq
+      configured = ["with", "without", "only"].any? { |key| !group_list(definition, key).empty? }
+      return nil unless configured
+      Commands.requested_groups_for(definition.config, all_groups, [] of String, [] of String)
+    end
+
+    private def self.group_list(definition : Definition, key : String) : Array(String)
+      case value = definition.config[key]
+      when Array  then value.map(&.to_s)
+      when String then value.split(":").reject(&.empty?)
+      else             [] of String
+      end
+    end
+
     # `installer.rb:208` installs `definition.specs`; `Definition` keeps only the
-    # dependencies with a group outside `without` (`dependency.rb`
+    # dependencies whose groups intersect the requested set (`dependency.rb`
     # `should_include?`), and resolution pulls in their transitive specs. A spec
     # that only excluded groups reach stays in the lockfile but is never installed.
     private def self.installable_specs(resolution : Resolution,
                                        specs : Array(Resolution::ResolvedSpec),
-                                       without_groups : Array(String)) : Array(Resolution::ResolvedSpec)
-      return specs if without_groups.empty?
+                                       requested_groups : Array(String)?) : Array(Resolution::ResolvedSpec)
+      return specs if requested_groups.nil?
+      return [] of Resolution::ResolvedSpec if requested_groups.empty?
       included = resolution.evaluation.dependencies.select do |dep|
-        dep.groups.empty? || dep.groups.any? { |group| !without_groups.includes?(group) }
+        groups = dep.groups.empty? ? ["default"] : dep.groups
+        groups.any? { |group| requested_groups.includes?(group) }
       end
       by_name = specs.to_h { |spec| {spec.name, spec} }
       seen = Set(String).new

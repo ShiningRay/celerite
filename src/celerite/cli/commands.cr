@@ -2616,8 +2616,15 @@ module Celerite
       without_list = configured_without.is_a?(Array(String)) ? configured_without : configured_without.to_s.split(":").reject(&.empty?)
       with_list = configured_with.is_a?(Array(String)) ? configured_with : configured_with.to_s.split(":").reject(&.empty?)
 
+      configured_only = config["only"]
+      only_list = configured_only.is_a?(Array(String)) ? configured_only : configured_only.to_s.split(":").reject(&.empty?)
+
+      # `definition.rb:1251-1254`: `values = groups - without - optional + with`,
+      # then `values &= settings[:only]` when `only` is configured. The
+      # intersection happens after `with` is merged, so `only` wins over both.
       requested = all_groups - without_list
       requested = (requested + with_list).uniq
+      requested = requested.select { |group| only_list.includes?(group) } unless only_list.empty?
 
       if only_groups.any?
         requested = only_groups
@@ -2628,6 +2635,11 @@ module Celerite
     end
 
     def self.filter_locked_specs_by_groups(definition : Definition, lockfile : Lockfile::Data, specs : Array(Lockfile::Spec), requested_groups : Array(String)) : Array(Lockfile::Spec)
+      # An empty requested set means "nothing selected" once `with`/`without`/
+      # `only` are configured; with no configuration at all the caller passes
+      # every group (`definition.rb:1251-1254` intersects unconditionally).
+      configured = ["with", "without", "only"].any? { |key| !definition.config[key].to_s.empty? }
+      return [] of Lockfile::Spec if requested_groups.empty? && configured
       return specs if requested_groups.empty? || requested_groups == lockfile_groups(definition, lockfile)
       bridge = Bridge::Client.new
       begin
