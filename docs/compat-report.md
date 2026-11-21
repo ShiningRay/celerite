@@ -6668,3 +6668,37 @@ PLUGIN SOURCE
 
 - 差分夹具无法表达绝对路径：harness 没有沙箱根占位符（只有 `@INDEX_DIR@`/`@PLATFORM_INDEX_DIR@` 等索引占位），该形状只在 spec 覆盖。
 - `Source::Git#cache` 仍未实现（msys `0xC0000022` 阻断 git 端到端）；`cache_all` 的工程外 `path` 拷贝只在 `cache` 命令上取过 oracle，`package` 共享同一路径但未单独取证。
+
+## 2026-11-21（M7 task-100：`licenses` 从运行期 spec 读取，而非缓存包）
+
+### oracle（4.0.24 与 2.7.2 逐字一致；隔离 HOME/BUNDLE_*，参考 `ruby .upstream-specs/v4.0.24/bundler/exe/bundle`）
+
+场景：`Gemfile` = `json_pure` + `thor` + `multilic`（`path:`，`s.license = "MIT"`）+ `nolic`（`path:`，无 license 字段）。
+
+| 场景 | 参考 stdout / stderr | 修前我方 |
+| --- | --- | --- |
+| 索引 gem（json_pure） | `json_pure: Ruby`（stdout） | 一致 |
+| `path` 源 gem | `multilic: MIT`（stdout） | `multilic: Unknown`（stderr） |
+| 删除 `<bundle>/ruby/<abi>/cache/*.gem` | 与上完全相同 | `json_pure: Unknown`（stderr） |
+| 无 license gem | `nolic: Unknown`（stderr） | 一致 |
+| 同 license 行序 | `json_pure: Ruby`、`bundler: MIT`、`thor: MIT`、`multilic: MIT` | `bundler`、`multilic`、`thor`（按 full_name 打破平局） |
+
+参考：`cli.rb:571-581` 遍历 `Bundler.load.specs.sort_by {|s| s.license.to_s }.reverse_each`，`license = s.license || s.licenses`；空值 `ui.warn "#{name}: Unknown"`（stderr），非空 `ui.info`（stdout）。`Bundler.load.specs` 先列运行中的 Bundler，再按 Gemfile 依赖顺序；Ruby 的 `sort_by` 稳定，所以同 license 保持该顺序。
+
+### 实现
+
+- `src/celerite/cli/commands_surface.cr` `spec_license` 改为从运行期 spec 取 license：先读 `<install_root>/specifications/<full_name>.gemspec`；`PATH` 源再从锁内 `remote`（相对 Gemfile 目录展开）匹配 `*.gemspec`；两者皆无才退回 `<install_root>/cache/<full_name>.gem`。读取经 `license_from_spec_file`（bridge `load_installed_spec`，`server.rb` 的 `license`/`licenses`）。
+- 排序：先列 `bundler`，再按 Gemfile 依赖顺序（`bridge.evaluate_gemfile(...).dependencies`）排列锁内 spec，其余按锁序补足；`license` 降序，平局用显式位置索引（Crystal 的 `sort_by` 不稳定）。
+
+### 夹具与证据
+
+- `fixtures/differential/licenses-path-source/`：`json_pure` + `path` 源 `multilic`（`sibling/`），`command` = `install --quiet` + `licenses`。
+- `fixtures/differential/licenses-after-cache-removal/`：`bundle-preset` 只含 `specifications/`+`gems/`（无 cache 包），`command` = `licenses`。
+- `spec/m7_licenses_spec.cr` 4 例：path 源、删掉 cache 目录后仍报 Ruby、无 license 落 stderr、同 license 保 Gemfile 顺序。实跑：`crystal spec spec/m7_licenses_spec.cr` → **4 examples, 0 failures**，`$LASTEXITCODE`=0（未接管道）。
+- 差分（4.0.24 / 2.7.2 各 6 passed/0 failed）：两新夹具 + `install-fresh`、`install-check`、`info-default-gem`、`install-only-group`。
+- 反假绿：`C:/temp/celerite-pre100`@`6ec0f7c` 跑两新夹具 → **0 passed / 2 failed**，差异行 `< json_pure: Ruby` 与 `> json_pure: Unknown`；worktree 已 `remove --force`，`CELERITE_BIN` 指回工作区。
+
+### 已声明差异
+
+- gemspec 与缓存包都读不到时仍回退 `Unknown`（参考在同类损坏安装下行为未取证）。
+- 排序平局改为「bundler 优先 + Gemfile 顺序」，与参考在本机 oracle 逐行一致；跨平台 `Bundler.load` 顺序若变化未覆盖。
