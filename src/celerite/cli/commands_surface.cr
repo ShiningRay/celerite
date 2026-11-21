@@ -1308,9 +1308,28 @@ module Celerite
     # missing lockfile writes it (reference Diagnose#run leaves the definition
     # locked), which is why `issue` on a Gemfile-only project must not fail with
     # the old `Could not locate Gemfile`.
+    # `settings/validator.rb:57-63`: when `path` and `path.system` are both set,
+    # the rule nils each one in turn and reports it with `Rule#set`, whose
+    # message is `Setting `key` to nil, since <description>`. The reference
+    # walks `path` first (silencing `path.system`), then `path.system`
+    # (silencing `path`), which is the order seen in `doctor` output.
+    private def self.doctor_settings_notices(stdout : IO, definition : Definition) : Nil
+      config = definition.config
+      return if config["path"].to_s.empty?
+      return unless config["path.system"] == true || config["disable_shared_gems"] == false
+      stdout.puts "Setting `path.system` to nil, since path and path.system are mutually exclusive"
+      stdout.puts "Setting `path` to nil, since path and path.system are mutually exclusive"
+    end
+
     def self.doctor_report(stdout : IO, stderr : IO, quiet : Bool = false, ssl : Bool = false) : Int32
       definition = Definition.build
       Commands.validate_ruby_runtime!(definition)
+      # `settings.rb:312-319` runs every `settings/validator.rb` rule before
+      # `cli/doctor/diagnose.rb:79` proceeds. The `path`/`path.system` rule
+      # (`:57-63`) silences the loser with an info line on stdout, and only then
+      # does `Path#validate!` (settings.rb:287-297) raise; the reference
+      # therefore prints both notices before the conflict report.
+      doctor_settings_notices(stdout, definition)
       # `doctor` resolves like `check` (cli/doctor.rb): it may fetch the index,
       # unlike the local-only read commands.
       lockfile = materialize_lockfile(definition, stdout)
