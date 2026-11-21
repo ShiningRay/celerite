@@ -1152,6 +1152,35 @@ module Celerite
             stdout.puts "  * #{gem_name}"
           end
         end
+
+        # `Source::Path#cache` (source/path.rb:84-96): with `cache_all` on, a
+        # path source that lives OUTSIDE the Gemfile root is copied wholesale
+        # into the cache directory and stamped with an empty `.bundlecache`;
+        # an in-project path source is never copied. `cache_all` defaults to
+        # true in 4.x (settings.rb:88 `"BUNDLE_CACHE_ALL" => true`), so only an
+        # explicit `false` disables it. The destination directory is named
+        # after the source's gem name (`app_cache_dirname`, path.rb:110-112).
+        if definition.config["cache_all"] != false
+          root_prefix = gemfile_root.gsub('\\', "/").chomp("/") + "/"
+          definition.lockfile!.sources.each do |source|
+            next unless source.type == "PATH"
+            original = source.remote
+            next if original.nil?
+            source_path = File.expand_path(original, gemfile_root)
+            next unless Dir.exists?(source_path)
+            next if source_path.gsub('\\', "/").starts_with?(root_prefix)
+            dir_name = source.specs.first?.try(&.name) || File.basename(source_path)
+            destination = File.join(cache_target, dir_name)
+            # `rm_rf` then `cp_r("<src>/.", dest)` — the reference replaces the
+            # whole directory rather than merging into a stale copy.
+            FileUtils.rm_rf(destination)
+            Dir.mkdir_p(destination)
+            Dir.children(source_path).each do |child|
+              FileUtils.cp_r(File.join(source_path, child), destination)
+            end
+            File.touch(File.join(destination, ".bundlecache"))
+          end
+        end
       ensure
         bridge.close
       end
