@@ -6209,3 +6209,39 @@ task-66：64 / 53 / 10 passed，artifice 38、low-il 9、fetch 6、product 0。�
 - 基线仍是 **64 examples / 53 failures / 11 passed**，与 task-66 逐条一致；本轮 8 项产品改动对上游 lockfile 套件零影响。
 - 真正的产品候选仍只有 `missing dependent specs auto-heals` 一族（3 条），被分桶规则掩藏在 `fixture:fetch-failed` 里；若要推进 L161，应先修分桶（把「含 `Fetching `」限定为命令失败而非任意文本），再单独处理该族。
 - 2.7.2 upstream profile 无 checkout，不可执行（沿用既有说明，本轮未尝试）。
+
+## 2026-11-21（M7 task-87：install/update/add 刷新 `vendor/cache`）
+
+### oracle（4.0.24 与 2.7.2 同形，工程内 `vendor/cache` 已存在）
+
+| 场景 | 参考 | 修前我方 |
+| --- | --- | --- |
+| 首次 `install` | `Updating files in vendor/cache` → `  * json_pure-2.8.1.gem` → `Bundle complete! …`，缓存出现该包 | 只打标题行，无复制 |
+| 删掉缓存包后 `install` | 恢复该包并再打 `  * …` 行 | 包仍缺失，少一行 |
+| 缓存包已存在 | 再次复制并打 `  * …`（参考无条件 `cp`） | 无复制、无行 |
+| `vendor/cache` 不存在 | 完全跳过（不建目录、不打标题） | 同（已正确） |
+| `install --no-cache` | 跳过 | 同 |
+| `BUNDLE_FROZEN=true install` | 跳过 | 同 |
+
+参考链路：`cli/install.rb:52-53` `Bundler.load.cache(nil, local) if Bundler.app_cache.exist? && !options["no-cache"] && !Bundler.frozen_bundle?` → `runtime.rb:108-146` `Runtime#cache`（打标题、逐 spec 走 `source.cache`）→ `source/rubygems.rb:233-242`（`  * <basename>` 后 `cp`）。同构调用点 `cli/update.rb:82`、`cli/add.rb:26-30`。
+
+### 实现
+
+`src/celerite/cli/commands_install.cr` 新增 `app_cache_label` / `app_cache_path` / `cache_path_sources` / `refresh_app_cache(stdout, definition, install_root, entries)` / `refresh_app_cache?`；`install` 在 `Bundle complete!` 之前、`update` 在 `clean_after_install` 之前、`add` 在 `install` 返回后按同一助手刷新。`cache` 命令的既有复制循环未改（task-84 行为保持不变），`cache_path_sources` 复刻 `Source::Path#cache` 的 `cache_all` 分支供两处共用。`--no-cache`、frozen、目录不存在三种情况按参考跳过。
+
+### 装具
+
+`script/differential` 新增 `file-exists` 断言原语（与 `file-absent` 对称）：每行一个工程相对路径，要求两侧都存在；`file-contains` 无法断二进制包，项目树比对只报缺失/多余而不保证指定文件存活。
+
+### 夹具与证据
+
+- `fixtures/differential/install-refreshes-app-cache/`（`extra/vendor/cache/keep.txt` 保证目录存在，`command` = `install`，`file-exists` = `vendor/cache/json_pure-2.8.1.gem`）：4.0.24 与 2.7.2 PASS，stdout 逐字包含 `  * json_pure-2.8.1.gem` 且位于 `Bundle complete!` 之前。
+- `fixtures/differential/install-no-cache-skips-refresh/`（`command` = `install --no-cache`，`file-absent` 同一路径）：双 profile PASS，仅作护栏、无区分力。
+- 回归：`cache-path-env`、`cache-all-path`（2.7.2 按既有 `deferred-2.7.2` 跳过）、`install-fresh`、`install-check` 双 profile 全绿；spec `m7_install_app_cache_spec.cr` 3 例（刷新与顺序、`--no-cache` 跳过、frozen 跳过）与 `m7_cache_path_spec`/`m7_cache_all_path_spec`/`m7_local_install_step_spec`/`m7_install_ruby_compat_spec` 联跑 17 例 0 失败。
+- 负对照 `C:/temp/celerite-pre87` @ `47282d5`（`install-refreshes-app-cache`）：stdout 少 `  * json_pure-2.8.1.gem`、项目树 `Only in SANDBOX/project/vendor/cache: json_pure-2.8.1.gem`、`file-exists violated`；`install-no-cache-skips-refresh` 在旧二进制上同样 PASS（纯护栏）。
+
+### 已声明差异
+
+- `Source::Git#cache` 未实现（本机 msys `0xC0000022` 阻塞 git 端到端），git 源在 install 期是否复制未取证。
+- `cache_all` 的工程外 path 源复制在 install 期复用同一助手，但未单独取 oracle（task-84 只在 `cache` 命令上取证）。
+- `package` 共用 `run_cache`/`install`，未单独取 oracle。
