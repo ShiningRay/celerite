@@ -5901,3 +5901,31 @@ oracle 用同一份 `file://` 索引（`fixtures/gem-index`，预装并锁 `json
 **负对照**：`C:/temp/celerite-pre76` @ `9f7d380` → **0 passed / 2 failed**（stdout 与整锁不一致；缺 `    platdemo (1.0.0)` 与 `  ruby` 两个 needle）。
 
 **已声明差异**：预置锁若缺 `CHECKSUMS` 段，4.0.24 参考会整段重建三行，我方仍略去该段（`checksums_enabled?` 参考锁内段落，属既有差异，未在本次修）。强制平台与 `clean`/`frozen` 的组合未逐项取 oracle。
+## 2026-11-21（M7 task-77：`bundle cache` 的 `BUNDLE_CACHE_PATH`）
+
+**现象**：`BUNDLE_CACHE_PATH=custom bundle install && bundle cache` 时参考写 `<gemfile 根>/custom/json_pure-2.8.1.gem` 并打印 `Updating files in custom`，我方忽略该设置，仍写 `vendor/cache`、打印 `Updating files in vendor/cache`。
+
+**根因**：`run_cache` 只认 `--cache-path` 参数，缺省直接硬编码 `<gemfile 根>/vendor/cache`，没有读 `cache_path` 设置。参考的显示串是 `Bundler.settings.app_cache_path`（`runtime.rb:115`），即**设置的原始值**（相对写法原样打印，绝对路径也原样打印），落盘位置 = `Pathname.new(root).join(app_cache_path)`（`bundler.rb:340-343`）。
+
+**oracle 表**（`fixtures/gem-index`，4.0.24 与 2.7.2 各测，隔离 HOME/BUNDLE_PATH/BUNDLE_APP_CONFIG）
+
+| 场景 | 参考 | 修前我方 |
+| --- | --- | --- |
+| 未设置 | `Updating files in vendor/cache`，写 `vendor/cache/…` | 一致 |
+| env `custom` | `Updating files in custom`，写 `custom/…` | `vendor/cache`（错） |
+| `.bundle/config` `BUNDLE_CACHE_PATH: "cfgcustom"` | `Updating files in cfgcustom`，写 `cfgcustom/…` | 同 env（错） |
+| env 绝对路径（工作区内） | 原样打印绝对路径，写该目录 | 忽略（错） |
+| `cache --cache-path flagdir` 且 env 同时给值 | `Updating files in flagdir`（`CLI::Cache#run` 用 `set_command_option_if_given` 覆盖设置，`cli/cache.rb:11`） | 只认 flag，但 env 情形已在上面体现（改后一致） |
+| 多值 `first:second` | exit 32，`Errno::ENOTDIR … dir_s_mkdir` | 不跟随（未夹带） |
+
+**实现**（`src/celerite/cli/commands_install.cr` `run_cache`）：`configured_cache = definition.config["cache_path"].as?(String)`；`cache_label = cache_arg || (configured_cache.nil? || configured_cache.empty? ? "vendor/cache" : configured_cache)`；`cache_target = File.expand_path(cache_label, gemfile_root)`。`cache_path` 本就在 `STRING_KEYS`（`config.cr:202`），env 与 `.bundle/config` 两种来源都经 `Config#[]` 生效，无需新增键。
+
+**夹具**：`fixtures/differential/cache-path-env`（`env` = `BUNDLE_CACHE_PATH=custom`，`command` = `install` + `cache`）。断言依靠精确 stdout（`Updating files in custom`）与 harness 的项目树比对（`custom/` 出现、`vendor/` 不出现），未额外加 `file-contains`。
+
+**spec**：`spec/m7_cache_path_spec.cr` 新增 2 例（env 生效并打印原始标签；`--cache-path` 压过 env），连同既有 3 例为 5 例；`m7_cache_path_spec` + `m7_app_config_env_spec` + `m7_clean_system_gems_spec` 合并 **12 例 0 失败**。
+
+**负对照**：`C:/temp/celerite-pre77` @ `544aea0` → `FAIL cache-path-env`：`< Updating files in custom` vs `> Updating files in vendor/cache`，并附 `project tree differs`。
+
+**附带修正**：`spec/m7_app_config_env_spec.cr` 三处断言仍按 `File.join`（反斜杠）比较，而 task-56 起 `Config.app_config_path`/`join_config` 返回正斜杠形态，故该 spec 在 `544aea0` 上**本来就是红的**（已用 `git stash` 在基线复现）。本次只把期望串归一化，产品代码未动。
+
+**已声明差异**：多值 `BUNDLE_CACHE_PATH`（`first:second`）参考直接崩（exit 32 `Errno::ENOTDIR`），我方不刻意复刻该崩溃；`--cache-path` 与多值组合未测。
