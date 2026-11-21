@@ -1,0 +1,15 @@
+GEM
+  remote: file:///@LOCKED_DEPS_INDEX_DIR@/
+  specs:
+    net-smtp (0.5.0)
+      net-protocol
+
+PLATFORMS
+  ruby
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  net-smtp
+
+BUNDLED WITH
+    @BUNDLER_VERSION@

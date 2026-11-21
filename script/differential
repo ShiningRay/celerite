@@ -590,7 +590,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
     local rel expected_file side actual_file
     rel="$(head -1 "$equals_marker" | tr -d '\r')"
     expected_file="$work/file-equals.expected"
-    tail -n +2 "$equals_marker" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@PLUGIN_GEM_INDEX_DIR@|$plugin_gem_index_dir|g" -e "s|@LEGACY_INDEX_DIR@|$legacy_index_dir|g" -e "s|@RUBY_VERSIONS_INDEX_DIR@|$ruby_versions_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g" > "$expected_file"
+    tail -n +2 "$equals_marker" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@PLUGIN_GEM_INDEX_DIR@|$plugin_gem_index_dir|g" -e "s|@LEGACY_INDEX_DIR@|$legacy_index_dir|g" -e "s|@RUBY_VERSIONS_INDEX_DIR@|$ruby_versions_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g" > "$expected_file"
     for side in ref cel; do
       if [ "$side" = "ref" ]; then actual_file="$ref_sandbox/project/$rel"; else actual_file="$cel_sandbox/project/$rel"; fi
       if ! diff -q "$expected_file" "$actual_file" >/dev/null 2>&1; then
