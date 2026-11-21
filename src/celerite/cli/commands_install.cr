@@ -886,7 +886,12 @@ module Celerite
           # `cli/install.rb` L59-64 as of 2.7.2/4.0.24: system gems report the
           # `bundle info` hint, a custom path prints the base path relative to
           # the working directory (no ruby scope).
-          if InstallPaths.use_system_gems?(config, bridge.ruby_environment.default_gem_dir)
+          # `settings.rb:253-285`: an explicitly empty `path` is still a
+          # configured path, so `base_path_relative_to_pwd` yields `.` and the
+          # reference prints `./.` instead of the system-gems hint.
+          if empty_bundle_path?(definition)
+            stdout.puts "Bundled gems are installed into `./.`"
+          elsif InstallPaths.use_system_gems?(config, bridge.ruby_environment.default_gem_dir)
             stdout.puts "Use `bundle info [gemname]` to see where a bundled gem is installed."
           else
             # `Pathname` renders with `/` even on Windows, and the reference
@@ -1238,6 +1243,15 @@ module Celerite
       if data = lockfile
         cache_path_sources(definition, cache_target, data)
       end
+    end
+
+    # An empty `path` (e.g. `BUNDLE_PATH=` or `BUNDLE_PATH: ""`) is still set:
+    # the reference keeps it and prints the `./.` base path
+    # (`settings.rb:287-297`, `settings.rb:253-285`).
+    private def self.empty_bundle_path?(definition : Definition) : Bool
+      return true if (env = ENV["BUNDLE_PATH"]?) && env.empty?
+      configured = definition.config["path"]
+      configured.is_a?(String) && configured.empty?
     end
 
     private def self.refresh_app_cache?(definition : Definition, frozen : Bool, rest : Array(String)) : Bool
