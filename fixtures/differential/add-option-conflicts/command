@@ -1,0 +1,4 @@
+add json_pure --branch main --skip-install
+add json_pure --ref abc123 --skip-install
+add thor --git https://example.invalid/x.git --github rails/thor --skip-install
+add thor --git https://example.invalid/x.git --branch main --ref abc123 --skip-install

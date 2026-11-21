@@ -1,0 +1,4 @@
+You cannot specify `--branch` unless `--git` or `--github` is specified.
+You cannot specify `--ref` unless `--git` or `--github` is specified.
+You cannot specify `--git` and `--github` at the same time.
+You cannot specify `--branch` and `--ref` at the same time.
