@@ -505,3 +505,65 @@ task-91 改为按**异常类**判定，规则表写在 `script/upstream-specs-bu
 - 未重跑套件（本轮只改判定规则），故三条候选的「当前是否仍失败」沿用 task-86 采集结果。
 - 规则 5b（`expected:`+`got:`）为兜底：若上游 rspec 换了异常类，仍能落到产品桶；本轮 53 条中无仅靠 5b 命中的用例。
 - 判定仍基于文本特征而非结构化断言 diff，`exception.message` 之外的比较细节不外泄，故默认「断言失败即产品候选」，不做修复建议分类。
+
+## 2026-11-22 复采（task-114）
+
+第四次采集上游 lockfile 套件（`spec/lock/lockfile_spec.rb`），基线 HEAD `b2f5f88`。本轮**只采集与判定，不改产品代码、不改夹具、不改分桶规则**。
+
+### 采集前置
+
+| 项 | 值 |
+|---|---|
+| 命令 | `CELERITE_SKIP_TEST_DEPS=1 bash script/upstream-specs`（`C:\msys64\usr\bin\bash.exe`，`TMPDIR=/c/temp`，PATH 前置 msys64/ucrt64/Ruby40） |
+| 墙上耗时 | 349 s（rspec `duration` 343.76 s） |
+| seed | 31786（`--order random`，见 `.upstream-specs/v4.0.24/bundler/.rspec`） |
+| 产物 | `.upstream-specs/upstream-lockfile-v4.0.24-20261121T182924Z.md`（17780 B） |
+| JSON | `.upstream-specs/rspec-output.json`（380230 B，mtime 2026-11-22 02:35:11） |
+| 汇总 | `example_count 64 / failure_count 53 / pending_count 0 / errors_outside_of_examples_count 0` |
+
+### 总数与桶对照
+
+总数与 task-91（2026-11-20，同样 `64/53`）一致；**分桶有两处移动**。
+
+| 桶 | task-91 | task-114 | 变化 |
+|---|---:|---:|---|
+| `env:artifice-unreachable` | 38 | 37 | −1 |
+| `env:low-il-shm` | 9 | 9 | — |
+| `fixture:fetch-failed` | 3 | 3 | — |
+| `product:candidates` | 3 | 4 | +1 |
+
+净移动：`[1:51]` 转绿退出失败集，`[1:46]` 由 env 桶移入产品桶，`[1:54]` 新增进失败集并落在产品桶。
+
+### 移动项明细
+
+**① `./spec/lock/lockfile_spec.rb[1:51]` — 本轮转绿（不再失败）**
+`the lockfile format automatically fixes the lockfile when it's missing deps and the full index is in use`（`spec/lock/lockfile_spec.rb:1933`）
+task-91 状态 `failed`（产品桶）→ task-114 状态 `passed`。这是 task-92／task-94 的锁边自愈（`IncorrectLockfileDependencies` → `reresolve_without`）落地的直接结果。
+
+**② `./spec/lock/lockfile_spec.rb[1:46]` — env 桶 → 产品桶**（`file:line` = `spec/lock/lockfile_spec.rb:1682`）
+`the lockfile format fills empty CHECKSUMS entries when not frozen, even if every gem is already installed`
+
+- task-91：`class=RuntimeError`，`message` = `Invoking … celerite install … failed with output: Could not reach host gem.repo2. Check your network connection and try again.` ⇒ 落在规则 1（`Could not reach host`）。
+- task-114：`class=RSpec::Expectations::ExpectationNotMetError`（规则 5 命中）。命令**已经跑通**（`Fetching gem metadata from https://gem.repo2/.`、`Bundle complete! 1 Gemfile dependency, 1 gem now installed.`、`# $? => 0`），失败点是锁体断言：
+  - expected（节选）：`CHECKSUMS\n  bundler (4.0.24) sha256=4f44f4…\n  myrack (0.9.1) sha256=64a66fbc6836e83c6fdfa9a86b769e8c3a66ce4686b7dfee6f9f2bb034b0db1e\n`
+  - got：`CHECKSUMS` 段只有 `  myrack (0.9.1)`，**缺 digest**。
+  - 判定：这是**产品候选**（CHECKSUMS 补写未落 digest），但本轮采集把 `gem.repo2` 这次判成可达——即该用例从「环境不可达」变成了「命令跑通但断言不过」，属**判定输入变化**，不一定代表产品行为在本轮期间发生了回归。task-25/26 的 CHECKSUMS 补写逻辑与此用例相关，需单独取 oracle 复核。
+
+**③ `./spec/lock/lockfile_spec.rb[1:54]` — 新增进失败集并落在产品桶**（`spec/lock/lockfile_spec.rb:2088`）
+`the lockfile format automatically fixes the lockfile when it has incorrect deps, keeping the locked version`
+
+- task-91：`status=passed`；task-114：`status=failed`，`class=RSpec::Expectations::ExpectationNotMetError`。
+- `message` 关键差异（`remote4` 本地索引，命令 exit 0）：
+  - `Fetching net-smtp 0.5.1 (was 0.5.0)` / `Installing net-smtp 0.5.1 (was 0.5.0)`
+  - expected：`net-smtp (0.5.0)`（保持锁定版本）；got：`net-smtp (0.5.1)`
+- 判定：**真产品候选**——用例名即「keeping the locked version」，我方的锁边自愈把 net-smtp 升到了索引里的最新版 0.5.1，而参考保持 0.5.0。与 task-92/94 的自愈实现直接相关（自愈路径未保留锁定版本）。
+
+**④ `[1:56:1:1]` / `[1:57:1:1]` — 桶内保持产品候选，内容与 task-91 相同（未移动）**
+两条 `behaves like a lockfile missing dependent specs auto-heals` 的 expected/got 差异仍是 `myrack` 系依赖行缺失，与 task-91 记录一致，故桶不变。
+
+### 结论
+
+- 总数未变（64/53），但**产品候选由 3 增至 4**：`[1:54]` 是新增的真实断言差异（自愈未保持锁定版本），`[1:46]` 是环境判定翻转后暴露的 CHECKSUMS digest 差异。
+- `[1:51]` 转绿，说明 task-92/94 的锁边自愈确实关掉了一条产品候选。
+- env 两桶（artifice 38→37、low-il 9）与 fetch 桶（3）基本稳定，可继续视为本机不可关闭项。
+- 本结论**晚于** task-92…task-113 全部改动，**早于**任何针对 `[1:46]`/`[1:54]` 的后续修复。
