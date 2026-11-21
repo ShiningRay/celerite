@@ -422,3 +422,86 @@ bash script/upstream-specs
 - 6 条 `fixture:fetch-failed` 人工复核：
   - `[1:2]`、`[1:3]`、`[1:5]`：`Could not verify the SSL certificate for https://rubygems.org/` —— 我们的二进制在锁文件 `BUNDLED WITH 1.8.2` 时按 task-57 语义去装 `bundler 1.8.2`，沙箱无 CA ⇒ 环境（无 CA/网络），非产品。
   - `[1:51]`、`[1:56:1:1]`、`[1:57:1:1]`（“missing dependent specs auto-heals”族）：分桶命中 `fixture:fetch-failed` 只是因为记录文本里出现 `Fetching source index …`；真实差异是锁正文少一行 `myrack (0.9.1)`（reference 期望 `specs:` 里保留该依赖行）。这是**产品候选**，但 task-66 同样存在，非本轮新增，且分桶规则把含 `Fetching ` 的失败一律归入 fixture 桶 —— 该规则对这类用例有系统性误分。
+
+## 2026-11-21 分桶规则修正（task-91，离线重算未重跑）
+
+`script/upstream-specs` 的旧分桶规则把「失败记录文本里出现 `Fetching `」一律归入 `fixture:fetch-failed`，于是三个锁断言用例（`missing dependent specs auto-heals` 族）被误分：它们的 `got:` 段里含被测命令打印的 `Fetching source index …`，被当成夹具抓取失败，掩盖了真实的产品候选。
+
+task-91 改为按**异常类**判定，规则表写在 `script/upstream-specs-buckets.rb`（harness 与离线重算共用同一函数）：
+
+| # | 条件 | 桶 |
+|--:|---|---|
+| 1 | 文本含 `Could not reach host` | `env:artifice-unreachable` |
+| 2 | 文本含 `HTTP 403` / `403 Forbidden` | `env:network-policy` |
+| 3 | 文本含 `0xC0000022` / `NtCreateDirectoryObject` | `env:low-il-shm` |
+| 4 | 文本含 `sinatra/base` | `env:test-deps-skipped` |
+| 5 | 异常类为 `RSpec::Expectations::ExpectationNotMetError` | `product:candidates` |
+| 5b | message 同时含 `expected:` 与 `got:` | `product:candidates` |
+| 6 | 文本含 `Errno::ENOENT` / `does not exist!` / `rb_sysopen` | `fixture:missing-gem-files` |
+| 7 | 文本含 `Fetching ` | `fixture:fetch-failed` |
+| 8 | 其他 | `product:candidates` |
+
+环境特征（1–4）先匹配，故原 38 artifice / 9 low-il 两桶不受影响；断言失败一律产品候选，即使正文含 `Fetching `。
+
+### 重算（task-86 产物，未重跑）
+
+输入：`.upstream-specs/rspec-output.json`（377781 B，mtime 2026-11-21 12:25:04，`failure_count 53`）。重算脚本：`.tmp-scratch/task91/rebucket.rb`（`require_relative` 同一个规则模块）。
+
+| bucket | task-86 旧规则 | task-91 新规则 |
+|---|--:|--:|
+| env:artifice-unreachable | 38 | 38 |
+| env:low-il-shm | 9 | 9 |
+| fixture:fetch-failed | 6 | 3 |
+| product:candidates | 0 | 3 |
+
+总例数与失败数不变（64 examples / 53 failures），移动项 3 条，全部为断言类：
+- `the lockfile format automatically fixes the lockfile when it's missing deps and the full index is in use`
+  - 位置：`./spec/lock/lockfile_spec.rb:1933`，异常类：`RSpec::Expectations::ExpectationNotMetError`
+  - `exception.message` 前 200 字符：
+
+    ```text
+
+
+    Commands:
+    $ C:/Users/ShiningRay/projects/ShiningRay/celerite/bin/celerite install
+    Fetching source index from file:///C:/Users/ShiningRay/projects/ShiningRay/celerite/.upstream-specs/v4.0.24/bundler/
+    ```
+
+- `the lockfile format with just specific platform behaves like a lockfile missing dependent specs auto-heals`
+  - 位置：`./spec/lock/lockfile_spec.rb:2215`，异常类：`RSpec::Expectations::ExpectationNotMetError`
+  - `exception.message` 前 200 字符：
+
+    ```text
+
+
+    Commands:
+    $ C:/Users/ShiningRay/projects/ShiningRay/celerite/bin/celerite install
+    Fetching gem metadata from https://gem.repo4/.
+    Resolving dependencies...
+    Resolving dependencies...
+    Installing minite
+    ```
+
+- `the lockfile format with both ruby and specific platform behaves like a lockfile missing dependent specs auto-heals`
+  - 位置：`./spec/lock/lockfile_spec.rb:2215`，异常类：`RSpec::Expectations::ExpectationNotMetError`
+  - `exception.message` 前 200 字符：
+
+    ```text
+
+
+    Commands:
+    $ C:/Users/ShiningRay/projects/ShiningRay/celerite/bin/celerite install
+    Fetching gem metadata from https://gem.repo4/.
+    Resolving dependencies...
+    Resolving dependencies...
+    Installing minite
+    ```
+
+断言类 product 候选数：3
+
+### 结论与已声明差异
+
+- 上游锁文件套件当前有 **3 条断言型产品候选**（此前记为 0，task-86 的结论「product 候选 0」**已被 task-91 更正**）；env 两桶数字未变，历史总数未变。
+- 未重跑套件（本轮只改判定规则），故三条候选的「当前是否仍失败」沿用 task-86 采集结果。
+- 规则 5b（`expected:`+`got:`）为兜底：若上游 rspec 换了异常类，仍能落到产品桶；本轮 53 条中无仅靠 5b 命中的用例。
+- 判定仍基于文本特征而非结构化断言 diff，`exception.message` 之外的比较细节不外泄，故默认「断言失败即产品候选」，不做修复建议分类。
