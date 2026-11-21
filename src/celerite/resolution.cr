@@ -415,6 +415,25 @@ module Celerite
       @locked_by_name ||= locked_specs.group_by(&.name)
     end
 
+    # Versions recorded in the ORIGINAL lockfile, keyed by gem name. The
+    # reference keeps these apart from the resolution base: `reresolve_without`
+    # deletes rows from the base only (`definition.rb:782-785`), while
+    # `new_resolution_base` always hands `Resolver::Base` the untouched
+    # `@originally_locked_specs` (`definition.rb:1323`), so `Package#locked_version`
+    # still reports them and the promoter keeps preferring the locked version
+    # (`gem_version_promoter.rb:134-145`). Used by the lock-edge heal so that
+    # completing a missing dependency edge never upgrades an already-locked gem.
+    private def preferred_locked_versions : Hash(String, Gem::Version)?
+      specs = locked_specs
+      return nil if specs.empty?
+
+      versions = {} of String => Gem::Version
+      specs.each do |spec|
+        versions[spec.name] ||= spec.version
+      end
+      versions
+    end
+
     # ------------------------------------------------------------------
     # Source/index setup
     # ------------------------------------------------------------------
@@ -1042,18 +1061,24 @@ module Celerite
           # `definition.rb:699-708` heals by `reresolve_without([spec])`: the
           # offending rows leave the locked index so their dependencies come
           # back from the index, and the retry prints the second
-          # `Resolving dependencies...` line.
+          # `Resolving dependencies...` line. The rows are NOT added to
+          # `@gems_to_unlock`: `reresolve_without` only deletes from the
+          # resolution base (`definition.rb:782-785`), while `Resolver::Base`
+          # still receives the untouched `@originally_locked_specs`
+          # (`definition.rb:1323`), so the locked version stays the preferred
+          # one and completing an edge never upgrades a locked gem.
           announce_index_fetch_for(stale.first)
-          stale_names = stale.compact_map do |full_name|
+          stale.compact_map do |full_name|
             @resolved_specs.find { |spec| spec.full_name == full_name }.try(&.name)
-          end
-          pending = @unlock.is_a?(Array(String)) ? @unlock.as(Array(String)) : [] of String
-          stale_names.each do |name|
-            @excluded_locked_names << name
-            pending << name unless pending.includes?(name)
-          end
-          @unlock = pending
-          @progress.puts "Resolving dependencies..."
+          end.each { |name| @excluded_locked_names << name }
+          @heal_locked_edges = true
+          # `resolver.rb:34` prints one `Resolving dependencies...` per
+          # `start_resolution`. A lock whose platforms cover the host needs no
+          # resolve before the heal, so the reference emits exactly one line
+          # (the heal's own); a `ruby`-only lock resolves both before and after
+          # and prints two. Measured 4.0.24 on `fixtures/gem-index-locked-deps`:
+          # `x64-mingw-ucrt` lock → 1 line, `ruby` lock → 2 lines.
+          @progress.puts "Resolving dependencies..." unless locked_platform_covers_local?
         end
       end
 
@@ -1085,16 +1110,19 @@ module Celerite
           # offending rows leave the locked index, so their dependencies come
           # back from the index instead of the lockfile row, and the retry emits
           # the second `Resolving dependencies...` line.
-          stale_names = stale.compact_map do |full_name|
+          # `reresolve_without` deletes the rows from the resolution BASE only
+          # (`definition.rb:782-785` -> `resolver/base.rb:39-41`); it never adds
+          # them to `@gems_to_unlock`, and `Resolver::Base` keeps receiving the
+          # untouched `@originally_locked_specs` (`definition.rb:1323`), so
+          # `Package#locked_version` still reports the locked version and the
+          # promoter keeps preferring it. Measured 4.0.24: `net-smtp` stays
+          # 0.5.0 while its missing `net-protocol` edge is restored.
+          stale.compact_map do |full_name|
             @resolved_specs.find { |spec| spec.full_name == full_name }.try(&.name)
-          end
-          unlocked_now = @unlock.is_a?(Array(String)) ? @unlock.as(Array(String)) : [] of String
-          stale_names.each do |name|
+          end.each do |name|
             @excluded_locked_names << name
-            unlocked_now << name unless unlocked_now.includes?(name)
           end
-          @unlock = unlocked_now
-          @progress.puts "Resolving dependencies..."
+          @heal_locked_edges = true
         end
         unlocked = @unlock.is_a?(Array(String)) ? @unlock.as(Array(String)) : [] of String
         @unlock = (unlocked + incompatible).uniq
@@ -1359,6 +1387,25 @@ module Celerite
     def covers_local_platform?(lockfile : Lockfile::Data) : Bool
       local = Gem::Platform.local.to_s
       lockfile.platforms.any? { |p| p == "ruby" || p == local }
+    end
+
+    # True only when the lockfile lists a NON-`ruby` platform that matches the
+    # running host (e.g. `x64-mingw-ucrt` here). A `ruby`-only lock does not
+    # count: the reference resolves it before the lockfile-dependency heal as
+    # well, which is why that shape prints two `Resolving dependencies...`
+    # lines instead of one.
+    private def locked_platform_covers_local? : Bool
+      return false unless @definition.lockfile_exists?
+      lockfile = @definition.lockfile!
+      lockfile.platforms.any? do |entry|
+        next false if entry == "ruby"
+        next true if entry == Gem::Platform.local.to_s
+        begin
+          Gem::Platform.new(entry).match?(Gem::Platform.local)
+        rescue
+          false
+        end
+      end
     end
 
     # Reference `Bundler::MatchPlatform.generic_local_platform_is_ruby?`:
@@ -1683,6 +1730,10 @@ module Celerite
         # `Resolver#raise_not_found!` adds this suffix whenever the app cache
         # directory exists (resolver.rb:334-361).
         app_cache_present? ? " or in gems cached in #{app_cache_label}" : nil,
+        # `definition.rb:1323` hands `Resolver::Base` the untouched
+        # `@originally_locked_specs`, so a row the heal removed from the
+        # candidate list still supplies the preferred version.
+        preferred_locked_versions,
       )
       prerelease_exceptions.each { |name| source.package_consider_prereleases(name) }
       source

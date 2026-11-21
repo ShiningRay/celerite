@@ -83,7 +83,15 @@ module Celerite
                      # `Resolver#raise_not_found!` appends " or in gems cached in
                      # vendor/cache" when `Bundler.app_cache.exist?`
                      # (resolver.rb:334-361); nil when the app cache is absent.
-                     @cache_note : String? = nil)
+                     @cache_note : String? = nil,
+                     # Locked versions taken from the ORIGINAL lockfile rows,
+                     # independent of the candidate list. `Resolver::Base` always
+                     # receives `@originally_locked_specs` (definition.rb:1323), so
+                     # `Package#locked_version` still reports the locked version for
+                     # a row the `reresolve_without` heal removed from the base
+                     # (definition.rb:782-785) and the promoter keeps preferring it
+                     # (gem_version_promoter.rb:134-145).
+                     @locked_versions : Hash(String, Gem::Version)? = nil)
         @root = RootPackage.new(@root_name)
         @packages = {} of String => Package
         @all_versions = {} of Package => Array(Candidate)
@@ -94,11 +102,21 @@ module Celerite
         @sorted_versions[@root] = [CandidateVersion.new(Gem::Version.new("0"), 0)]
       end
 
+      # `Resolver::Base` reads `locked_specs.version_for(name)` from the ORIGINAL
+      # lockfile (definition.rb:1323), so a row removed from the candidate list by
+      # the heal still contributes its locked version as the preferred one.
+      private def locked_version_for(name : String) : Gem::Version?
+        if (versions = @locked_versions) && (version = versions[name]?)
+          return version
+        end
+        @locked_specs[name]?.try(&.first?).try(&.version)
+      end
+
       def package_for(dependency : DepSpec, top_level : Bool = false) : Package
         pkg = @packages[dependency.name]?
         unless pkg
           prerelease_specified = dependency.requirement.prerelease?
-          locked_version = @locked_specs[dependency.name]?.try(&.first?).try(&.version)
+          locked_version = locked_version_for(dependency.name)
           platforms = top_level ? resolution_platforms : [@local_platform]
           pkg = Package.new(dependency.name, platforms, locked_version, @unlock, dependency, prerelease_specified)
           @packages[dependency.name] = pkg
@@ -349,7 +367,6 @@ module Celerite
           end
           b <=> a
         end
-
         return result if package.unlock? || locked_version.nil?
 
         move = result.select { |candidate| candidate.version == locked_version }
@@ -557,7 +574,7 @@ module Celerite
           package = @packages[dep.name]?
           package ||= begin
             prerelease_specified = dep.requirement.prerelease?
-            locked_version = @locked_specs[dep.name]?.try(&.first?).try(&.version)
+            locked_version = locked_version_for(dep.name)
             Package.new(dep.name, resolution_platforms, locked_version, @unlock, dep, prerelease_specified).tap do |pkg|
               @packages[dep.name] = pkg
             end
