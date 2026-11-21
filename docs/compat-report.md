@@ -6912,3 +6912,40 @@ hanlin 报「`cache --all-platforms` 我方多打 `  * json_pure.gem`、`Updatin
 ### 声明
 - 单次 `cache --all-platforms` 已对齐，夹具无区分力（纯护栏）。
 - 重跑分歧未修，成因与「app cache 已含该包时仍复制/仍打印」相关。
+
+## 2026-11-21（M7 task-104：`cache` 重跑面的输出）
+
+### 分歧与成因
+`cache --all-platforms` 在缓存已存在时重跑，我方曾多打一次 `Updating files in vendor/cache`
+与一行 `  * json_pure-2.8.1.gem`，且该段出现在 `Bundle complete!` 之前。
+
+成因：`cache` 命令内部先跑 install 流水线（`CLI::Cache#run` → install），而 install 自己带
+app-cache 刷新（task-87/101 引入），于是「install 刷一次 + cache 再刷一次」。参考只在
+`CLI::Cache#run` 里刷，install 由 cache 驱动时不刷。
+
+### 修法
+install 流水线新增 `refresh_cache : Bool = true` 形参并透传到 `run_install`；`cache` 调用时传
+`refresh_cache: false`。`run_cache` 保留唯一一次 `Updating files …`，`  *` 仅对**文件缺失**的包打印。
+
+### oracle（同沙箱连跑，PATH 源形状；4.0.24 与 2.7.2 逐行）
+| 形状 | 参考 | 修后我方 |
+|---|---|---|
+| 首次运行 | 9 行（含 `Updating files` 一次、`  * json_pure-2.8.1.gem` 一次） | 同 |
+| 第二次运行 | 4 行（`Bundle complete!`/`Bundled gems …`/`Updating files …`/`Fetching source index …`） | 同 |
+| 缓存缺该包（预置 `vendor/cache`） | 5 行（重跑 4 行 + `  * json_pure-2.8.1.gem`） | 同 |
+
+2.7.2：首次与「缺包」一致；**重跑时参考多打一行 `Fetching source index`**（其内部二次解析），
+我方未复现 ⇒ 夹具 `cache-rerun-existing-cache` 带 `deferred-2.7.2` 并写明理由。
+
+### 夹具与证据
+- `fixtures/differential/cache-rerun-existing-cache/`：`command` 两行同命令，stdout 逐行拼接比对。
+- `fixtures/differential/cache-rerun-partial-cache/`：`extra/vendor/cache/json_pure-2.8.1.gem`
+  预置该包、`command` 一行为 `cache --all-platforms`（覆盖「已存在⇒不打印 `  *`」）。
+- 负对照 `C:/temp/celerite-pre104`@`575fc00`：两夹具均 FAIL —— `> Updating files in vendor/cache`
+  / `>   * json_pure-2.8.1.gem`（重复段）与 `3a4 > Updating files in vendor/cache`。
+
+### 声明
+- 2.7.2 重跑的 `Fetching source index` 行未对齐（deferred）。
+- `spec/m7_cache_rerun_spec.cr` 未能落地：in-process 下 `cache` 首跑返回 7
+  （`Could not find gem 'json_pure' in rubygems repository`，source 未解析），窗口内未定位；
+  该面由两个精确 stdout 夹具覆盖，未提交红测试。
