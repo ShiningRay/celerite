@@ -452,7 +452,13 @@ module Celerite
         # already-installed specs; the reference still installs them).
         force_reinstall = rest.any? { |a| a == "--force" || a == "--redownload" }
         force_install = [] of Resolution::ResolvedSpec
-        pending = specs.sort_by(&.full_name).select(&.source_type.==("GEM"))
+        # `installer.rb:208` installs `definition.specs`, and `Definition` keeps
+        # only dependencies with a group outside `without`
+        # (`dependency.rb` `should_include?`), so an excluded group's specs sit
+        # in the lockfile but are never installed. The lock stays complete.
+        without_groups = without_group_names(definition)
+        installable = installable_specs(resolution, specs, without_groups)
+        pending = installable.sort_by(&.full_name).select(&.source_type.==("GEM"))
         if force_reinstall
           force_install, pending = pending.partition do |spec|
             installer.installed?(spec.name, spec.version.to_s, spec.platform)
@@ -847,7 +853,10 @@ module Celerite
 
         if summary
           deps_count = resolution.evaluation.dependencies.count { |d| !d.gemspec_dev_dep && !hidden_plugins.includes?(d.name) }
-          gems_count = specs.size
+          gems_count = installable.size
+          # `cli/common.rb:57`: the notice names the excluded groups that still
+          # have Gemfile dependencies, in configuration order.
+          skipped_groups = skipped_group_names(resolution, without_groups)
           # 2.7.x counts the running Bundler; a switched run counts the
           # switched-to bundler instead
           if resolution.switched_bundler
@@ -864,6 +873,15 @@ module Celerite
             refresh_app_cache(stdout, definition, install_root, specs.map { |spec| {spec.name, spec.full_name} }, resolution.generated_lockfile)
           end
           stdout.puts "Bundle complete! #{deps_count} Gemfile dependenc#{deps_count == 1 ? "y" : "ies"}, #{gems_count} gem#{gems_count == 1 ? "" : "s"} now installed."
+          unless skipped_groups.empty?
+            label = if skipped_groups.size == 1
+                      "group '#{skipped_groups.first}'"
+                    else
+                      quoted = skipped_groups.map { |group| "'#{group}'" }
+                      "groups #{quoted[0...-1].join(", ")} and #{quoted.last}"
+                    end
+            stdout.puts "Gems in the #{label} were not installed."
+          end
           # `cli/install.rb` L59-64 as of 2.7.2/4.0.24: system gems report the
           # `bundle info` hint, a custom path prints the base path relative to
           # the working directory (no ruby scope).
@@ -1098,6 +1116,51 @@ module Celerite
     # `generated_lockfile` because the very first install runs before anything
     # is written to disk (the reference walks `definition.specs`, so it copies
     # out-of-project path sources on a first install too).
+    # `settings.rb` stores `with`/`without` as symbol lists; the env form splits
+    # on `:`. Values arrive already normalised, so accept both shapes.
+    private def self.without_group_names(definition : Definition) : Array(String)
+      case value = definition.config["without"]
+      when Array
+        value.map(&.to_s)
+      when String
+        value.split(':').reject(&.empty?)
+      else
+        [] of String
+      end
+    end
+
+    # `installer.rb:208` installs `definition.specs`; `Definition` keeps only the
+    # dependencies with a group outside `without` (`dependency.rb`
+    # `should_include?`), and resolution pulls in their transitive specs. A spec
+    # that only excluded groups reach stays in the lockfile but is never installed.
+    private def self.installable_specs(resolution : Resolution,
+                                       specs : Array(Resolution::ResolvedSpec),
+                                       without_groups : Array(String)) : Array(Resolution::ResolvedSpec)
+      return specs if without_groups.empty?
+      included = resolution.evaluation.dependencies.select do |dep|
+        dep.groups.empty? || dep.groups.any? { |group| !without_groups.includes?(group) }
+      end
+      by_name = specs.to_h { |spec| {spec.name, spec} }
+      seen = Set(String).new
+      queue = included.map(&.name)
+      until queue.empty?
+        name = queue.pop
+        spec = by_name[name]?
+        next if spec.nil?
+        next unless seen.add?(name)
+        spec.dependencies.each { |dep| queue << dep.name }
+      end
+      specs.select { |spec| seen.includes?(spec.name) }
+    end
+
+    # `cli/common.rb:57` verbalises the excluded groups that still carry Gemfile
+    # dependencies, in configuration order.
+    private def self.skipped_group_names(resolution : Resolution, without_groups : Array(String)) : Array(String)
+      return [] of String if without_groups.empty?
+      present = resolution.evaluation.dependencies.flat_map(&.groups).uniq
+      without_groups.select { |group| present.includes?(group) }
+    end
+
     private def self.cache_path_sources(definition : Definition, cache_target : String,
                                         lockfile : Lockfile::Data) : Nil
       # `cache_all` defaults to true only in 4.x (`settings.rb:88`); 2.7.2
