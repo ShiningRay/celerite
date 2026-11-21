@@ -572,6 +572,13 @@ module Celerite
               cached_paths[spec.full_name] = vendor_path
               next
             end
+            # `--local` forbids downloading: a spec that is neither installed
+            # nor vendor-cached aborts like `Installer#install` with
+            # `Bundler::GemNotFound: Could not find <full_name> in locally
+            # installed gems` (`installer.rb:81-96`), not with a fetch error.
+            if resolution.local_only
+              raise GemNotFoundError.new("Could not find gem '#{spec.name}' in locally installed gems.")
+            end
             install_events << {
               kind: "fetch",
               name: spec.full_name,
@@ -871,7 +878,7 @@ module Celerite
           # before the `Bundle complete!` line, printing one `  * <file>.gem`
           # per copied package.
           if refresh_app_cache?(definition, config.frozen?, rest)
-            refresh_app_cache(stdout, definition, install_root, specs.map { |spec| {spec.name, spec.full_name} }, resolution.generated_lockfile)
+            refresh_app_cache(stdout, definition, install_root, specs.map { |spec| {spec.name, spec.full_name} }, resolution.generated_lockfile, cached_paths)
           end
           stdout.puts "Bundle complete! #{deps_count} Gemfile dependenc#{deps_count == 1 ? "y" : "ies"}, #{gems_count} gem#{gems_count == 1 ? "" : "s"} now installed."
           unless skipped_groups.empty?
@@ -1226,7 +1233,8 @@ module Celerite
     # `  * <file>.gem` per copied package, then the command prints its summary.
     private def self.refresh_app_cache(stdout : IO, definition : Definition, install_root : String,
                                        entries : Array(Tuple(String, String)),
-                                       lockfile : Lockfile::Data? = nil) : Nil
+                                       lockfile : Lockfile::Data? = nil,
+                                       cached_paths : Hash(String, String)? = nil) : Nil
       cache_label = app_cache_label(definition)
       cache_target = app_cache_path(definition)
       Dir.mkdir_p(cache_target)
@@ -1237,7 +1245,15 @@ module Celerite
         gem_name = "#{full_name}.gem"
         gem_file = File.join(download_cache, gem_name)
         next unless File.file?(gem_file)
-        FileUtils.cp(gem_file, File.join(cache_target, gem_name))
+        # `Source::Rubygems#cache` skips a package that already lives in the
+        # app cache (`rubygems.rb:233-242`: only the bundle copy is copied);
+        # copying it onto itself printed a bogus `  * <file>.gem` line for a
+        # `--local` install served from `vendor/cache`.
+        destination = File.join(cache_target, gem_name)
+        served_from = cached_paths.try(&.[full_name]?)
+        next if served_from && File.expand_path(served_from) == File.expand_path(destination)
+        next if File.expand_path(gem_file) == File.expand_path(destination)
+        FileUtils.cp(gem_file, destination)
         stdout.puts "  * #{gem_name}"
       end
       if data = lockfile

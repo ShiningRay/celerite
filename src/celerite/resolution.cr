@@ -760,6 +760,15 @@ module Celerite
               next unless gem_path.starts_with?(home_prefix)
             end
           end
+          # `install --local` restricts the interpreter's view to the project
+          # bundle (`Gem.path` is rewired to `BUNDLE_PATH`), so host gems must
+          # not become candidates; otherwise a host copy would be "installed"
+          # and the reference's `Could not find gem '<name>' in locally
+          # installed gems.` never fires.  Only when a custom path is in play:
+          # without one the reference does see the system gems.
+          if @local_only && !@definition.config["path"].as?(String).try(&.empty?).nil?
+            next unless entry["from_dir"]?.try(&.as_bool?)
+          end
           platform_raw = entry["platform"]?.try(&.as_s?) || "ruby"
           platform = platform_raw == "ruby" ? Gem::Platform::RUBY : Gem::Platform.new(platform_raw)
           deps = (entry["dependencies"]?.try(&.as_a) || [] of JSON::Any).map do |dep|
@@ -1528,12 +1537,19 @@ module Celerite
         # metadata-only solve failure happens after the reference has already
         # announced resolution, while missing/platform errors happen earlier
         # and do not print it (pinned oracle behavior).
-        @progress.puts "Resolving dependencies..." if @show_resolving
+        # `--local` never announces a resolve: the reference materializes from the
+      # installed specs only (`sources.local_only!`) and reports not-found.
+      @progress.puts "Resolving dependencies..." if @show_resolving && !@local_only
         raise ex
       end
-      @progress.puts "Resolving dependencies..." if @show_resolving
+      # `--local` announces the resolve only once it actually succeeded: the
+      # reference materializes from the installed specs only
+      # (`sources.local_only!`) and a not-found error therefore prints nothing.
+      @progress.puts "Resolving dependencies..." if @show_resolving && !@local_only
       decisions = solve_with_relaxation(source, deps, prerelease_exceptions, unlocked, orchestrator)
-      decisions_to_specs(decisions, index, locked_index)
+      specs = decisions_to_specs(decisions, index, locked_index)
+      @progress.puts "Resolving dependencies..." if @show_resolving && @local_only
+      specs
     end
 
     private def make_source(base_requirements : Hash(String, Gem::Requirement),
