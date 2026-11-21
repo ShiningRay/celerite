@@ -249,6 +249,15 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
     cp -r "$fixture_dir/sibling/." "$cel_sandbox/"
   fi
 
+  # Home dir preset, if any: fixtures that need files under `$HOME`, which both
+  # sides point at `<sandbox>/home` (e.g. `~/.gemrc` proxy entries).
+  # `home/<rel>` lands at `<sandbox>/home/<rel>`.
+  if [ -d "$fixture_dir/home" ]; then
+    mkdir -p "$ref_sandbox/home" "$cel_sandbox/home"
+    cp -r "$fixture_dir/home/." "$ref_sandbox/home/"
+    cp -r "$fixture_dir/home/." "$cel_sandbox/home/"
+  fi
+
   # Bundle-path preset, if any: some fixtures need gems that are already
   # "installed" (e.g. `check` with satisfied dependencies). Each side gets its
   # own BUNDLE_PATH (see the run block below), so seed both from the same

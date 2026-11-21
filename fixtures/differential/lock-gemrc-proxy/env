@@ -1,0 +1,3 @@
+unset:http_proxy
+unset:HTTP_PROXY
+unset:no_proxy
