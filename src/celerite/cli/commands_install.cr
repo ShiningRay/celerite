@@ -2099,37 +2099,34 @@ module Celerite
         # missing (cli/binstubs.rb:12-26), so binstubs work before the first
         # install.  Nothing is written back to the lockfile, and the sources are
         # local-only (binstubs never fetches the index).
-        specs = materialize_lockfile(definition, stdout, local_only: true).specs
+        targets = binstub_targets(definition)
         # `--all` walks `definition.specs`, which always carries the running
         # bundler even when the lockfile has no `bundler` line.
-        names_list = all ? (["bundler"] + specs.map(&.name)) : names
+        names_list = all ? (["bundler"] + targets.map(&.name)) : names
         names_list.each do |name|
           # installer.rb:98-102: RubyGems owns the bundler stub.
           if name == "bundler"
             stderr.puts "Bundler itself does not use binstubs because its version is selected by RubyGems"
             next
           end
-          spec = specs.find(&.name.==(name))
+          spec = targets.find(&.name.==(name))
           if spec.nil?
             # cli/common.rb:113-123: `gem_not_found_message(name, specs)`.
-            stderr.puts gem_not_found_message_for(name, specs.map(&.name))
+            stderr.puts gem_not_found_message_for(name, targets.map(&.name))
             return 7
           end
-          gem_file = File.join(install_root, "cache", "#{spec.full_name}.gem")
-          next unless File.file?(gem_file)
-          info = Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(gem_file).to_json)
+          available, executables, bindir, dependency_names = binstub_spec_info(bridge, spec, install_root, definition)
+          next unless available
           # installer.rb:104-118: an explicit `binstubs GEM` without executables
           # points at a dependency that has some, else it reports the gem.
-          if !all && info.executables.empty?
+          if !all && executables.empty?
             suggestions = [] of Tuple(String, Array(String))
-            each_runtime_dependency(info) do |dep_name|
-              dep_spec = specs.find(&.name.==(dep_name))
+            dependency_names.each do |dep_name|
+              dep_spec = targets.find(&.name.==(dep_name))
               next if dep_spec.nil?
-              dep_file = File.join(install_root, "cache", "#{dep_spec.full_name}.gem")
-              next unless File.file?(dep_file)
-              dep_info = Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(dep_file).to_json)
-              next if dep_info.executables.empty?
-              suggestions << {dep_name, dep_info.executables}
+              dep_available, dep_executables, _, _ = binstub_spec_info(bridge, dep_spec, install_root, definition)
+              next unless dep_available && !dep_executables.empty?
+              suggestions << {dep_name, dep_executables}
             end
             if suggestions.empty?
               stderr.puts "There are no executables for the gem #{spec.name}."
@@ -2139,14 +2136,14 @@ module Celerite
             end
             next
           end
-          gem_dir = File.join(install_root, "gems", spec.full_name)
-          bindir = info.bindir.empty? ? "bin" : info.bindir
+          gem_dir = installed_gem_dir(spec, install_root, definition)
+          bindir = "bin" if bindir.empty?
           # `Bundler.bin_path` memoizes and mkdir_p's on first use (bundler.rb:120-126),
           # which the installer reaches only once a spec with executables is at
           # hand (installer.rb:121-130) 闁?so a missing gem never leaves `bin/` behind.
           Dir.mkdir_p(target)
           exists = [] of String
-          info.executables.each do |executable|
+          executables.each do |executable|
             source = File.join(gem_dir, bindir, executable)
             next unless File.file?(source)
             stub = File.join(target, executable)
@@ -2184,6 +2181,67 @@ module Celerite
       end
     end
 
+    # A binstub target derived from the lockfile: the reference reads the
+    # executable list from `definition.specs`, so path/git sources (no cached
+    # `.gem`) must be derivable without the package file.
+    record BinstubTarget,
+      name : String,
+      full_name : String,
+      source_type : String,
+      remote : String? = nil
+
+    private def self.binstub_targets(definition : Definition) : Array(BinstubTarget)
+      data = materialize_lockfile(definition, nil, local_only: true)
+      targets = [] of BinstubTarget
+      data.sources.each do |section|
+        remote = section.options.find { |o| o.key == "remote" }.try(&.value).try(&.as?(String))
+        section.specs.each do |spec|
+          targets << BinstubTarget.new(spec.name, spec.full_name, section.type, remote)
+        end
+      end
+      targets
+    end
+
+    # The installed gem directory for a spec, matching how the installer laid
+    # it out (PATH sources keep their declared directory, GEM sources live
+    # under `<install>/gems`, GIT checkouts under `<install>/bundler/gems`).
+    private def self.installed_gem_dir(spec : BinstubTarget, install_root : String,
+                                       definition : Definition) : String
+      case spec.source_type
+      when "PATH"
+        File.expand_path(spec.remote || "", File.dirname(definition.gemfile_path))
+      when "GIT"
+        File.join(install_root, "bundler", "gems", spec.full_name)
+      else
+        File.join(install_root, "gems", spec.full_name)
+      end
+    end
+
+    # `cli/binstubs.rb:52` -> `installer.rb:121-130`: the reference reads the
+    # executable list and bindir from the *installed spec*, never from the
+    # cached `.gem`, so path/git sources (which have no `<full_name>.gem`) must
+    # work too. Returns `{available, executables, bindir, dependency_names}`.
+    private def self.binstub_spec_info(bridge : Bridge::Client, spec : BinstubTarget,
+                                       install_root : String,
+                                       definition : Definition) : Tuple(Bool, Array(String), String, Array(String))
+      if spec.source_type == "GEM"
+        gem_file = File.join(install_root, "cache", "#{spec.full_name}.gem")
+        return {false, [] of String, "bin", [] of String} unless File.file?(gem_file)
+        info = Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(gem_file).to_json)
+        deps = [] of String
+        info.dependencies.try(&.each { |dep| deps << (dep["name"]?.try(&.as_s?) || "") })
+        return {true, info.executables, info.bindir, deps.reject(&.empty?)}
+      end
+      gem_dir = installed_gem_dir(spec, install_root, definition)
+      path = File.join(gem_dir.gsub('\\', "/"), "#{spec.name}.gemspec")
+      path = Dir.glob(File.join(gem_dir.gsub('\\', "/"), "*.gemspec")).first? || path unless File.file?(path)
+      payload = File.file?(path) ? bridge.load_installed_spec(path) : nil
+      return {false, [] of String, "bin", [] of String} if payload.nil?
+      executables = (payload["executables"]?.try(&.as_a?) || [] of JSON::Any).compact_map(&.as_s?)
+      bindir = payload["bindir"]?.try(&.as_s?) || "bin"
+      deps = (payload["dependencies"]?.try(&.as_a?) || [] of JSON::Any).compact_map(&.as_s?)
+      {true, executables, bindir, deps}
+    end
     # `Bundler::Standalone#gem_path` (`installer/standalone.rb:54-61`) resolves a
     # spec's on-disk root: PATH sources live at their declared directory, GEM
     # sources under `<install>/gems`, GIT checkouts under `<install>/bundler/gems`.

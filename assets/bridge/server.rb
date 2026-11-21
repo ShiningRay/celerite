@@ -381,6 +381,11 @@ def op_load_installed_spec(payload)
       "metadata" => metadata,
       # `installer/standalone.rb:30-40` emits one `$:.unshift` per entry.
       "require_paths" => spec.require_paths,
+      # `installer.rb:121-130` locates binstubs through the spec, never the
+      # cached `.gem`, so path/git sources need these on the installed spec.
+      "executables" => spec.executables,
+      "bindir" => spec.bindir,
+      "dependencies" => spec.runtime_dependencies.map { |d| d.name },
     },
   }
 end
