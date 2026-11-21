@@ -2790,6 +2790,23 @@ module Celerite
     # lockfile whose `PLATFORMS` lacks the local one is never a no-op: the
     # reference fetches the index, resolves and rewrites the list (measured on
     # 4.0.24 and 2.7.2 with a lockfile that lists only `ruby`).
+    # `cli/common.rb:137`: the promotion levels are mutually exclusive and the
+    # message lists them in the reference's option order (minor before patch).
+    def self.promotion_level_conflicts(rest : Array(String)) : Array(String)?
+      names = [] of String
+      names << "minor" if rest.includes?("--minor")
+      names << "patch" if rest.includes?("--patch")
+      names << "major" if rest.includes?("--major")
+      names.size > 1 ? names : nil
+    end
+
+    def self.requested_promotion_level(rest : Array(String)) : String?
+      return "patch" if rest.includes?("--patch")
+      return "minor" if rest.includes?("--minor")
+      return "major" if rest.includes?("--major")
+      nil
+    end
+
     private def self.lockfile_platforms_cover_local?(platforms : Array(String)) : Bool
       local = Gem::Platform.local.to_s
       platforms.includes?(local)
@@ -2819,6 +2836,13 @@ module Celerite
       # `--update` is a repeatable array option in the reference; a bare
       # `--update` records `true`, names record a per-gem unlock list.
       update_names = platform_flag_values(rest, "--update")
+      # The promotion levels are mutually exclusive (`cli/common.rb:137`); the
+      # reference validates them while configuring the promoter, i.e. before
+      # anything is resolved or written.
+      if conflicts = promotion_level_conflicts(rest)
+        stderr.puts "Provide only one of the following options: #{conflicts.join(", ")}"
+        return 15
+      end
 
       definition = Definition.build
       if unsupported = Commands.unsupported_setting_error(definition.config, stderr)
@@ -2897,6 +2921,16 @@ module Celerite
       checksum_refresh = definition.checksums_need_refresh?(rest.includes?("--local") && !add_checksums)
 
       resolution = Resolution.new(definition, unlock)
+      # `cli/lock.rb:47` calls `configure_gem_version_promoter` only when
+      # `--update` is given; `common.rb:134-148` then uses the requested level
+      # or `:major`, and `prefer_patch` (the `--strict` flag / the setting)
+      # tightens it to patches. Without this wiring `lock --patch --update`
+      # promoted json_pure 2.6.0 to 2.8.1 instead of staying on the patch line.
+      if update || !update_names.empty?
+        resolution.version_promotion = requested_promotion_level(rest) || "major"
+        resolution.version_promotion_strict =
+          rest.includes?("--strict") || definition.config["prefer_patch"] == true
+      end
       # Nothing to unlock and `DEPENDENCIES` already matches the Gemfile: the
       # reference resolves nothing, so plain `lock` prints only "Writing
       # lockfile to ..." and `lock --print` prints only the lock body (measured

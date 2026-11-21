@@ -221,15 +221,15 @@ module Celerite
         if days = cooldown_flag_value(rest)
           resolution.cooldown_days = days
         end
-        level = if rest.includes?("--patch")
-                  "patch"
-                elsif rest.includes?("--minor")
-                  "minor"
-                elsif rest.includes?("--major")
-                  "major"
-                end
-        resolution.version_promotion = level
-        resolution.version_promotion_strict = rest.includes?("--strict")
+        # `cli/common.rb:137` rejects multiple promotion levels before the
+        # promoter is configured, i.e. before resolution and any write.
+        if conflicts = Commands.promotion_level_conflicts(rest)
+          stderr.puts "Provide only one of the following options: #{conflicts.join(", ")}"
+          return 15
+        end
+        resolution.version_promotion = Commands.requested_promotion_level(rest)
+        resolution.version_promotion_strict =
+          rest.includes?("--strict") || definition.config["prefer_patch"] == true
 
         # BUNDLED WITH semantics: update does not auto-switch -it records
         # the running bundler version in the rewritten lockfile (pinned
