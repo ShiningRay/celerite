@@ -6053,3 +6053,35 @@ C（只记录，不修）：`add json_pure --github rails/thor --skip-install`�
 - 我方：exit 0，从源重新下载并回填 cache（task-60 的实现）。
 
 理由：参考此处是缺陷（把「强制重装」限制在 cache 命中，cache 缺失时不是给出可执行的错误而是抛内部异常）。对齐等于复制该缺陷、并把一个可自愈的路径改成崩溃，故**故意不对齐**，仅记录。
+
+## 2026-11-21（M7 task-83：`install --local` 只限制来源，不跳过安装）
+
+### oracle（两版 profile；`file://` 索引；隔离 HOME/BUNDLE_PATH/BUNDLE_APP_CONFIG；参考 = `ruby .upstream-specs/v4.0.24/bundler/exe/bundle`）
+
+| 场景 | 参考 | 我方（修前） |
+|---|---|---|
+| `vendor/cache/json_pure-2.6.0.gem` 存在，`install --local` | exit 0，`Resolving dependencies...` / `Installing json_pure 2.6.0` / `Updating files in vendor/cache` / `Bundle complete! 1 Gemfile dependency, 1 gem now installed.`，bundle 内有 `ruby/4.0.0/specifications/json_pure-2.6.0.gemspec` | exit 0，**无 `Installing` 行**，bundle 内没有任何 gemspec |
+| 同上，`install`（无 `--local`） | 多一行 `Fetching source index from …`，其余一致 | 一致 |
+| `--local` 且 cache 为空、`vendor/cache` 目录存在 | exit 7，`Could not find gem 'json_pure (= 2.6.0)' in cached gems or installed locally or` / `in gems cached in vendor/cache.` | 一致（task-69 已对齐） |
+
+机制：`cli/install.rb:33` 走 `Installer#run` → `install(spec)`，跳过条件只有 `installed?(spec)`（即「已在 bundle 中」，`source/rubygems.rb:181`/`:206`）；`--local` 只经 `definition.rb:190-203 setup_domain!` 关掉 remote 来源，不改变安装步骤。
+
+### 实现
+
+`src/celerite/cli/commands_install.cr`：删掉 `if resolution.local_only … pending = pending.reject { |spec| resolution.local_installed_full_names.includes?(spec.full_name) }`。该过滤把 `GEM_HOME` 里同名同版本的副本当作「已安装」，于是既不下载也不安装，bundle 留空却报 `Bundle complete!`。`--local` 的来源限制仍由 `resolution.local_only`（`index_specs_for` 只返回本地候选）负责。
+
+### 装具与夹具
+
+- `fixtures/differential/install-local-vendored-install/`：`Gemfile` = `source "file:///@INDEX_DIR@"` + `gem "json_pure", "2.6.0"`；`extra/vendor/cache/json_pure-2.6.0.gem`；`command` = `install --local`；`installed-tree` = `ruby/*/gems`、`ruby/*/specifications`。双 profile **PASS**（4.0.24 / 2.7.2 各 1 passed）。
+- `spec/m7_local_install_step_spec.cr` 3 例：`--local` 把 vendored gem 装进 bundle（断言 `Installing json_pure 2.6.0` + bundle 内 gemspec）；第二次运行不再 `Installing`；cache 为空时仍 exit 7 并带 `in cached gems or installed locally`。
+
+### 反假绿
+
+- **差分夹具无区分力**：harness 把 `GEM_HOME` 指到沙箱空目录（`script/differential:304-309`），前置条件（宿主同名同版本副本可见）无法复现，基线二进制 `01d19d4` 也 **PASS** 该夹具 → 该夹具是回归护栏。
+- **区分力由 spec 提供**：`C:/temp/celerite-pre83` @ `01d19d4` 跑同一 spec → **1 example failed**（`out.should contain("Installing json_pure 2.6.0")`，实际输出 `Resolving dependencies...` 起、无 Installing 行）；修后 3/0。
+
+### 已声明差异 / 未验证
+
+- `--prefer-local` 走同一安装路径，本轮未单独取 oracle（逻辑上不受本次删除影响：`prefer_local` 只影响版本选择）。
+- 远端 `install`（非 `--local`）无 `vendor/cache` 时的 `Fetching`/`Installing` 顺序未变，回归夹具覆盖。
+- `bundle package` / `cache --all` 与本次改动无关（那条仍在 roadmap L158 挂账）。
