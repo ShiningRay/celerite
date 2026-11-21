@@ -1,0 +1,4 @@
+source "file:///@INDEX_DIR@"
+
+gem "ptool", path: "ptool"
+gem "json_pure"

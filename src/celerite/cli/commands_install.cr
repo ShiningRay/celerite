@@ -2242,6 +2242,7 @@ module Celerite
       deps = (payload["dependencies"]?.try(&.as_a?) || [] of JSON::Any).compact_map(&.as_s?)
       {true, executables, bindir, deps}
     end
+
     # `Bundler::Standalone#gem_path` (`installer/standalone.rb:54-61`) resolves a
     # spec's on-disk root: PATH sources live at their declared directory, GEM
     # sources under `<install>/gems`, GIT checkouts under `<install>/bundler/gems`.

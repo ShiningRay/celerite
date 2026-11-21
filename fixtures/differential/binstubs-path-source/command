@@ -1,0 +1,3 @@
+install --quiet
+config set bin bin2
+binstubs ptool
