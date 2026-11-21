@@ -5981,3 +5981,25 @@ oracle 用同一份 `file://` 索引（`fixtures/gem-index`，预装并锁 `json
 1. `lockfile_changed_reason` 的另外 12 个条件（sources 变更、缺平台、path/git gemspec 变更、缺依赖、CHECKSUMS 缺失/为空、bundler 自更新等）未逐条实现；`lockfile_changed_reason` 只实现了 oracle 命中的 `the dependencies in your gemfile changed`，未命中时回落到「不改写」。
 2. `update`/`outdated` 的 verbose `Using …` 与 `N:  … from …` 并行工作行未实现：参考的工作线程序号（实测出现 `3:`/`5:`/`7:`）依赖并行完成顺序，非确定，不宜进差分断言。
 3. `outdated` 的 `Re-resolving …` 只覆盖「有锁且解锁」形态；无锁时参考走 `Resolving dependencies because there's no lockfile`（已由 task-78 的 install 路径覆盖 install，未单独验 outdated）。
+
+## 2026-11-21（M7 task-80：`bundle add` 的 requirement 渲染与 option 冲突）
+
+D1：`--version` 的值是**逗号分隔的 requirement 列表**（`cli/add.rb:33`），每个条目经 `Gem::Requirement::PATTERN` 校验（`:57-59`），再由 `Injector` 逐条 dump（`injector.rb:106`）。我方旧实现把它包成 `"= <值>"`，于是 `~> 2.8` 变成 `"= ~> 2.8"`，Gemfile 已写坏后才报 `Illformed requirement`。
+
+| 场景（`--skip-install`，有 `file://` 索引） | 修前我方 | 参考 | 修后我方 |
+| --- | --- | --- | --- |
+| `--version ~>2.8` | exit 1，写 `"= ~> 2.8"` + `Illformed requirement` | exit 0，`"~> 2.8"` | 一致 |
+| `--version >=2.6,<2.9` | exit 1，`"= >=2.6,<2.9"` | `">= 2.6", "< 2.9"` | 一致 |
+| `--version 2.8.1` | `"= 2.8.1"` | `"= 2.8.1"` | 一致 |
+| `--version bogus` | exit 1，写坏行 | exit 15，`Invalid gem requirement pattern 'bogus'`，Gemfile 不动 | 一致 |
+| `--require false` / `--group dev,test` / `--source …` | 与参考一致 | `require: false` / `groups: [:dev, :test]` / `source: "<verbatim>"` | 一致（随选项顺序一并复核） |
+
+D3：`--github` 原先无分支、被静默丢弃；参考 `injector.rb:116` 写 `github: "<v>"`，拼装顺序（`:122`）为 source→path→git→github→branch→ref→glob→require。全选项组合实测（`--version ~>2.8 --group dev,test --source … --glob x.gemspec --require false`）逐字一致：`gem "json_pure", "~> 2.8", groups: [:dev, :test], source: "…", glob: "x.gemspec", require: false`。
+
+D2：参考 `cli/add.rb:41-52` 四条互斥校验（exit 15，Gemfile 不动）；我方原先只校验 strict+optimistic 与空名，`--branch main` 会先写 Gemfile 再以 exit 4 失败。现按参考顺序（git+github → branch 无 git/github → ref 无 git/github → branch+ref）在写盘前拦下，文案逐字。**该块仅 4.x 存在**：实测 2.7.2 无此校验（`--branch` 单独 exit 4、`--ref` 单独 exit 0 并写行、git+github exit 4、git+branch+ref exit 11），故用 `profile_2_x?` 门控，2.7.2 夹具标 `deferred-2.7.2`。
+
+夹具：`add-version-requirement`（`--version ~>2.8`，断言 Gemfile 逐字；注意差分 `command` 行不做引号解析，带空格的 requirement 必须写成 `~>2.8` 单 token）、`add-option-conflicts`（四条命令，断言 exit 15 + 四条文案，Gemfile 未变）。spec `spec/m7_add_version_requirement_spec.cr` 4 例（`~>`、`>=,<`、裸版本、非法）。
+
+已声明差异：`--github owner/repo --skip-install` 参考 exit 0 且不 clone，我方写完 `github: "rails/thor"` 后在 relock 阶段 clone 失败（exit 11）——写入行逐字一致，退出码不一致，未加差分夹具（仅 spec 层面覆盖 suffix 渲染）；D1 的 `--version` 与 `--path`/`--git` 组合未逐条 oracle。
+
+已知历史红：`spec/m7_gemfile_plugins_spec.cr` 的 `gem-index/,` 断言在 `9bda5f5` 上即失败（`git stash` 复现，7 examples/1 failure），与本任务无关，未修。
