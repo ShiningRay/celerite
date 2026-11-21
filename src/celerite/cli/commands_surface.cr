@@ -382,6 +382,31 @@ module Celerite
         stderr.puts "You cannot specify `--strict` and `--optimistic` at the same time."
         return 15
       end
+      # `cli/add.rb:41-52` rejects these combinations before the injector runs,
+      # so nothing is written to the Gemfile (Thor exits 15). Measured: 4.0.24
+      # rejects all four; 2.7.2 has no such block and instead fails later inside
+      # the injected Gemfile (branch/git+github: exit 4) or proceeds (ref alone:
+      # exit 0, git clone failure: exit 11), so the checks are 4.x only.
+      unless profile_2_x?
+        if rest.includes?("--git") && rest.includes?("--github")
+          stderr.puts "You cannot specify `--git` and `--github` at the same time."
+          return 15
+        end
+        unless rest.includes?("--git") || rest.includes?("--github")
+          if rest.includes?("--branch")
+            stderr.puts "You cannot specify `--branch` unless `--git` or `--github` is specified."
+            return 15
+          end
+          if rest.includes?("--ref")
+            stderr.puts "You cannot specify `--ref` unless `--git` or `--github` is specified."
+            return 15
+          end
+        end
+        if rest.includes?("--branch") && rest.includes?("--ref")
+          stderr.puts "You cannot specify `--branch` and `--ref` at the same time."
+          return 15
+        end
+      end
       # Thor only treats the operands it parses as values of the preceding
       # `--option` as option values (`cli/add.rb` then requires at least one
       # positional gem). `rest.reject(&.starts_with?("--"))` wrongly promoted
@@ -407,6 +432,18 @@ module Celerite
       definition = Definition.build
       gemfile_path = definition.gemfile_path
 
+      # `cli/add.rb:33` splits `--version` on commas; each entry is validated
+      # with `Gem::Requirement::PATTERN` (:57-59) and `Injector` dumps every
+      # entry on its own (`injector.rb:106`), so `~> 2.8` keeps its operator and
+      # a bare `1.2.3` becomes `= 1.2.3`. The old `"= <value>"` wrapping turned
+      # every non-bare requirement into `Illformed requirement` after the
+      # Gemfile had already been written.
+      explicit_parts = nil.as(Array(String)?)
+      if version_value = flag_value(rest, "--version") || flag_value(rest, "-v")
+        explicit_parts = add_requirement_parts(version_value, stderr)
+        return 15 if explicit_parts.nil?
+      end
+
       # `source/path.rb:198-204` raises PathError (status 13) while the injector
       # evaluates the new dependency, i.e. before `append_to` writes anything.
       # Validate here so a missing `--path` leaves the Gemfile untouched.
@@ -429,8 +466,7 @@ module Celerite
       bridge = Bridge::Client.new
       begin
         evaluation = bridge.evaluate_gemfile(gemfile_path)
-        explicit_version = flag_value(rest, "--version") || flag_value(rest, "-v")
-        desired = explicit_version ? ["= #{explicit_version}"] : [">= 0"]
+        desired = explicit_parts || [">= 0"]
         current = evaluation.dependencies.find { |dep| dep.name == name }
         if current && !same_requirement?(current.requirements, desired)
           raise injected_gem_conflict(name, current.requirements, desired, gemfile_path)
@@ -450,7 +486,7 @@ module Celerite
           # add-optimistic probes: explicit `--version` is exact; otherwise
           # strict (`= major.minor`), optimistic (`>= major.minor`) or the
           # default pessimistic (`~> major.minor`) form.
-          probe = latest_requirement_for(definition, name, stdout, rest, bridge)
+          probe = latest_requirement_for(definition, name, stdout, rest, bridge, explicit_parts)
           version_requirement = probe[:requirement]
           gem_line = "gem \"#{name}\"#{version_requirement}#{add_group_option(rest)}#{add_option_suffix(rest)}"
           append_gemfile(gemfile_path, gem_line)
@@ -611,25 +647,58 @@ module Celerite
       positionals
     end
 
-    # Gemfile options added by `bundle add` (--path/--git/--branch/--ref/
-    # --source/--require). Values are Ruby string literals; `--require`
-    # accepts the bare keyword `false`.
+    # `cli/add.rb:33,57-59`: the `--version` value is a comma separated list of
+    # requirement entries, each validated against `Gem::Requirement::PATTERN`.
+    # Returns nil (after printing the reference's message) when an entry is not
+    # a requirement. Bare versions are dumped as `= 1.2.3`.
+    private def self.add_requirement_parts(value : String, stderr : IO) : Array(String)?
+      parts = [] of String
+      value.split(',').each do |raw|
+        entry = raw.strip
+        next if entry.empty?
+        match = entry.match(/\A(>=|<=|!=|~>|>|<|=)?\s*(\S+)\z/)
+        version = match.try(&.[2]?)
+        valid = false
+        if version
+          begin
+            Gem::Version.new(version)
+            valid = true
+          rescue VersionError | ArgumentError
+            valid = false
+          end
+        end
+        unless valid
+          stderr.puts "Invalid gem requirement pattern '#{entry}'"
+          return nil
+        end
+        operator = match.not_nil![1]? || "="
+        parts << "#{operator} #{version}"
+      end
+      parts.empty? ? nil : parts
+    end
+
+    # Gemfile options added by `bundle add`. `injector.rb:122` fixes the order:
+    # source, path, git, github, branch, ref, glob, require.
     private def self.add_option_suffix(rest : Array(String)) : String
       parts = [] of String
+      if source = flag_value(rest, "--source") || flag_value(rest, "-s")
+        parts << "source: #{source.inspect}"
+      end
       if path = flag_value(rest, "--path")
         parts << "path: #{path.inspect}"
       end
       if git = flag_value(rest, "--git")
         parts << "git: #{git.inspect}"
       end
+      # `injector.rb:116` renders `github: "owner/repo"`.
+      if github = flag_value(rest, "--github")
+        parts << "github: #{github.inspect}"
+      end
       if branch = flag_value(rest, "--branch")
         parts << "branch: #{branch.inspect}"
       end
       if git_ref = flag_value(rest, "--ref")
         parts << "ref: #{git_ref.inspect}"
-      end
-      if source = flag_value(rest, "--source") || flag_value(rest, "-s")
-        parts << "source: #{source.inspect}"
       end
       # `injector.rb:114` renders `glob: "..."` from the dependency options.
       if glob = flag_value(rest, "--glob")
@@ -645,10 +714,15 @@ module Celerite
     # printed its source-index/resolve lines, so the injector's relock can stay
     # silent instead of announcing the same fetch twice.
     private def self.latest_requirement_for(definition : Definition, name : String, stdout : IO, rest : Array(String),
-                                            bridge : Bridge::Client) : NamedTuple(requirement: String, printed: Bool)
+                                            bridge : Bridge::Client,
+                                            explicit_parts : Array(String)?) : NamedTuple(requirement: String, printed: Bool)
       printed = false
       begin
         resolution = Resolution.new(definition, false, bridge)
+        # `--github` resolves against the source list like a plain add (the
+        # reference writes `~> 1.5` without cloning; the git source is only
+        # materialised during install), so only `--path`/`--git` skip the index
+        # probe.
         if flag_value(rest, "--path").nil? && flag_value(rest, "--git").nil?
           # Reference probes the index source before resolving: the fetch line
           # comes first, then the resolver announcement.
@@ -666,8 +740,12 @@ module Celerite
           printed = true
         end
 
-        if explicit = flag_value(rest, "--version") || flag_value(rest, "-v")
-          return {requirement: ", \"= #{explicit}\"", printed: printed}
+        # `Injector#build_gem_lines` (injector.rb:106) dumps each requirement
+        # entry on its own, so `~> 2.8` stays `~> 2.8` and `>= 1.0, < 2` becomes
+        # `">= 1.0", "< 2"`.
+        if explicit_parts
+          dumped = explicit_parts.map { |part| "\"#{part}\"" }.join(", ")
+          return {requirement: ", #{dumped}", printed: printed}
         end
 
         versions = if local_spec_dir = flag_value(rest, "--path") || flag_value(rest, "--git")
