@@ -1,0 +1,7 @@
+source "file:///@INDEX_DIR@"
+
+gem "json_pure"
+
+group :test do
+  gem "thor"
+end

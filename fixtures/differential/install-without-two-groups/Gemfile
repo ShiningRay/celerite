@@ -1,0 +1,11 @@
+source "file:///@INDEX_DIR@"
+
+gem "json_pure"
+
+group :a do
+  gem "thor"
+end
+
+group :b do
+  gem "racc"
+end
