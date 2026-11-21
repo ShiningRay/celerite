@@ -2646,12 +2646,16 @@ module Celerite
     # blocking unsupported setting is present.
     #
     # Policy:
-    # - Proxy routing is supported: `Proxy.resolve` honors the `proxy` and
-    #   `http_proxy` config keys and the `http_proxy`/`HTTP_PROXY` env vars,
+    # - Proxy routing is supported: `Proxy.resolve` honors `~/.gemrc`
+    #   `:http_proxy` (the reference fetcher reads
+    #   `Gem.configuration[:http_proxy]`, `fetcher.rb:262`, `:313-316`; a
+    #   `:no_proxy` value disables proxying), then the `proxy` and
+    #   `http_proxy` config keys, then the `http_proxy`/`HTTP_PROXY` env vars,
     #   and both the downloader and the compact-index fetcher route through
-    #   it. Bundler reads no other proxy env var (`https_proxy`/`ALL_PROXY`)
-    #   and no `~/.gemrc` proxy entries, so those are silently ignored here
-    #   instead of warning or failing.
+    #   it. Bundler reads no other proxy env var (`https_proxy`/`ALL_PROXY`),
+    #   so those are silently ignored here instead of warning or failing.
+    #   `~/.gemrc` `:sources` is genuinely never read by the reference
+    #   (`gem`/`bundle` only document it), so it stays ignored.
     # - ssl_client_key: Bundler 4.0.24 / 4.0.16 / 2.7.2 do not define this
     #   setting at all (`settings.rb` has no such key); a client private key
     #   belongs in the same PEM referenced by `ssl_client_cert`. Because some

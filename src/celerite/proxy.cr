@@ -1,18 +1,25 @@
 require "uri"
 require "base64"
+require "yaml"
 require "./config"
 
 module Celerite
   # HTTP proxy selection mirroring the reference (`net-http-persistent`'s
   # `proxy_from_env`, vendored by Bundler and wired in `fetcher.rb`):
   #
-  # - only `http_proxy`/`HTTP_PROXY` is consulted (lowercase wins, empty value
-  #   means "no proxy"); `https_proxy`/`ALL_PROXY` are deliberately ignored,
-  #   exactly like the reference;
+  # - `~/.gemrc` `:http_proxy` comes first: the reference fetcher reads
+  #   `Gem.configuration[:http_proxy]` (`fetcher.rb:262`, `:313-316`), which
+  #   RubyGems fills from the gemrc, and the literal `:no_proxy` disables
+  #   proxying outright — even when `http_proxy` is exported;
+  # - otherwise `http_proxy`/`HTTP_PROXY` is consulted (lowercase wins, empty
+  #   value means "no proxy"); `https_proxy`/`ALL_PROXY` are deliberately
+  #   ignored, exactly like the reference;
   # - a proxy without a scheme is treated as `http://`;
   # - `http_proxy_user`/`http_proxy_pass` (and uppercase variants) fill in
   #   credentials missing from the URI;
-  # - `.bundle/config` `proxy`/`http_proxy` win over the environment.
+  # - between the gemrc and the environment, `.bundle/config`
+  #   `proxy`/`http_proxy` win (a celerite extension: the reference ignores
+  #   those keys for proxying, recorded as a declared divergence).
   #
   # This type is pure: it never opens sockets, so it can be unit tested
   # offline. Routing lives in `HttpTransport`.
@@ -34,6 +41,14 @@ module Celerite
     # `.bundle/config` keys first (`proxy` then `http_proxy`), then the
     # environment. The config value intentionally overrides `http_proxy`.
     def self.resolve(config : Config) : Proxy?
+      gemrc = gemrc_http_proxy
+      if gemrc[:found]
+        return nil if gemrc[:disabled]
+        if (value = gemrc[:value])
+          proxy = parse(value, env_credential("http_proxy_user", "HTTP_PROXY_USER"), env_credential("http_proxy_pass", "HTTP_PROXY_PASS"))
+          return proxy if proxy
+        end
+      end
       {"proxy", "http_proxy"}.each do |key|
         value = config[key].to_s
         next if value.strip.empty?
@@ -41,6 +56,40 @@ module Celerite
         return proxy if proxy
       end
       from_environment
+    end
+
+    # `~/.gemrc`'s `:http_proxy` entry. RubyGems parses the file into
+    # `Gem.configuration[:http_proxy]`, and the reference fetcher prefers that
+    # value over the environment; `:no_proxy` there means "do not proxy" and
+    # short-circuits every later source. Keys may be written as symbols
+    # (`:http_proxy`) or plain strings (`http_proxy`).
+    private def self.gemrc_http_proxy : {found: Bool, disabled: Bool, value: String?}
+      path = gemrc_path
+      absent = {found: false, disabled: false, value: nil}
+      return absent if path.nil?
+      return absent unless File.exists?(path)
+
+      mapping = YAML.parse(File.read(path)).as_h?
+      return absent if mapping.nil?
+
+      mapping.each do |key, value|
+        name = key.as_s?
+        next if name.nil?
+        name = name[1..] if name.starts_with?(":")
+        next unless name == "http_proxy"
+        raw = value.as_s?
+        return absent if raw.nil?
+        stripped = raw.strip
+        return {found: true, disabled: true, value: nil} if stripped == ":no_proxy"
+        return {found: true, disabled: false, value: stripped}
+      end
+      absent
+    end
+
+    private def self.gemrc_path : String?
+      home = ENV["HOME"]? || ENV["USERPROFILE"]?
+      return nil if home.nil? || home.strip.empty?
+      File.join(home, ".gemrc")
     end
 
     def host : String
