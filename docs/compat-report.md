@@ -6449,3 +6449,24 @@ task-91 改为按**异常类**判定，规则表写在 `script/upstream-specs-bu
 - **非 frozen 自愈未实现**：我方在该状态走锁刷新而非重解析，只一条 `Resolving dependencies...`、只装一个 gem，且写出的锁「有依赖边、缺 spec 行」——这是当前缺陷，与参考的两条 `Resolving dependencies...` + 补齐 `net-protocol (0.2.2)` 行 + 两个 gem 不符。失配识别已可用（frozen 41 走同一判定），但非 frozen 分支需要绕开锁复用并强制重解析，改动涉及 `resolve!`、`decisions_to_specs` 与锁刷新三处，超出本轮窗口。
 - `install --local` 在该夹具下我方 exit 0（`file://` 源仍被当作本地可达），参考 exit 7。
 - `lock` 在该夹具下我方不改锁，参考补 `x64-mingw-ucrt` 平台行。
+
+## 2026-11-21（M7 task-93：`show` 的列举排序与 `show bundler` 形态）
+
+参考 `cli/show.rb`：无参数列举走 `Bundler.load.specs.sort_by(&:name)`（`:33-36` 的 `--paths`、`:37-51` 的列表同一条排序），而 `Bundler.load.specs` 包含正在运行的 Bundler 自身，所以它的位置由名字决定，不是固定首行；`show bundler` 在 `:19-30` 先于 `--paths`/`--version` 判断，直接 `File.expand_path("../../..", __dir__)` 后 `ui.info(path)` 只打一行。
+
+oracle（工程含 `path "vendor/app_gem"` + `gem "app_gem"`，名字排在 `bundler` 之前；4.0.24 与 2.7.2 同形）：
+
+| 命令 | 参考 stdout | 修复前我方 |
+| --- | --- | --- |
+| `show` | `Gems included by the bundle:` / `  * app_gem (1.0.0)` / `  * bundler (4.0.24)` / `  * json_pure (2.8.1)` | `bundler` 固定第一行，其余顺序不变 |
+| `show --paths` | `…/vendor/app_gem` / `…/bundler-<ver>` / `…/gems/json_pure-2.8.1` | `bundler` 路径固定第一行 |
+| `show bundler` | 仅一行路径（由正在运行的 Bundler 的 `lib/bundler` 上溯三级） | 7 行 info 块（`  * bundler (…4.0.24)` + Summary/Homepage/元数据/Path） |
+| `show bundler --paths` | 同上单行 | 同上 info 块 |
+
+实现（`src/celerite/cli/commands.cr`）：列举分支改为先构造 `(name, line)` 列表（列表与 `-v` 各自的元数据形态都在内），`sort_by!` 后打印；`--paths` 同法。新增私有 `show_bundler_path(gem_dir)`：harness 下取 `CELERITE_REFERENCE_BUNDLER_LIB` 的父目录（即参考运行的 Bundler 根），否则按安装形态 `File.expand_path("../../..", <gem_dir>/lib/bundler)`；`show bundler` 分支在 `--version`/`--path` 之前短路成单行。`info bundler` 保持原 info 块未动（该差异仍未定性）。
+
+证据：`spec/m7_show_order_spec.cr` 4 examples 0 failures；差分 `show-listing-order`、`show-paths-order`、`show-bundler`、`show-bundler-paths` 双 profile 均 PASS（4.0.24 5 passed/0 failed/1 skipped、2.7.2 5/0/0，含 `info-default-gem-fallback` 回归）；负对照 `C:/temp/celerite-pre93`@`cfb2d91` 两条 FAIL（`show-listing-order` 顺序差、`show-bundler` 打成 info 块）。
+
+已声明差异：
+- `info bundler` 仍打印 7 行 info 块，参考的 `cli/info.rb` 对 bundler 走 `print_gem_info`，本轮未定性与未调整。
+- `show bundler` 的路径在 harness 下等价于「参考所用 Bundler 的根目录」；脱离 harness 时按安装形态回退到 `lib/bundler` 上溯三级，与参考「正在运行的 Bundler 自身的相对位置」语义一致，但不同安装布局下的字面值未逐形态取 oracle。
