@@ -841,6 +841,39 @@ module Celerite
       end
     end
 
+    # `install --prefer-local` only sees the gems installed for THIS project:
+    # the reference rewires `Gem.path` to `BUNDLE_PATH`, so the interpreter's
+    # own directories are invisible. `Bridge.installed_specs` aggregates the
+    # whole RubyGems view (host `json_pure 2.8.1`), which is exactly what must
+    # not leak in here, so enumerate the project's `specifications/*.gemspec`
+    # ourselves and read them through the bridge (task-50/112 op).
+    private def prefer_local_candidates(name : String) : Array(Resolver::IndexSpec)
+      specs = [] of Resolver::IndexSpec
+      if dir = project_spec_dir
+        Glob.paths(dir, "*.gemspec").each do |path|
+          data = @bridge.not_nil!.load_installed_spec(path) || next
+          next unless data["name"]?.try(&.as_s?) == name
+          version = data["version"]?.try(&.as_s?) || next
+          platform_raw = data["platform"]?.try(&.as_s?) || "ruby"
+          platform = platform_raw == "ruby" ? Gem::Platform::RUBY : Gem::Platform.new(platform_raw)
+          deps = (data["dependencies"]?.try(&.as_a) || [] of JSON::Any).compact_map do |dep|
+            dep_name = dep.as_s?
+            dep_name ? Resolver::DepSpec.new(dep_name, Gem::Requirement.new) : nil
+          end
+          specs << Resolver::IndexSpec.new(
+            name,
+            Gem::Version.new(version),
+            platform,
+            deps,
+            requirement_from(data["required_ruby_version"]?.try(&.as_s?)),
+            requirement_from(data["required_rubygems_version"]?.try(&.as_s?)),
+          )
+        end
+      end
+      specs.concat(vendor_cache_specs(name))
+      specs
+    end
+
     private def index_specs_for(name : String) : Array(Resolver::IndexSpec)
       local = local_index_specs(name)
       if @local_only
@@ -849,8 +882,16 @@ module Celerite
         # "Could not find gem '<name> (<req>)' in locally installed gems."
         return local
       end
-      if @prefer_local && !local.empty?
-        return local
+      if @prefer_local
+        # `install --prefer-local` still owns the remote source: the reference
+        # fetches the index (so `Fetching source index …` prints) and only then
+        # prefers the bundle copies (source/rubygems.rb:148-178 keeps both
+        # views; the resolver takes the local one when available).
+        remote = index_specs_from_remote(name)
+        candidates = prefer_local_candidates(name)
+        return candidates unless candidates.empty?
+        return remote unless remote.empty?
+        return [] of Resolver::IndexSpec
       end
       remote = index_specs_from_remote(name)
       return remote unless remote.empty?
