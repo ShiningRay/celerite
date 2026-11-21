@@ -429,9 +429,45 @@ module Celerite
 
       versions = {} of String => Gem::Version
       specs.each do |spec|
+        next if @dropped_locked_names.includes?(spec.name)
         versions[spec.name] ||= spec.version
       end
-      versions
+      versions.empty? ? nil : versions
+    end
+
+    # `@locked_spec_with_missing_deps` / `@locked_spec_with_invalid_deps`
+    # (`definition.rb:973-1015 check_lockfile` + `spec_set.rb:87-96
+    # validate_deps`): a locked row whose edge points at a gem with no locked row
+    # at all is `:missing`; one whose edge names a locked gem but no locked
+    # version satisfies the edge requirement is `:invalid`. The reference
+    # deletes such rows from `@locked_specs`, which makes `something_changed?`
+    # true (`definition.rb:630-645`) and lets the resolve pick a fresh version.
+    # A row with no edges at all (S3: the edge line is absent) is complete and
+    # keeps the reference's no-op behavior.
+    def incomplete_locked_spec_names : Array(String)
+      @incomplete_locked_names ||= begin
+        names = [] of String
+        if @definition.lockfile_exists?
+          rows = [] of Lockfile::Spec
+          @definition.lockfile!.sources.each { |source| rows.concat(source.specs) }
+          by_name = Hash(String, Array(Lockfile::Spec)).new
+          rows.each { |row| (by_name[row.name] ||= [] of Lockfile::Spec) << row }
+          rows.each do |row|
+            incomplete = row.dependencies.any? do |edge|
+              next false if edge.name == "bundler"
+              targets = by_name[edge.name]?
+              if targets.nil?
+                true
+              else
+                !targets.any? { |target| edge.requirement.satisfied_by?(Gem::Version.new(target.version)) }
+              end
+            end
+            names << row.name if incomplete
+          end
+        end
+        names.uniq!
+        names
+      end
     end
 
     # ------------------------------------------------------------------
@@ -616,6 +652,8 @@ module Celerite
     # index with empty requirements.
     @excluded_locked_names = Set(String).new
 
+    @incomplete_locked_names : Array(String)?
+
     @path_specs_changed : Bool?
 
     @fetch_replayed = false
@@ -623,6 +661,18 @@ module Celerite
     # install asks for the eresolve_without heal of stale lockfile edges
     # (definition.rb:699-708); lock deliberately keeps the edges as written.
     property autoheal_locked_edges : Bool = false
+
+    # `lock` asks for the `check_lockfile` semantics instead: a locked row whose
+    # own edges cannot be satisfied by the lockfile is removed from the locked
+    # state entirely, so the solver may pick a newer version (see
+    # `incomplete_locked_spec_names`).
+    property drop_incomplete_locked_specs : Bool = false
+
+    # Names removed by `drop_incomplete_locked_specs`. They must disappear from
+    # the locked index AND from the preferred-version map and the `>= locked`
+    # floor, because the reference deletes the row from `@locked_specs`, the
+    # very object `@originally_locked_specs` aliases (`definition.rb:140`).
+    @dropped_locked_names = Set(String).new
 
     private def log_fetch_for(remote : String) : Nil
       return unless @fetch_logged_remotes.add?(remote)
@@ -1127,6 +1177,21 @@ module Celerite
         unlocked = @unlock.is_a?(Array(String)) ? @unlock.as(Array(String)) : [] of String
         @unlock = (unlocked + incompatible).uniq
         incompatible.each { |name| @excluded_locked_names << name }
+      end
+
+      # `definition.rb:973-1015 check_lockfile` runs during `Definition#initialize`
+      # for every command, but only a command that actually writes the lockfile
+      # (i.e. `lock`, which has no "skip the write" short circuit in
+      # `cli/lock.rb:78-97`) observes the consequence. Drop the incomplete rows
+      # before the resolve so their locked candidate, their preferred version and
+      # their `>= locked` floor all disappear together, exactly as
+      # `@locked_specs.delete(rows)` does in the reference (it deletes from the
+      # object `@originally_locked_specs` aliases).
+      if @drop_incomplete_locked_specs
+        incomplete_locked_spec_names.each do |name|
+          @dropped_locked_names << name
+          @excluded_locked_names << name
+        end
       end
 
       @resolved_specs = run_resolution(deps)
@@ -1918,6 +1983,7 @@ module Celerite
         next if @unlock == true
         next if @unlock.is_a?(Array(String)) && @unlock.as(Array(String)).includes?(name)
         next if unlocked.includes?(name)
+        next if @dropped_locked_names.includes?(name)
         locked_version = specs.first?.try(&.version)
         next unless locked_version
         next unless base.has_key?(name)

@@ -2921,6 +2921,15 @@ module Celerite
       checksum_refresh = !definition.checksums_need_refresh?(rest.includes?("--local") && !add_checksums).nil?
 
       resolution = Resolution.new(definition, unlock)
+      # `cli/lock.rb:78-97` has no "skip the write" short circuit: whether the
+      # lockfile is rewritten and whether anything is resolved are decided by
+      # `Definition`'s state alone. `check_lockfile` (`definition.rb:973-1015`)
+      # deletes a locked row whose own dependency edges cannot be satisfied by
+      # the lockfile (`spec_set.rb:87-96 validate_deps`), which sets
+      # `@locked_spec_with_missing_deps` / `@locked_spec_with_invalid_deps` and
+      # makes `something_changed?` true (`definition.rb:630-645`), so the
+      # reference re-resolves and may promote the gem. Opt into that here.
+      resolution.drop_incomplete_locked_specs = true
       # `cli/lock.rb:47` calls `configure_gem_version_promoter` only when
       # `--update` is given; `common.rb:134-148` then uses the requested level
       # or `:major`, and `prefer_patch` (the `--strict` flag / the setting)
@@ -2940,6 +2949,7 @@ module Celerite
          !rest.includes?("--add-platform") && !rest.includes?("--remove-platform") &&
          !definition.dependency_sources_changed?(resolution.evaluation.dependencies, resolution.evaluation.sources) &&
          !resolution.path_specs_changed? &&
+         resolution.incomplete_locked_spec_names.empty? &&
          definition.lockfile_exists? && definition.lockfile_matches_dependencies?(resolution.evaluation.dependencies) && lockfile_platforms_cover_local?(definition.lockfile!.platforms)
         resolution.close
         text = with_profile_indent(definition.lockfile!.to_lock)
@@ -3007,6 +3017,7 @@ module Celerite
                          !update && update_names.empty? &&
                          !rest.includes?("--add-platform") && !rest.includes?("--remove-platform") &&
                          !definition.dependency_sources_changed?(resolution.evaluation.dependencies, resolution.evaluation.sources) &&
+                         resolution.incomplete_locked_spec_names.empty? &&
                          definition.lockfile_matches_dependencies?(resolution.evaluation.dependencies)
       if lockfile_current && (print_mode || normalize_platforms || (add_checksums && !checksum_refresh))
         resolution.show_resolving = false
