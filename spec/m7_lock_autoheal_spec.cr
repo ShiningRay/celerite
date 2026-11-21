@@ -133,3 +133,68 @@ describe "task-94 stale lockfile dependency edges" do
     end
   end
 end
+
+# task-115: the upstream `lockfile_spec.rb:2088` shape ("automatically fixes the
+# lockfile when it has incorrect deps, keeping the locked version"). Both spec
+# rows are present but the dependent's edge line is missing; `install` must
+# restore the edge and keep the locked version, printing ONE
+# `Resolving dependencies...` because a lock whose platforms cover the host does
+# not resolve before the heal (`definition.rb:782-785` never adds the row to
+# `@gems_to_unlock`, so `gem_version_promoter.rb:134-145` still prefers 0.5.0).
+private def edge_heal_lockfile(remote : String = "#{autoheal_index_url}/") : String
+  <<-LOCK
+    GEM
+      remote: #{remote}
+      specs:
+        net-protocol (0.2.2)
+        net-smtp (0.5.0)
+
+    PLATFORMS
+      x64-mingw-ucrt
+
+    DEPENDENCIES
+      net-smtp
+
+    BUNDLED WITH
+       4.0.24
+    LOCK
+end
+
+describe "task-115 missing dependency edge keeps the locked version" do
+  it "restores the edge without upgrading the locked spec" do
+    with_project(autoheal_project) do |project|
+      File.write(File.join(project, "Gemfile.lock"), edge_heal_lockfile)
+
+      with_autoheal_env(project) do |dir|
+        code, out, err = run_cli(["install"])
+        code.should eq(0)
+        out.scan("Resolving dependencies...").size.should eq(1)
+        out.should contain("Installing net-smtp 0.5.0")
+        out.should_not contain("net-smtp 0.5.1")
+        err.should_not contain("net-smtp 0.5.1")
+        lock = File.read(File.join(dir, "Gemfile.lock"))
+        lock.should contain("    net-protocol (0.2.2)")
+        lock.should contain("    net-smtp (0.5.0)\n      net-protocol")
+        lock.should_not contain("net-smtp (0.5.1)")
+      end
+    end
+  end
+
+  it "keeps the locked version when the healed row is the only one missing" do
+    with_project(autoheal_project) do |project|
+      # `net-protocol` row absent as well: the heal adds both the row and the
+      # edge and still must not promote `net-smtp` to the index's newest 0.5.1.
+      File.write(File.join(project, "Gemfile.lock"), edge_heal_lockfile.lines.reject { |l| l.includes?("net-protocol (0.2.2)") }.join)
+
+      with_autoheal_env(project) do |dir|
+        code, out, _ = run_cli(["install"])
+        code.should eq(0)
+        lock = File.read(File.join(dir, "Gemfile.lock"))
+        lock.should contain("    net-protocol (0.2.2)")
+        lock.should contain("    net-smtp (0.5.0)\n      net-protocol")
+        lock.should_not contain("net-smtp (0.5.1)")
+        out.should_not contain("(was 0.5.0)")
+      end
+    end
+  end
+end
