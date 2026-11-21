@@ -274,6 +274,19 @@ module Celerite
 
         force_reinstall = rest.includes?("--force") || rest.includes?("--redownload")
         pending = specs.sort_by(&.full_name).select(&.source_type.==("GEM"))
+        # `definition.rb:1251-1254` + `dependency.rb#should_include?`: the
+        # requested group set is `groups - without - optional + with`, so gems
+        # that only belong to an excluded group never enter the install step
+        # (oracle: `BUNDLE_WITHOUT=test update --all` installs no `test` gem
+        # while the lockfile keeps it).
+        update_without = without_group_names(definition)
+        unless update_without.empty?
+          update_deps = resolution.evaluation.dependencies
+          all_groups = update_deps.flat_map { |dep| dep.groups.empty? ? ["default"] : dep.groups }.uniq
+          requested = all_groups.reject { |group| update_without.includes?(group) }
+          keep = installable_specs(resolution, specs, requested).map(&.full_name).to_set
+          pending = pending.select { |spec| keep.includes?(spec.full_name) }
+        end
         unless force_reinstall
           pending = pending.reject do |spec|
             installer.installed?(spec.name, spec.version.to_s, spec.platform)
@@ -367,6 +380,7 @@ module Celerite
         # before `Bundle updated!` (oracle: Removing precedes that line).
         clean_after_install(stdout, definition, resolution.generated_lockfile, update_install_root, bridge)
         stdout.puts "Bundle updated!"
+        print_update_without_notice(stdout, definition, resolution.evaluation.dependencies)
         print_cooldown_summary(resolution, stdout)
         # `cli/update.rb:123`: same trailing funding hint as install, printed
         # last, over the freshly resolved definition.
@@ -1308,6 +1322,31 @@ module Celerite
     # missing lockfile writes it (reference Diagnose#run leaves the definition
     # locked), which is why `issue` on a Gemfile-only project must not fail with
     # the old `Could not locate Gemfile`.
+    # `cli/update.rb:119` calls `Common.output_without_groups_message(:update)`,
+    # which (`common.rb:49-58`) returns when `without` is empty and otherwise
+    # names the excluded groups that still carry Gemfile dependencies, in the
+    # command's past tense. Only `without` triggers it; `only` stays silent.
+    private def self.print_update_without_notice(stdout : IO, definition : Definition, deps : Array(Bridge::EvaluatedDependency)) : Nil
+      groups = case value = definition.config["without"]
+               when Array  then value.map(&.to_s)
+               when String then value.split(":").reject(&.empty?)
+               else             [] of String
+               end
+      return if groups.empty?
+      present = deps.flat_map do |dep|
+        dep.groups.empty? ? ["default"] : dep.groups
+      end.uniq
+      skipped = groups.select { |group| present.includes?(group) }
+      return if skipped.empty?
+      message = if skipped.size == 1
+                  "Gems in the group '#{skipped.first}' were not updated."
+                else
+                  quoted = skipped.map { |group| "'#{group}'" }
+                  "Gems in the groups #{quoted[0..-2].join(", ")} and #{quoted.last} were not updated."
+                end
+      stdout.puts message
+    end
+
     # `settings/validator.rb:57-63`: when `path` and `path.system` are both set,
     # the rule nils each one in turn and reports it with `Rule#set`, whose
     # message is `Setting `key` to nil, since <description>`. The reference
