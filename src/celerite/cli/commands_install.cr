@@ -502,7 +502,9 @@ module Celerite
         # Locked-path installs print the source-index line when downloads are
         # pending, but never a Resolving line (pinned reference behavior,
         # update-conservative fixture).
-        if reuse && pending.any? && !resolution.index_fetch_logged?
+        # `--local` never fetches, so a missing package reports straight from
+        # the installer (installer.rb:81-96) without a source-index line.
+        if reuse && pending.any? && !resolution.index_fetch_logged? && !resolution.local_only
           if resolution.primary_remote.starts_with?("file:")
             stdout.puts "Fetching source index from #{resolution.primary_remote}"
           else
@@ -577,7 +579,7 @@ module Celerite
             # `Bundler::GemNotFound: Could not find <full_name> in locally
             # installed gems` (`installer.rb:81-96`), not with a fetch error.
             if resolution.local_only
-              raise GemNotFoundError.new("Could not find gem '#{spec.name}' in locally installed gems.")
+              raise GemNotFoundError.new("Could not find #{spec.full_name} in locally installed gems")
             end
             install_events << {
               kind: "fetch",

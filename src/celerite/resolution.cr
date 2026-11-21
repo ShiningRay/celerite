@@ -948,6 +948,21 @@ module Celerite
     def resolve!(reuse : Bool = false, verify_locked_compat : Bool = false) : Array(ResolvedSpec)
       @resolved = true
       deps = top_level_deps
+      # `definition.rb:190-203`: `--local` never enables remote sources, so a
+      # locked bundle is materialized from the lockfile and nothing is
+      # resolved or fetched. When a package is neither installed in the bundle
+      # nor present in the app cache the installer reports the not-found
+      # message (`installer.rb:81-96`) and no resolve line is printed.
+      if @local_only && @definition.lockfile_exists?
+        @resolved_specs = materialize_locked
+        gem_specs = @resolved_specs.select { |spec| spec.source_type == "GEM" }
+        available = gem_specs.all? do |spec|
+          index_specs_for(spec.name)
+          @local_installed_full_names.includes?(spec.full_name) || !vendor_cache_specs(spec.name).empty?
+        end
+        @progress.puts "Resolving dependencies..." if @show_resolving && available
+        return @resolved_specs
+      end
 
       # `source/git.rb:76-81`: a source change makes the locked spec ineligible;
       # drop it from the locked index so the solver would otherwise keep the

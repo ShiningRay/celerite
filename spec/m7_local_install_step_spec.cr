@@ -145,8 +145,11 @@ LOCK
       # `--local` neither downloads nor announces a resolve. The resolve line is
       # the aligned part; the reference also skips the index fetch entirely and
       # our lazy fetcher still announces it (declared in the task-101 section).
+      # `--local` materializes the lock without resolving or fetching, so the
+      # installer reports the missing package by full name (`installer.rb:81-96`).
       out.should_not contain("Resolving dependencies")
-      err.strip.should eq("Could not find gem 'net-smtp' in locally installed gems.")
+      out.should_not contain("Fetching source index")
+      err.strip.should eq("Could not find net-smtp-0.5.0 in locally installed gems")
     end
   end
 
