@@ -143,8 +143,8 @@ module Celerite
           gems = (gems + group_gems).uniq
         end
         # `cli/update.rb:49-56`: a selector that matches nothing leaves the
-        # unlock set empty, and `Bundler.definition(gems: [], …)` then unlocks
-        # nothing — the lockfile is left untouched and only the closing line
+        # unlock set empty, and `Bundler.definition(gems: [], 閳?` then unlocks
+        # nothing 閳?the lockfile is left untouched and only the closing line
         # is printed. Without this the resolver still fetches the index and
         # re-resolves, which the reference never does.
         if !full_update && gems.empty? && sources.empty? && !ruby_flag && !update_bundler
@@ -367,8 +367,7 @@ module Celerite
           return code
         end
 
-        # `cli/update.rb:82`: `Bundler.load.cache if Bundler.app_cache.exist?` —
-        # update refreshes the app cache right after the install pass and
+        # `cli/update.rb:82`: `Bundler.load.cache if Bundler.app_cache.exist?` 閳?        # update refreshes the app cache right after the install pass and
         # before the optional cleaner and the `Bundle updated!` line.
         update_install_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, InstallPaths.ruby_abi(bridge))
         if Dir.exists?(app_cache_path(definition))
@@ -492,7 +491,7 @@ module Celerite
       # The remaining set gates both `append_to` and the injected-gems
       # evaluation, so a repeated `add` with the same requirement is a no-op
       # (the Gemfile keeps its bytes) while a different requirement surfaces as
-      # a conflict inside the synthetic `injected gems` file — before any index
+      # a conflict inside the synthetic `injected gems` file 閳?before any index
       # fetch line or Gemfile write.
       # `Injector` resolves and installs the injected dependency BEFORE it
       # appends the line, so a failed `add` leaves the Gemfile byte-identical
@@ -616,7 +615,7 @@ module Celerite
       description = "There was an error parsing `injected gems`: You cannot specify the same gem twice with different version requirements.\n" \
                     "You specified: #{name} (#{current.join(", ")}) and #{name} (#{desired.join(", ")})#{prompt}"
       # `Injector#build_gem_lines` joins with "\n" and appends none (injector.rb:99-124),
-      # so the synthetic file's single line carries no terminator — that is why
+      # so the synthetic file's single line carries no terminator 閳?that is why
       # the 2.7.x frame (which resolves its index to `-1`) renders the same line
       # twice on one output line instead of splitting it.
       contents = "gem \"#{name}\", #{desired.map(&.inspect).join(", ")}"
@@ -970,14 +969,14 @@ module Celerite
         new_gemfile << line
       end
 
-      # injector.rb:210 — an emptied `group`/`source`/`env`/`install_if` block
+      # injector.rb:210 閳?an emptied `group`/`source`/`env`/`install_if` block
       # is dropped together with its `end` line.
       {"group", "source", "env", "install_if"}.each do |block|
         remove_nested_blocks(new_gemfile, block)
       end
 
       # `remove_gems_from_gemfile` ends with `new_gemfile.join.chomp`
-      # (injector.rb:212) — exactly one trailing newline is stripped — and
+      # (injector.rb:212) 閳?exactly one trailing newline is stripped 閳?and
       # `SharedHelpers.write_to_gemfile` (shared_helpers.rb:215-217) then does
       # `File.open(path, "w") { |file| file.puts contents }`: `puts` appends a
       # newline only when `contents` does not already end with one, and the
@@ -1034,7 +1033,7 @@ module Celerite
       remove_pattern([name])
     end
 
-    # injector.rb:217-220 — a `gem` line that is commented out is not a
+    # injector.rb:217-220 閳?a `gem` line that is commented out is not a
     # declaration, so it survives the removal.
     private def self.within_gemfile_comment?(line : String, match : Regex::MatchData) : Bool
       offset = match.begin(0)
@@ -1042,7 +1041,7 @@ module Celerite
       line[0..(offset - 1)].includes?("#")
     end
 
-    # injector.rb:224-243 — drop a block header line together with the `end`
+    # injector.rb:224-243 閳?drop a block header line together with the `end`
     # line directly after it, repeating until the pass stops changing anything
     # (the reference counts adjacent block headers to bound its loop; iterating
     # to a fixed point drops the same lines).
@@ -1396,7 +1395,7 @@ module Celerite
       end
     end
 
-    # `[:test]` — the shape `fail!` produces for `settings.fetch(...).to_sym`.
+    # `[:test]` 閳?the shape `fail!` produces for `settings.fetch(...).to_sym`.
     private def self.symbol_list(groups : Array(String)) : String
       "[:#{groups.join(", :")}]"
     end
@@ -1823,15 +1822,41 @@ module Celerite
         # (license MIT) and equal keys keep `Bundler.load` order, which the
         # lockfile order mirrors; ties are therefore keyed by full_name here
         # to stay deterministic.
-        entries = materialize_lockfile(definition, stdout, local_only: true).specs.map do |spec|
-          {spec.full_name, spec.name, spec_license(bridge, install_root, spec)}
+        lockfile = materialize_lockfile(definition, stdout, local_only: true)
+        # A `PATH` source keeps its spec under the path, not under the bundle,
+        # so the live gemspec has to be located from the lockfile's source.
+        path_remotes = {} of String => String
+        lockfile.sources.each do |source|
+          next unless source.type == "PATH"
+          remote = source.remote
+          next if remote.nil? || remote.empty?
+          source.specs.each { |spec| path_remotes[spec.full_name] = remote }
         end
-        entries << {"bundler", "bundler", "MIT"}
-        entries.sort! do |a, b|
-          by_license = b[2] <=> a[2]
-          by_license == 0 ? (a[0] <=> b[0]) : by_license
+        gemfile_dir = File.dirname(definition.gemfile_path)
+        # `Bundler.load.specs` lists the running Bundler first, then the
+        # definition's specs in lockfile order, and `sort_by {|s| s.license }`
+        # is stable in Ruby, so equal licenses keep that order. Crystal's
+        # `sort_by` is not stable, hence the explicit position tie-breaker.
+        entries = [{"bundler", "bundler", "MIT"}]
+        # `Bundler.load.specs` orders specs by the Gemfile dependency order
+        # (`definition.specs`), not by lockfile section layout, so the
+        # tie-breaker follows the DEPENDENCIES section.
+        ordered = [] of Lockfile::Spec
+        bridge.evaluate_gemfile(definition.gemfile_path).dependencies.each do |dependency|
+          spec = lockfile.specs.find(&.name.==(dependency.name))
+          ordered << spec if spec && !ordered.includes?(spec)
         end
-        entries.each do |(_full_name, name, license)|
+        lockfile.specs.each { |spec| ordered << spec unless ordered.includes?(spec) }
+        ordered.each do |spec|
+          entries << {spec.full_name, spec.name, spec_license(bridge, install_root, spec, path_remotes, gemfile_dir)}
+        end
+        indexed = entries.map_with_index { |entry, index| {entry, index} }
+        indexed.sort! do |a, b|
+          by_license = b[0][2] <=> a[0][2]
+          by_license == 0 ? (a[1] <=> b[1]) : by_license
+        end
+        indexed.each do |(entry, _index)|
+          name, license = entry[1], entry[2]
           if license.empty? || license == "Unknown"
             stderr.puts "#{name}: Unknown"
           else
@@ -1844,13 +1869,46 @@ module Celerite
       0
     end
 
-    private def self.spec_license(bridge : Bridge::Client, install_root : String, spec : Lockfile::Spec) : String
+    # `cli.rb:571-581` reports `spec.license || spec.licenses` from the LIVE
+    # spec (`Bundler.load.specs`), so a path source and a bundle whose cache was
+    # deleted still show their real license. The cached `.gem` is only a
+    # fallback for the case where no gemspec can be read.
+    private def self.spec_license(bridge : Bridge::Client, install_root : String, spec : Lockfile::Spec,
+                                  path_remotes : Hash(String, String), gemfile_dir : String) : String
+      candidates = [File.join(install_root, "specifications", "#{spec.full_name}.gemspec")]
+      if remote = path_remotes[spec.full_name]?
+        base = File.expand_path(remote, gemfile_dir).gsub('\\', "/")
+        Dir.glob("#{base}/*.gemspec").each { |path| candidates << path }
+      end
+      candidates.each do |path|
+        next unless File.file?(path)
+        if license = license_from_spec_file(bridge, path)
+          return license
+        end
+      end
       gem_file = File.join(install_root, "cache", "#{spec.full_name}.gem")
       return "Unknown" unless File.file?(gem_file)
       info = Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(gem_file).to_json)
       info.license || info.licenses.try(&.first?) || "Unknown"
     rescue
       "Unknown"
+    end
+
+    # The bridge returns the gemspec's own `license`/`licenses` fields
+    # (`server.rb` `op_load_installed_spec`).
+    private def self.license_from_spec_file(bridge : Bridge::Client, path : String) : String?
+      spec = bridge.load_installed_spec(path)
+      return nil if spec.nil?
+      if license = spec["license"]?.try(&.as_s?)
+        return license unless license.empty?
+      end
+      if list = spec["licenses"]?.try(&.as_a?)
+        joined = list.compact_map(&.as_s?).reject(&.empty?).join(", ")
+        return joined unless joined.empty?
+      end
+      nil
+    rescue
+      nil
     end
 
     def self.fund(stdout : IO, stderr : IO, rest : Array(String)) : Int32
@@ -2558,7 +2616,7 @@ module Celerite
           resolution.remote_only = remote_only
           # `Plugin::Installer` resolves against remote/cached sources only
           # (the definition never calls `local!`), so the reference GemNotFound
-          # message reads "…, cached gems or installed locally"
+          # message reads "閳? cached gems or installed locally"
           # (source/rubygems.rb:122-136).
           resolution.progress = stdout
           stdin_specs = resolution.resolve!
@@ -3656,7 +3714,7 @@ module Celerite
       end
 
       # Thor enum validation (`Expected '--test' to be one of rspec, minitest,
-      # test-unit; got minitestx`, exit 15) — measured on both references.
+      # test-unit; got minitestx`, exit 15) 閳?measured on both references.
       if value = values["--test"]?
         unless ["rspec", "minitest", "test-unit"].includes?(value)
           stderr.puts "Expected '--test' to be one of rspec, minitest, test-unit; got #{value}"
