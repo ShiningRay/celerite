@@ -1059,10 +1059,13 @@ module Celerite
       # `Bundler.app_cache` = `Pathname.new(custom_path || root).join(cache_path)`
       # (bundler.rb:340-343), and `cache_path` defaults to "vendor/cache"
       # (settings.rb:304-306) — both resolve against the Gemfile root, never the
-      # invocation cwd.
+      # invocation cwd. `CLI::Cache#run` installs a `--cache-path` flag as a
+      # command-option setting (cli/cache.rb:11), so the flag wins over the
+      # configured/env value, and `runtime.rb:115` prints the raw setting.
       gemfile_root = File.dirname(definition.gemfile_path)
-      cache_target = cache_arg ? File.expand_path(cache_arg, gemfile_root) : File.join(gemfile_root, "vendor", "cache")
-      cache_label = cache_arg ? cache_arg.gsub(/\\/, "/") : "vendor/cache"
+      configured_cache = definition.config["cache_path"].as?(String)
+      cache_label = cache_arg || (configured_cache.nil? || configured_cache.empty? ? "vendor/cache" : configured_cache)
+      cache_target = File.expand_path(cache_label, gemfile_root)
 
       # `cache` always runs the install pipeline (reference `CLI::Cache#run` →
       # `CLI::Install`); `--no-install` only suppresses unpacking the gems.
