@@ -393,7 +393,13 @@ module Celerite
         # BUNDLED WITH version selection (pinned reference behavior): when the
         # running profile differs from the lockfile's BUNDLED WITH, install
         # the target bundler into GEM_HOME and continue under it.
-        if definition.lockfile_exists?
+        #
+        # `--local` never touches the network for this: the reference calls
+        # `restart_with_locked_bundler_if_needed` instead, which only restarts
+        # when the locked bundler is already installed (`cli/install.rb:15-19`,
+        # `self_manager.rb:9-14`), so neither announcement line nor the
+        # rubygems fetch may run here.
+        if definition.lockfile_exists? && !resolution.local_only
           locked_bundler = definition.lockfile!.bundler_version
           if locked_bundler && !resolution.bridge_bundler_version.starts_with?(locked_bundler.split(".")[0] + "." + (locked_bundler.split(".")[1]? || "0"))
             auto_switch_bundler(definition, stdout, stderr, resolution)
