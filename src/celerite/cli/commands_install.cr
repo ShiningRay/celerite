@@ -106,7 +106,7 @@ module Celerite
       remote = PluginGemfile.primary_source(gemfile_path)
       index_path = PluginCommands.index_path(gemfile_path)
       # Reference resolves the inferred plugin inside `Plugin.gemfile_install`,
-      # whose definition allows remote/cached sources only — but only once a
+      # whose definition allows remote/cached sources only 鈥?but only once a
       # plugin actually registered a source; with no plugin loaded the same
       # lookup runs with local sources allowed (source/rubygems.rb:122-136).
       remote_only = !PluginCommands.sources(index_path).empty?
@@ -129,13 +129,13 @@ module Celerite
 
     # `--gemfile`/`--lockfile` really take effect for install in the reference;
     # scope the ENV override to this command and restore on every exit path.
-    def self.install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false, no_install : Bool = false, cli_arguments : Bool = true) : Int32
+    def self.install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false, no_install : Bool = false, cli_arguments : Bool = true, refresh_cache : Bool = true) : Int32
       # Thor parses `--jobs`/`--retry` as numeric values and rejects positional
       # arguments before `install` runs; internal callers (add/remove/cache/clean)
       # pass gem names through this entry, so they opt out of that check.
       begin
         with_gemfile_overrides(rest) do
-          run_install(stdout, stderr, rest, summary, show_resolving, no_reuse, no_install, cli_arguments)
+          run_install(stdout, stderr, rest, summary, show_resolving, no_reuse, no_install, cli_arguments, refresh_cache)
         end
       rescue ex : GemfileNotFound
         # `cli.rb:290-313`: `bundle install` rescues a missing Gemfile, renders
@@ -149,7 +149,7 @@ module Celerite
       end
     end
 
-    private def self.run_install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false, no_install : Bool = false, cli_arguments : Bool = true) : Int32
+    private def self.run_install(stdout : IO, stderr : IO, rest : Array(String), summary : Bool = true, show_resolving : Bool = true, no_reuse : Bool = false, no_install : Bool = false, cli_arguments : Bool = true, refresh_cache : Bool = true) : Int32
       if rest.includes?("--frozen")
         # Thor rejects the flag before any Gemfile validation; the exact
         # message depends on the profile and the command (see frozen helper).
@@ -194,7 +194,7 @@ module Celerite
       definition = Definition.build
       config = definition.config
       # `install --standalone` without an explicit path (and without `--local`)
-      # installs into `./bundle` for this run only — the reference uses
+      # installs into `./bundle` for this run only 鈥?the reference uses
       # `set_command_option :path, "bundle"` (cli/install.rb L112-114), which
       # never reaches `.bundle/config`.
       standalone_requested = rest.any? { |a| a == "--standalone" || a.starts_with?("--standalone=") }
@@ -320,8 +320,7 @@ module Celerite
           expanded = File.expand_path(target_rbconfig, Dir.current)
           unless File.file?(expanded)
             # `cli/install.rb:24` passes the path straight to
-            # `Gem.set_target_rbconfig` (rubygems_integration.rb:34 →
-            # rubygems/target_rbconfig.rb:37), which loads it immediately. A
+            # `Gem.set_target_rbconfig` (rubygems_integration.rb:34 鈫?            # rubygems/target_rbconfig.rb:37), which loads it immediately. A
             # missing file raises LoadError before anything is resolved or
             # written, so stdout stays empty, no lockfile is produced, and
             # friendly-errors prints the ERROR REPORT TEMPLATE (exit 1).
@@ -701,7 +700,7 @@ module Celerite
           # records each locked spec's dependency edges, and a lockfile written
           # without them (Bundler's locked specs never carry edges,
           # `lazy_specification.rb:26-39`) would otherwise be reused unchanged
-          # forever — `check_lockfile` (`definition.rb:973-1014`) cannot see the
+          # forever 鈥?`check_lockfile` (`definition.rb:973-1014`) cannot see the
           # gap. Refresh the edges of the locked specs fetched in this run from
           # their real gemspecs, keeping every locked version. Runs before the
           # lockfile is written and does not touch the pending/install flow.
@@ -784,7 +783,7 @@ module Celerite
           end
         end
 
-        # Plugin lifecycle hook (architecture §2.2); no-op without plugins.
+        # Plugin lifecycle hook (architecture 搂2.2); no-op without plugins.
         # The reference runs `gem_after_install` from inside the installer once
         # per spec whose install just finished (`parallel_installer.rb:217`),
         # including specs that were already installed and the running Bundler's
@@ -879,7 +878,7 @@ module Celerite
           # the bundle isn't frozen. It runs after the gems are installed and
           # before the `Bundle complete!` line, printing one `  * <file>.gem`
           # per copied package.
-          if refresh_app_cache?(definition, config.frozen?, rest)
+          if refresh_cache && refresh_app_cache?(definition, config.frozen?, rest)
             refresh_app_cache(stdout, definition, install_root, specs.map { |spec| {spec.name, spec.full_name} }, resolution.generated_lockfile, cached_paths)
           end
           stdout.puts "Bundle complete! #{deps_count} Gemfile dependenc#{deps_count == 1 ? "y" : "ies"}, #{gems_count} gem#{gems_count == 1 ? "" : "s"} now installed."
@@ -927,7 +926,7 @@ module Celerite
           text = resolution.generated_lockfile.to_lock
           existing = File.file?(definition.lockfile_path) ? File.read(definition.lockfile_path) : nil
           # Reference parity: install leaves the lockfile untouched when the
-          # semantic content is unchanged — formatting-only deltas (BUNDLED
+          # semantic content is unchanged 鈥?formatting-only deltas (BUNDLED
           # WITH indent across profiles) do not trigger a rewrite.
           if existing.nil? || semantic_content(existing) != semantic_content(text)
             Lockfile.write(definition.lockfile_path, text, preserve_crlf: preserve_lockfile_crlf?)
@@ -1228,6 +1227,10 @@ module Celerite
       end
     end
 
+    # `cache` drives the install pipeline too, but the reference prints the app
+    # cache header/copies from `CLI::Cache#run` only, so the install-time
+    # refresh is disabled there (`refresh_cache: false`).
+    #
     # `cli/install.rb:52-53`, `cli/update.rb:82`, `cli/add.rb:29`: with the app
     # cache present, caching enabled and the bundle not frozen, the reference
     # copies every resolved gem into it. `Runtime#cache` (runtime.rb:108-146)
@@ -1319,7 +1322,7 @@ module Celerite
       cache_arg = flag_value(rest, "--cache-path") if rest.any? { |a| a == "--cache-path" || a.starts_with?("--cache-path=") }
       # `Bundler.app_cache` = `Pathname.new(custom_path || root).join(cache_path)`
       # (bundler.rb:340-343), and `cache_path` defaults to "vendor/cache"
-      # (settings.rb:304-306) — both resolve against the Gemfile root, never the
+      # (settings.rb:304-306) 鈥?both resolve against the Gemfile root, never the
       # invocation cwd. `CLI::Cache#run` installs a `--cache-path` flag as a
       # command-option setting (cli/cache.rb:11), so the flag wins over the
       # configured/env value, and `runtime.rb:115` prints the raw setting.
@@ -1328,9 +1331,8 @@ module Celerite
       cache_label = cache_arg || (configured_cache.nil? || configured_cache.empty? ? "vendor/cache" : configured_cache)
       cache_target = File.expand_path(cache_label, gemfile_root)
 
-      # `cache` always runs the install pipeline (reference `CLI::Cache#run` →
-      # `CLI::Install`); `--no-install` only suppresses unpacking the gems.
-      code = install(stdout, stderr, install_args_from_cache(rest), no_install: rest.includes?("--no-install"), cli_arguments: false)
+      # `cache` always runs the install pipeline (reference `CLI::Cache#run` 鈫?      # `CLI::Install`); `--no-install` only suppresses unpacking the gems.
+      code = install(stdout, stderr, install_args_from_cache(rest), no_install: rest.includes?("--no-install"), cli_arguments: false, refresh_cache: false)
       return code if code != 0
 
       Commands.validate_ruby_runtime!(definition)
@@ -1393,7 +1395,7 @@ module Celerite
             next if source_path.gsub('\\', "/").starts_with?(root_prefix)
             dir_name = source.specs.first?.try(&.name) || File.basename(source_path)
             destination = File.join(cache_target, dir_name)
-            # `rm_rf` then `cp_r("<src>/.", dest)` — the reference replaces the
+            # `rm_rf` then `cp_r("<src>/.", dest)` 鈥?the reference replaces the
             # whole directory rather than merging into a stale copy.
             FileUtils.rm_rf(destination)
             Dir.mkdir_p(destination)
@@ -1904,14 +1906,14 @@ module Celerite
       header = Bytes.new(4)
       read = File.open(path, "rb") { |io| io.read(header) }
       return false if read < 2
-      # PE/COFF (MZ) — Windows executables
+      # PE/COFF (MZ) 鈥?Windows executables
       return true if header[0] == 0x4D && header[1] == 0x5A
       return false if read < 4
-      # ELF — Linux executables
+      # ELF 鈥?Linux executables
       if header[0] == 0x7F && header[1] == 0x45 && header[2] == 0x4C && header[3] == 0x46
         return true
       end
-      # Mach-O 32/64 and fat variants — macOS executables
+      # Mach-O 32/64 and fat variants 鈥?macOS executables
       mach_o = {0xCE, 0xCF, 0xCA, 0xBE}.any? do |first|
         header[0] == first && header[1] == 0xFA
       end
@@ -1955,7 +1957,7 @@ module Celerite
     end
 
     # Reference parity: install leaves the lockfile untouched when the
-    # semantic content is unchanged — formatting-only deltas (BUNDLED WITH
+    # semantic content is unchanged 鈥?formatting-only deltas (BUNDLED WITH
     # indent across profiles) do not trigger a rewrite. Comparison strips
     # blank lines, the BUNDLED WITH heading and its version line.
     private def self.semantic_content(text : String) : String
@@ -2128,7 +2130,7 @@ module Celerite
           bindir = info.bindir.empty? ? "bin" : info.bindir
           # `Bundler.bin_path` memoizes and mkdir_p's on first use (bundler.rb:120-126),
           # which the installer reaches only once a spec with executables is at
-          # hand (installer.rb:121-130) — so a missing gem never leaves `bin/` behind.
+          # hand (installer.rb:121-130) 鈥?so a missing gem never leaves `bin/` behind.
           Dir.mkdir_p(target)
           exists = [] of String
           info.executables.each do |executable|
