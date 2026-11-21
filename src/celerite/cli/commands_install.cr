@@ -752,7 +752,8 @@ module Celerite
         standalone = rest.any? { |a| a == "--standalone" || a.starts_with?("--standalone=") }
         if standalone
           render_standalone_setup(install_path,
-            standalone_specs(specs, resolution.evaluation.dependencies, standalone_groups(rest)))
+            standalone_specs(specs, resolution.evaluation.dependencies, standalone_groups(rest)),
+            File.dirname(definition.gemfile_path), bridge)
           # `definition.specs_for(groups)` re-materializes the selected groups,
           # so the reference fetches the index once more before its summary
           # (installer/standalone.rb L10-12).
@@ -959,7 +960,8 @@ module Celerite
       specs.select { |spec| selected.includes?(spec.name) }
     end
 
-    private def self.render_standalone_setup(install_path : String, specs : Array(Resolution::ResolvedSpec)) : Nil
+    private def self.render_standalone_setup(install_path : String, specs : Array(Resolution::ResolvedSpec),
+                                             project_root : String, bridge : Bridge::Client) : Nil
       target = File.join(install_path, "bundler")
       Dir.mkdir_p(target)
       body = String.build do |io|
@@ -1000,8 +1002,26 @@ module Celerite
         io.puts "  end"
         io.puts "end"
         specs.each do |spec|
-          next unless spec.source_type == "GEM"
-          io << "$:.unshift File.expand_path(\"\#{__dir__}/../\#{RUBY_ENGINE}/\#{Gem.ruby_api_version}/gems/#{spec.full_name}/lib\")\n"
+          # `installer/standalone.rb:30-40`: every spec except bundler contributes
+          # one line per `require_paths` entry; non-GEM sources (PATH, GIT) are
+          # included, and a PATH source whose declared path is absolute is
+          # emitted verbatim (`:54-61`).
+          next if spec.name == "bundler"
+          gem_root = standalone_gem_root(spec, install_path, project_root)
+          standalone_require_paths(spec, gem_root, bridge).each do |req_path|
+            full = File.join(gem_root, req_path)
+            if spec.source_type == "PATH"
+              rel = standalone_relative_path(full, File.join(install_path, "bundler"))
+              if rel.starts_with?("..")
+                io << "$:.unshift File.expand_path(\"\#{__dir__}/#{rel}\")\n"
+              else
+                # Cross-drive: `relative_to` cannot express it, so emit the path.
+                io << "$:.unshift File.expand_path(\"#{rel}\")\n"
+              end
+            else
+              io << "$:.unshift File.expand_path(\"\#{__dir__}/../\#{RUBY_ENGINE}/\#{Gem.ruby_api_version}/gems/#{spec.full_name}/#{req_path}\")\n"
+            end
+          end
         end
       end
       # The reference opens the file in text mode (`File.open(..., "w")`), so
@@ -2027,6 +2047,61 @@ module Celerite
         0
       ensure
         bridge.close
+      end
+    end
+
+    # `Bundler::Standalone#gem_path` (`installer/standalone.rb:54-61`) resolves a
+    # spec's on-disk root: PATH sources live at their declared directory, GEM
+    # sources under `<install>/gems`, GIT checkouts under `<install>/bundler/gems`.
+    private def self.standalone_gem_root(spec : Resolution::ResolvedSpec, install_root : String,
+                                         project_root : String) : String
+      case spec.source_type
+      when "PATH"
+        declared = (spec.source_declared || spec.source_remote || spec.source_info.try(&.remote) || "").to_s
+        File.expand_path(declared, project_root)
+      when "GIT"
+        File.join(install_root, "bundler", "gems", spec.full_name)
+      else
+        File.join(install_root, "gems", spec.full_name)
+      end
+    end
+
+    private def self.standalone_absolute_path?(spec : Resolution::ResolvedSpec, project_root : String) : Bool
+      declared = (spec.source_declared || spec.source_remote || spec.source_info.try(&.remote) || "").to_s
+      return false if declared.empty?
+      declared.starts_with?("/") || declared.matches?(/\A[A-Za-z]:[\\\/]/)
+    end
+
+    # `spec.require_paths` as RubyGems reports it. Read through the bridge
+    # (`load_installed_spec`) rather than guessing `lib`.
+    private def self.standalone_require_paths(spec : Resolution::ResolvedSpec, gem_root : String,
+                                              bridge : Bridge::Client) : Array(String)
+      candidates = [] of String
+      Dir.glob(File.join(gem_root.gsub('\\', "/"), "*.gemspec")).each { |path| candidates << path }
+      if spec.source_type == "GEM"
+        install_root = File.dirname(File.dirname(gem_root))
+        candidates << File.join(install_root, "specifications", "#{spec.full_name}.gemspec")
+      end
+      candidates.each do |path|
+        next unless File.file?(path)
+        loaded = begin
+          bridge.load_installed_spec(path)
+        rescue
+          nil
+        end
+        paths = loaded.try(&.["require_paths"]?).try(&.as_a?).try(&.map(&.as_s))
+        return paths if paths && !paths.empty?
+      end
+      ["lib"]
+    end
+
+    private def self.standalone_relative_path(full : String, from : String) : String
+      normalized_full = File.expand_path(full).to_s.gsub('\\', "/")
+      normalized_from = File.expand_path(from).to_s.gsub('\\', "/")
+      begin
+        Path[normalized_full].relative_to(Path[normalized_from]).to_s.gsub(/\\/, "/")
+      rescue ArgumentError
+        normalized_full
       end
     end
   end

@@ -210,6 +210,10 @@ module Celerite
       getter source_type : String # GEM / PATH / GIT
       getter source_info : SourceInfo?
       getter source_remote : String?
+      # The declared (unexpanded) path for PATH/GIT sources, kept so
+      # `install --standalone` can reproduce `source.path.absolute?`
+      # (`installer/standalone.rb:54-61`) from the lockfile text.
+      property source_declared : String? = nil
 
       # `Gem::Specification#required_ruby_version` / `required_rubygems_version`
       # from the resolved index entry. Reference `Installer#ensure_specs_are_compatible!`
@@ -1239,6 +1243,7 @@ module Celerite
         # already falls back to `primary_remote` there.
         source_remote = source.type == "PLUGIN SOURCE" ? source.remote : nil
         type = locked_source_type(source.type)
+        source_declared = type == "GEM" || type == "PLUGIN SOURCE" ? nil : source.remote
         rows = source.specs.map do |spec|
           # Checksums are per platform row: the ruby row of a gem that also has
           # a native row stays digestless (measured 4.0.24 lock output).
@@ -1248,7 +1253,7 @@ module Celerite
               (spec.platform.nil? || spec.platform == "ruby" || c.platform == spec.platform)
           end
           ResolvedSpec.new(spec.name, Gem::Version.new(spec.version), spec.platform,
-            spec.dependencies, checksum.try(&.checksums.first?), 0, type, source_info, source_remote)
+            spec.dependencies, checksum.try(&.checksums.first?), 0, type, source_info, source_remote).tap { |row| row.source_declared = source_declared }
         end
         rows.each { |row| specs << row }
       end

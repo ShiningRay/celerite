@@ -379,6 +379,8 @@ def op_load_installed_spec(payload)
       "license" => (spec.license if spec.respond_to?(:license)),
       "licenses" => (spec.licenses if spec.respond_to?(:licenses)),
       "metadata" => metadata,
+      # `installer/standalone.rb:30-40` emits one `$:.unshift` per entry.
+      "require_paths" => spec.require_paths,
     },
   }
 end
