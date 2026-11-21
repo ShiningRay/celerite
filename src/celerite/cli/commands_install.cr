@@ -428,6 +428,21 @@ module Celerite
         if code = PluginHooks.run(bridge, definition, config, "before-install-all", stdout, stderr)
           return code
         end
+        # `definition.rb:868-875` explains the resolution decision, and
+        # `fetcher.rb:273-276` notes the local-server shortcut for `file://`
+        # remotes. Both are `Bundler.ui.debug`, so `--verbose`/`BUNDLE_VERBOSE`
+        # is the only way to see them.
+        verbose_output = ENV["CELERITE_VERBOSE"]? == "1"
+        if verbose_output
+          if definition.lockfile_exists?
+            stdout.puts "Found no changes, using resolution from the lockfile"
+          else
+            stdout.puts "Resolving dependencies because there's no lockfile"
+            if (remote = resolution.primary_remote).starts_with?("file://")
+              stdout.puts "Using a local server, bundler won't use the CompactIndex API"
+            end
+          end
+        end
         specs = resolution.resolve!(reuse, verify_locked_compat: verify_locked_compat)
         installer.ensure_specs_are_compatible!(specs)
 
@@ -802,6 +817,29 @@ module Celerite
         # `cli/install.rb`, so the hook output precedes `Bundle complete!`.
         if code = PluginHooks.run(bridge, definition, config, "after-install-all", stdout, stderr)
           return code
+        end
+
+        # `parallel_installer.rb:18` emits one debug line per installed spec;
+        # our installer is sequential, so the worker prefix is always `0` (the
+        # reference prints `0` on the lock-reuse path too).
+        if verbose_output
+          bundler_version = resolution.bridge_bundler_version
+          stdout.puts "Using bundler #{bundler_version}"
+          # The default gem's `loaded_from` renders as
+          # `<gems dir>/gems/<full_name>/../../specifications/<full_name>.gemspec`
+          # in the reference (a plain join of the stub's paths, never
+          # normalised), so keep the `../..` segment. Both profiles print it.
+          bundler_spec = File.join(bridge.ruby_environment.ruby_default_dir || bridge.ruby_environment.default_gem_dir, "gems",
+            "bundler-#{bundler_version}", "..", "..", "specifications",
+            "bundler-#{bundler_version}.gemspec").gsub('\\', "/")
+          stdout.puts "0:  bundler (#{bundler_version}) from #{bundler_spec}"
+          specs.sort_by(&.full_name).each do |spec|
+            next unless spec.source_type == "GEM"
+            stdout.puts "Using #{spec.name} #{spec.version}"
+            spec_path = File.join(install_root, "specifications",
+              "#{spec.full_name}.gemspec").gsub('\\', "/")
+            stdout.puts "0:  #{spec.name} (#{spec.version}) from #{spec_path}"
+          end
         end
 
         if summary

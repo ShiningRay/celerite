@@ -2785,11 +2785,13 @@ module Celerite
         verbose = ENV["CELERITE_VERBOSE"]? == "1"
         if verbose
           # The `Running ...` echo is emitted once by `Commands.dispatch`
-          # (`print_command_echo`); only the reference debug line is printed
-          # here, so the two never duplicate.
+          # (`print_command_echo`); only the reference debug lines are printed
+          # here, so the two never duplicate. `fetcher.rb:273-276` is the only
+          # one measured for this command; the resolve-reason lines live in
+          # `definition.rb:868-875` and are not reproduced without an oracle.
           primary = resolution.primary_remote
-          if primary.starts_with?("file:") || primary.includes?("127.0.0.1") || primary.includes?("localhost")
-            stdout.puts "Re-resolving dependencies because bundler is unlocking Using a local server, bundler won't use the CompactIndex API"
+          if primary.starts_with?("file://")
+            stdout.puts "Using a local server, bundler won't use the CompactIndex API"
           end
         end
         # Pinned by the `outdated-parseable` differential: parseable mode

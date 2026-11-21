@@ -41,6 +41,10 @@ module Celerite
       # loads into the child process.
       getter default_path : Array(String)? = nil
       getter default_gem_dir : String
+      # `Gem.default_dir`, which ignores GEM_HOME: default gems live in the
+      # Ruby installation, and `spec.loaded_from` reports that location even
+      # when a project overrides GEM_HOME.
+      getter ruby_default_dir : String? = nil
       getter user_gem_dir : String?
       # `Gem.bindir` / the system-wide RubyGems config directory; reported by
       # RubyGems itself because Crystal cannot reproduce them portably.

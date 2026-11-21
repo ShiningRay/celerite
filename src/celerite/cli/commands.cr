@@ -28,7 +28,13 @@ module Celerite
       # `strip_global_flags` removes the global switches before dispatch, so the
       # `--verbose` echo (reference `CLI#print_command`) must be reconstructed
       # from the raw invocation.
-      verbose_requested = args.includes?("--verbose")
+      verbose_requested = args.includes?("--verbose") || args.includes?("-V")
+      # `settings.rb:21` declares `verbose` as a BOOL setting, so
+      # `BUNDLE_VERBOSE=true` (or the equivalent `.bundle/config` entry) turns
+      # on the same UI level as the flag; the flag still wins when the setting
+      # is explicitly false.
+      env_verbose = env_verbose?
+      ENV["CELERITE_VERBOSE"] = "1" if verbose_requested || env_verbose
       # `--quiet` raises the UI level to `warn` (bundler/cli/install.rb:11 and
       # friends), so every `info`/`confirm` line disappears while warnings and
       # errors stay on stderr. It is captured before `strip_global_flags` for
@@ -75,7 +81,7 @@ module Celerite
         end
       end
       command = expand_deprecated_alias(command, stderr)
-      print_command_echo(command, rest, verbose_requested, cli_retry, stdout)
+      print_command_echo(command, rest, verbose_requested || env_verbose, verbose_requested, cli_retry, stdout)
 
       # `--quiet` is honoured by install/update/add/cache (and `doctor`, whose
       # Thor subcommand declares the same option): the reference raises the UI
@@ -217,7 +223,7 @@ module Celerite
           ENV["CELERITE_CLI_RETRY"] = arg.split("=", 2)[1]? || ""
           next
         end
-        if arg == "--verbose"
+        if arg == "--verbose" || arg == "-V"
           ENV["CELERITE_VERBOSE"] = "1"
           next
         end
@@ -231,6 +237,20 @@ module Celerite
     # ships no `tree`, so `-t`/`--tree` never map there and stay on the argument
     # list as unknown switches of the default command (measured: 15 with
     # `Unknown switches "-t"`).
+    # `Bundler.settings[:verbose]` (`settings.rb:21`, BOOL) feeds
+    # `Bundler.ui.level = "debug" if settings[:verbose]` (`cli.rb#initialize`).
+    # Only the environment copy is consulted here because dispatch runs before
+    # `Definition.build` loads the project config; a `.bundle/config` entry of
+    # `BUNDLE_VERBOSE` lands in the same variable once the CLI exports it.
+    private def self.env_verbose? : Bool
+      case ENV["BUNDLE_VERBOSE"]?.try(&.strip.downcase)
+      when "true", "1", "yes"
+        true
+      else
+        false
+      end
+    end
+
     private def self.dash_command_map : Hash(String, String)
       return DASH_COMMAND_MAP_4_X unless profile_2_x?
 
@@ -431,8 +451,12 @@ module Celerite
 
     # Reference `CLI#print_command` (bundler/cli.rb:777-791): with `--verbose`
     # the invocation is echoed with Thor-rendered switches (booleans bare,
-    # strings inspected, array options bracketed, sorted by option name).
-    def self.print_command_echo(command : String, rest : Array(String), verbose : Bool, retry_value : String?, stdout : IO) : Nil
+    # strings inspected, array options bracketed, sorted by option name). The
+    # echo reproduces what the user typed, so `verbose` (which also covers
+    # `BUNDLE_VERBOSE`) only decides whether to print, while `flag_verbose`
+    # decides whether the `--verbose` token itself belongs in the line.
+    def self.print_command_echo(command : String, rest : Array(String), verbose : Bool, flag_verbose : Bool,
+                                retry_value : String?, stdout : IO) : Nil
       return unless verbose
       return if PARSEABLE_COMMANDS.includes?(command)
       return unless ECHO_COMMANDS.includes?(command)
@@ -491,7 +515,7 @@ module Celerite
       if value = retry_value
         switches << {"retry", "--retry #{value}"}
       end
-      switches << {"verbose", "--verbose"}
+      switches << {"verbose", "--verbose"} if flag_verbose
 
       parts = ["bundle", command]
       positionals.each { |positional| parts << positional }

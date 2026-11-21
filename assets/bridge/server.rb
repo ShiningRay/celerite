@@ -88,6 +88,10 @@ def op_ruby_environment(_payload)
     # its own `lib` directory regardless of GEM_PATH).
     "default_path" => Gem.default_path,
     "default_gem_dir" => (ENV["GEM_HOME"] || Gem.default_dir),
+    # `Gem.default_dir` ignores GEM_HOME, so it stays the Ruby installation's
+    # own gems directory. Default gems (e.g. bundler) are installed there even
+    # when a project overrides GEM_HOME, and `spec.loaded_from` points at it.
+    "ruby_default_dir" => Gem.default_dir,
     "user_gem_dir" => (Gem.user_dir rescue nil),
     # `Bundler::Env#report` prints `Gem.bindir` (env.rb:78) and the directory
     # of `Gem::ConfigFile::SYSTEM_WIDE_CONFIG_FILE` (env.rb:74). Neither is
