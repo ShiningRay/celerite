@@ -6305,3 +6305,43 @@ task-66：64 / 53 / 10 passed，artifice 38、low-il 9、fetch 6、product 0。�
 ### 已声明差异
 
 同一驱动器上「声明路径为绝对」的 PATH 源，参考把绝对路径原样写进 `$:.unshift`，我方统一相对化（功能等价，`require` 均可）；跨盘时双方都只能写绝对路径。`--standalone` 与 `BUNDLE_PATH` 同时出现时 setup.rb 落在 `$BUNDLE_PATH/bundler/`（夹具的 `../bundle/...` 即此），未在参考侧单独取 oracle。
+
+## 2026-11-21（M7 task-90：`update --group <无成员组>` 不再多余重解析）
+
+参考 `cli/update.rb:49-52` 只用组把显式 gem 列表加宽：
+
+```ruby
+if groups.any?
+  deps = Bundler.definition.dependencies.select {|d| (d.groups & groups).any? }
+  gems.concat(deps.map(&:name))
+end
+```
+
+组不存在时 `gems` 仍空，随后 `Bundler.definition(gems: [], sources: [], …)`（`:54-56`）不解锁任何东西——既不取索引也不重解析，锁文件原样保留，只打印收尾行。我方 `src/celerite/cli/commands_surface.cr` 在组合并后仍把空数组当作解锁集交给 `Resolution`，于是多了 `Fetching source index` 与 `Resolving dependencies...`。
+
+### oracle（参考 4.0.24，逐 case 记录锁文件 sha1 前后值）
+
+| case | 参考 stdout | 锁文件 | 我方（修前） |
+|---|---|---|---|
+| `update --group nope` | 仅 `Bundle updated!` | 未变 | 多 `Fetching source index …` + `Resolving dependencies...` |
+| `update --group dev` | `Fetching source index …` / `Resolving dependencies...` ×2 / `Bundle updated!`，stderr `Bundler attempted to update thor but its version stayed the same` | 未变 | 一致 |
+| `update --group dev,test` | 仅 `Bundle updated!` | 未变 | 一致 |
+| `update --source nope` | `Fetching …` / `Resolving …` / `Bundle updated!` | 未变 | 一致 |
+| 裸 `update` | `Fetching …` / `Resolving …` / `Bundle updated!` + `[DEPRECATED] Pass --all …` | 未变 | 既有行为 |
+
+注：`--group dev,test` 在参考里同样落到空集合（逗号形式不匹配成员的符号组），与我方一致，故未改。
+
+### 实现
+
+`src/celerite/cli/commands_surface.cr`（组合并之后、`unlock` 计算之前）新增零解锁集短路：`!full_update && gems.empty? && sources.empty? && !ruby_flag && !update_bundler` 时打印 `Bundle updated!` 并返回 0，不建 `Resolution`、不取索引、不写锁。未新写落盘逻辑（该路径本就不写锁）。
+
+### 夹具与反假绿
+
+- `fixtures/differential/update-group-missing/`（`command` = `install --quiet` + `update --group nope`，`file-equals Gemfile.lock`）4.0.24 PASS。
+- `fixtures/differential/update-group-present/`（`install --quiet` + `update --group dev`）4.0.24 PASS。
+- 两夹具均带 `deferred-2.7.2`：锁文件 `BUNDLED WITH 4.0.24`，2.7.2 profile 下参考的 self-manager 会去 rubygems.org 安装 bundler 4.0.24 而阻塞（沙箱无网），所测语义与 profile 无关。
+- 负对照 `C:/temp/celerite-pre90`@`0f6ff34`：`FAIL update-group-missing`，`> Fetching source index …` / `> Resolving dependencies...`（旧二进制仍重解析），`update-group-present` PASS（纯护栏，无区分力）。
+
+### 已声明差异
+
+`update` 在缺装状态下的补齐安装行（缺少 bundle 时参考会打印 `Fetching <gem>` / `Installing <gem>`）本轮未对齐，也未纳入夹具——夹具一律先 `install --quiet` 以固定「已装」前置。`--group` 的逗号形式与单个形式的集合语义差异沿用参考行为，未单独取 oracle。
