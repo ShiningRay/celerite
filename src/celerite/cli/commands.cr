@@ -1578,7 +1578,27 @@ module Celerite
         raise ProductionError.new(message)
       end
 
-      if unresolved_dep(definition, lockfile)
+      # `definition.rb:172-182`: after the Gemfile comparison the reference
+      # always materializes the locked definition against local sources, so a
+      # `PATH` section whose gemspecs drifted (or lost its spec rows) heals
+      # here, announces the resolve, and `cli/check.rb:33` writes the refreshed
+      # lock unless `--dry-run`.
+      path_heal_text : String? = nil
+      if !config.frozen? && lockfile.sources.any? { |source| source.type == "PATH" }
+        stdout.puts "Resolving dependencies..."
+        heal = Resolution.new(definition, false)
+        begin
+          heal.resolve!
+          path_heal_text = heal.generated_lockfile.to_lock
+        rescue ex : Error
+          # A path source that cannot be read keeps the pre-heal behavior (the
+          # unresolved/missing probes below report it).
+          path_heal_text = nil
+        ensure
+          heal.close
+        end
+      end
+      if path_heal_text.nil? && unresolved_dep(definition, lockfile)
         stderr.puts "Bundler can't satisfy your Gemfile's dependencies."
         stderr.puts "Install missing gems with `bundle install`."
         return 1
@@ -1624,7 +1644,7 @@ module Celerite
       # reference `lockfiles_equal?` early-return when only the bundler version
       # differs (definition.rb:413-419).
       if !config.frozen? && !rest.includes?("--dry-run") && bridge_available?
-        text = generated_text
+        text = path_heal_text || generated_text
         unless text
           rewrite = Resolution.new(definition, false)
           begin

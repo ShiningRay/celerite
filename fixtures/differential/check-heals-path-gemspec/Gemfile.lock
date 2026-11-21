@@ -1,0 +1,12 @@
+PATH
+  remote: pg
+  specs:
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  pg!
+
+BUNDLED WITH
+   @BUNDLER_VERSION@
