@@ -6428,3 +6428,24 @@ task-91 改为按**异常类**判定，规则表写在 `script/upstream-specs-bu
 - 未重跑套件（本轮只改判定规则），故三条候选的「当前是否仍失败」沿用 task-86 采集结果。
 - 规则 5b（`expected:`+`got:`）为兜底：若上游 rspec 换了异常类，仍能落到产品桶；本轮 53 条中无仅靠 5b 命中的用例。
 - 判定仍基于文本特征而非结构化断言 diff，`exception.message` 之外的比较细节不外泄，故默认「断言失败即产品候选」，不做修复建议分类。
+
+## 2026-11-21（M7 task-92：锁文件依赖表失配的 frozen 语义与 file:// remote 归一）
+
+上游用例 `missing dependent specs auto-heals`（`spec/lock/lockfile_spec.rb:1933` / `:2215`）要求：锁文件里某行缺少依赖边、依赖 spec 也未落行时，`install` 必须重解析补齐；而 `BUNDLE_FROZEN=true` 时同一状态必须报 status 41 而不是静默修补。本轮取了两侧 oracle（4.0.24 与 2.7.2 同形；夹具 `fixtures/gem-index-locked-deps`，Gemfile `gem "net-smtp", "0.5.0"`，锁只钉 `net-smtp (0.5.0)` 且无依赖边，`PLATFORMS ruby`）：
+
+| 命令 | 参考行为（两侧一致） | 本轮我方 |
+| --- | --- | --- |
+| `install` | exit 0；`Fetching source index …` + **两条** `Resolving dependencies...`；先 `Fetching/Installing net-protocol 0.2.2` 再 `net-smtp 0.5.0`；锁新增 `net-protocol (0.2.2)` 行、`      net-protocol` 边、`x64-mingw-ucrt` 平台、`BUNDLED WITH` 与 `CHECKSUMS` | exit 0；只一条 `Resolving dependencies...`，只装 `net-smtp 0.5.0`；锁里出现 `      net-protocol` 边却**没有** `net-protocol (0.2.2)` 行（缺陷，见下） |
+| `BUNDLE_FROZEN=true install` | exit **41**；stdout `Fetching source index …`；stderr `Bundler found incorrect dependencies in the lockfile for net-smtp-0.5.0` | **已对齐**（本轮修复） |
+| `lock` | exit 0；不补依赖行，但补 `x64-mingw-ucrt` 平台行 | exit 0；锁不变（未修） |
+| `check` | exit 1；`The following gems are missing` / ` * net-smtp (0.5.0)` / `Install missing gems with \`bundle install\`` | 一致 |
+| `install --local` | exit 7；`Could not find net-smtp-0.5.0 in locally installed gems` | exit 0（`file://` 源被当作本地可达，未修） |
+
+机制锚点：`lazy_specification.rb:259-270` `validate_dependencies`（严格物化时把行内依赖表与索引 spec 的 runtime 依赖比对，失配抛 `IncorrectLockfileDependencies`）；`errors.rb:264-275` 定义该错误的 status 41；`definition.rb:699-708` `materialize` 的 rescue 在 frozen 下重新抛出，否则 `reresolve_without([spec])` 走重解析。
+
+本轮的实现与根因结论：桥返回的 `file:` remote 与锁文件里的拼写不同（桥省略盘符冒号 `C/Users/…`，锁写 `C:/Users/…`），`default_source_changed?` 因此恒判「源变化」，frozen 安装误报 exit 16。修复只放在相等性判断层，不改写出的锁：`definition.cr:414-431` 新增 `normalize_remote`（折叠 `file:` 前缀、首尾斜杠、无冒号盘符），`source_diff` 增 `default_rubygems_source?` 把锁内默认 GEM 远端下的依赖视作 `no specified source`；`errors.cr` 新增 status 41 的错误类；`resolution.cr:946` 在 `resolve!` 入口对 `frozen && lockfile_exists?` 先 `materialize_locked`、用索引比对行依赖，失配时回放一次 `Fetching source index …` 再抛 41。证据：`spec/m7_frozen_source_normalization_spec.cr` 2 examples 0 failures（伪 16 消失、真源差异仍 16）；差分 `install-frozen` / `install-frozen-source-changed` / `check-frozen-path-gemspec-bump` / `scoped-source-lock` / `install-platforms-frozen-error` / `lock-add-checksums-frozen` 双 profile 各 6 passed / 0 failed。
+
+已声明差异（均未修，非参考行为）：
+- **非 frozen 自愈未实现**：我方在该状态走锁刷新而非重解析，只一条 `Resolving dependencies...`、只装一个 gem，且写出的锁「有依赖边、缺 spec 行」——这是当前缺陷，与参考的两条 `Resolving dependencies...` + 补齐 `net-protocol (0.2.2)` 行 + 两个 gem 不符。失配识别已可用（frozen 41 走同一判定），但非 frozen 分支需要绕开锁复用并强制重解析，改动涉及 `resolve!`、`decisions_to_specs` 与锁刷新三处，超出本轮窗口。
+- `install --local` 在该夹具下我方 exit 0（`file://` 源仍被当作本地可达），参考 exit 7。
+- `lock` 在该夹具下我方不改锁，参考补 `x64-mingw-ucrt` 平台行。
