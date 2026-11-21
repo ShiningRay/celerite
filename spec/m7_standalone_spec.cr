@@ -60,6 +60,40 @@ private def with_standalone_bridge(&)
   end
 end
 
+private def standalone_path_gem(root : String) : Nil
+  Dir.mkdir_p(File.join(root, "lib"))
+  File.write(File.join(root, "lib", "pgem.rb"), "module Pgem\n  VERSION = \"1.0.0\"\nend\n")
+  File.write(File.join(root, "pgem.gemspec"), <<-GEMSPEC)
+    Gem::Specification.new do |s|
+      s.name = "pgem"
+      s.version = "1.0.0"
+      s.summary = "pgem"
+      s.authors = ["celerite"]
+      s.files = ["lib/pgem.rb"]
+      s.require_paths = ["lib"]
+    end
+    GEMSPEC
+end
+
+private def standalone_gemfile_with_path(declared : String) : String
+  index = File.expand_path("../fixtures/gem-index", __DIR__).gsub('\\', "/")
+  String.build do |io|
+    io.puts %(source "file:///#{index}/")
+    io.puts ""
+    io.puts %(gem "json_pure", "2.6.0")
+    io.puts %(gem "pgem", path: "#{declared.gsub('\\', "/")}")
+  end
+end
+
+private def standalone_require_works?(setup : String, project : String) : Bool
+  ruby = Process.find_executable("ruby")
+  return true if ruby.nil?
+  output = IO::Memory.new
+  status = Process.run(ruby, ["-r", setup, "-e", "require 'pgem'"], chdir: project,
+    output: output, error: output)
+  status.success?
+end
+
 describe "M7(2) install --standalone" do
   it "installs into ./bundle and renders setup.rb with CRLF" do
     with_standalone_bridge do
@@ -114,6 +148,72 @@ describe "M7(2) install --standalone" do
           code.should eq(7)
           err.should contain("Could not find gem 'json_pure (= 2.6.0)' in locally installed gems.")
           File.exists?(File.join(dir, "bundle")).should be_false
+        end
+      end
+    end
+  end
+
+  # `installer/standalone.rb:30-40`: non-GEM sources are rendered too, one line
+  # per `require_paths` entry, relative to `<install>/bundler` (`:54-61`).
+  it "renders an out-of-project path source relative to the bundler directory" do
+    with_standalone_bridge do
+      sibling = File.join(Dir.tempdir, "standalone-pgem-#{Process.pid}")
+      standalone_path_gem(sibling)
+      begin
+        with_project({"Gemfile" => standalone_gemfile_with_path(sibling)}) do |dir|
+          with_standalone_env(dir) do
+            code, _out, _err = run_cli(["install", "--standalone"])
+            code.should eq(0)
+            setup = File.join(dir, "bundle", "bundler", "setup.rb")
+            body = File.read(setup)
+            line = body.lines.find(&.includes?("standalone-pgem")).not_nil!
+            line.should contain("\#{__dir__}/")
+            line.should_not contain(sibling.gsub('\\', "/"))
+            # The rendered line must resolve to the path gem's lib directory.
+            relative = line.split("\#{__dir__}/").last.split("\")").first
+            File.expand_path(relative, File.join(dir, "bundle", "bundler"))
+              .gsub('\\', "/").should eq(File.join(sibling, "lib").gsub('\\', "/"))
+            standalone_require_works?(setup, dir).should be_true
+          end
+        end
+      ensure
+        FileUtils.rm_rf(sibling)
+      end
+    end
+  end
+
+  it "renders a path source whose declared path is absolute and skips bundler" do
+    with_standalone_bridge do
+      sibling = File.join(Dir.tempdir, "standalone-pgem-abs-#{Process.pid}")
+      standalone_path_gem(sibling)
+      begin
+        with_project({"Gemfile" => standalone_gemfile_with_path(File.join(sibling, "").gsub('\\', "/"))}) do |dir|
+          with_standalone_env(dir) do
+            code, _out, _err = run_cli(["install", "--standalone"])
+            code.should eq(0)
+            setup = File.join(dir, "bundle", "bundler", "setup.rb")
+            body = File.read(setup)
+            body.should contain("standalone-pgem-abs")
+            body.should_not contain("bundler-4.0")
+            body.should contain("gems/json_pure-2.6.0/lib")
+            standalone_require_works?(setup, dir).should be_true
+          end
+        end
+      ensure
+        FileUtils.rm_rf(sibling)
+      end
+    end
+  end
+
+  it "skips the installed bundler spec when rendering the load path" do
+    with_standalone_bridge do
+      with_project({"Gemfile" => standalone_gemfile}) do |dir|
+        with_standalone_env(dir) do
+          code, _out, _err = run_cli(["install", "--standalone"])
+          code.should eq(0)
+          body = File.read(File.join(dir, "bundle", "bundler", "setup.rb"))
+          body.should_not contain("gems/bundler-")
+          body.should contain("gems/json_pure-2.6.0/lib")
         end
       end
     end
