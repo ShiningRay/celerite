@@ -7370,3 +7370,41 @@ task-91 状态 `failed`（产品桶）→ task-114 状态 `passed`。这是 task
 - **夹具用预置初态替代中间步骤**：harness 只能表达夹具初始文件树加命令序列，无法表达「先 install、再改锁、再删缓存」的中间态；故夹具预置「CHECKSUMS 缺行的锁 + 无缓存包」，等价于首辅步骤 ②③ 之后的机器状态（该形态下 `missing_specs?` 仍为 false，缓存包不参与判定）。
 - **`file://` 索引不给 `json_pure` 写 digest**：两种 profile 的落锁都只补回裸行，与 HTTP compact index 下会写 `sha256=` 的形态不同；两侧一致，差分仍成立。
 - **空值形态在 2.7.2 上未实测**：4.0.24 靠 `empty_checksums_actionable?`（`:651-659`）把空值形态挡在解析之外，而 2.7.2 的 `definition.rb:599-600` 把 `@locked_spec_with_empty_checksums` 直接并入 `resolve_needed?`，预计会真解析并打印该行；我方抑制逻辑也只作用于非 2.x（`commands_install.cr:376`），两侧应仍一致，但本轮未做成夹具，标未验证。
+
+## 2026-11-22（M7 task-117：锁定 spec 行缺失但依赖边仍在时重解析并升级）
+
+起因：`lock` 在「锁定 spec 行缺失、但依赖边行仍在」的锁上静默 no-op，参考会重解析并把版本提升到索引里更高的 0.5.1。本轮按任务书复跑三形状取得逐字 oracle，确认差异只落在「缺行」这一种形态上，另两形状两侧本已一致，修复不得回归。
+
+### oracle 表（4.0.24，offline `fixtures/gem-index-locked-deps`，Gemfile = `source "file:///<index>"` + `gem "net-smtp"`（不钉版本），`PLATFORMS` 含 `ruby` 与 `x64-mingw-ucrt`）
+
+| 形态 | 锁初态 | 参考 stdout | 参考锁 | 修复前我方 |
+| --- | --- | --- | --- | --- |
+| S4 缺行 | 只有 `net-smtp (0.5.0)` 行 + `      net-protocol` 边，**无** `net-protocol (0.2.2)` 行 | `Writing lockfile to …` / `Fetching source index from file:///…/gem-index-locked-deps/` / `Resolving dependencies...`，exit 0 | `net-protocol (0.2.2)` + `net-smtp (0.5.1)` + 边 | 只打 `Writing lockfile to …`，锁原样（仍 `0.5.0`、仍缺行） |
+| S0 两行齐 + 边在 | `net-protocol (0.2.2)` + `net-smtp (0.5.0)` + 边 | 只打 `Writing lockfile to …`，exit 0 | 原样 | 原样（已一致） |
+| S3 两行齐、边缺 | 两行齐、无 `      net-protocol` 边 | 只打 `Writing lockfile to …`，exit 0 | 原样、**不补边** | 原样、不补边（已一致） |
+
+三形状下 `PLATFORMS` 都必须已含本地平台，否则 `current_platform_missing` 让两侧都重解析，S4 与 S3 的分野就无从观察（首轮探针因此一度复现不出 oracle）。
+
+### 机制（参考锚点）
+
+- `cli/lock.rb:78-97` 没有「跳过写锁」的短路：写与不写、解析与不解析全由 `Definition` 状态决定。
+- `definition.rb:973-1015 check_lockfile` 对每个锁定行调 `spec_set.rb:87-96 validate_deps`：边目标无锁定行 ⇒ `:missing`，有行但无版本满足 requirement ⇒ `:invalid`；两者都令 `@locked_specs.delete(rows)` 并置 `@locked_spec_with_missing_deps` / `@locked_spec_with_invalid_deps`，经 `definition.rb:630-645 something_changed?` 使 `resolve_needed?`（`:647-649`）为真 ⇒ `:342-363 resolve` 走 `start_resolution`，自由选到索引里的 0.5.1。
+- 关键在于被删的行与 `@originally_locked_specs` 是**同一对象**（`definition.rb:140`），所以「锁定候选」「preferred version」「`>= locked` 下限」三者同时消失。这是本任务与 task-115 自愈的语义分界：`reresolve_without`（`definition.rb:782-785`）只从解析基座删行，`new_resolution_base`（`:1321-1328`）仍把 `@originally_locked_specs` 交给 `Resolver::Base`，故 task-115 那条路只补边、保持 0.5.0。
+
+### 实现
+
+- `src/celerite/resolution.cr`：新增 `incomplete_locked_spec_names`（复刻 `check_lockfile` + `validate_deps` 的 `:missing`/`:invalid` 判定，按参考逐个 `next if edge.name == "bundler"`；无边的行视为完整，S3 保持 no-op）；新增属性 `drop_incomplete_locked_specs`（仅 `lock` 置真）与私有集合 `@dropped_locked_names`；`resolve!` 在 `run_resolution` 前把不完整行名同时收入 `@dropped_locked_names` 与 `@excluded_locked_names`；`build_locked_index`（既有 `@excluded_locked_names` 过滤）、`preferred_locked_versions`、`build_base_requirements` 的 `>= locked_version` 下限三处都跳过 `@dropped_locked_names`，以复刻「同一对象被 delete」的三重后果。
+- `src/celerite/cli/commands.cr:2924-2932` 置 `resolution.drop_incomplete_locked_specs = true`；no-op 短路条件与 `lockfile_current` 条件各加 `resolution.incomplete_locked_spec_names.empty?`，前者让 S4 落入解析路径，后者保证 `--print` 形态下也照参考打印 `Resolving dependencies...`。
+
+### 证据
+
+- `crystal spec spec/m7_lock_missing_spec_row_spec.cr` → 3 examples, 0 failures（S4 重解析并升级到 0.5.1；S0 不重解析且锁原样；S3 不补边）。`spec/m7_lock_autoheal_spec.cr` 6 examples, 0 failures（task-94/task-115 无回归）。
+- 新夹具 `fixtures/differential/lock-missing-locked-spec-line`（单条 `lock`，`file-equals-4.0.24` / `file-equals-2.7.2` 分别钉整份锁）双 profile PASS：两侧 stdout 除沙箱路径外逐字一致（三行），两侧锁逐字一致（4.0.24 收 `BUNDLED WITH 4.0.24`、2.7.2 收 `2.7.2`）。
+- 负对照 worktree `C:/temp/celerite-pre117` @ `27f26f9` 的旧二进制跑同一夹具必须 FAIL。
+- `script/differential:593` 的 `file-equals` 期望文本替换表原先独缺 `@LOCKED_DEPS_INDEX_DIR@`（`file-contains` 表里本就有），本轮补入——否则新夹具的期望锁里那条 `remote:` 无法用占位符表达，只能写死宿主绝对路径。
+
+### 已声明差异（仍未对齐）
+
+- 判定只覆盖锁定行自身的**依赖边完整性**；锁定行的 checksum、平台等其它失配仍走各自既有判据，不在本轮范围。
+- 采用 `check_lockfile` 全量语义（不区分 GEM / PATH / GIT 源），与参考一致，但风险由 `drop_incomplete_locked_specs` 只在 `lock` 路径开启来限制；`install` 仍走 task-115 的自愈语义。
+- 2.7.2 profile 只做了差分夹具验证（`file-equals-2.7.2`），未取该版本参考侧的逐字 oracle 表。
