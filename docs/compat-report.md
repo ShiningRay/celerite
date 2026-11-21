@@ -6852,3 +6852,63 @@ materialization 判定缺 spec；`cli/check.rb:33` 满足时写锁（`--dry-run`
 
 **仍未对齐**：锁缺整段 source（如缺 `GEM`）时参考会宣告解析而我不宣告（本窗口未处理，与前窗口
 同源）；frozen 的 reason 列表文案；`GIT`/`PLUGIN` 段不参与。
+
+## 2026-11-21（M7 task-103：`cache --all-platforms` 的 path 源回归网）
+
+### 缘起
+hanlin 报「`cache --all-platforms` 我方多打 `  * json_pure.gem`、`Updating files in vendor/cache` 重复」。
+首辅手测已不复现，判断为 task-101 的 app-cache 拷贝护栏顺带修掉；但原夹具 `cache-all-platforms`
+双 profile 均 `deferred`（racc 原生扩展），该面**没有回归网**。
+
+### 新夹具
+`fixtures/differential/cache-all-platforms-path-source/`：`Gemfile` = `source "file:///@INDEX_DIR@"`
++ `gem "json_pure"` + `gem "pg", path: "./pg"`，`extra/pg/` 最小 gemspec + `lib/pg.rb`，
+`command` = `cache --all-platforms`。不含原生扩展。
+双 profile：4.0.24 **PASS**、2.7.2 **PASS**（stdout 逐行精确比对，`script/differential:514`）。
+
+### 首轮 stdout（两侧逐行相同，含沙箱路径）
+```
+1. Fetching source index from file:///…/fixtures/gem-index/
+2. Resolving dependencies...
+3. Fetching json_pure 2.8.1
+4. Installing json_pure 2.8.1
+5. Bundle complete! 2 Gemfile dependencies, 2 gems now installed.
+6. Bundled gems are installed into `…/ref/bundle`
+7. Updating files in vendor/cache
+8. Fetching source index from file:///…/fixtures/gem-index/
+9.   * json_pure-2.8.1.gem
+```
+与首辅给的 9 行形状一致。
+
+### 区分力核查（未达预期）
+用 task-101 之前的二进制 `C:/temp/celerite-cache103`@`3e336c9` 跑同一夹具：**PASS**，
+手工同形状单次运行也是同样 9 行 ⇒ 单次 `cache` 在本仓库早已对齐，该夹具对
+`3e336c9` **无区分力**，只能作为回归护栏（防止再次出现重复 `Updating`/多余 `  *` 行）。
+
+### 但发现**第二次运行**的真实分歧（未修，交后续任务）
+同一沙箱连跑两次 `cache --all-platforms`：
+
+参考（4.0.24，第二次）：
+```
+1. Bundle complete! 2 Gemfile dependencies, 2 gems now installed.
+2. Bundled gems are installed into `…/h/b`
+3. Updating files in vendor/cache
+4. Fetching source index from file:///…/fixtures/gem-index/
+```
+我方（旧 `3e336c9` 与当前 HEAD 一致）：
+```
+1. Updating files in vendor/cache
+2.   * json_pure-2.8.1.gem
+3. Bundle complete! 2 Gemfile dependencies, 2 gems now installed.
+4. Bundled gems are installed into `…/h/b`
+5. Updating files in vendor/cache
+6. Fetching source index from file:///…/fixtures/gem-index/
+```
+即：`Updating files …` 多打一次、多出 `  * json_pure-2.8.1.gem`、且第一段出现在
+`Bundle complete!` 之前。这正是 hanlin 观察到的形状，但只在**缓存已存在时重跑**出现。
+单次运行不可能覆盖它，故本任务不改产品，也不提交失败夹具；建议单列任务处理
+（`Runtime#cache` 在重跑时不应再打印 `  *` 行，且刷新应发生在 `Bundle complete!` 之后）。
+
+### 声明
+- 单次 `cache --all-platforms` 已对齐，夹具无区分力（纯护栏）。
+- 重跑分歧未修，成因与「app cache 已含该包时仍复制/仍打印」相关。
