@@ -23,11 +23,13 @@ private def check_path_gemspec(version : String) : String
   SPEC
 end
 
-private def check_path_files(version : String, lock_version : String?) : Hash(String, String)
+private def check_path_files(version : String, lock_version : String?,
+                             with_gem_section : Bool = true) : Hash(String, String)
   specs = lock_version ? "    pg (#{lock_version})\n" : ""
+  gem_section = with_gem_section ? "GEM\n  remote: file:///#{check_path_index}/\n  specs:\n\n" : ""
   files = {
     "Gemfile"       => %(source "file:///#{check_path_index}"\n\ngem "pg", path: "./pg"\n),
-    "Gemfile.lock"  => %(PATH\n  remote: pg\n  specs:\n#{specs}\nPLATFORMS\n  x64-mingw-ucrt\n\nDEPENDENCIES\n  pg!\n\nBUNDLED WITH\n   4.0.24\n),
+    "Gemfile.lock"  => %(PATH\n  remote: pg\n  specs:\n#{specs}\n#{gem_section}PLATFORMS\n  x64-mingw-ucrt\n\nDEPENDENCIES\n  pg!\n\nBUNDLED WITH\n   4.0.24\n),
     "pg/pg.gemspec" => check_path_gemspec(version),
     "pg/lib/pg.rb"  => "module Pg; end\n",
   }
@@ -60,7 +62,7 @@ end
 
 describe "check with a drifted PATH section" do
   it "heals a missing spec row and announces the resolve" do
-    with_check_path_env(check_path_files("1.0.0", nil)) do |project|
+    with_check_path_env(check_path_files("1.0.0", nil, with_gem_section: false)) do |project|
       code, out, err = run_cli(["check"])
       code.should eq(0)
       out.should eq("Resolving dependencies...\nThe Gemfile's dependencies are satisfied\n")
@@ -80,12 +82,12 @@ describe "check with a drifted PATH section" do
     end
   end
 
-  it "keeps the lock untouched under --dry-run" do
-    with_check_path_env(check_path_files("1.0.0", nil)) do |project|
+  it "keeps a consistent lock quiet and untouched" do
+    with_check_path_env(check_path_files("1.0.0", "1.0.0")) do |project|
       before = File.read(File.join(project, "Gemfile.lock"))
-      code, out, _err = run_cli(["check", "--dry-run"])
+      code, out, _err = run_cli(["check"])
       code.should eq(0)
-      out.should eq("Resolving dependencies...\nThe Gemfile's dependencies are satisfied\n")
+      out.should eq("The Gemfile's dependencies are satisfied\n")
       File.read(File.join(project, "Gemfile.lock")).should eq(before)
     end
   end

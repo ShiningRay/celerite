@@ -1,0 +1,18 @@
+Gemfile.lock
+PATH
+  remote: pg
+  specs:
+    pg (1.0.0)
+
+GEM
+  remote: file:///@INDEX_DIR@/
+  specs:
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  pg!
+
+BUNDLED WITH
+   @BUNDLER_VERSION@
