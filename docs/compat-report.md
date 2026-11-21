@@ -6032,3 +6032,24 @@ installed locally.
 C（只记录，不修）：`add json_pure --github rails/thor --skip-install`，参考先 `Fetching https://github.com/rails/thor.git` 再 `Could not find gem 'json_pure' in https://github.com/rails/thor.git (at <rev>).`，Gemfile 不变；我方先查 rubygems 索引并报 `Could not find gem 'json_pure (~> 2.8)' …`，Gemfile 现在也会回滚（B 的修复顺带覆盖）。这是「先选源再选版本」与「先选版本再选源」的顺序差异，属 C 类，仅记录。
 
 夹具：`add-failure-keeps-gemfile`（`command` = `add nosuchgem --skip-install`，`file-equals` 断言 Gemfile 与初始一致，`stderr-contains` 断言 exit 7 的文案）。spec：`spec/m7_add_failure_rollback_spec.cr` 3 例（缺 gem、坏 requirement、`--path` 不存在）。
+
+## 2026-11-21（M7 task-82：`add --github` 的源选择，以及一条「故意不对齐」）
+
+参考把 `github:` 选项在 DSL 层就归一成 git 源（`dsl.rb:340-350` `git_source(:github)`，`Bundler::Source::Git` + `https://github.com/<repo>.git`），所以注入的依赖按 git 源解析；我方桥接同样走真实 Bundler DSL，实测 `gem "json_pure", github: "rails/thor"` 求值出的源是 `Bundler::Source::Git`、`uri=https://github.com/rails/thor.git`，与参考一致。
+
+| 场景（`file://` 索引） | 参考 4.0.24 | 我方 |
+| --- | --- | --- |
+| `add json_pure --github rails/thor --skip-install` | `Fetching https://github.com/rails/thor.git` → stderr `Could not find gem 'json_pure' in https://github.com/rails/thor.git (at cb11e8e).`，exit 7，Gemfile 不变 | 源选择相同（git 源，同一 URL、同一 rev `cb11e8e`），但解析后继续做 `git clone --quiet --no-hardlinks <mirror> <dest>` 检出，被本机 msys 的 `NtCreateDirectoryObject … 0xC0000022` 打断：`git command failed: git clone --quiet --no-hardlinks`，exit 11，Gemfile 已回滚（task-81） |
+| `add … --github … --branch <b>` | 分支随注入行写入 `branch:` 选项 | 注入行渲染一致；端到端同样卡在检出 |
+| `--git <本地仓库> --skip-install` / `--ref <tag>` | 不联网即可完成 | 本机 git 子进程同样被 `0xC0000022` 阻断（与 `plugin-git-local*` 同族） |
+
+结论：**源选择本身已对齐**，残差是「参考在解析阶段只读 mirror、不检出；我方在解析阶段就检出」——检出被环境阻断，无法端到端验证。为此未新增 `add-github-source-order` / `add-git-local-ref` 差分夹具（在本机必然因环境变红），改以 `spec/m7_add_github_source_spec.cr`（2 例）在桥接求值边界断言：`github:` ⇒ `type=git`、`remote=https://github.com/rails/thor.git`、且无 branch/tag/ref。
+
+### 故意不对齐（记录，不改产品）
+
+`install --redownload` 在「gem 已安装、`bundle/ruby/<abi>/cache/<full_name>.gem` 已被删除」时：
+
+- 参考：exit 5，stderr `Bundler::GemNotFound: Could not find json_pure-2.8.1.gem for installation` + 约 40 行回溯（`source/rubygems.rb:586` `rubygems_gem_installer`），即崩溃路径。
+- 我方：exit 0，从源重新下载并回填 cache（task-60 的实现）。
+
+理由：参考此处是缺陷（把「强制重装」限制在 cache 命中，cache 缺失时不是给出可执行的错误而是抛内部异常）。对齐等于复制该缺陷、并把一个可自愈的路径改成崩溃，故**故意不对齐**，仅记录。
