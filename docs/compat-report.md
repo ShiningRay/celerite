@@ -6245,3 +6245,33 @@ task-66：64 / 53 / 10 passed，artifice 38、low-il 9、fetch 6、product 0。�
 - `Source::Git#cache` 未实现（本机 msys `0xC0000022` 阻塞 git 端到端），git 源在 install 期是否复制未取证。
 - `cache_all` 的工程外 path 源复制在 install 期复用同一助手，但未单独取 oracle（task-84 只在 `cache` 命令上取证）。
 - `package` 共用 `run_cache`/`install`，未单独取 oracle。
+
+## 2026-11-21（M7 task-88：首次 install 复制工程外 path 源、`BUNDLE_PATH` 绝对路径原样渲染）
+
+### oracle（4.0.24；`file://` 索引，双侧隔离 HOME/BUNDLE_PATH/BUNDLE_APP_CONFIG）
+
+| 场景 | 参考 | 我方（修前） | 修后 |
+|---|---|---|---|
+| 首次 `install` + `gem "pgem", path: "../pgem"`（工程外，`vendor/cache` 预建，无锁） | 退出 0，`vendor/cache/pgem/{pgem.gemspec,lib/pgem.rb,.bundlecache}` | 退出 0，`vendor/cache` 为空 | 与参考逐字一致 |
+| `BUNDLE_PATH` 绝对反斜杠（工程上级） | `Bundled gems are installed into `C:\Users\…\bundle`` | ``C:/Users/…/bundle`` | 保持配置原样 |
+| `BUNDLE_PATH` 绝对正斜杠 | 原样 | 原样 | 一致 |
+| `BUNDLE_PATH=./bundle` | ``./bundle`` | 一致 | 一致 |
+| `BUNDLE_PATH=`（空串） | ``Bundled gems are installed into `./.`` | 打印 `bundle info` 提示 | 未对齐（见已声明差异） |
+
+参考链路：`runtime.rb:131-142` 遍历 `definition.specs`（不读锁）→ `source/path.rb:84-96`；`settings.rb:253-285` 的 `base_path_relative_to_pwd` 只在相对路径以 `..` 开头时保留配置原样，否则补 `./`；`settings.rb:88` 只在 4.x 打开 `BUNDLE_CACHE_ALL`。
+
+### 实现
+- `src/celerite/cli/commands_install.cr`：`cache_path_sources` 不再要求锁存在，改用调用方传入的锁数据；`refresh_app_cache` 的 `lockfile` 参数可选；install 传 `resolution.generated_lockfile`（写盘前即可用），update 传同一对象，add 传 `Definition#lockfile`（若有）。`run_cache` 的既有循环不动。
+- `src/celerite/resolution.cr`：`InstallPaths.base_path_relative_to_pwd` 重写为 `settings.rb:253-285` 的语义（绝对配置原样、相对补 `./`、`..` 分支保留原样、分隔符统一为 `/` 后比较）。
+- `src/celerite/config.cr`：移除 `BUNDLE_CACHE_ALL => true` 的共享默认值（4.x 默认开、2.7.2 默认关，由消费方按 profile 决定）。
+
+### 装具与夹具
+- 夹具 `fixtures/differential/install-path-source-app-cache-first/`：`sibling/pgem/*`（task-84 约定）+ `extra/vendor/cache/keep.txt`，`file-exists` 断言 `vendor/cache/pgem/lib/pgem.rb` 与 `.bundlecache`；2.7.2 用 `deferred-2.7.2` 声明（该 profile 两侧都不复制，断言无法成立）。
+- 绝对 `BUNDLE_PATH` 无法做差分夹具：`script/differential` 只替换索引占位符，没有 `@SANDBOX@`，沙箱绝对路径无法写进 `env` 文件；改由 `spec/m7_install_app_cache_spec.cr` 运行时构造。
+
+### 反假绿
+- `C:/temp/celerite-pre88`（`8b6bae7`）：`FAIL install-path-source-app-cache-first`，`Only in SANDBOX/project/vendor/cache: pgem`、两条 `file-exists violated (… ) ref_exists=yes cel_exists=no`；旧二进制的绝对路径渲染为 `C:/…`（spec 覆盖）。
+
+### 已声明差异
+- `BUNDLE_PATH=`（空串）：参考渲染 `./.`，我方把空值当作未设置（`Config` 丢弃空值），打印 `bundle info` 提示；未修。
+- `Source::Git#cache` 仍未实现（msys `0xC0000022` 阻断 git 端到端）；`package` 与 `cache` 共用路径，未单独取 oracle。
