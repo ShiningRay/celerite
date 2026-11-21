@@ -59,6 +59,31 @@ private def checksums_lock(url : String) : String
   LOCK
 end
 
+# A lockfile whose CHECKSUMS section carries no row at all for `json_pure`.
+# The reference treats that as a *missing* entry, which makes it re-resolve for
+# real (`definition.rb:641` + `:651-659`), so `resolver.rb:34` announces
+# `Resolving dependencies...` on 4.0.24 too -- unlike the empty-value shape.
+private def missing_checksums_lock(url : String) : String
+  <<-LOCK
+  GEM
+    remote: #{url}/
+    specs:
+      json_pure (2.8.1)
+
+  PLATFORMS
+    x64-mingw-ucrt
+
+  DEPENDENCIES
+    json_pure
+
+  CHECKSUMS
+    bundler (4.0.24)
+
+  BUNDLED WITH
+     4.0.24
+  LOCK
+end
+
 private def no_checksums_lock(url : String) : String
   <<-LOCK
   GEM
@@ -125,6 +150,71 @@ describe "M7 empty CHECKSUMS entries" do
     end
   end
 
+  # task-116: the two shapes must stay distinct. A *missing* row makes the
+  # reference re-resolve for real, so `Resolving dependencies...` is announced
+  # (`resolver.rb:34`); an *empty* row only re-reads the index and stays quiet.
+  # Pinning both directions keeps the fix from over-printing on the empty shape.
+  it "announces the re-resolution when a CHECKSUMS entry is missing" do
+    pending! "ruby not available" unless ruby_available?
+    with_http_index do |port|
+      url = "http://127.0.0.1:#{port}"
+      preset = File.expand_path("../fixtures/differential/check-no-lockfile-installed/bundle-preset", __DIR__)
+      with_project({
+        "Gemfile"      => %(source "#{url}/"\n\ngem "json_pure"\n),
+        "Gemfile.lock" => missing_checksums_lock(url),
+      }) do |dir|
+        bundle = File.join(dir, "bundle")
+        FileUtils.cp_r(preset, bundle)
+        with_bundle_path(bundle) do
+          code, stdout, _stderr = run_cli(["install"])
+          code.should eq(0)
+          stdout.should contain("Resolving dependencies...")
+          File.read(File.join(dir, "Gemfile.lock")).should contain(json_pure_sha)
+        end
+      end
+    end
+  end
+
+  it "stays silent when the CHECKSUMS entry is present but empty" do
+    pending! "ruby not available" unless ruby_available?
+    with_http_index do |port|
+      url = "http://127.0.0.1:#{port}"
+      preset = File.expand_path("../fixtures/differential/check-no-lockfile-installed/bundle-preset", __DIR__)
+      with_project({
+        "Gemfile"      => %(source "#{url}/"\n\ngem "json_pure"\n),
+        "Gemfile.lock" => checksums_lock(url),
+      }) do |dir|
+        bundle = File.join(dir, "bundle")
+        FileUtils.cp_r(preset, bundle)
+        with_bundle_path(bundle) do
+          code, stdout, _stderr = run_cli(["install"])
+          code.should eq(0)
+          stdout.should_not contain("Resolving dependencies...")
+          File.read(File.join(dir, "Gemfile.lock")).should contain(json_pure_sha)
+        end
+      end
+    end
+  end
+
+  it "classifies a missing row as Missing and an empty row as Empty" do
+    pending! "ruby not available" unless ruby_available?
+    url = file_source_url(File.expand_path("../fixtures/gem-index", __DIR__))
+    with_project({
+      "Gemfile"      => %(source "#{url}"\n\ngem "json_pure"\n),
+      "Gemfile.lock" => missing_checksums_lock(url),
+    }) do
+      reason = Celerite::Definition.build.checksums_need_refresh?(false)
+      reason.should eq(Celerite::Definition::ChecksumsRefreshReason::Missing)
+    end
+    with_project({
+      "Gemfile"      => %(source "#{url}"\n\ngem "json_pure"\n),
+      "Gemfile.lock" => checksums_lock(url),
+    }) do
+      reason = Celerite::Definition.build.checksums_need_refresh?(false)
+      reason.should eq(Celerite::Definition::ChecksumsRefreshReason::Empty)
+    end
+  end
+
   it "backfills the lockfile on lock" do
     pending! "ruby not available" unless ruby_available?
     with_http_index do |port|
@@ -150,8 +240,8 @@ describe "M7 empty CHECKSUMS entries" do
         "Gemfile.lock" => checksums_lock(url),
       }) do |dir|
         definition = Celerite::Definition.build
-        definition.checksums_need_refresh?(true).should be_false
-        definition.checksums_need_refresh?(false).should be_true
+        definition.checksums_need_refresh?(true).should be_nil
+        definition.checksums_need_refresh?(false).should eq(Celerite::Definition::ChecksumsRefreshReason::Empty)
         code, stdout, _stderr = run_cli(["lock", "--local"])
         code.should eq(0)
         stdout.should_not contain("Fetching gem metadata")
