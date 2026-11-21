@@ -10,7 +10,8 @@ end
 
 private def with_doctor_settings_env(project : String, settings : Hash(String, String?), & : String ->) : Nil
   keys = ["HOME", "USERPROFILE", "GEM_HOME", "GEM_PATH", "BUNDLE_PATH",
-          "BUNDLE_PATH__SYSTEM", "BUNDLE_DISABLE_SHARED_GEMS", "CELERITE_BRIDGE_SERVER",
+          "BUNDLE_PATH__SYSTEM", "BUNDLE_DISABLE_SHARED_GEMS", "BUNDLE_WITH",
+          "BUNDLE_WITHOUT", "BUNDLE_DEFAULT_CLI_COMMAND", "CELERITE_BRIDGE_SERVER",
           "CELERITE_PROFILE_BUNDLER_VERSION"]
   previous = {} of String => String?
   keys.each { |key| previous[key] = ENV[key]? }
@@ -77,6 +78,49 @@ describe "task-96 doctor settings conflict" do
         out.should contain("Setting `path.system` to nil, since path and path.system are mutually exclusive")
         out.should contain("Setting `path` to nil, since path and path.system are mutually exclusive")
         err.should contain("Using a custom path while using system gems is unsupported.")
+      end
+    end
+  end
+end
+
+# task-98: `settings/validator.rb:65-76` (with/without) and `:78-83`
+# (default_cli_command, 4.x only) run through `fail!`, which prints the header
+# plus one indented line per argument on stderr and exits 15.
+describe "task-98 doctor settings rules" do
+  it "reports a with/without overlap before doing any work" do
+    with_project(doctor_settings_gemfile) do |project|
+      with_doctor_settings_env(project, {"BUNDLE_WITH" => "test", "BUNDLE_WITHOUT" => "test"}) do |dir|
+        code, out, err = run_cli(["doctor"])
+        code.should_not eq(0)
+        out.should eq("")
+        err.should contain("Setting `with` to [:test] failed:")
+        err.should contain(" - a group cannot be in both `with` & `without` simultaneously")
+        err.should contain(" - `without` is current set to [:test]")
+        err.should contain(" - the `test` groups conflict")
+      end
+    end
+  end
+
+  it "keeps the group rule silent when only with is configured" do
+    with_project(doctor_settings_gemfile) do |project|
+      with_doctor_settings_env(project, {"BUNDLE_WITH" => "test", "BUNDLE_WITHOUT" => nil}) do |dir|
+        code, out, err = run_cli(["doctor"])
+        code.should_not eq(15)
+        out.should_not contain("failed:")
+        err.should_not contain("groups conflict")
+      end
+    end
+  end
+
+  it "rejects an invalid default_cli_command" do
+    with_project(doctor_settings_gemfile) do |project|
+      with_doctor_settings_env(project, {"BUNDLE_DEFAULT_CLI_COMMAND" => "nosuch"}) do |dir|
+        code, out, err = run_cli(["doctor"])
+        code.should_not eq(0)
+        out.should eq("")
+        err.should contain("Setting `default_cli_command` to \"nosuch\" failed:")
+        err.should contain(" - default_cli_command must be either 'install' or 'cli_help'")
+        err.should contain(" - must be one of: install, cli_help")
       end
     end
   end

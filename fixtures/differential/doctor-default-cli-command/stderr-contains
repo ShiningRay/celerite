@@ -1,0 +1,3 @@
+Setting `default_cli_command` to "nosuch" failed:
+ - default_cli_command must be either 'install' or 'cli_help'
+ - must be one of: install, cli_help

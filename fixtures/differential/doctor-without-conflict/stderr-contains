@@ -1,0 +1,3 @@
+Setting `with` to [:test] failed:
+ - a group cannot be in both `with` & `without` simultaneously
+ - the `test` groups conflict
