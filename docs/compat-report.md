@@ -6800,3 +6800,30 @@ CEL exit=7 OUT=[] ERR=[Could not find gem 'net-smtp' in locally installed gems.]
 **回归**：双 profile 5/0（`install-local`、`install-local-vendored-install`、
 `install-autoheals-locked-dependency-edges`、`lock-does-not-heal-dependency-edges`、
 `install-refreshes-app-cache`）；spec 5/0；format/`build --no-codegen`/bin build 0。
+## 2026-11-21（M7 task-102：`check` 自愈 `PATH` 段缺失/漂移的 spec）
+
+**oracle（手工实测；沙箱 `Gemfile` = `source 'https://rubygems.org'` + `gem 'pg', path: './pg'`，隔离 `HOME`/`USERPROFILE`/`BUNDLE_APP_CONFIG`/`BUNDLE_PATH`，`GEM_HOME`/`GEM_PATH` unset）**
+
+| 形状 | 参考 4.0.24 / 2.7.2 | 我方（修前） | 我方（修后） |
+|---|---|---|---|
+| (a) `PATH` 段缺 `    pg (1.0.0)` 行 | exit 0；`Resolving dependencies...` + `The Gemfile's dependencies are satisfied`；锁补回该行 | exit 1；两行 `Bundler can't satisfy…` / `Install missing gems…` | 同参考 |
+| (b) gemspec 2.0.0、锁仍 1.0.0 | exit 0；同上两行；锁更新为 `pg (2.0.0)` | exit 0；只有 satisfied（缺 `Resolving` 行） | 同参考 |
+| (c) 锁完整且源一致 | exit 0；**仍打印** `Resolving dependencies...`；锁不变 | 只有 satisfied | 同参考 |
+| (d) frozen + (a) | exit 16；`The list of sources changed, the gemspecs for path gems changed, your lockfile is missing "pg", …` | exit 16，但只报 sources changed，Gemfile diff 用绝对路径 | 未对齐（已声明） |
+| (e) `check --dry-run` + (a) | exit 0；两行；不写锁 | exit 1 | 同参考 |
+
+**机制**：`definition.rb:172-182` 在 Gemfile 比对之后无条件 `sources.local_only!` + `resolve`，
+materialization 判定缺 spec；`cli/check.rb:33` 满足时写锁（`--dry-run` 跳过）。
+
+**实现**：`src/celerite/cli/commands.cr` `run_check` 在 `unresolved_dep` 之前插入：锁内存在
+`PATH` 源且非 frozen 时打印 `Resolving dependencies...`，用 `Resolution.new(definition, false).resolve!`
+重解析并以 `generated_lockfile.to_lock` 作为写盘首选项（`text = path_heal_text || generated_text`）；
+`unresolved_dep` 在该形状下让位（否则 (a)/(e) 会先报 exit 1）。
+
+**夹具/规格**：`fixtures/differential/check-heals-path-gemspec`（`extra/pg/` 提供 gemspec，
+`file-contains` 断 `    pg (1.0.0)`）；`spec/m7_check_path_gemspec_spec.cr` 3 例。负对照
+`d78d665` 失败行：`> Bundler can't satisfy your Gemfile's dependencies.`、
+`file-contains differs (Gemfile.lock): needle=    pg (1.0.0)`。
+
+**已声明差异**：① frozen 的 reason 列表与 Gemfile diff 文案未对齐（仍 exit 16）；② `GIT`/`PLUGIN`
+段不参与自愈（保持 task-44b 现状）；③ 无 bridge 环境下退化为"只重写不重解析"。
