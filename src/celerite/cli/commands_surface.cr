@@ -142,6 +142,15 @@ module Celerite
           end.map(&.name)
           gems = (gems + group_gems).uniq
         end
+        # `cli/update.rb:49-56`: a selector that matches nothing leaves the
+        # unlock set empty, and `Bundler.definition(gems: [], …)` then unlocks
+        # nothing — the lockfile is left untouched and only the closing line
+        # is printed. Without this the resolver still fetches the index and
+        # re-resolves, which the reference never does.
+        if !full_update && gems.empty? && sources.empty? && !ruby_flag && !update_bundler
+          stdout.puts "Bundle updated!"
+          return 0
+        end
         unlock : Bool | Array(String) = full_update ? true : gems
         if source_name = sources.first?
           evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
