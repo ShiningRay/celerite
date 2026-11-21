@@ -6638,3 +6638,33 @@ PLUGIN SOURCE
 - 2.7.2 的 `settings/validator.rb` 只有 `path` 与 `with`/`without` 两条规则，没有 `default_cli_command` 规则：同一取值在 2.7.2 被忽略并走正常流程，故该夹具 `deferred-2.7.2`。
 - 只覆盖 `with`/`without` 的「交集非空」形态；`with` 或 `without` 单独取值不校验（参考同）。
 - 校验时机沿用 task-96：`doctor` 进入解析前；`install`/`check`/`config set` 不跑 `validate!`（参考同）。
+
+## 2026-11-21（M7 task-99：首次 install 的 path 源缓存与 `Bundled gems are installed into` 的分隔符与空值形态）
+
+### oracle（4.0.24 与 2.7.2，隔离 HOME/BUNDLE_*，参考 `ruby .upstream-specs/v4.0.24/bundler/exe/bundle`）
+
+| 场景 | 参考 | 修前我方 |
+| --- | --- | --- |
+| 首次 install，工程外 `path` 源 + 已存在的 `vendor/cache` | exit 0，`Updating files in vendor/cache`，`vendor/cache/pgem/{.bundlecache,lib/pgem.rb,pgem.gemspec}` | 同（task-87 已把 in-memory lock 传进拷贝路径，此轮补夹具固定） |
+| `BUNDLE_PATH=./bundel` | ``Bundled gems are installed into `./bundel` `` | 一致 |
+| `BUNDLE_PATH=C:\...\bundle-dir` | 原样保留反斜杠 | `C:/...`（结果被 `.gsub(/\\/, "/")` 归一化） |
+| `BUNDLE_PATH=`（显式空） | ``./.`` | ``Use `bundle info [gemname]` …``（空值被当成未设置） |
+| `BUNDLE_PATH` 未设 | ``Use `bundle info [gemname]` …`` | 一致 |
+
+参考实现：`cli/install.rb:59-64` 打印路径，文本来自 `settings.rb:253-285`（`base_path_relative_to_pwd`）与 `settings.rb:287-297`（`Path#validate!`，空值仍算「已配置」）；`Runtime#cache`（`runtime.rb:131-142`）遍历 `definition.specs` 而非锁文件，所以首次 install 也会拷贝工程外 `path` 源。
+
+### 实现
+
+- `src/celerite/cli/commands_install.cr`：`InstallPaths.base_path_relative_to_pwd` 先在两处把 `\` 归一为 `/` 再 `Path#relative_to`，并按配置原始串是否绝对决定原样返回还是 `./` 前缀；新增 `empty_bundle_path?`（`BUNDLE_PATH` 存在且为空，或配置 `path` 为空串），打印分支优先输出 `./.`。
+- 缓存拷贝：`cache_path_sources` 改为接收调用方传入的 `Lockfile::Data`，install/update/add 分别传 `resolution.generated_lockfile`（add 传其自建结果），首次 install 不再因 `lockfile_exists?` 提前返回。
+
+### 夹具与证据
+
+- `fixtures/differential/install-path-source-app-cache-first/`：`sibling/pgem/*`（工程外源）、`extra/vendor/cache/keep.txt`，`file-exists` 断言 `vendor/cache/pgem/lib/pgem.rb` 与 `.bundlecache`；4.0.24 PASS；2.7.2 标记 `deferred-2.7.2`（2.7.2 的 `cache_all` 无共享默认，两侧都不拷贝，断言不适用）。
+- `spec/m7_bundle_path_rendering_spec.cr` 3 例（相对、绝对反斜杠、显式空）；与 `m7_cache_all_path_spec`、`m7_install_app_cache_spec`、`m7_cache_path_spec`、`m7_deployment_path_spec` 合并运行 **28 例 0 失败**。
+- 反假绿：`C:/temp/celerite-pre88`@`8b6bae7` 跑新 spec → 2 例失败（绝对路径被归一化、空值打印 `bundle info` 提示）；同一旧二进制跑新夹具亦失败（首次 install 未拷贝 `vendor/cache/pgem`）。
+
+### 已声明差异
+
+- 差分夹具无法表达绝对路径：harness 没有沙箱根占位符（只有 `@INDEX_DIR@`/`@PLATFORM_INDEX_DIR@` 等索引占位），该形状只在 spec 覆盖。
+- `Source::Git#cache` 仍未实现（msys `0xC0000022` 阻断 git 端到端）；`cache_all` 的工程外 `path` 拷贝只在 `cache` 命令上取过 oracle，`package` 共享同一路径但未单独取证。
