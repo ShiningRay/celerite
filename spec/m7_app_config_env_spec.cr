@@ -42,7 +42,8 @@ describe "M7 BUNDLE_APP_CONFIG resolution" do
       absolute = File.join(dir, "elsewhere", "appcfg")
       with_app_config(absolute) do
         Celerite::Config.app_config_path(dir).should eq(absolute)
-        Celerite::Config.new(dir).local_config_file.should eq(File.join(absolute, "config"))
+        # `Config.join_config` always appends with a forward slash (task-56).
+        Celerite::Config.new(dir).local_config_file.should eq("#{absolute}/config")
       end
     end
   end
@@ -52,7 +53,7 @@ describe "M7 BUNDLE_APP_CONFIG resolution" do
       parent = File.dirname(dir)
       with_app_config("relcfg") do
         Dir.cd(parent) do
-          Celerite::Config.app_config_path(dir).should eq(File.join(dir, "relcfg"))
+          Celerite::Config.app_config_path(dir).should eq(File.join(dir, "relcfg").gsub('\\', "/"))
         end
       end
     end
@@ -79,8 +80,8 @@ describe "M7 BUNDLE_APP_CONFIG resolution" do
   it "keeps <root>/.bundle when BUNDLE_APP_CONFIG is unset" do
     with_project({"Gemfile" => "source \"https://rubygems.org/\"\n"}) do |dir|
       with_app_config(nil) do
-        Celerite::Config.app_config_path(dir).should eq(File.join(dir, ".bundle"))
-        Celerite::Config.new(dir).local_config_file.should eq(File.join(dir, ".bundle", "config"))
+        Celerite::Config.app_config_path(dir).should eq(File.join(dir, ".bundle").gsub('\\', "/"))
+        Celerite::Config.new(dir).local_config_file.should eq("#{File.join(dir, ".bundle").gsub('\\', "/")}/config")
       end
     end
   end

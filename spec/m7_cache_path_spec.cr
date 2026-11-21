@@ -83,4 +83,36 @@ describe "M7 bundle cache target root" do
       end
     end
   end
+
+  # `app_cache_path` reads the `cache_path` setting (settings.rb:304-306), which
+  # `BUNDLE_CACHE_PATH` feeds; `runtime.rb:115` prints that raw value, so the
+  # label stays `custom` instead of an expanded path.
+  it "writes BUNDLE_CACHE_PATH under the Gemfile root and prints the label" do
+    with_project({"Gemfile" => cache_gemfile}) do |dir|
+      bundle_path = File.join(dir, "tmp-bundle")
+      with_env({"BUNDLE_PATH" => bundle_path, "BUNDLE_CACHE_PATH" => "custom"}) do
+        code, out_text, err_text = capture_cache { |o, e| Celerite::Commands.cache(o, e, [] of String) }
+        code.should eq(0)
+        err_text.should eq("")
+        out_text.should contain("Updating files in custom")
+        File.file?(File.join(dir, "custom/json_pure-2.8.1.gem")).should be_true
+        Dir.exists?(File.join(dir, "vendor/cache")).should be_false
+      end
+    end
+  end
+
+  # `CLI::Cache#run` installs `--cache-path` as a command-option setting
+  # (cli/cache.rb:11), which outranks the env/config value.
+  it "lets --cache-path win over BUNDLE_CACHE_PATH" do
+    with_project({"Gemfile" => cache_gemfile}) do |dir|
+      bundle_path = File.join(dir, "tmp-bundle")
+      with_env({"BUNDLE_PATH" => bundle_path, "BUNDLE_CACHE_PATH" => "fromenv"}) do
+        code, out_text, _err = capture_cache { |o, e| Celerite::Commands.cache(o, e, ["--cache-path", "flagdir"]) }
+        code.should eq(0)
+        out_text.should contain("Updating files in flagdir")
+        File.file?(File.join(dir, "flagdir/json_pure-2.8.1.gem")).should be_true
+        Dir.exists?(File.join(dir, "fromenv")).should be_false
+      end
+    end
+  end
 end
