@@ -6500,3 +6500,37 @@ oracle（`fixtures/gem-index-locked-deps`；Gemfile `gem "net-smtp", "0.5.0"`；
 - `lock` 重解析时我方仍会写下 `      net-protocol` 依赖边（生成器从索引取依赖），参考保留锁内原依赖表；本轮只保证「不补 spec 行」，边差异沿用既有登记。
 - `install --local` 在该锁形状下仍是既有差异（参考 exit 7、我方从索引装），未在本轮改动。
 - `update` 未接入自愈（参考的 `reresolve_without` 也用于 update 路径，本轮未取 oracle）。
+
+## 2026-11-21（M7 task-95：`install` 按 `without` 过滤安装集合）
+
+`installer.rb:208` 装的是 `definition.specs`，而 `Definition` 只保留「至少有一个组不在 `without` 里」的依赖（`dependency.rb` `should_include?`）；被排除组的 gem 仍写进锁文件，但既不下载也不安装。我方此前完全不看 `without`：把排除组的 gem 也装了，`gems now installed` 计数偏高，并且缺少 `cli/common.rb:57` 的通知行。
+
+oracle（`fixtures/gem-index`；`BUNDLE_PATH` 隔离；4.0.24 与 2.7.2 同形）：
+
+| 形态 | 参考（exit 0） |
+|---|---|
+| Gemfile `gem "json_pure"` + `group :test do gem "thor" end`，`BUNDLE_WITHOUT=test` | `Fetching source index …`、`Resolving dependencies...`、`Fetching/Installing json_pure 2.8.1`、`Bundle complete! 2 Gemfile dependencies, 1 gem now installed.`、`Gems in the group 'test' were not installed.`、`Bundled gems are installed into `./bundle``；`bundle/ruby/4.0.0/gems` 只有 `json_pure-2.8.1`；锁里 `DEPENDENCIES` 仍有 `thor` |
+| 两组 `:a`(thor)/`:b`(racc)，`BUNDLE_WITHOUT=b:a` | 同上，但通知是 `Gems in the groups 'b' and 'a' were not installed.`（顺序按配置，不排序），`3 Gemfile dependencies, 1 gem now installed.` |
+| thor 同时在默认组与 `:test`，`BUNDLE_WITHOUT=test` | 仍然安装 thor（默认组需要）：`2 gems now installed`，但通知**照打** `Gems in the group 'test' were not installed.` |
+| 不设 `BUNDLE_WITHOUT` | 两个 gem 都装，无通知行 |
+| `install --help` | 4.0.24 已无 `--without` 旗标 ⇒ 不实现该旗标（`config` 里的 `without` 仍生效） |
+
+实现（`src/celerite/cli/commands_install.cr`）：
+- `without_group_names(definition)`：读 `definition.config["without"]`（`Array` 或 `String` 的 `:` 分隔形式）。
+- `installable_specs(resolution, specs, without_groups)`：从「组未被完全排除」的顶层依赖出发，沿已解析 spec 的依赖边做可达闭包；`without` 为空时原样返回。安装工作集、`gems now installed` 计数都基于该集合。
+- `skipped_group_names(resolution, without_groups)`：只把「仍承载 Gemfile 依赖」的排除组写进通知，保持配置顺序。
+- 通知行插在 `Bundle complete! …` 之后、`Bundled gems are installed into …` / `Use `bundle info …`` 之前；单组 `group 'x'`、多组 `groups 'a' and 'b'`。
+- 锁内容、`resolution` 的候选集、`list`/`show` 的既有分组过滤均未改动。
+
+装具/夹具：
+- `fixtures/differential/install-without-group/`（`env` `BUNDLE_WITHOUT=test`，`file-contains` 断锁里仍有 `  thor`；stdout 整段比对覆盖通知行与 `1 gem now installed`）
+- `fixtures/differential/install-without-two-groups/`（`env` `BUNDLE_WITHOUT=b:a`）
+- `fixtures/differential/install-without-none/`（无 `env`，两个 gem 都装）
+- `spec/m7_install_without_spec.cr` 4 例：单组过滤 + 通知、双组文案、无设置时全装且沉默、默认组与排除组重叠时仍安装但照打通知。
+
+证据：三条新夹具双 profile PASS（4.0.24 与 2.7.2）；回归 4.0.24 10 passed/0 failed（`install-fresh`、`install-check`、`install-fund-summary`、`fund-groups`、`install-clean-after-install`、`install-refreshes-app-cache`、`install-autoheals-locked-dependency-edges` 及各新夹具），2.7.2 6/0；负对照 `C:/temp/celerite-pre95`@`ab36946` 的 `install-without-group` FAIL（`> Fetching thor 1.3.2`、`> Installing thor 1.3.2`、`> Bundle complete! … 2 gems now installed.`，且缺通知行）。
+
+已声明差异/未验证：
+- `with`/`BUNDLE_WITH` 的「只装指定组」语义未取 oracle，本轮只实现 `without`。
+- 排除组里的 gem 若同时被默认组需要，我方与参考一样安装并照打通知（已测），但「通知只列承载依赖的组」这一细则只在两组都有依赖时验证过。
+- `update`/`add` 路径未接入分组过滤（参考的过滤发生在 `Definition.dependencies`，本轮未取这两条命令的 oracle）。
