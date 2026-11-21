@@ -859,7 +859,7 @@ module Celerite
           # before the `Bundle complete!` line, printing one `  * <file>.gem`
           # per copied package.
           if refresh_app_cache?(definition, config.frozen?, rest)
-            refresh_app_cache(stdout, definition, install_root, specs.map { |spec| {spec.name, spec.full_name} })
+            refresh_app_cache(stdout, definition, install_root, specs.map { |spec| {spec.name, spec.full_name} }, resolution.generated_lockfile)
           end
           stdout.puts "Bundle complete! #{deps_count} Gemfile dependenc#{deps_count == 1 ? "y" : "ies"}, #{gems_count} gem#{gems_count == 1 ? "" : "s"} now installed."
           # `cli/install.rb` L59-64 as of 2.7.2/4.0.24: system gems report the
@@ -871,7 +871,7 @@ module Celerite
             # `Pathname` renders with `/` even on Windows, and the reference
             # prints it back with `./` for paths below the working directory.
             relative = InstallPaths.base_path_relative_to_pwd(config, definition.project_root)
-            stdout.puts "Bundled gems are installed into `#{relative.gsub(/\\/, "/")}`"
+            stdout.puts "Bundled gems are installed into `#{relative}`"
           end
           plugin_messages.each do |(plugin_name, message)|
             stdout.puts "Post-install message from #{plugin_name}:"
@@ -1073,12 +1073,21 @@ module Celerite
     # source outside the Gemfile root is copied wholesale into the app cache
     # and stamped with an empty `.bundlecache`; an in-project source is never
     # copied. `cache_all` defaults to true in 4.x (settings.rb:88).
-    private def self.cache_path_sources(definition : Definition, cache_target : String) : Nil
-      return if definition.config["cache_all"] == false
-      return unless definition.lockfile_exists?
+    # `lockfile` carries the `PATH` sections; `install` passes its in-memory
+    # `generated_lockfile` because the very first install runs before anything
+    # is written to disk (the reference walks `definition.specs`, so it copies
+    # out-of-project path sources on a first install too).
+    private def self.cache_path_sources(definition : Definition, cache_target : String,
+                                        lockfile : Lockfile::Data) : Nil
+      # `cache_all` defaults to true only in 4.x (`settings.rb:88`); 2.7.2
+      # requires the option explicitly, so our shared default (`true`, see
+      # `DEFAULT_CONFIG`) must not switch it on there.
+      cache_all = definition.config["cache_all"]
+      return if cache_all == false
+      return if cache_all.nil? && profile_2_x?
       gemfile_root = File.dirname(definition.gemfile_path)
       root_prefix = gemfile_root.gsub('\\', "/").chomp("/") + "/"
-      definition.lockfile!.sources.each do |source|
+      lockfile.sources.each do |source|
         next unless source.type == "PATH"
         original = source.remote
         next if original.nil?
@@ -1104,7 +1113,8 @@ module Celerite
     # prints the header, `Source::Rubygems#cache` (rubygems.rb:233-242) prints
     # `  * <file>.gem` per copied package, then the command prints its summary.
     private def self.refresh_app_cache(stdout : IO, definition : Definition, install_root : String,
-                                       entries : Array(Tuple(String, String))) : Nil
+                                       entries : Array(Tuple(String, String)),
+                                       lockfile : Lockfile::Data? = nil) : Nil
       cache_label = app_cache_label(definition)
       cache_target = app_cache_path(definition)
       Dir.mkdir_p(cache_target)
@@ -1118,7 +1128,9 @@ module Celerite
         FileUtils.cp(gem_file, File.join(cache_target, gem_name))
         stdout.puts "  * #{gem_name}"
       end
-      cache_path_sources(definition, cache_target)
+      if data = lockfile
+        cache_path_sources(definition, cache_target, data)
+      end
     end
 
     private def self.refresh_app_cache?(definition : Definition, frozen : Bool, rest : Array(String)) : Bool
@@ -1231,7 +1243,7 @@ module Celerite
         # true in 4.x (settings.rb:88 `"BUNDLE_CACHE_ALL" => true`), so only an
         # explicit `false` disables it. The destination directory is named
         # after the source's gem name (`app_cache_dirname`, path.rb:110-112).
-        if definition.config["cache_all"] != false
+        if definition.config["cache_all"] != false && (definition.config["cache_all"] == true || !profile_2_x?)
           root_prefix = gemfile_root.gsub('\\', "/").chomp("/") + "/"
           definition.lockfile!.sources.each do |source|
             next unless source.type == "PATH"

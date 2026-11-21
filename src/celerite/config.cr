@@ -27,15 +27,16 @@ module Celerite
     ARRAY_KEYS = ["with", "without"]
 
     DEFAULT_CONFIG = {
-      "BUNDLE_SILENCE_DEPRECATIONS"     => false,
-      "BUNDLE_DISABLE_VERSION_CHECK"    => true,
-      "BUNDLE_PREFER_PATCH"             => false,
-      "BUNDLE_REDIRECT"                 => 5,
-      "BUNDLE_RETRY"                    => 3,
-      "BUNDLE_TIMEOUT"                  => 10,
-      "BUNDLE_VERSION"                  => "lockfile",
-      "BUNDLE_LOCKFILE_CHECKSUMS"       => true,
-      "BUNDLE_CACHE_ALL"                => true,
+      "BUNDLE_SILENCE_DEPRECATIONS"  => false,
+      "BUNDLE_DISABLE_VERSION_CHECK" => true,
+      "BUNDLE_PREFER_PATCH"          => false,
+      "BUNDLE_REDIRECT"              => 5,
+      "BUNDLE_RETRY"                 => 3,
+      "BUNDLE_TIMEOUT"               => 10,
+      "BUNDLE_VERSION"               => "lockfile",
+      "BUNDLE_LOCKFILE_CHECKSUMS"    => true,
+      # `cache_all` has no shared default: 4.x turns it on (settings.rb:88),
+      # 2.7.2 leaves it off, so consumers decide per profile.
       "BUNDLE_PLUGINS"                  => true,
       "BUNDLE_GLOBAL_GEM_CACHE"         => false,
       "BUNDLE_UPDATE_REQUIRES_ALL_FLAG" => false,

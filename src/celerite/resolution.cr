@@ -99,20 +99,30 @@ module Celerite
       # given in that case.
       configured = config["path"].to_s
       base = configured.empty? ? base_path(config, system_gem_dir) : configured
+      # Normalise to `/` before the relative computation: Crystal's `Path`
+      # treats backslashes as ordinary characters on some inputs, which makes
+      # `relative_to` raise across what look like different roots.
+      expanded = File.expand_path(base, project_root).gsub(/\\/, "/")
+      cwd = Dir.current.gsub(/\\/, "/")
+      absolute = base.starts_with?("/") || base.matches?(/\A[A-Za-z]:[\\\/]/)
       begin
-        expanded = File.expand_path(base, project_root)
-        relative = Path[expanded].relative_to(Dir.current).to_s
-        value = if relative.starts_with?("..")
-                  Path[base].absolute? ? base : relative
-                else
-                  relative == "." ? "." : "./#{relative}"
-                end
-        # `Pathname` prints `/` even on Windows.
-        value.gsub(/\\/, "/")
+        relative = Path[expanded].relative_to(Path[cwd]).to_s.gsub(/\\/, "/")
+        if relative.starts_with?("..")
+          # Above the working directory: the reference keeps the configured
+          # spelling verbatim (`Pathname#to_s` of the raw value), so an
+          # absolute `C:\…` path prints with backslashes and an absolute
+          # `C:/…` path prints with forward slashes.
+          absolute ? base : relative
+        else
+          # Below the working directory the reference prints
+          # `Pathname.new(File.join(".", relative))`, i.e. `./<relative>`.
+          relative == "." ? "./." : "./#{relative}"
+        end
       rescue ArgumentError
         # Windows paths on different drives cannot be made relative
-        # (Pathname.relative_path_from raises ArgumentError there too).
-        File.expand_path(base, project_root).gsub(/\\/, "/")
+        # (Pathname.relative_path_from raises ArgumentError there too); the
+        # reference falls back to the expanded base path.
+        expanded
       end
     end
 

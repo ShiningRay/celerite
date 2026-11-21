@@ -351,7 +351,7 @@ module Celerite
         update_install_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, InstallPaths.ruby_abi(bridge))
         if Dir.exists?(app_cache_path(definition))
           update_entries = resolution.generated_lockfile.specs.map { |spec| {spec.name, spec.full_name} }
-          refresh_app_cache(stdout, definition, update_install_root, update_entries)
+          refresh_app_cache(stdout, definition, update_install_root, update_entries, resolution.generated_lockfile)
         end
 
         # `cli/update.rb:84`: BUNDLE_CLEAN cleans after the install pass and
@@ -561,7 +561,7 @@ module Celerite
             end
           end
           add_entries = add_definition.lockfile_exists? ? add_definition.lockfile!.specs.map { |spec| {spec.name, spec.full_name} } : [] of Tuple(String, String)
-          refresh_app_cache(stdout, add_definition, add_root, add_entries)
+          refresh_app_cache(stdout, add_definition, add_root, add_entries, add_definition.lockfile_exists? ? add_definition.lockfile! : nil)
         end
       end
       code
