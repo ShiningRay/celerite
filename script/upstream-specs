@@ -196,7 +196,7 @@ celerite_invocations="${celerite_invocations:-0}"
 # Classify failures from the rspec JSON formatter into environment, fixture and
 # product buckets (bash 3.2 compatible; parsing is done by ruby, which the
 # harness already requires).
-ruby -rjson -e '
+ruby -rjson -r "$repo_root/script/upstream-specs-buckets.rb" -e '
   json_path, out_path = ARGV
   data = JSON.parse(File.read(json_path)) rescue { "examples" => [] }
   failures = (data["examples"] || []).select { |example| example["status"] == "failed" }
@@ -207,29 +207,14 @@ ruby -rjson -e '
     message = exception["message"].to_s
     backtrace = (exception["backtrace"] || []).join("\n")
     text = klass + "\n" + message + "\n" + backtrace
-    bucket =
-      if text.include?("Could not reach host")
-        "env:artifice-unreachable"
-      elsif text.include?("HTTP 403") || text.include?("403 Forbidden")
-        "env:network-policy"
-      elsif text.include?("0xC0000022") || text.include?("NtCreateDirectoryObject")
-        "env:low-il-shm"
-      elsif text.include?("sinatra/base (LoadError)") || text.include?("sinatra/base]")
-        "env:test-deps-skipped"
-      elsif text.include?("Errno::ENOENT") || text.include?("does not exist!") || text.include?("No such file or directory @ rb_sysopen")
-        "fixture:missing-gem-files"
-      elsif text.match?(/Fetching .*[^\n]*\n/) || text.include?("Fetching ")
-        "fixture:fetch-failed"
-      else
-        "product:candidates"
-      end
+    # Rule table lives in `script/upstream-specs-buckets.rb` so the offline
+    # re-bucket tool applies exactly the same classification (task-91).
+    bucket = UpstreamSpecsBuckets.classify(klass, message, backtrace)
     first_line = message.lines.first.to_s.strip
     first_line = klass if first_line.empty?
     buckets[bucket] << [example["full_description"].to_s, first_line]
   end
-  order = ["env:artifice-unreachable", "env:network-policy", "env:low-il-shm",
-           "env:test-deps-skipped", "fixture:missing-gem-files",
-           "fixture:fetch-failed", "product:candidates"]
+  order = UpstreamSpecsBuckets::ORDER
   lines = ["## Failure buckets", ""]
   order.each do |bucket|
     items = buckets[bucket]
