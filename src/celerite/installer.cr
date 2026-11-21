@@ -17,7 +17,7 @@ module Celerite
     getter downloader : Downloader
     property config : Config?
     property target_rbconfig : String?
-    # Dependency path (top-level dependency → failing gem) used by the
+    # Dependency path (top-level dependency 鈫?failing gem) used by the
     # reference's `In Gemfile:` tree appended to install failures.
     property dependency_tree : Proc(String, Array(NamedTuple(name: String, version: String?)))? = nil
     property gemfile_name : String = "Gemfile"
@@ -32,6 +32,18 @@ module Celerite
     def initialize(@install_root : String, @ruby_abi : String, @bridge : Bridge::Client,
                    @downloader : Downloader, progress : IO)
       @progress = progress
+      Installer.ensure_layout(@install_root)
+    end
+
+    # `Gem::Installer#install` always creates the RubyGems bookkeeping
+    # directories: `build_info` (`installer.rb:902-918 write_build_info_file`),
+    # `doc`, `plugins` (`installer.rb:475-484 generate_plugins` →
+    # `Gem.plugindir`) and `extensions`. All four stay empty for a pure-Ruby gem,
+    # but the reference creates them on every install (measured).
+    def self.ensure_layout(install_root : String) : Nil
+      %w[build_info doc plugins extensions].each do |name|
+        Dir.mkdir_p(File.join(install_root, name))
+      end
     end
 
     # Extension directory layout: <install_root>/extensions/<platform>/<abi>/<full_name>
@@ -220,7 +232,7 @@ module Celerite
         File.rename(File.join(cache_dir, "#{full_name}.gem"), target_gem_file)
         File.rename(gem_dir, File.join(target_gems, full_name))
 
-        # native extensions (Ruby toolchain via the bridge, architecture §2.1)
+        # native extensions (Ruby toolchain via the bridge, architecture 搂2.1)
         unless written.extensions.empty?
           extension_dir = Installer.extension_dir_for(@install_root, @ruby_abi, full_name)
           # Idempotent: a completed build (gem.build_complete marker) is
@@ -252,7 +264,7 @@ module Celerite
         true
       rescue ex : InstallError
         # Native-extension failures keep the partially installed gem for
-        # inspection (reference: "Gem files will remain installed in … for
+        # inspection (reference: "Gem files will remain installed in 鈥?for
         # inspection."); only the installed specification must stay absent so
         # `installed?` remains false. Other failure paths keep the existing
         # cleanup semantics (below).
@@ -303,7 +315,7 @@ module Celerite
     end
 
     # `installer/gem_installer.rb:44-49` + `parallel_installer.rb:198`: a
-    # download failure is reported like any other `BundlerError` — class name,
+    # download failure is reported like any other `BundlerError` 鈥?class name,
     # message, the install failure line and the `In Gemfile:` tree. RubyGems'
     # Ruby backtrace cannot be reproduced, so it is omitted.
     def self.download_failure_message(name : String, version : String,
