@@ -345,9 +345,17 @@ module Celerite
           return code
         end
 
+        # `cli/update.rb:82`: `Bundler.load.cache if Bundler.app_cache.exist?` —
+        # update refreshes the app cache right after the install pass and
+        # before the optional cleaner and the `Bundle updated!` line.
+        update_install_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, InstallPaths.ruby_abi(bridge))
+        if Dir.exists?(app_cache_path(definition))
+          update_entries = resolution.generated_lockfile.specs.map { |spec| {spec.name, spec.full_name} }
+          refresh_app_cache(stdout, definition, update_install_root, update_entries)
+        end
+
         # `cli/update.rb:84`: BUNDLE_CLEAN cleans after the install pass and
         # before `Bundle updated!` (oracle: Removing precedes that line).
-        update_install_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, InstallPaths.ruby_abi(bridge))
         clean_after_install(stdout, definition, resolution.generated_lockfile, update_install_root, bridge)
         stdout.puts "Bundle updated!"
         print_cooldown_summary(resolution, stdout)
@@ -532,13 +540,31 @@ module Celerite
       # resolution); install() repeats the second fetch when the lockfile
       # is (re)written. An unchanged Gemfile still runs the installer, which
       # reuses the lockfile resolution and therefore prints nothing.
-      begin
+      code = begin
         install(stdout, stderr, install_args_from_add(rest, name),
           summary: false, no_reuse: !already_declared)
       rescue ex
         File.write(gemfile_path, gemfile_backup) if gemfile_appended
         raise ex
       end
+      # `cli/add.rb:26-30`: `perform_bundle_install` = install, then
+      # `Bundler.load.cache if Bundler.app_cache.exist?`.
+      if code == 0
+        add_definition = Definition.build
+        if Dir.exists?(app_cache_path(add_definition))
+          add_root = begin
+            add_bridge = Bridge::Client.new
+            begin
+              InstallPaths.gem_root(add_definition.config, add_bridge.ruby_environment.default_gem_dir, InstallPaths.ruby_abi(add_bridge))
+            ensure
+              add_bridge.close
+            end
+          end
+          add_entries = add_definition.lockfile_exists? ? add_definition.lockfile!.specs.map { |spec| {spec.name, spec.full_name} } : [] of Tuple(String, String)
+          refresh_app_cache(stdout, add_definition, add_root, add_entries)
+        end
+      end
+      code
     end
 
     # `Gem::Requirement#==` compares the sorted `as_list`; the Gemfile text

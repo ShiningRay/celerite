@@ -853,11 +853,13 @@ module Celerite
           elsif resolution.bridge_bundler_version.starts_with?("2.")
             gems_count += 1
           end
-          # The reference updates the app cache during install whenever
-          # `vendor/cache` exists (and caching wasn't disabled/frozen).
-          app_cache = File.join(File.dirname(definition.gemfile_path), "vendor", "cache")
-          if Dir.exists?(app_cache) && !config.frozen? && !rest.includes?("--no-cache")
-            stdout.puts "Updating files in vendor/cache"
+          # `cli/install.rb:52-53`: the reference refreshes the app cache during
+          # every install while `vendor/cache` exists, caching is enabled and
+          # the bundle isn't frozen. It runs after the gems are installed and
+          # before the `Bundle complete!` line, printing one `  * <file>.gem`
+          # per copied package.
+          if refresh_app_cache?(definition, config.frozen?, rest)
+            refresh_app_cache(stdout, definition, install_root, specs.map { |spec| {spec.name, spec.full_name} })
           end
           stdout.puts "Bundle complete! #{deps_count} Gemfile dependenc#{deps_count == 1 ? "y" : "ies"}, #{gems_count} gem#{gems_count == 1 ? "" : "s"} now installed."
           # `cli/install.rb` L59-64 as of 2.7.2/4.0.24: system gems report the
@@ -1052,6 +1054,75 @@ module Celerite
       rescue ArgumentError
         lockfile
       end
+    end
+
+    # `Bundler.app_cache` = `Pathname.new(root).join(cache_path)`
+    # (bundler.rb:340-343) with `cache_path` defaulting to "vendor/cache"
+    # (settings.rb:304-306); the `cache --cache-path` flag is command-local and
+    # never reaches this path.
+    private def self.app_cache_label(definition : Definition) : String
+      configured = definition.config["cache_path"].as?(String)
+      configured.nil? || configured.empty? ? "vendor/cache" : configured
+    end
+
+    private def self.app_cache_path(definition : Definition) : String
+      File.expand_path(app_cache_label(definition), File.dirname(definition.gemfile_path))
+    end
+
+    # `Source::Path#cache` (source/path.rb:84-96): with `cache_all` on, a path
+    # source outside the Gemfile root is copied wholesale into the app cache
+    # and stamped with an empty `.bundlecache`; an in-project source is never
+    # copied. `cache_all` defaults to true in 4.x (settings.rb:88).
+    private def self.cache_path_sources(definition : Definition, cache_target : String) : Nil
+      return if definition.config["cache_all"] == false
+      return unless definition.lockfile_exists?
+      gemfile_root = File.dirname(definition.gemfile_path)
+      root_prefix = gemfile_root.gsub('\\', "/").chomp("/") + "/"
+      definition.lockfile!.sources.each do |source|
+        next unless source.type == "PATH"
+        original = source.remote
+        next if original.nil?
+        source_path = File.expand_path(original, gemfile_root)
+        next unless Dir.exists?(source_path)
+        next if source_path.gsub('\\', "/").starts_with?(root_prefix)
+        dir_name = source.specs.first?.try(&.name) || File.basename(source_path)
+        destination = File.join(cache_target, dir_name)
+        # `rm_rf` then `cp_r("<src>/.", dest)`: the reference replaces the
+        # whole directory rather than merging into a stale copy.
+        FileUtils.rm_rf(destination)
+        Dir.mkdir_p(destination)
+        Dir.children(source_path).each do |child|
+          FileUtils.cp_r(File.join(source_path, child), destination)
+        end
+        File.touch(File.join(destination, ".bundlecache"))
+      end
+    end
+
+    # `cli/install.rb:52-53`, `cli/update.rb:82`, `cli/add.rb:29`: with the app
+    # cache present, caching enabled and the bundle not frozen, the reference
+    # copies every resolved gem into it. `Runtime#cache` (runtime.rb:108-146)
+    # prints the header, `Source::Rubygems#cache` (rubygems.rb:233-242) prints
+    # `  * <file>.gem` per copied package, then the command prints its summary.
+    private def self.refresh_app_cache(stdout : IO, definition : Definition, install_root : String,
+                                       entries : Array(Tuple(String, String))) : Nil
+      cache_label = app_cache_label(definition)
+      cache_target = app_cache_path(definition)
+      Dir.mkdir_p(cache_target)
+      stdout.puts "Updating files in #{cache_label}"
+      download_cache = File.join(install_root, "cache")
+      entries.each do |(name, full_name)|
+        next if name == "bundler"
+        gem_name = "#{full_name}.gem"
+        gem_file = File.join(download_cache, gem_name)
+        next unless File.file?(gem_file)
+        FileUtils.cp(gem_file, File.join(cache_target, gem_name))
+        stdout.puts "  * #{gem_name}"
+      end
+      cache_path_sources(definition, cache_target)
+    end
+
+    private def self.refresh_app_cache?(definition : Definition, frozen : Bool, rest : Array(String)) : Bool
+      Dir.exists?(app_cache_path(definition)) && !frozen && !rest.includes?("--no-cache")
     end
 
     private def self.run_cache(stdout : IO, stderr : IO, rest : Array(String)) : Int32
