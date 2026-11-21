@@ -6741,3 +6741,30 @@ celerite=0`，且缺 stderr needle。
 3. `--local` 缺包时我方仍会打印 `Fetching source index from …`（惰性取索引的
    公告未被抑制），参考完全不打印；stdout 的 `Resolving dependencies...`
    已对齐为空。
+
+### 更正（task-101 第三窗口）：撤掉夹具，并记录两条消息形态
+
+**撤掉 `fixtures/differential/install-local-lock-missing-edges`**（`git rm`）。
+理由（`KEEP_DIFFERENTIAL=1` 实测，4.0.24）：两侧 `ref.out`/`ref.err`/`cel.out`/`cel.err`
+全为空且都 exit 0，`project/` 未装任何 gem、`bundle/` 为空 —— harness 的沙箱把
+`GEM_HOME`/`GEM_PATH` 指到空目录后，该形状双方都不做事，`stderr-contains`
+等于没跑，属假绿。**该形状只能由 spec + 手工 oracle 覆盖**，不再进差分集。
+
+**两条消息形态不同，不得混用**：
+- 锁存在且可物化、但 spec 在本地（已装 gem + `vendor/cache`）取不到 ⇒
+  installer 形态：`Could not find <full_name> in locally installed gems`
+  （无引号、无句号，`installer.rb:81-96`）；
+- 解析阶段就没有候选 ⇒ resolver 形态：
+  `Could not find gem '<name>' in locally installed gems.`（带引号带句号，
+  `resolver.rb:334-361`）。
+
+**手工 oracle（隔离 HOME/GEM_HOME/GEM_PATH/BUNDLE_PATH/BUNDLE_APP_CONFIG，
+`.tmp-scratch/task101/iso.sh`，非差分夹具）**：
+```
+REF exit=7 OUT=[] ERR=[Could not find gem 'net-smtp' in locally installed gems.]
+CEL exit=7 OUT=[] ERR=[Could not find gem 'net-smtp' in locally installed gems.]
+```
+即：在本机可复现的沙箱里两侧逐字一致（resolver 形态、stdout 空）。
+首辅环境测到的参考侧 `Could not find net-smtp-0.5.0 in locally installed gems`
+（installer 形态）**我无法复现**——同一 Gemfile/锁/隔离变量下参考走的是解析失败路径。
+在拿到该沙箱的完整锁与命令前，不改产品代码，以免按不可复现的形状把本已一致的行为改坏。

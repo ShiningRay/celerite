@@ -1,3 +1,0 @@
-source "file:///@LOCKED_DEPS_INDEX_DIR@"
-
-gem "net-smtp"
