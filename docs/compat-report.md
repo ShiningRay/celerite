@@ -6702,3 +6702,42 @@ PLUGIN SOURCE
 
 - gemspec 与缓存包都读不到时仍回退 `Unknown`（参考在同类损坏安装下行为未取证）。
 - 排序平局改为「bundler 优先 + Gemfile 顺序」，与参考在本机 oracle 逐行一致；跨平台 `Bundler.load` 顺序若变化未覆盖。
+
+## 2026-11-21（M7 task-101：`install --local` 不得取索引、不得自愈）
+
+`--local` 限制的是**源**，不只是待装清单：参考走 `sources.local_only!`
+（`definition.rb:190-203`）后直接从已安装 spec 物化，缺包时由
+`installer.rb:81-96` 抛出 `Bundler::GemNotFound`。
+
+复现形状（`fixtures/gem-index-locked-deps`，`Gemfile` = `gem "net-smtp"`，
+锁内只有 `net-smtp (0.5.0)`、缺 `net-protocol` 依赖边与 spec）：
+
+| 命令 | 参考 4.0.24 = 2.7.2 | 修前我方 |
+|---|---|---|
+| `install --local` | exit 7，stdout 空，stderr `Could not find gem 'net-smtp' in locally installed gems.` | exit 0，打印 `Resolving dependencies...` 并从索引安 0.5.1 |
+| 同形状不带 `--local` | exit 0，自愈（task-94） | 自愈（未变） |
+
+修法三处：
+- `src/celerite/resolution.cr` `local_index_specs`：配置了 `path` 时，
+  `--local` 不再把宿主 gem 当候选（此前只在 `GEM_HOME` 已设置时过滤）；
+- `src/celerite/cli/commands_install.cr` 下载循环：`resolution.local_only`
+  时不再 `fetch`，直接 `GemNotFoundError`；
+- `src/celerite/resolution.cr`：`--local` 的 `Resolving dependencies...`
+  改为**解析成功后**才打印，缺包路径因此 stdout 为空；`vendor/cache`
+  形状（task-83）仍在成功解析后打印该行。
+- 附带：`refresh_app_cache` 不再把已在 app cache 里的包拷到自己身上
+  （`rubygems.rb:233-242`），修掉 `--local` + `vendor/cache` 多出的
+  `  * <file>.gem` 行。
+
+夹具 `fixtures/differential/install-local-lock-missing-edges` 断言 exit 7、
+stderr 逐字与锁内 spec 行；双 profile PASS（4.0.24 10 passed / 2.7.2 7 passed）。
+负对照 `C:/temp/celerite-pre101`@`3e336c9` 新夹具 FAIL：`exit code: reference=7
+celerite=0`，且缺 stderr needle。
+
+**已声明差异（本任务未修）**：
+1. 锁内版本被索引刷新：同一形状不带 `--local` 时我方装 `net-smtp 0.5.1`，
+   参考保持锁内 `0.5.0`（既有缺口，与本任务同源但独立立项）；
+2. `--local` + `vendor/cache` 的候选/平台选择仍未完全对齐（`(d)` 形态移出本任务）；
+3. `--local` 缺包时我方仍会打印 `Fetching source index from …`（惰性取索引的
+   公告未被抑制），参考完全不打印；stdout 的 `Resolving dependencies...`
+   已对齐为空。
