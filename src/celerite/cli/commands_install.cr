@@ -148,7 +148,7 @@ module Celerite
         # `cli_help` and re-raises so the exit status still reports the missing
         # Gemfile (measured: exit 10, the table on stdout, `Could not locate
         # Gemfile` on stderr). 2.7.2 has no such rescue, so it stays silent.
-        unless (ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")
+        unless (Celerite::Profile.bundler_version).starts_with?("2.")
           Commands.cli_help(stdout, stderr, [] of String)
         end
         raise ex
@@ -159,7 +159,7 @@ module Celerite
       if rest.includes?("--frozen")
         # Thor rejects the flag before any Gemfile validation; the exact
         # message depends on the profile and the command (see frozen helper).
-        bundle_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+        bundle_version = Celerite::Profile.bundler_version
         lockfile_exists = begin
           Definition.build.lockfile_exists?
         rescue
@@ -175,7 +175,7 @@ module Celerite
       # those flags keep their reference wording. 2.7.x only warns (and keeps
       # going: `install --path` still reaches the Gemfile check).
       if removed = Commands.removed_flag(rest, "install")
-        bundle_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+        bundle_version = Celerite::Profile.bundler_version
         if bundle_version.starts_with?("2.")
           stderr.puts Commands.removed_flag_deprecation(removed) unless removed.special_message
         else
@@ -1313,7 +1313,7 @@ module Celerite
     end
 
     private def self.run_cache(stdout : IO, stderr : IO, rest : Array(String)) : Int32
-      bundle_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+      bundle_version = Celerite::Profile.bundler_version
       if removed = Commands.removed_flag(rest, "cache")
         if bundle_version.starts_with?("2.")
           stderr.puts Commands.removed_flag_deprecation(removed) unless removed.special_message
@@ -1372,7 +1372,7 @@ module Celerite
       Dir.mkdir_p(cache_target)
       # 2.7.x: cache options are remembered in .bundle/config (pinned probe:
       # plain `cache` writes BUNDLE_CACHE_ALL "false").
-      bundle_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+      bundle_version = Celerite::Profile.bundler_version
       if bundle_version.starts_with?("2.")
         definition.config.set_local("cache_all", "false")
         definition.config.set_local("cache_path", cache_arg) if cache_arg
@@ -1674,7 +1674,7 @@ module Celerite
           rescue
           end
         end
-        bundler_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+        bundler_version = Celerite::Profile.bundler_version
         bundler_lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]?
         if bundler_lib.nil? || bundler_lib.empty?
           bundler_lib = find_bundler_lib(env, bundler_version)
@@ -2015,7 +2015,7 @@ module Celerite
     end
 
     private def self.binstubs_remember_shebang(rest : Array(String), stderr : IO) : Nil
-      return unless (ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")
+      return unless (Celerite::Profile.bundler_version).starts_with?("2.")
       if custom = flag_value(rest, "--shebang")
         Definition.build.config.set_local("shebang", custom)
       end

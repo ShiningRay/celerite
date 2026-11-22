@@ -13,7 +13,7 @@ module Celerite
   # reproduce that byte-for-byte by translating line endings when
   # `flag?(:windows)` is set.
   module Manpages
-    PROFILE_DEFAULT = "4.0.24"
+    PROFILE_DEFAULT = Celerite::Profile::DEFAULT_BUNDLER_VERSION
 
     # Reference `cli.rb:161-165`: the page name is derived from the command,
     # with `gemfile` being the only page that is not `bundle-<cmd>.1`.

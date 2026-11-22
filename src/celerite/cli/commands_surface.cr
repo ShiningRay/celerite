@@ -55,7 +55,7 @@ module Celerite
       if rest.includes?("--frozen")
         # Thor rejects the flag before any Gemfile validation; the exact
         # message depends on the profile and the command (see frozen helper).
-        bundle_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+        bundle_version = Celerite::Profile.bundler_version
         if code = frozen_flag_exit(rest, stderr, Definition.build.lockfile_exists?, bundle_version, "update")
           return code
         end
@@ -82,7 +82,7 @@ module Celerite
 
       # parity: bare `bundle update` works but deprecates on stderr on 4.x
       # (2.7.x never deprecates the bare form -observed oracle diff).
-      bridge_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+      bridge_version = Celerite::Profile.bundler_version
       if full_update && !all_flag && !bridge_version.starts_with?("2.")
         stderr.puts "[DEPRECATED] Pass --all to `bundle update` to update everything"
       end
@@ -1126,7 +1126,7 @@ module Celerite
       begin
         re = bridge.ruby_environment
         config = definition.config
-        bundler_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+        bundler_version = Celerite::Profile.bundler_version
 
         stdout.puts "## Environment"
         stdout.puts
@@ -3467,7 +3467,7 @@ module Celerite
     TEXT
 
     def self.issue_resources : String
-      if (ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")
+      if (Celerite::Profile.bundler_version).starts_with?("2.")
         ISSUE_RESOURCES_2X
       else
         ISSUE_RESOURCES_4X
@@ -3522,7 +3522,7 @@ module Celerite
         stdout.puts "## Environment"
         stdout.puts
         stdout.puts "```"
-        bundler_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+        bundler_version = Celerite::Profile.bundler_version
         # Same line as `env` (env.rb:44): the reference has no Celerite suffix,
         # and `issue` embeds the identical environment report.
         stdout.puts "Bundler       #{bundler_version}"

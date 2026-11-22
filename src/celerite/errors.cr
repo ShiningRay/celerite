@@ -188,7 +188,7 @@ module Celerite
     # `CELERITE_PROFILE_BUNDLER_VERSION` selects the emulated reference tree
     # (default 4.0.24, matching Commands.bundle_profile_version).
     private def profile_2_x? : Bool
-      (ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")
+      (Celerite::Profile.bundler_version).starts_with?("2.")
     end
   end
 

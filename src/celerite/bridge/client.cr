@@ -251,7 +251,7 @@ module Celerite
 
       # The compatibility profile's reference Bundler version (docs/compat-matrix).
       private def reference_bundler_version : String
-        ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+        Celerite::Profile.bundler_version
       end
 
       # Load path for the pinned reference Bundler (set by the differential

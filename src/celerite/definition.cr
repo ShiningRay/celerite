@@ -106,7 +106,7 @@ module Celerite
       return unless section.platforms.includes?(LEGACY_MINGW_PLATFORM)
       return if config["silence_deprecations"] == true
 
-      if (ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")
+      if (Celerite::Profile.bundler_version).starts_with?("2.")
         return if config["frozen"] == true
 
         if section.platforms.includes?(MINGW_UCRT_PLATFORM)

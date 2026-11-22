@@ -2,6 +2,7 @@
 #
 # Core semantic modules are required here so both the binary and the spec
 # suite see the same world.
+require "./celerite/profile"
 require "./celerite/errors"
 require "./celerite/gem/version"
 require "./celerite/gem/requirement"

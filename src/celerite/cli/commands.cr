@@ -600,7 +600,7 @@ module Celerite
       positionals.each { |positional| parts << positional }
       switches.sort_by! { |entry| entry[0] }
       switches.each { |entry| parts << entry[1] }
-      profile = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+      profile = Celerite::Profile.bundler_version
       stdout.puts "Running `#{parts.join(" ")}` with bundler #{profile}"
     end
 
@@ -830,7 +830,7 @@ module Celerite
     # The profile selects the reference implementation we mirror
     # (`CELERITE_PROFILE_BUNDLER_VERSION`, defaulting to 4.0.24).
     def self.bundle_profile_version : String
-      ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+      Celerite::Profile.bundler_version
     end
 
     def self.profile_2_x? : Bool
@@ -1051,7 +1051,7 @@ module Celerite
     # its `match?("\r\n")` never fires and a CRLF lockfile is rewritten as LF;
     # 4.x preserves the style. Mirror that per profile.
     def self.preserve_lockfile_crlf? : Bool
-      !(ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")
+      !(Celerite::Profile.bundler_version).starts_with?("2.")
     end
 
     # The reference re-serializes a lockfile with its own writer whenever it
@@ -1059,7 +1059,7 @@ module Celerite
     # `RUBY VERSION` values never survives: 4.x emits two spaces, 2.x three
     # (measured with the same three-space fixture on both profiles).
     private def self.with_profile_indent(text : String) : String
-      indent = (ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.") ? "   " : "  "
+      indent = (Celerite::Profile.bundler_version).starts_with?("2.") ? "   " : "  "
       text.gsub(/(BUNDLED WITH\n|RUBY VERSION\n)[ \t]*/) { "#{$1}#{indent}" }
     end
 
@@ -1200,7 +1200,7 @@ module Celerite
         return 15
       end
 
-      profile = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+      profile = Celerite::Profile.bundler_version
       # Bundler 2.x prefixes the human-readable command with "Bundler version";
       # 4.x prints the bare version (cli.rb#version).
       text = profile.starts_with?("2.") ? "Bundler version #{profile}" : profile
@@ -1424,7 +1424,7 @@ module Celerite
         return code
       end
       if flag = removed_flag(rest, "check")
-        if (ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24").starts_with?("2.")
+        if (Celerite::Profile.bundler_version).starts_with?("2.")
           stderr.puts removed_flag_deprecation(flag)
           if flag.flag == "--path"
             value = flag.value.strip('\'')
@@ -2424,7 +2424,7 @@ module Celerite
 
     # The Bundler release Celerite emulates in this run.
     private def self.profile_bundler_version : String
-      ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+      Celerite::Profile.bundler_version
     end
 
     # `bundle show` lists the running Bundler as a gem of the bundle, and
@@ -2918,7 +2918,7 @@ module Celerite
 
     private def self.run_lock(stdout : IO, stderr : IO, rest : Array(String)) : Int32
       if rest.includes?("--frozen")
-        bundle_version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"
+        bundle_version = Celerite::Profile.bundler_version
         if code = frozen_flag_exit(rest, stderr, Definition.build.lockfile_exists?, bundle_version, "lock")
           return code
         end
