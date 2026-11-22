@@ -94,4 +94,58 @@ describe "version promotion" do
       end
     end
   end
+
+  # `common.rb:136` appends `:patch` to `patch_level` when nothing was asked
+  # for and `prefer_patch` is on, so the setting selects the patch level
+  # instead of merely tightening `strict` (`:141`). Measured on 4.0.24 and
+  # 2.7.2: `BUNDLE_PREFER_PATCH=true bundle lock --update json_pure` keeps
+  # json_pure on 2.6.0 (an explicit `--minor` still wins over the setting),
+  # while `bundle update json_pure` reports the stayed-same warning.
+  it "keeps the patch line for lock --update when BUNDLE_PREFER_PATCH is on" do
+    with_project(promotion_files) do |dir|
+      with_promotion_env(dir) do
+        ENV["BUNDLE_PREFER_PATCH"] = "true"
+        begin
+          code, _, err = run_cli(["lock", "--update", "json_pure"])
+          code.should eq(0)
+          File.read(File.join(dir, "Gemfile.lock")).should contain("json_pure (2.6.0)")
+          err.strip.should eq("")
+        ensure
+          ENV.delete("BUNDLE_PREFER_PATCH")
+        end
+      end
+    end
+  end
+
+  it "keeps the patch line for update when BUNDLE_PREFER_PATCH is on" do
+    with_project(promotion_files) do |dir|
+      with_promotion_env(dir) do
+        run_cli(["install", "--quiet"])
+        ENV["BUNDLE_PREFER_PATCH"] = "true"
+        begin
+          code, _, err = run_cli(["update", "json_pure"])
+          code.should eq(0)
+          File.read(File.join(dir, "Gemfile.lock")).should contain("json_pure (2.6.0)")
+          err.should contain("Bundler attempted to update json_pure but its version stayed the same")
+        ensure
+          ENV.delete("BUNDLE_PREFER_PATCH")
+        end
+      end
+    end
+  end
+
+  it "lets an explicit level override BUNDLE_PREFER_PATCH" do
+    with_project(promotion_files) do |dir|
+      with_promotion_env(dir) do
+        ENV["BUNDLE_PREFER_PATCH"] = "true"
+        begin
+          code, _, _ = run_cli(["lock", "--minor", "--update", "json_pure"])
+          code.should eq(0)
+          File.read(File.join(dir, "Gemfile.lock")).should contain("json_pure (2.8.1)")
+        ensure
+          ENV.delete("BUNDLE_PREFER_PATCH")
+        end
+      end
+    end
+  end
 end
