@@ -1,0 +1,158 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Generates and validates the claim index in docs/compat-claims/README.md.
+#
+# Usage:
+#   script/compat-claims-index          # rewrite the generated index block
+#   script/compat-claims-index --check  # verify only; exit 1 if stale or invalid
+#
+# The format is defined in docs/compat-claims/README.md; this script is the
+# only writer of the block between the GENERATED INDEX markers.
+
+require "pathname"
+
+REPO_ROOT = Pathname.new(__dir__).parent.expand_path
+CLAIMS_DIR = REPO_ROOT / "docs" / "compat-claims"
+README = CLAIMS_DIR / "README.md"
+BEGIN_MARK = "<!-- BEGIN GENERATED INDEX -->"
+END_MARK = "<!-- END GENERATED INDEX -->"
+
+FIELDS = ["状态", "参考行为", "我方行为", "判据", "边界", "生效", "取代"].freeze
+STATUSES = ["已实现", "已声明差异", "未实现", "未验证", "已取代"].freeze
+
+Claim = Struct.new(:id, :title, :fields, :file, :line, keyword_init: true) do
+  def status = fields["状态"].to_s.strip
+
+  def judging_command?
+    # A judgement must name something executable: a fixture run or a spec run.
+    fields["判据"].to_s.match?(%r{script/differential|crystal spec|script/upstream-specs|script/benchmark})
+  end
+end
+
+# Reads UTF-8 text without newline translation, so the file is compared and
+# rewritten byte-for-byte the same way on Windows and Unix.
+def read_text(path)
+  File.binread(path).force_encoding("UTF-8")
+end
+
+# The repository is LF-only. Normalizing here keeps the generated block at LF
+# even when an editor rewrote the README with CRLF.
+def normalize_newlines(text)
+  text.gsub("\r\n", "\n")
+end
+
+# Writes bytes verbatim; File.write would translate "\n" to "\r\n" on Windows.
+def write_text(path, text)
+  File.binwrite(path, text)
+end
+
+def parse_claims(path)
+  text = read_text(path)
+  claims = []
+  current = nil
+  text.each_line.with_index(1) do |raw, lineno|
+    line = raw.chomp
+    if (m = line.match(/\A## (C-[A-Za-z0-9-]+) (.+?)\s*\z/))
+      claims << current if current
+      current = Claim.new(id: m[1], title: m[2], fields: {}, file: path, line: lineno)
+    elsif current && (m = line.match(/\A- (#{FIELDS.join("|")})(?:（[^）]*）)?：(.*)\z/))
+      current.fields[m[1]] = m[2].rstrip
+    elsif current && line.start_with?(" ") && !line.strip.empty? && current.fields.any?
+      # Continuation line of the last field.
+      key = current.fields.keys.last
+      current.fields[key] = "#{current.fields[key]}\n#{line}"
+    end
+  end
+  claims << current if current
+  claims
+end
+
+def validate(claims)
+  problems = []
+  seen = {}
+  claims.each do |c|
+    if (prev = seen[c.id])
+      problems << "#{c.id}: duplicate id (#{prev} and #{c.file}:#{c.line})"
+    else
+      seen[c.id] = "#{c.file}:#{c.line}"
+    end
+
+    FIELDS.each do |f|
+      problems << "#{c.id}: missing field `#{f}` at #{File.basename(c.file)}:#{c.line}" if c.fields[f].nil?
+    end
+
+    unless STATUSES.include?(c.status)
+      problems << "#{c.id}: invalid status `#{c.status}` (allowed: #{STATUSES.join("/")})"
+    end
+
+    next if c.fields["判据"].nil?
+
+    problems << "#{c.id}: judgement is not an executable command" unless c.judging_command?
+
+    if c.status == "已取代" && c.fields["取代"].to_s.strip.empty?
+      problems << "#{c.id}: status 已取代 requires a 取代 target"
+    end
+  end
+  problems
+end
+
+def index_block(claims)
+  lines = []
+  lines << "| ID | 断言 | 状态 | 文件 | 判据 |"
+  lines << "| --- | --- | --- | --- | --- |"
+  claims.sort_by { |c| [c.id, c.line] }.each do |c|
+    judgement = c.fields["判据"].to_s.gsub(/\s+/, " ").strip
+    judgement = "#{judgement[0, 70]}…" if judgement.length > 70
+    judgement = judgement.gsub("`", "'")
+    lines << "| #{c.id} | #{c.title} | #{c.status} | " \
+             "[#{File.basename(c.file)}](#{File.basename(c.file)}) | `#{judgement}` |"
+  end
+  counts = claims.group_by(&:status).transform_values(&:size)
+  summary = STATUSES.filter_map { |s| "#{s} #{counts[s]}" if counts[s] }.join(" · ")
+  lines << ""
+  lines << "合计 #{claims.size} 条断言（#{summary}）。"
+  lines.join("\n")
+end
+
+def render(readme, block)
+  unless readme.include?(BEGIN_MARK) && readme.include?(END_MARK)
+    abort "#{README}: missing #{BEGIN_MARK} / #{END_MARK} markers"
+  end
+
+  head, rest = readme.split(BEGIN_MARK, 2)
+  _, tail = rest.split(END_MARK, 2)
+  "#{head}#{BEGIN_MARK}\n#{block}\n#{END_MARK}#{tail}"
+end
+
+check_only = ARGV.delete("--check")
+abort "unknown argument: #{ARGV.first}" unless ARGV.empty?
+abort "#{CLAIMS_DIR} does not exist" unless CLAIMS_DIR.directory?
+
+files = CLAIMS_DIR.glob("*.md").reject { |p| p.basename.to_s == "README.md" }.sort
+abort "no claim files found in #{CLAIMS_DIR}" if files.empty?
+
+claims = files.flat_map { |p| parse_claims(p) }
+problems = validate(claims)
+unless problems.empty?
+  warn "claim validation failed:"
+  problems.each { |p| warn "  - #{p}" }
+  exit 1
+end
+
+readme = read_text(README)
+updated = render(readme, index_block(claims))
+updated = normalize_newlines(updated)
+
+if check_only
+  if updated == readme
+    puts "compat-claims: #{claims.size} claims, index up to date"
+    exit 0
+  else
+    warn "compat-claims: index is stale; run script/compat-claims-index"
+    exit 1
+  end
+end
+
+write_text(README, updated)
+puts "compat-claims: #{claims.size} claims, index written (#{files.size} files)"
