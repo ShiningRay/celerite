@@ -567,3 +567,82 @@ task-91 状态 `failed`（产品桶）→ task-114 状态 `passed`。这是 task
 - `[1:51]` 转绿，说明 task-92/94 的锁边自愈确实关掉了一条产品候选。
 - env 两桶（artifice 38→37、low-il 9）与 fetch 桶（3）基本稳定，可继续视为本机不可关闭项。
 - 本结论**晚于** task-92…task-113 全部改动，**早于**任何针对 `[1:46]`/`[1:54]` 的后续修复。
+
+## 2026-11-22 第五次复采（task-118）
+
+第五次采集上游 lockfile 套件（`spec/lock/lockfile_spec.rb`），基线 HEAD `e71ed06`（`c3b9a6f` 为其父提交）。本轮**只采集与判定，不改产品代码、不改夹具、不改分桶规则**。
+
+### 采集前置
+
+| 项 | 值 |
+|---|---|
+| 命令 | `CELERITE_SKIP_TEST_DEPS=1 bash script/upstream-specs`（`C:\msys64\usr\bin\bash.exe`，`TMPDIR=/c/temp`，PATH 前置 msys64/ucrt64/Ruby40） |
+| 墙上耗时 | 483.3 s（rspec `duration` 476.89 s；超出任务书预期 350–450 s 区间，记为观察项） |
+| seed | 16550（`--order random`） |
+| 产物 | `.upstream-specs/upstream-lockfile-v4.0.24-20261122T024315Z.md`（16683 B，mtime 2026-11-22 10:51:17） |
+| JSON | `.upstream-specs/rspec-output.json`（339863 B，mtime 2026-11-22 10:51:16） |
+| 汇总 | `example_count 64 / failure_count 48 / pending_count 0 / errors_outside_of_examples_count 0`（16 passed，rspec exit 1） |
+| real-drive | 51 次 celerite 调用（task-114 为 56） |
+| 二进制 | `bin/celerite.exe`（mtime 2026-11-22 08:55:06；`script/upstream-specs` 不重建，直接使用仓库内既有产物） |
+
+### 总数与桶对照
+
+| 项 | task-114 | task-118 | 变化 |
+|---|---:|---:|---|
+| examples | 64 | 64 | — |
+| failures | 53 | 48 | −5 |
+| passed | 11 | 16 | +5 |
+| `env:artifice-unreachable` | 37 | 40 | +3 |
+| `env:low-il-shm` | 9 | 2 | −7 |
+| `fixture:fetch-failed` | 3 | 3 | — |
+| `product:candidates` | 4 | 3 | −1 |
+
+净移动 8 例：5 例转绿退出失败集（`[1:12]`/`[1:14]`/`[1:15]`/`[1:54]`/`[1:55]`），3 例在 low-il 与 artifice 两个 env 桶之间互移（`[1:20]`/`[1:52]`/`[1:53]`，状态仍 `failed`）。例 id 集合不变（64 = 64，无新增、无消失）。
+
+### 移动项明细
+
+**① `[1:12]` / `[1:14]` / `[1:15]` / `[1:55]` — low-il 失败 → 通过**
+
+| id | 描述 | file:line | 状态 | 桶 |
+|---|---|---|---|---|
+| `[1:12]` | generates a simple lockfile for a single pinned source, gem with a version requirement | `spec/lock/lockfile_spec.rb:477` | failed → **passed** | `env:low-il-shm` → — |
+| `[1:14]` | serializes global git sources | `spec/lock/lockfile_spec.rb:550` | failed → **passed** | `env:low-il-shm` → — |
+| `[1:15]` | generates a lockfile with a ref for a single pinned source, git gem with a branch requirement | `spec/lock/lockfile_spec.rb:586` | failed → **passed** | `env:low-il-shm` → — |
+| `[1:55]` | successfully updates the lockfile when a new gem is added in the Gemfile includes a gem that shouldn't be included | `spec/lock/lockfile_spec.rb:2144` | failed → **passed** | `env:low-il-shm` → — |
+
+四条 task-114 的 `exception.message` 尾部同为 msys Low-IL 特征 `NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0S5-…): 0xC0000022` + `fatal: Could not read from remote repository.`（规则 3 命中）。本轮同一命令在 git 初始化/克隆段不再触发该错误。判定：**环境波动**——该缺陷已登记为宿主执行完整性级别问题，本轮未做受控 A/B，**不宣称产品修复**。
+
+**② `[1:20]` / `[1:52]` / `[1:53]` — low-il → artifice（状态仍 failed）**
+
+| id | 描述 | file:line | 状态 | 桶 | task-118 message 尾部 |
+|---|---|---|---|---|---|
+| `[1:20]` | sorts serialized sources by type | `spec/lock/lockfile_spec.rb:813` | failed → failed | `env:low-il-shm` → `env:artifice-unreachable` | `Could not reach host gem.repo2. Check your network connection and try again.` |
+| `[1:52]` | automatically fixes the lockfile when it includes a gem under the correct GIT section, but also under an incorrect GEM section, with a higher version, and with no explicit Gemfile requirement | `spec/lock/lockfile_spec.rb:1974` | failed → failed | `env:low-il-shm` → `env:artifice-unreachable` | `Could not reach host gem.repo1. …` |
+| `[1:53]` | automatically fixes the lockfile when it includes a gem under the correct GIT section, but also under an incorrect GEM section, with a higher version | `spec/lock/lockfile_spec.rb:2031` | failed → failed | `env:low-il-shm` → `env:artifice-unreachable` | `Could not reach host gem.repo1. …` |
+
+三条旧消息同为 `0xC0000022`（`NtCreateDirectoryObject`）变体，新消息为 artifice `Could not reach host`（规则 1 先于规则 3 命中）。判定：**判定输入变化**，属两个 env 桶之间的搬移，失败集合不变。
+
+**③ `[1:54]` — 产品桶 → 通过**
+
+`the lockfile format automatically fixes the lockfile when it has incorrect deps, keeping the locked version`（`spec/lock/lockfile_spec.rb:2088`）
+
+- task-114：`status=failed`，`class=RSpec::Expectations::ExpectationNotMetError`，expected `net-smtp (0.5.0)`、got `net-smtp (0.5.1)`。
+- task-118：`status=passed`。
+- 归因（有据）：task-114 采集时点 2026-11-22 02:29–02:35，其 `bin/celerite.exe` 早于 `300fc65 fix(M7 task-115): keep the locked version when healing a missing dependency edge`（2026-11-22 04:03）；本轮二进制 mtime 2026-11-22 08:55:06，晚于 task-115/116/117 全部修复提交。用例名与实际修复语义逐字对应，故判定为 **task-115 修复落地**，非环境翻转。
+
+**④ 产品候选桶内保持（未移动，内容逐字节相同）**
+
+`[1:46]`（`:1682`）、`[1:56:1:1]`、`[1:57:1:1]`（`:2215`）三条的 `exception.message` 与 task-114 **逐字节相同**（SHA1 前 10 位依次 `c903411e40` / `37f8912aad` / `3a78d35eb5`；passing 例空消息 SHA1 为 `da39a3ee5e`）。首 200 字符：
+
+- `[1:46]`：`` \n\nCommands:\n$ C:/Users/ShiningRay/projects/ShiningRay/celerite/bin/celerite install\nFetching gem metadata from https://gem.repo2/.\nBundle complete! 1 Gemfile dependency, 1 gem now installed.\nUse `bund ``
+- `[1:56:1:1]`：`\n\nCommands:\n$ …/bin/celerite install\nFetching gem metadata from https://gem.repo4/.\nResolving dependencies...\nResolving dependencies...\nInstalling minite`
+- `[1:57:1:1]`：同 `[1:56:1:1]`（`gem.repo4` 与 `Installing minite` 前缀一致）
+
+三条断言差异：`[1:46]` 为 `CHECKSUMS` 段缺 `myrack (0.9.1) sha256=…` digest；`[1:56:1:1]`/`[1:57:1:1]` 为锁体 specs 段缺 `path_expander (1.1.1)` 行。另有 `[1:51]`（`:1933`）task-114 已转绿，本轮保持 `passed`。
+
+### 结论
+
+- 总数 64 不变，失败 53 → 48；转绿 5 例中仅 `[1:54]` 可归因于产品修复（task-115），其余 4 例为 msys Low-IL 环境波动。
+- 产品候选 4 → 3（`[1:54]` 退出）；剩余 3 条消息逐字节未变。
+- 两条 env 桶内部互移 3 例（low-il → artifice），失败集合与总失败数的一部分由该搬移解释。
+- 本结论**晚于** task-112…task-117 全部改动及治理提交 `e71ed06`，**早于**任何针对 `[1:46]`/`[1:56:1:1]`/`[1:57:1:1]` 三条产品候选的后续修复。

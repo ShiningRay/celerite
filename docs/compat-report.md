@@ -16,7 +16,7 @@
 | 差分 2.7.2（全量） | `BUNDLER_REF_VERSION=2.7.2 script/differential` | **133 fixtures: 126 passed, 6 failed, 1 skipped**（`add-group` deferred） | 2026-11-13 | `C:\temp\celerite-diff-full-2.7.2-517f69a-rerun.log`；此后只做定向复跑，**未在 424 夹具上重跑全量** |
 | 差分夹具总数 | — | 424 个目录（全量分母 = 424 − 该 profile 的 deferred 数） | 2026-11-22 | `fixtures/differential/*/command` |
 | 全量 `crystal spec` | `crystal spec` | **656 examples, 0 failures, 4 errors**（4 = 既有 msys Low-IL `spec/git_source_spec.cr`）；另有一轮 **665 examples, 12 failures**，12 条经 `git checkout d3cd04e -- src/celerite/cli/commands.cr src/celerite/errors.cr` 证为既有 | 2026-11-18/19 | [compat-evidence/2026-11-18.md](compat-evidence/2026-11-18.md) |
-| 上游 lockfile 套件 | `script/upstream-specs`（`CELERITE_SKIP_TEST_DEPS=1`） | **64 examples, 53 failures**（11 passed；分桶 artifice-unreachable 37、low-il-shm 9、fixture:fetch-failed 3、product:candidates 4） | 2026-11-22（task-114，349s，seed 31786） | [compat-evidence/2026-11-22.md](compat-evidence/2026-11-22.md) |
+| 上游 lockfile 套件 | `script/upstream-specs`（`CELERITE_SKIP_TEST_DEPS=1`） | **64 examples, 48 failures**（16 passed；分桶 artifice-unreachable 40、low-il-shm 2、fixture:fetch-failed 3、product:candidates 3） | 2026-11-22（task-118，483s，seed 16550） | [compat-evidence/2026-11-22.md](compat-evidence/2026-11-22.md) |
 
 差分 4.0.24 的历史演进（同一文件里仍并存，读旧条目时注意口径）：115:101/14/0 → 130:123/7/0 → 133:126/7/0 → 135:135/0/1 → 160:160/16/2 → 210:210/14/2 → **218/14/3**。
 其中 2026-11-14 的 `135 passed, 0 failed` 与 2026-11-15 装具 `git-init` 修复期的 `77 passed, 59 failed` 属装具口径轮次，不作产品结论（原证据见 [compat-evidence/2026-11-14.md](compat-evidence/2026-11-14.md)、[compat-evidence/2026-11-15.md](compat-evidence/2026-11-15.md)）。
