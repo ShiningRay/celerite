@@ -103,3 +103,95 @@
 **2026-11-21（task-112 补记）：`bundle binstubs` 对 PATH/GIT 源改为经「已装 gemspec（bridge `load_installed_spec`）」读取 `executables`/`bindir`，不再要求 `<install>/cache/<full_name>.gem`；`--all` 一并覆盖。双 profile 夹具 `binstubs-path-source` 通过，负对照 `90d0391` 0/1。GIT 源因本机 msys `0xC0000022` 未做夹具。** 
 
 **2026-11-22（task-113 补记）：`install --prefer-local` 只把本 bundle 已装的 spec（`specifications/*.gemspec` + `vendor/cache`）当候选，不再泄漏宿主 gem；本机 `Dir.glob` 对绝对 Windows 路径零命中，改用 `Celerite::Glob`。见 `docs/compat-evidence/2026-11-22.md` 对应小节。**
+
+## 2026-11-23：默认参考 bundler 版本常量化（task-143）
+
+### 五要素之一 · oracle
+
+`Celerite::Profile.bundler_version`（环境未设时取 `Profile::DEFAULT_BUNDLER_VERSION`）必须与改前的内联表达式逐字同语义。改前基线在 `1af3a0d` 上以裸探针实测（Crystal 1.22.1 / Windows）：
+
+- 未设 `CELERITE_PROFILE_BUNDLER_VERSION` → `"4.0.24"`；
+- 设为空串 `""` → `"4.0.24"`（Windows 上空环境值被 OS 删除，`ENV[...]?` 得 `nil`，与「未设」不可区分）；
+- 设为 `"   "` → `"   "`；设为 `" 2.7.2 "` → `" 2.7.2 "`；设为 `"9.9.9"` → `"9.9.9"`（不 trim、不校验、不回退）。
+
+因此本次收敛**不得**新增「空/空白回退常量」——那会改变可观测行为。收敛后 `Profile.bundler_version` 即上述表达式的原样搬迁，并新增 spec 以独立 oracle 钉住默认值（见证据）。默认值另受两条既有约束交叉验证：它必须是 `Celerite::ReleaseMetadata::RELEASES` 的键（`"4.0.24" => {"2026-11-05", "3b396e4"}`），且 `Commands.profile_2_x?` 必须为 `false`，且 `assets/man/<默认值>/` 目录存在。
+
+### 五要素之二 · 参考锚点
+
+- `src/celerite/release_metadata.cr` 的 `RELEASES`（各发布编译期元数据表，本次**未改动**）——默认值必须能在其中解析；
+- 参考实现侧 `bundle version` 的渲染形状（4.x 打印 `4.0.24 (2026-11-05 commit 3b396e4)`，2.x 打印 `Bundler version …`），由 `spec/m7_version_spec.cr` 既有断言覆盖；
+- `assets/man/4.0.24`、`assets/man/2.7.2` 两套已 vendored 的 manpage 目录，是默认 profile 的下游消费者；
+- 差分夹具 `fixtures/differential/cli-help`（该仓无 `gem-help`；`bundle help` 族以 `cli-help` 为准）、`install-fresh`、`lock-noop`。
+
+### 五要素之三 · 实现位置
+
+新增 `src/celerite/profile.cr`（21 行，唯一出处）：
+
+- `src/celerite/profile.cr:11` `ENV_KEY = "CELERITE_PROFILE_BUNDLER_VERSION"`
+- `src/celerite/profile.cr:15` `DEFAULT_BUNDLER_VERSION = "4.0.24"`
+- `src/celerite/profile.cr:24-26` `def self.bundler_version : String` → `ENV[ENV_KEY]? || DEFAULT_BUNDLER_VERSION`
+
+接线与替换：
+
+- `src/celerite.cr:5` 新增 `require "./celerite/profile"`（置于 `errors` 等所有消费者之前）；`cli/commands` 经 `spec_helper`/`cli.cr` 各自 require，均可见。
+- `src/celerite/manpages.cr:16` `PROFILE_DEFAULT = Celerite::Profile::DEFAULT_BUNDLER_VERSION`（原为 `"4.0.24"` 字面量，全仓仅此一处定义、无其它引用）。
+- 其余 23 处内联惯用法全部改为 `Celerite::Profile.bundler_version`：`definition.cr` 1、`bridge/client.cr` 1、`errors.cr` 1、`cli/commands.cr` 8、`cli/commands_install.cr` 7、`cli/commands_surface.cr` 5。所有站点均为「取值后做 `starts_with?("2.")` 判定 / 透传打印 / 传给 `frozen_flag_exit`」，替换前后只动了取值表达式本身。
+
+刻意**未**改动（核过语义后判为异事）：
+
+- `src/celerite/cli/commands_install.cr:657/698/708` 用 `ENV["CELERITE_PROFILE_BUNDLER_VERSION"]?.try(&.starts_with?("2."))`——「显式设了才算」的三路或判定，本身不含默认字面量，改它即改判定；
+- `src/celerite/cli/commands_install.cr` 中 `profile_2_x? ? "2.7.2" : "4.0.24"` 选的是 binstub 模板目录名，非环境默认值，若改走访问器会在非默认 4.x profile 下改变行为；
+- `release_metadata.cr` 的 `RELEASES` 属另一关切（各发布元数据表）。
+
+### 五要素之四 · 证据
+
+改前/改后计数（对 `src/**/*.cr` 逐文件正则统计 `ENV["CELERITE_PROFILE_BUNDLER_VERSION"]? || "4.0.24"` 精确串）：
+
+```
+BEFORE: src/celerite/definition.cr 1, errors.cr 1, bridge/client.cr 1,
+        cli/commands.cr 8, cli/commands_install.cr 7, cli/commands_surface.cr 5
+TOTAL = 23
+AFTER : TOTAL = 1   # 唯一残留是 src/celerite/profile.cr 注释里对该旧写法的说明文字
+Celerite::Profile.bundler_version 调用点 TOTAL = 23（分布同 BEFORE 各文件）
+```
+
+门禁（全部本机实跑，工作树 `C:\temp\celerite-t143`，HEAD `c3709a1`）：
+
+- `crystal tool format --check src spec` → `exit=0`；
+- `crystal spec spec/m7_profile_version_spec.cr` → `7 examples, 0 failures, 0 errors, 0 pending`（新增 spec，见下）；
+- `crystal spec spec/m7_ruby*.cr` → `30 examples, 0 failures, 0 errors, 0 pending`；
+- `crystal spec spec/m7_help_manpage_spec.cr` → `12 examples, 0 failures, 0 errors, 0 pending`；
+- `crystal spec spec/m7_cli_help_spec.cr` → `10 examples, 0 failures, 0 errors, 0 pending`；
+- `crystal spec spec/m7_version_spec.cr spec/m7_version_promotion_spec.cr` → `11 examples, 0 failures, 0 errors, 0 pending`。
+
+新增 `spec/m7_profile_version_spec.cr`（`test(M7 task-143)` 提交）7 例，断言**不**复写 `"4.0.24"` 字面量：
+
+1. 未设环境时，`Profile.bundler_version` 必须是 `ReleaseMetadata.for` 能解析的版本（常量写错即失败），形如 `x.y.z`，且 `Commands.profile_2_x?` 为 `false`；
+2. 未设环境时，`assets/man/<默认值>/` 目录必须存在；
+3. 未设环境时，`bundle version` 的输出必须等于 `<版本> (<日期> commit <提交>)`，其中日期与提交取自 `ReleaseMetadata`；
+4. 设为 `"2.7.2"` 时，`Profile.bundler_version` 与 `Commands.bundle_profile_version` 均取 `"2.7.2"`，`profile_2_x?` 为 `true`；
+5. 设为未知名 `"9.9.9"` 时原样取值（不校验）；
+6. 设为 `"   "` / `" 2.7.2 "` 时原样取值（不 trim、不空白回退），且 `profile_2_x?` 为 `false`；
+7. `Manpages::PROFILE_DEFAULT` 与 `Profile::DEFAULT_BUNDLER_VERSION` 同值，未设环境时等于 `Profile.bundler_version`。
+
+差分抽查（`script/differential`，本轮三组，引擎为本次构建的 `bin/celerite.exe`）：
+
+```
+=== A: reference 4.0.24 ===        PASS cli-help (exit=0) / PASS install-fresh (exit=0) / PASS lock-noop (exit=0)
+                                   differential (4.0.24): 3 passed, 0 failed, 0 skipped
+=== B: reference 2.7.2 ===         PASS cli-help (exit=0) / PASS install-fresh (exit=0) / PASS lock-noop (exit=0)
+                                   differential (2.7.2): 3 passed, 0 failed, 0 skipped
+=== C: CELERITE_PROFILE_BUNDLER_VERSION=2.7.2, reference 4.0.24 ===
+                                   PASS cli-help (exit=0) / PASS install-fresh (exit=0) / PASS lock-noop (exit=0)
+                                   differential (4.0.24): 3 passed, 0 failed, 0 skipped
+```
+
+C 组刻意用「引擎侧 profile 环境变量 = 2.7.2、参考侧仍 4.0.24」——两侧不一致时 `cli-help` 期望会分歧（2.x 打印 `Bundler version …` 前缀）；此处仍 PASS，说明本轮夹具的命令路径不经过该渲染分支，**该组只证明版本取值路径未被改坏，不构成 2.7.2 语义的覆盖**。2.7.2 语义由 B 组（参考侧亦 2.7.2）与 spec 第 4 例承担。
+
+### 五要素之五 · 已声明差异
+
+- **未覆盖**：全部 23 处站点的「取值之后的判定分支」未逐一做差分举证，仅由既有 spec 族（`m7_ruby*`、`m7_help_manpage`、`m7_cli_help`、`m7_version*`、`m7_profile_version`）与三组差分夹具间接覆盖；替换是纯表达式搬迁，逐站点已在改动前核对过原语义（含 `starts_with?("2.")` 各分支）。
+- **未覆盖**：`fixtures/differential/gem-help` 不存在，`bundle help` 族以 `cli-help` 代替；任务书给的该夹具名在本仓无效。
+- **未覆盖**：`docs/compat-claims/M7-3-placeholders.md` 断言账本本轮**未**同步（该路径属禁改范围），本轮证据仅落在本文件。
+- **未勾选**：`docs/roadmap.md` 的 M7-3 行本轮不动（尚未到勾选条件），本文件为 M7-3 子项实证流水。
+- **已声明**：Windows 上空环境值被 OS 删除，故「设为空串」在 Windows 上与「未设」不可区分；spec 第 6 例因此只钉 `"   "`/`" 2.7.2 "` 的原样语义，空串的等价性以裸探针实测结论记录，未写成可跨平台的断言。
