@@ -152,7 +152,7 @@ differential (4.0.24): 1 passed, 0 failed, 0 skipped
   failures. Root cause (2026-11-15): workspace Crystal binaries run at Low
   integrity (`S-1-16-4096`) and their msys `sh` cannot create the
   `\BaseNamedObjects\msys-2.0S5-<hash>` object; see
-  `docs/compat-report.md`「2026-11-15 M7(5)/M7(8) 环境失败根因」.
+  ``docs/compat-evidence/2026-11-15.md``「2026-11-15 M7(5)/M7(8) 环境失败根因」.
 - Each command of a multi-command fixture writes its own `ref.part.$n.out` /
   `.err` (and `cel.part.$n.*`); the per-side files are combined once with
   `cat "${parts[@]}" > "$work/ref.out"`. On this host a second `>>` reopen of

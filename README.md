@@ -48,7 +48,7 @@ compatibility boundary. Performance is a measured goal, not an unconditional cla
   (current v4.0.24 lockfile baseline: 64 examples, 54 failed / 10 passed;
   buckets artifice 38 / low-IL 8 / fetch 6 / product 2, collected 2026-11-19
   16:32 by task-32; not recollected after tasks 33–59; see
-  `docs/compat-report.md` task-32).
+  ``docs/compat-evidence/2026-11-19.md`` task-32).
 
 ## Non-goals
 

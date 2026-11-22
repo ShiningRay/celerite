@@ -509,7 +509,7 @@ Measured (shim bin `C:\Users\ShiningRay\AppData\Local\Temp\celerite-b1b2-fix.exe
   match?/specificity unit spec (46-example spec subset green, see above).
 
 ## Known blockers / not verified (as of this run)
-- 2026-11-13 combo-fixture subitem: full 4.0.24/2.7.2 suites not rerun (unverified; measured baselines 133:126/7/0 @1882f53 and 133:126/6/1 @517f69a-rerun stand); targeted 2-fixture + 43-case regression dual profile green; M7 spec subset rerun 70/0/0/0 EXIT 0. B1 Default Gem / B2 console UX / IRB-in-bundle / Case C / gem matrix / env-issue outer fields / ABI-gnu-musl remain unverified with repro in docs/compat-report.md.
+- 2026-11-13 combo-fixture subitem: full 4.0.24/2.7.2 suites not rerun (unverified; measured baselines 133:126/7/0 @1882f53 and 133:126/6/1 @517f69a-rerun stand); targeted 2-fixture + 43-case regression dual profile green; M7 spec subset rerun 70/0/0/0 EXIT 0. B1 Default Gem / B2 console UX / IRB-in-bundle / Case C / gem matrix / env-issue outer fields / ABI-gnu-musl remain unverified with repro in `docs/compat-evidence/2026-11-11.md`.
 
 - Stock `crystal build src/cli.cr` remains blocked on this host:
   `undefined reference to 'EVP_MD_size'` (Crystal 1.22.1 / MSYS2 ucrt64 OpenSSL

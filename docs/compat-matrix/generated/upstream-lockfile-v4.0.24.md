@@ -314,7 +314,7 @@ ruby -S rspec -r "$repo\script\upstream-specs-celerite-override.rb" spec/lock/lo
 - `:2088` 附近 `automatically fixes the lockfile when it has incorrect deps, keeping the locked version` **通过**。
 - `:1882`（regenerates a lockfile with no specs）仍失败，但失败文本为 `Could not reach host gem.repo4`（上游 spec 的进程内 artifice 端点，外部二进制无法访问），属 harness 限制；该语义已由差分夹具 `lock-missing-dependency-edges` 双 profile PASS 覆盖。
 
-分桶判据（脚本内 ruby 读取 rspec JSON）：`Could not reach host` → artifice；`HTTP 403` → network-policy；`0xC0000022` / `NtCreateDirectoryObject` → low-il-shm（既有环境根因，见 compat-report「M7(5)/M7(8) 环境失败根因」节）；`sinatra/base (LoadError)` → test-deps-skipped；`Errno::ENOENT` / `does not exist!` / `No such file or directory @ rb_sysopen` → missing-gem-files；其余含 `Fetching ` → fetch-failed；再其余 → product:candidates（本轮 0 条）。
+分桶判据（脚本内 ruby 读取 rspec JSON）：`Could not reach host` → artifice；`HTTP 403` → network-policy；`0xC0000022` / `NtCreateDirectoryObject` → low-il-shm（既有环境根因，见 `docs/compat-evidence/2026-11-15.md`「M7(5)/M7(8) 环境失败根因」节）；`sinatra/base (LoadError)` → test-deps-skipped；`Errno::ENOENT` / `does not exist!` / `No such file or directory @ rb_sysopen` → missing-gem-files；其余含 `Fetching ` → fetch-failed；再其余 → product:candidates（本轮 0 条）。
 
 复现：`CELERITE_SKIP_TEST_DEPS=1 bash script/upstream-specs`；基线 `CELERITE_SKIP_TEST_DEPS=1 CELERITE_BUNDLE_HELPER_OVERRIDE=0 bash script/upstream-specs`。产物：`.upstream-specs/rspec-output.txt`、`.upstream-specs/rspec-output.json`、`.upstream-specs/upstream-lockfile-v4.0.24-<ts>.md`（均 gitignored）。
 
@@ -322,7 +322,7 @@ ruby -S rspec -r "$repo\script\upstream-specs-celerite-override.rb" spec/lock/lo
 
 ## 2026-11-19 rerun：fixture 修复后的当前基线（task-23 证据）
 
-本节取代上方 iteration 2 / 2026-11-16 的历史基线。采集命令：`CELERITE_SKIP_TEST_DEPS=1 bash script/upstream-specs`（MSYS bash、仓库外 exe 副本、`TMPDIR=/c/temp`），`script/upstream-specs` 已加入 stale-empty `remote1` 修复与 base rake 缓存播种（根因见 `docs/compat-report.md` task-23 节）。
+本节取代上方 iteration 2 / 2026-11-16 的历史基线。采集命令：`CELERITE_SKIP_TEST_DEPS=1 bash script/upstream-specs`（MSYS bash、仓库外 exe 副本、`TMPDIR=/c/temp`），`script/upstream-specs` 已加入 stale-empty `remote1` 修复与 base rake 缓存播种（根因见 ``docs/compat-evidence/2026-11-19.md`` task-23 节）。
 
 | 指标 | 当前值 |
 |---|---|
