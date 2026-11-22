@@ -257,3 +257,110 @@ upstream checkout integrity: ok (HEAD 01e797f6aa045fd09df7813d0b5448e3667172a9)
 2. **截断前存在真绿假象（已修）**：`rspec --out` 只在套件结束后写文件，跑挂了就留着上一次的文件。v2.7.2 在 spec_helper 崩溃的那次，报告一度写出 `64 examples, 47 failures`、`- real-drive: 50 celerite invocations`、`- harness verdict: ok (rspec exit 1)`——每个数字都是上一次 4.0.24 运行的残留。`:300-301` 的两行截断即为堵这个洞。
 3. **本机新基线是 64/47，不是 64/48**：分桶 `env:artifice-unreachable (43)`、`fixture:fetch-failed (1)`、`product:candidates (3)`，合 47；主工作区参考报告为 artifice 40 / fetch 3 / product 3。差异来自本 worktree 的 fixture 预置状态（`bundler/tmp/gems/pristine_system` 需用宿主 `spec/support/helpers.rb` 的 `Spec::Helpers.install_dev_bundler` 预置），非本次改动所致，也不主张与旧基线逐字节相同。此处只登记新基线数值，未改任何分类桶逻辑。
 4. **未做**：`docs/roadmap.md` 复选框、`docs/compat-report.md`、`docs/compat-claims/` 均未改；失败基线未删；分类桶未调。新增退出码 69/70 未接入任何断言方（`.github/workflows/ci.yml:55-74` 只上传报告、不检查退出码），故不破坏既有 CI 调用，但也意味着**没有回归测试锁住这套自检**——只有本次手工 A/B 双跑为证。
+## 2026-11-23：锁缺 spec 行的自愈（task-149）
+
+### oracle
+
+- 上游用例：`.upstream-specs/v4.0.24/bundler/spec/lock/lockfile_spec.rb:2214-2279`，`shared_examples "a lockfile missing dependent specs"` → `it "auto-heals"`，两个 context 各一条失败：`with both ruby and specific platform behaves like a lockfile missing dependent specs auto-heals`、`with just specific platform behaves like …`（task-118 基线均落在 `lockfile_spec.rb:2215`，`RSpec::Expectations::ExpectationNotMetError`）。
+- 用例形状：`build_repo4` 造 `minitest-bisect 1.6.0`（`add_dependency "path_expander", "~> 1.1"`）与 `path_expander 1.1.1`；Gemfile 为 `source "https://gem.repo4"` + `gem "minitest-bisect"`；`Gemfile.lock` 的 `GEM`/`specs` 段**只有** `minitest-bisect (1.6.0)` 一行——没有 `path_expander` 的边、也没有 `path_expander (1.1.1)` 行；`cache_gems "minitest-bisect-1.6.0", "path_expander-1.1.1", gem_repo: gem_repo4` 只往 `vendor/cache` 放这两个 `.gem`；断言 `bundle :install` 后锁为
+  `minitest-bisect (1.6.0)` / `  path_expander (~> 1.1)` / `path_expander (1.1.1)`，`PLATFORMS` 为 `#{platforms}`（`lockfile_platforms` 或 `lockfile_platforms("ruby")`），`DEPENDENCIES` 为 `minitest-bisect`。
+- 触发条件是**源索引不可达**：索引可达时 HEAD 的 stale 探针已能把两条自愈（实验 vE），上游 harness 用 artifice 注入 `RUBYOPT`，celerite 原生进程拿不到该桩，故真驱动下这一形态恒为「索引不可达 + 只有 `vendor/cache`」。
+- 离线可差分形态（本次据此建夹具）：不可达源 `http://127.0.0.1:9/` + `vendor/cache` 里的两个 `.gem` + `install --local`。参考侧在此形态 `exit 0` 并把锁补全；不带 `--local` 时参考侧直接 `exit 17`（`Could not reach host 127.0.0.1:9. Check your network connection and try again.`），不是差分区。
+
+### 参考锚点
+
+- `lazy_specification.rb:260-268`（`validate_dependencies`）：strict 物化时比较锁行记录的 `dependencies` 与源物化 spec 的 `runtime_dependencies`，不等即 `raise IncorrectLockfileDependencies.new(self)`。这是参考「察觉」缺行的唯一入口。
+- `definition.rb:699-708`（`materialize`）：`rescue IncorrectLockfileDependencies => e` → 非 frozen 时 `reresolve_without([e.spec])` 后 `retry`；frozen 时原样抛出。
+- `definition.rb:782-785`（`reresolve_without`）：`resolution_base.delete(incomplete_specs)` + `@resolve = start_resolution`。只从解析基底删行，**不**写 `@gems_to_unlock`，`@originally_locked_specs` 仍是原对象，所以已存在行的锁定版本不被抬升。
+- `spec_set.rb:125-129` / `:241-264` / `:266-268`（`materialize` / `materialize_dependencies` / `materialized_specs`）：重解析按依赖闭包物化——`deps.concat(materialization.dependencies) if materialization.complete?` 把新发现的边重新入队，`@materializations << materialization` 为每个访问到的名字留下物化项，缺的 spec 行就是这样被补出来的（**补行发生在 resolve 阶段，不是安装阶段事后追加**）。
+- `spec_set.rb:86-96`（`validate_deps`）：`check_lockfile` 用的校验；空依赖集返回 `:valid`，所以「锁内完全没有该 spec 行」这种形态不靠它察觉（本次也未改 `lockfile_covers_dependencies?`）。
+- 安装顺序：`spec_set.rb:316-323`（`sorted`）= `[@specs.find { "rake" }] + tsort`，`tsort_each_node` 按名字排序（`:339-341`）、`tsort_each_child` 按依赖名排序（`:344-353`）；`installer.rb:203-219` 把 `definition.specs` 交给 `ParallelInstaller`，`jobs == 1` 时 `install_serially`（`parallel_installer.rb:161-170`）按该序列逐个 `ready_to_enqueue?` 安装。故参考在本形态下打 `Installing path_expander 1.1.1` 在 `Installing minitest-bisect 1.6.0` **之前**（依赖先装，非字典序）。
+
+### 实现位置
+
+- `src/celerite/resolution.cr:1130-1131`（`resolve!` 的 `--local` 早退块内）：`healed = available && heal_missing_locked_spec_rows`；随后
+  `@progress.puts "Resolving dependencies..." if @show_resolving && (healed || (available && !platform_ready))`。自愈确实发生时只打**一行** `Resolving dependencies...`（参考在本形态下同样是一行），并且因为父行边已在 resolve 阶段改写完毕，`commands_install.cr:727` 的 `refresh_locked_dependencies` 返回 `false`，`commands_install.cr:740-742` 的两行补打不再触发。
+- `src/celerite/resolution.cr:1194-1196`（`reuse` 复用路径，索引不可达时的静默返回点）：`if stale.empty?` → `heal_missing_locked_spec_rows` → `return @resolved_specs`。stale 探针在索引不可达时被 `rescue next` 吞成空集，这里是它之后的同一段补行逻辑，**没有**改动 `stale_locked_dependency_full_names` 的 `@local_only` 短路（`:1248`）。
+- `src/celerite/resolution.cr:1776-1839`（新增 `private def heal_missing_locked_spec_rows : Bool`，紧邻 `refresh_locked_dependencies` / `run_resolution` 之前）：以已物化的 GEM 行为队列，对每行用 `local_index_specs(name)` 取 `full_name` 相同的候选；把候选比锁行多出的 runtime 边（剔除 `bundler`）作为「缺行」的线索，子行也只从本地候选（已装 spec + `vendor/cache`）里选，且必须满足该边的 `Gem::Requirement`。任一边无法在本地满足时不动那行，安装器照旧报缺包。确认有缺行后：给父行追加缺失的边（写 `Lockfile::SpecDependency`，6 空格缩进由 `to_lock_line` 负责），并把子行以新 `ResolvedSpec` 追加到 `@resolved_specs`（`source_type "GEM"`、`source_index 0`、checksum 取自本地候选）。补出的行会被 `installable_specs`（`commands_install.cr:1189-1223`）顺着刚补上的边纳入安装集，并由 `vendor_cache_path`（`:591-594`）命中 `vendor/cache` 里的包。
+- 未改动：`stale_locked_dependency_full_names`（含 `@local_only` 短路与 `rescue next`）、`lockfile_covers_dependencies?`、`lockfile_covers_all_dependencies?`、安装顺序（仍是 `pending.sort_by(&.full_name)`，见「已声明差异」）。
+
+### 证据
+
+新夹具 `fixtures/differential/lock-missing-spec-row/`（`command` = `install --local`，`env` = `BUNDLE_JOBS=1`，`Gemfile` 指向 `http://127.0.0.1:9/` + `gem "zroot-gem"`，`Gemfile.lock` 只有 `zroot-gem (1.6.0)` 行，`extra/vendor/cache/{zroot-gem-1.6.0,child-gem-1.1.1}.gem` 为 4096 B 最小合成桩，`installed-tree` 覆盖 `ruby/*/gems`、`ruby/*/specifications`、`ruby/*/bin`）。`zroot-gem 1.6.0` 声明 `child-gem ~> 1.1`，`child-gem 1.1.1` 无依赖；两个名字的字典序与依赖序一致，用来把「补行」这一件事与安装顺序差异隔开（顺序差异本身见下）。
+
+修复后双 profile 原始结果行：
+
+```
+PASS lock-missing-spec-row (exit=0)
+
+differential (4.0.24): 1 passed, 0 failed, 0 skipped (documented deferrals)
+```
+```
+PASS lock-missing-spec-row (exit=0)
+
+differential (2.7.2): 1 passed, 0 failed, 0 skipped (documented deferrals)
+```
+
+反假绿：`CELERITE_BIN=C:\temp\celerite-pre149\bin\celerite-old.exe`（`C:\temp\celerite-pre149` detached @ `3e0cebb`，与本次 base 相同）+ 工作区的 `script/differential`，同一夹具必须 FAIL，原文：
+
+```
+FAIL lock-missing-spec-row (install --local)
+      stdout differs:
+    2c2
+    < Installing child-gem 1.1.1
+    ---
+    > Resolving dependencies...
+    5,6c5,6
+    < Bundle complete! 1 Gemfile dependency, 2 gems now installed.
+    < Bundled gems are installed into `C:\temp\celerite-t149\.d-anfi/pz3zAa/ref/bundle`
+    ---
+    > Bundle complete! 1 Gemfile dependency, 1 gem now installed.
+    > Bundled gems are installed into `C:\temp\celerite-t149\.d-anfi/pz3zAa/cel/bundle`
+      installed tree differs:
+      ruby/4.0.0/gems path set differs:
+        Only in 'C:\temp\celerite-t149\.d-anfi/pz3zAa/ref/bundle/ruby/4.0.0/gems': child-gem-1.1.1
+      ruby/4.0.0/specifications path set differs:
+        Only in 'C:\temp\celerite-t149\.d-anfi/pz3zAa/ref/bundle/ruby/4.0.0/specifications': child-gem-1.1.1.gemspec  file-equals differs (Gemfile.lock, cel):
+    4d3
+    <     child-gem (1.1.1)
+
+    sandboxes kept at: C:\temp\celerite-t149\.d-anfi/pz3zAa
+
+differential (4.0.24): 0 passed, 1 failed, 0 skipped (documented deferrals)
+```
+
+同一棵 `celerite-pre149` 上跑新增 spec（把 spec 与夹具原样拷入该树）——修前 1 条失败、修后 0 条：
+
+```
+  1) task-149 locked spec row missing and the source index unreachable heals the missing row and edge from vendor/cache under --local
+     Failure/Error: out.should contain("Installing child-gem 1.1.1")
+       Expected:   "Resolving dependencies...\n" +
+3 examples, 1 failures, 0 errors, 0 pending
+```
+
+受影响 spec 家族（修复后，`crystal spec` 逐文件列出，原始尾行）：
+
+```
+spec/m7_lockfile_locked_deps_spec.cr spec/m7_install_failure_spec.cr spec/m7_lock_autoheal_spec.cr \
+spec/m7_check_missing_dependency_spec.cr spec/m7_lock_missing_spec_row_spec.cr spec/m7_local_install_step_spec.cr \
+spec/m7_vendor_cache_spec.cr spec/m7_local_install_spec.cr spec/m7_local_install_missing_dep_spec.cr \
+spec/m7_prefer_local_spec.cr
+38 examples, 0 failures, 0 errors, 0 pending
+```
+
+同名族扩到 `install|lock|local|prefer_local|vendor|reuse|frozen|update` 共 49 个 spec 文件：
+
+```
+225 examples, 0 failures, 0 errors, 0 pending
+```
+
+新增 `spec/m7_lock_spec_row_heal_spec.cr`（3 例）：①`install --local` 在不可达源 + `vendor/cache` 下补出 `child-gem (1.1.1)` 行与 `zroot-gem` 的边，输出含 `Installing child-gem 1.1.1` / `Installing zroot-gem 1.6.0` / `Bundle complete! 1 Gemfile dependency, 2 gems now installed.`，且 `bundle/ruby/<abi>/specifications` 里两个 `.gemspec` 都在；②两行齐、边齐时锁逐字不变且没有 `Resolving dependencies...`，`child-gem (1.1.1)` 行只出现一次（补行不重复）；③既无索引也无 `vendor/cache` 时仍 `exit 7` 且报 `Could not find zroot-gem-1.6.0 in locally installed gems`，锁里不得凭空长出 `child-gem`。
+
+门禁：`crystal tool format --check src spec` → exit 0；`git diff 3e0cebb..HEAD --check` → exit 0。
+
+### 已声明差异
+
+- **安装顺序**：参考按 `SpecSet#sorted` 的 tsort 拓扑序安装（依赖先装），celerite 仍按 `pending.sort_by(&.full_name)` 的字典序（`commands_install.cr:480`）。本夹具因此选用「字典序 = 依赖序」的两个合成 gem（`child-gem` / `zroot-gem`），使这条差异不混进本用例；一旦父子名序反向（如上游 oracle 的 `minitest-bisect` → `path_expander`，字典序把父排在子前），celerite 的 `Installing` 两行顺序会与参考相反。这是**未修**的既有差异，本次不重构安装顺序。
+- **stale 探针的 `rescue next`**：`stale_locked_dependency_full_names`（`resolution.cr:1264-1268`）在索引不可达时仍把异常吞成「与锁一致」，本次按要求未动它；补行改由 `heal_missing_locked_spec_rows` 在 materialize 之后独立完成。因此该探针的语义缺陷仍在（`--frozen` 下索引不可达时不会报 `IncorrectLockfileDependencies`，而是直接复用锁）。
+- **`--local` 与不带 `--local` 的行为仍不同**：不带 `--local` 且源不可达时，参考侧 `exit 17`（`Could not reach host …`），celerite 侧只要 `vendor/cache` 有包就 `exit 0` 并（修复后）补全锁。这条差异属既有声明（task-146 记于 `docs/roadmap-evidence/M7-8-upstream-specs.md` 之外的产品差异清单），本次未改。
+- **未验证**：未跑上游 `script/upstream-specs` 真驱动（本机 artifice 不可用，`env:artifice-unreachable` 族）；未验证 `PLATFORMS` 含 `ruby` 的第二种 context（上游 `with both ruby and specific platform`）在本夹具形态下的输出行数；未跑全量 `crystal spec`。
