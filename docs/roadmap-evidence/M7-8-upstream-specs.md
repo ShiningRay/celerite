@@ -153,3 +153,107 @@
 - 环境族在本机不可消除，本节不据其判定产品差异：① 宿主 Ruby 缺 `sinatra`/`artifice`（`require 'sinatra/base'` → LoadError），`env:artifice-unreachable` 40 条属此类；② msys Low-IL 下的 `0xC0000022`（`NtCreateDirectoryObject`）使部分 git 源用例在任何二进制下都失败，本轮新增失败的 `lockfile_spec.rb:586` 即此族；③ 上游 `tmp/2.1/gems/` 只有 `base`/`remote1`、缺 `remote2`/`system`，`fixture:fetch-failed` 3 条属此类。
 - 本次未做多次采样，`8 minutes 47 seconds` 与 seed 31249 均为单次观测；`product:candidates` 三条选在本次未做逐条差分定位，故只记入桶、不宣称产品结论变化。
 - 2.7.2 profile 未取得有效 baseline（见上），本条不对 2.7.2 作任何结论。
+## 2026-11-23：装具的真驱动自检与 checkout 完整性（task-148）
+
+### oracle
+
+`docs/roadmap.md` L148 原文：「修复 `script/upstream-specs`：使锁文件族真实驱动 Celerite，退出码反映失败；保留当前 64 failures 作为失败基线，再逐项关闭。」
+
+拆成可判定的三条：
+
+1. 装具必须自证「真的驱动了 celerite」，不能只靠 rspec 自己的退出码——`real-drive == 0` 或 `examples == 0` 都要立即非零退出并打印明确错误。
+2. checkout 不存在「有 spec 文件就算可用」的假设：`bundler/spec/lock/lockfile_spec.rb` 在而 `bundler/lib` 缺失或为空时必须重取，仍失败要带明确错误退出，不得静默产出 `0 examples` 的假报告。
+3. 退出码要区分「上游失败」与「环境不可用」两类；既有的 `0 = 全绿` 语义不变。
+
+### 参考锚点
+
+- `docs/roadmap.md:148`：本条要求原文（复选框保持 `[ ]`，未勾）。
+- task-146 复采（不带 `git` 的 PATH）：`0 examples, 0 failures, 1 error occurred outside of examples`、`real-drive: 0 celerite invocations`、`WARNING: NOT driving celerite (helper override disabled or not applied)`。该形态下 rspec 仍退 1，但装具本身无法区分「跑过但失败」与「根本没跑起来」——正是本任务要消除的假绿缝。
+- 基线（4.0.24、PATH 含 git、`CELERITE_SKIP_TEST_DEPS=1`）：`64 examples, 48 failures`、real-drive 51 次，报告 `.upstream-specs/upstream-lockfile-v4.0.24-20261122T174318Z.md`。
+- 上游锚点：`bundler/spec/support/filters.rb:21`（`git --version`，无 git 即 `Errno::ENOENT`）；`bundler/spec/spec_helper.rb:16` 与 `:20`（`rspec ~> 3.6`，以及 `abort "Run rake spec:deps to install development dependencies"`）；`bundler/spec/support/rubygems_ext.rb:32`（`install_test_deps unless ENV["RSPEC_FORMATTER_OUTPUT_ID"]`，即 `CELERITE_SKIP_TEST_DEPS=1` 的落点）。
+- `v2.7.2` tag 的 `.gitmodules`：`[submodule "bundler"] path = bundler url = https://github.com/bundler/bundler.git`；`git ls-tree HEAD -- bundler` = `160000 commit 10f20fa33bc36371cbad00106487c6eb22616ec7 bundler`。子模块内的 `bundler/` 才是 `lib` 与 `spec` 所在。
+
+### 实现位置
+
+`script/upstream-specs`：
+
+- `:55-56` 退出码常量 `exit_env_unusable=69`（EX_UNAVAILABLE）、`exit_not_driving=70`（EX_SOFTWARE）；文件头 Notes 补退出码表（`0` 全绿 / `<rspec status>` 上游红 / `69` 环境不可用 / `70` 未驱动 / `127` 二进制缺失）。
+- `:87-95` `init_bundler_submodule()`：`git ls-files -s -- bundler` 命中 `160000*` 时执行 `git submodule update --init --depth 1 bundler`；新树在 `:109` 之后调用，`repair_checkout` 内在稀疏重放与重 clone 之间（`:161`）调用一次，重 clone 分支内（`:173` 之后）再调用一次。
+- `:122-198` checkout 完整性预检：`checkout_markers` 为 `bundler/lib/bundler.rb`、`bundler/lib/bundler/version.rb`、`bundler/spec/lock/lockfile_spec.rb`、`bundler/spec/support/helpers.rb`，另要求 `bundler/bin`、`bundler/exe` 为非空目录；`repair_checkout` 三级修复（稀疏重放 → 子模块初始化 → 重 clone），仍失败则打印 `refusing to run the upstream suite against an incomplete checkout` 并 `exit 69`。
+- `:210-222` 缺 git 闸：`command -v git` 失败即打印 `error: git is not on PATH, but the upstream suite requires it` 等四行并 `exit 69`；`rev-parse` 取不到 HEAD（等于 `unknown`）同样 `exit 69`。
+- `:250-252` `drive_counter="$repo_root/.upstream-specs/celerite-invocations.log"`；shim 的 `bundle`/`bundle.cmd`/`bundle.bat` 各自在启动时向 `$CELERITE_DRIVE_COUNTER` 追加一行 PID；跑 rspec 前 `: > "$drive_counter"` 清空。
+- `:300-301` 跑 rspec 前 `: > "$rspec_out"` 与 `: > "$json_out"` 截断，堵住「上次残留冒充本次证据」。
+- `:351` 子 shell 导出 `CELERITE_DRIVE_COUNTER`。
+- `:379-393` 真驱动自检：`drive_counter_count`（计数文件行数）与 `celerite_invocations`（`grep -c -E 'celerite(\.exe)? ' "$rspec_out"`）取大者。
+- `:397-399` 由 `summary` 解析 `examples_total` 与 `failures_total`。
+- `:442-459` 判词：`examples_total -eq 0` → `harness_rc=69`；否则 `celerite_invocations -eq 0` → `harness_rc=70`；否则 `harness_rc=$rspec_status`（既有语义不变）。
+- `:473`、`:476`、`:486` 报告新增 `- Checkout HEAD:`、`- real-drive counter file:`、`- harness verdict:` 三行。
+- `:504-514` 判词非 ok 时向 stderr 打 `error: $verdict`、`harness exit N (rspec exited M)`、`report: <path>`，然后 `exit "$harness_rc"`。
+
+`script/upstream-specs-celerite-override.rb`：
+
+- `:15-24` `celerite_record_drive`：以 append 模式向 `ENV["CELERITE_DRIVE_COUNTER"]` 写 `Process.pid`，`rescue StandardError` 静默——计数是旁证，写不进去也不能改变套件行为。
+- `:58` 在 `:59` 的 `sys_exec(...)` 之前调用。这是 in-example 驱动的唯一注入点，与 shim 计数互为独立旁证。
+
+### 证据
+
+命令与结果行（worktree `C:\temp\celerite-t148`，detached；PATH 前缀 `C:\msys64\usr\bin;C:\msys64\ucrt64\bin;C:\Ruby40-x64\bin`，`TMPDIR=/c/temp`，`CELERITE_SKIP_TEST_DEPS=1`）。
+
+反假绿负对照（PATH 显式去掉 `C:\Program Files\Git\cmd`，其余全同）：
+
+```
+git=NONE
+error: git is not on PATH, but the upstream suite requires it
+       (bundler/spec/support/filters.rb:21 runs 'git --version'; without it
+        rspec loads 0 examples and reports no real compatibility evidence)
+       add git to PATH and re-run
+HARNESS_EXIT=69
+```
+
+未写出任何新报告（最新报告仍是上一次正对照的），计数文件 0 字节。即：不再产出 `0 examples` 的体面报告来冒充证据。
+
+正对照（PATH 含 git）：
+
+```
+upstream checkout integrity: ok (HEAD 3b396e42bdf993c7cbf64647fca2a31177eab734)
+wrote /c/temp/celerite-t148/.upstream-specs/upstream-lockfile-v4.0.24-20261122T184550Z.md
+HARNESS_EXIT=1
+```
+
+报告 `upstream-lockfile-v4.0.24-20261122T184550Z.md` 正文：
+
+```
+- Checkout HEAD: `3b396e42bdf993c7cbf64647fca2a31177eab734` (integrity pre-check passed)
+- rspec exit status: 1
+- real-drive counter file: `.../.upstream-specs/celerite-invocations.log` (69 lines)
+## Result summary
+64 examples, 47 failures
+- real-drive: 69 celerite invocations
+- harness verdict: ok (rspec exit 1)
+buckets: env:artifice-unreachable (43) / fixture:fetch-failed (1) / product:candidates (3)
+```
+
+计数文件 69 行多于输出扫描 50 行，取大者生效——`real-drive: 69` 由计数文件给出，不依赖输出里的巧合子串。
+
+`real-drive == 0` 判词实测（正对照首次跑到 fixture 未预置的形态）：`- real-drive: 0 celerite invocations`、`- harness verdict: the upstream suite did not drive celerite (0 invocations)`、`HARNESS_EXIT=70`、stderr `error: the upstream suite did not drive celerite (0 invocations)`。即「64 examples 全失败但一次都没驱动」与「上游失败」被分成两个不同退出码。
+
+`examples == 0` 判词实测：首次正对照漏了 `CELERITE_SKIP_TEST_DEPS=1`，上游 `bundler/lib/bundler.rb:501` 读 `tool/bundler/test_gems.rb` 得 `Errno::ENOENT`（稀疏 checkout 不含 `tool/`），套件报 `0 examples, 0 failures, 1 error occurred outside of examples`，装具判 `69` 并打 `error: the upstream suite ran 0 examples (environment/checkout unusable)`。
+
+v2.7.2 checkout 修复实测（`UPSTREAM_REV=v2.7.2`）：
+
+```
+Cloning rubygems/rubygems @ v2.7.2 (sparse)...
+initialising upstream bundler submodule (gitlink in v2.7.2)
+upstream checkout integrity: ok (HEAD 01e797f6aa045fd09df7813d0b5448e3667172a9)
+```
+
+修复前该 tree 的 `bundler/` 恒为空（`git sparse-checkout list` 列得出 `bundler/spec` 却不能落盘），装具现在报 `upstream checkout incomplete: ...` 并拒绝开跑；修复后四个 marker 与 `bin`（7 个文件）、`exe`（3 个文件）全部在位。
+
+本机既有检查：`crystal tool format --check src spec` → exit `0`；`git diff 155639c..HEAD --check` → exit `0`。
+
+### 已声明差异
+
+1. **v2.7.2 仍未采到基线**（目标 4 未完成）。子模块修复后 2.7.2 的 checkout 已完整，但套件在 `bundler/spec/spec_helper.rb:20` 直接 `abort "Run rake spec:deps to install development dependencies"`，根因 `Gem::MissingSpecError: Could not find 'rspec' (~> 3.6) among 850 total gem(s)`（`GEM_PATH` 只含宿主默认路径）。`CELERITE_SKIP_TEST_DEPS=1` 正是跳过 `spec:deps` 的开关，2.7.2 的 spec_helper 却硬依赖它；4.0.24 profile 因装具改用 `ruby -S rspec` 而未触发。要采 2.7.2 基线还需在 2.7.2 tree 内另装其开发依赖，或改 rspec 解析路径；本任务未做。`docs/compat-claims` 中 C-M7-8-016「2.7.2 未复采」的状态不变。
+2. **截断前存在真绿假象（已修）**：`rspec --out` 只在套件结束后写文件，跑挂了就留着上一次的文件。v2.7.2 在 spec_helper 崩溃的那次，报告一度写出 `64 examples, 47 failures`、`- real-drive: 50 celerite invocations`、`- harness verdict: ok (rspec exit 1)`——每个数字都是上一次 4.0.24 运行的残留。`:300-301` 的两行截断即为堵这个洞。
+3. **本机新基线是 64/47，不是 64/48**：分桶 `env:artifice-unreachable (43)`、`fixture:fetch-failed (1)`、`product:candidates (3)`，合 47；主工作区参考报告为 artifice 40 / fetch 3 / product 3。差异来自本 worktree 的 fixture 预置状态（`bundler/tmp/gems/pristine_system` 需用宿主 `spec/support/helpers.rb` 的 `Spec::Helpers.install_dev_bundler` 预置），非本次改动所致，也不主张与旧基线逐字节相同。此处只登记新基线数值，未改任何分类桶逻辑。
+4. **未做**：`docs/roadmap.md` 复选框、`docs/compat-report.md`、`docs/compat-claims/` 均未改；失败基线未删；分类桶未调。新增退出码 69/70 未接入任何断言方（`.github/workflows/ci.yml:55-74` 只上传报告、不检查退出码），故不破坏既有 CI 调用，但也意味着**没有回归测试锁住这套自检**——只有本次手工 A/B 双跑为证。
