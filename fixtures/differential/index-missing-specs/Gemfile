@@ -1,0 +1,3 @@
+source "file:///@RUBY_CONSTRAINTS_INDEX_DIR@"
+
+gem "rubygems_gem"
