@@ -1,0 +1,3 @@
+install --quiet
+show bundler
+show bundler --paths
