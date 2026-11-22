@@ -1013,6 +1013,7 @@ module Celerite
         client = remote == primary_remote ? compact_index_client : compact_index_client_for(remote)
         entries = client.info(name)
         log_fetch_for(remote)
+        ensure_source_index(remote)
         entries.each do |entry|
           version = Gem::Version.new(entry.version)
           @cooldown_skipped << {name, entry.version, entry.created_at.not_nil!} if cooldown_excluded?(name, version, entry.created_at)
@@ -1048,6 +1049,36 @@ module Celerite
         raise ex
       rescue ex : Celerite::VersionError
         raise LockfileError.new("bad compact index data for #{name}: #{ex.message}")
+      end
+    end
+
+    # Parity: a `file:` GEM source is served by the legacy index fetcher, so
+    # `<remote>specs.4.8.gz` must exist even when `names`/`versions`/`info/*`
+    # are readable (`fetcher.rb:271-280`). `Gem::RemoteFetcher` raises
+    # `FetchError` around the missing-file `Errno::ENOENT`, `specs_with_retry`
+    # retries it three times (`fetcher.rb:171-176`) and the whole thing ends as
+    # `Bundler::HTTPError` (`fetcher/index.rb:8-22`). Retry bookkeeping follows
+    # `retry.rb#fail_attempt`: one empty line on the progress stream per
+    # attempt, and one *unwrapped* warning per failed attempt except the last.
+    private def ensure_source_index(remote : String) : Nil
+      return unless remote.starts_with?("file:")
+      base = FileURL.local_path(remote)
+      base += "/" unless base.ends_with?("/")
+      local_path = "#{base}specs.4.8.gz"
+      return if File.file?(local_path)
+      message = SourceIndexFetchError.message_for(remote, local_path)
+      total_runs = Commands.retry_count(@definition.config) + 1
+      run = 1
+      loop do
+        @progress.puts ""
+        raise SourceIndexFetchError.new(message, remote) if run >= total_runs
+        Definition.default_warning_sink.puts(
+          "Retrying fetcher due to error (#{run + 1}/#{total_runs}): Bundler::HTTPError #{message}")
+        # `Bundler::Retry#sleep` uses `base_delay(1.0) * 2**(report.current_run - 1)`
+        # plus jitter; the jitter is dropped so the pacing stays deterministic.
+        sleep 1.second * (2 ** (run - 1))
+        run += 1
+        return if File.file?(local_path)
       end
     end
 

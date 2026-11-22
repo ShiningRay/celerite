@@ -601,4 +601,35 @@ module Celerite
       true
     end
   end
+
+  # A GEM source that cannot serve its legacy index. The reference always
+  # fetches `<remote>specs.4.8.gz` for a `file:` source — such remotes never
+  # use the compact index (`fetcher.rb:271-280`) — retries that read three
+  # times and then reports the wrapped message below
+  # (`fetcher/index.rb:8-22`, `retry.rb#fail_attempt`).
+  class SourceIndexFetchError < Error
+    # `display_uri` of the source that could not be fetched (trailing slash
+    # included, matching the reference's `remote_uri.to_s`).
+    getter remote : String
+
+    def initialize(message : String, @remote : String)
+      super(message)
+    end
+
+    def self.message_for(remote : String, local_path : String) : String
+      "Could not fetch specs from #{remote} due to underlying error " \
+      "<Errno::ENOENT: No such file or directory @ rb_sysopen - #{local_path} " \
+      "(#{remote}specs.4.8.gz)>"
+    end
+
+    # The reference re-raises the `Gem::RemoteFetcher::FetchError` as
+    # `Bundler::HTTPError`, whose status code is 17.
+    def status_code : Int32
+      17
+    end
+
+    def wrap? : Bool
+      true
+    end
+  end
 end
