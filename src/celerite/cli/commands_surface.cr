@@ -254,6 +254,10 @@ module Celerite
         if code = PluginHooks.run(bridge, definition, config, "before-install-all", stdout, stderr)
           return code
         end
+        # `cli/update.rb:81` hands the definition to the same `Installer.install`
+        # as `install`, so `installer.rb:73-77` warns here as well — before the
+        # resolve that prints `Resolving dependencies...`.
+        Commands.warn_when_no_dependencies(stderr, resolution)
         # `definition.rb:866-902`: an unlocked update always re-resolves, and the
         # debug reason names the gems for a scoped selection and stays a bare
         # trailing space for `--all` (`@gems_to_unlock` empty), which Thor then
@@ -1008,11 +1012,11 @@ module Celerite
         stdout.puts "#{display} was removed."
       end
 
-      if cleaned.lines.none? { |l| l.strip.starts_with?("gem ") }
-        # Reference install reports this on stderr (the remove command still
-        # exits 0 and prints the removal lines on stdout).
-        stderr.puts "The Gemfile specifies no dependencies"
-      end
+      # `cli/remove.rb:15` ends with the same `Installer.install` call as
+      # `install`, so an emptied Gemfile gets `The Gemfile specifies no
+      # dependencies` from that shared path (`installer.rb:73-77`) — the call
+      # below prints it once, on stderr, while remove still exits 0 and keeps
+      # its removal lines on stdout.
 
       # Reference remove: regenerate the lockfile and reinstall silently (no
       # progress/summary output). It does **not** prune the bundle directory:

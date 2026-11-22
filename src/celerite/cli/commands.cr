@@ -24,6 +24,20 @@ module Celerite
     # Global flags accepted before the subcommand (parsed, largely inert in M1).
     GLOBAL_FLAGS = ["--no-color", "--verbose", "-V", "--retry", "-r"]
 
+    # `bundler/installer.rb:73-77`: `Installer#run` warns on stderr and returns
+    # before resolving/installing whenever the Gemfile declares no dependencies.
+    # `install`, `update` (`cli/update.rb:81`) and `cache` (`cli/cache.rb:24-30`)
+    # all funnel through `Installer.install`, and `remove` (`cli/remove.rb:15`)
+    # reaches it too, so the sentence has a single producer here.
+    NO_DEPENDENCIES_MESSAGE = "The Gemfile specifies no dependencies"
+
+    # Emits the empty-Gemfile warning for a resolution about to run. The check is
+    # the DSL-level dependency list (`definition.dependencies` in the reference),
+    # not the installable subset.
+    def self.warn_when_no_dependencies(stderr : IO, resolution : Resolution) : Nil
+      stderr.puts NO_DEPENDENCIES_MESSAGE if resolution.evaluation.dependencies.empty?
+    end
+
     def self.dispatch(args : Array(String), stdout : IO, stderr : IO) : Int32
       # `strip_global_flags` removes the global switches before dispatch, so the
       # `--verbose` echo (reference `CLI#print_command`) must be reconstructed

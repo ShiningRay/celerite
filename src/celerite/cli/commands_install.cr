@@ -442,6 +442,10 @@ module Celerite
         if code = PluginHooks.run(bridge, definition, config, "before-install-all", stdout, stderr)
           return code
         end
+        # `installer.rb:73-77` sits between the install-all hook (`installer.rb:12-20`)
+        # and the resolve that prints `Resolving dependencies...`, so an empty
+        # Gemfile warns on stderr first and still writes the lockfile.
+        Commands.warn_when_no_dependencies(stderr, resolution)
         # `definition.rb:868-875` explains the resolution decision, and
         # `fetcher.rb:273-276` notes the local-server shortcut for `file://`
         # remotes. Both are `Bundler.ui.debug`, so `--verbose`/`BUNDLE_VERBOSE`
