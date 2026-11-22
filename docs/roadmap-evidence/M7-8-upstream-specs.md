@@ -364,3 +364,46 @@ spec/m7_prefer_local_spec.cr
 - **stale 探针的 `rescue next`**：`stale_locked_dependency_full_names`（`resolution.cr:1264-1268`）在索引不可达时仍把异常吞成「与锁一致」，本次按要求未动它；补行改由 `heal_missing_locked_spec_rows` 在 materialize 之后独立完成。因此该探针的语义缺陷仍在（`--frozen` 下索引不可达时不会报 `IncorrectLockfileDependencies`，而是直接复用锁）。
 - **`--local` 与不带 `--local` 的行为仍不同**：不带 `--local` 且源不可达时，参考侧 `exit 17`（`Could not reach host …`），celerite 侧只要 `vendor/cache` 有包就 `exit 0` 并（修复后）补全锁。这条差异属既有声明（task-146 记于 `docs/roadmap-evidence/M7-8-upstream-specs.md` 之外的产品差异清单），本次未改。
 - **未验证**：未跑上游 `script/upstream-specs` 真驱动（本机 artifice 不可用，`env:artifice-unreachable` 族）；未验证 `PLATFORMS` 含 `ruby` 的第二种 context（上游 `with both ruby and specific platform`）在本夹具形态下的输出行数；未跑全量 `crystal spec`。
+
+## 2026-11-23：M7-8 基线数字与 product 桶的取代说明（task-158）
+
+本节是 supersession 条目：旧陈述原文保留不删，仅在此写明取代关系。
+
+被取代的旧陈述（逐字，未改）：
+
+- `docs/roadmap.md` 的 M7-8 行：「保留当前 64 failures 作为失败基线，再逐项关闭。」
+- 本节 task-146 段与 task-148 段给出的旧基线口径「`64 examples, 48 failures`」中关于 **failures 总数**的那部分数字（分桶明细与差集仍有效，未被取代）。
+
+### 新基线
+
+`docs/compat-report.md` 的 `## Current metrics` 与本节 task-148 段的报告快照一致为 **`64 examples, 47 failures`**（17 passed，real-drive 69 次 celerite 调用，`harness verdict: ok`）。取代 `64 examples, 48 failures` 与 roadmap 里的 `64 failures`。
+
+### 48 → 47 的原因
+
+减少的 1 例是 `spec/lock/lockfile_spec.rb:586`（git branch requirement 用例）**flaky 转绿**，**不是产品修复**：该例在旧基线 e71ed06 采集时失败，在 155639c 与本次复采时通过；同一用例在两次采集之间的通过/失败不伴随任何 `src/` 改动。因此 47 只是新采集基线，不得读作「已修好一项 product 缺陷」。
+
+### 分桶口径差异（如实并列，不合并）
+
+两处来源的 failures 总数同为 47，但分桶分布不同，均为原始记录，不得互相改写：
+
+- `docs/compat-report.md` 的 `## Current metrics`（task-146/148 同步）：`env:artifice-unreachable 41` / `fixture:fetch-failed 3` / `product:candidates 3`。
+- 本节 task-148 段的报告快照（`upstream-lockfile-v4.0.24-20261122T184550Z.md`）：`env:artifice-unreachable 43` / `fixture:fetch-failed 1` / `product:candidates 3`。
+
+差异集中在 env 与 fixture 两桶之间的归属判定（41+3 与 43+1），product 桶两处均为 3 且成员相同；本节不裁断哪种归属为最终口径，仅登记两个来源并存。
+
+### product:candidates 三条的现状
+
+- `spec/lock/lockfile_spec.rb:1682`（`fills empty CHECKSUMS entries when not frozen, even if every gem is already installed`）：**判为「离线不可验证」**。该例走 artifice（宿主缺 `sinatra`/`artifice`，`spec/support/artifice/helpers/compact_index.rb:3` 报 `cannot load such file -- sinatra/base`），且在可复现形态下**双侧行为一致**（file:// + 已装包字节形态下参考侧同样留裸行，diff 显示 ref 与 cel 同形）⇒ 既非 celerite 缺陷、亦无法离线证成或证伪。依据见 `docs/compat-evidence/2026-11-23.md` 的「install 回填空 CHECKSUMS 条目的可行边界（task-140）」节；该节明确未提交任何 `src/` 守卫补丁。
+- `spec/lock/lockfile_spec.rb:2215`（missing dependent specs auto-heals）的 **`--local` 形态已由 task-149 修好**：新增夹具 `fixtures/differential/lock-missing-spec-row/`、新增 `spec/m7_lock_spec_row_heal_spec.cr` 3 例、双 profile PASS、反假绿 3e0cebb FAIL。**仍未关闭**的部分见 task-149 段的已声明差异（安装顺序未修、stale 探针 `rescue next` 未动、`--local` 与不带 `--local` 行为不同、未跑真驱动），故该条**不得**整条读作已修。
+- 第三条第 2215 的另一参数化形态同理仍以 task-149 段的声明为准。
+
+### 取代关系
+
+- 「保留当前 64 failures 作为失败基线，再逐项关闭。」由本节的「新基线」取代：基线应为 `47 failures`；`docs/roadmap.md` 的同一处已同步改为 `47 failures`，复选框保持 `[ ]`（M7-8 未完成）。
+- task-146 段 `64 examples, 48 failures` 的 **failures 总数**由本节与 task-148 段的 `64 examples, 47 failures` 取代；task-146 段其余事实（分桶明细、差集、旧基线 e71ed06 已被 155639c 取代的声明）继续有效，旧文保留。
+- 本节不新增 roadmap 行号引用；引用点位置一律用文本（如「M7-8 行」）指代。
+
+### 已声明差异
+
+- 本节为数字与归属的登记条目，未跑编译、未跑差分、未新增或修改任何 `src/`、`spec/`、`fixtures/` 文件；47 与两个分桶表均转述既有原始记录，未重采。
+- 48→47 归因（`:586` flaky）依据 task-148 段的差集记录（新增通过 `:622`、新增失败 `:586`），本条未独立重跑该用例。

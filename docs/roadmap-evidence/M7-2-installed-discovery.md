@@ -145,3 +145,53 @@ The gem json_pure is missing. Gemspec information is still available though:
 - 未取证：`show <default gem>`（缺锁内 spec 时的默认 gem 分派）；`check --dry-run` 在「Gemfile 有锁外依赖需重解」态（该态只有 spec `m7_check_missing_dependency_spec.cr` 的 `--dry-run` 用例，无差分夹具）；`info <name> --version` 与「缺目录 + 解释器默认 gem」两个条件的交集形态。
 - 期望值取自本机实装 `C:/Ruby40-x64`（Ruby 4.0.6 系，`json` 2.18.0 / `psych` 5.2.3）：`info-default-gem` 的 `Path` 与 `Default Gem: yes` 依赖该解释器确有同名默认 gem；换解释器版本时该夹具的 oracle 需重取。其他 Ruby 安装、多平台矩阵未验证。
 - 夹具均为最小合成桩（`bundle-preset` 只放一个 stub `gemspec`，`:specifications/json_pure-2.8.1.gemspec`），未收割真实 gem 整树；`fixtures/differential/info-version-installed-spec-without-gemdir` 复用 `info-installed-spec-without-gemdir` 的 `Gemfile` / `Gemfile.lock` / stub `gemspec` 形态，仅换 `command`。
+
+## 2026-11-23：Did-you-mean 已实现，取代此前的「未实现」结论（task-158）
+
+本节是 supersession 条目：旧结论原文保留不删，仅在此写明取代关系。
+
+被取代的旧语句（逐字，未改）：
+
+- `docs/roadmap-evidence/M7-2-installed-discovery.md` 的 task-72 判据重写段：「仍缺（真未实现）——`gem_not_found_message` 的 `Did you mean …?` 未实现」；同段结句「不勾选依据：三项真未实现项未关闭。」
+- `docs/compat-evidence/2026-11-21.md`（task-71 节）：「- 参考 `gem_not_found_message` 的 `Did you mean …?` 建议未实现；当前所有 not-found 都只打一行 `Could not find gem '<name>'.`（本任务范围内的用例都不触发建议）。」
+
+### oracle
+
+同一项目内请求锁里不存在的 gem 名，参考 Bundler 4.0.24 打两行（首行 plain、次行建议）并 exit 7；这是上游 `cli/common.rb` 的既有行为，不是本仓库自造判据。逐字（`lock --update json_pur`，锁里锁的是 `json_pure`）：
+
+```
+Could not find gem 'json_pur'.
+Did you mean 'json_pure'?
+```
+
+### 参考锚点
+
+- `C:\Ruby40-x64\lib\ruby\gems\4.0.0\gems\bundler-4.0.24\lib\bundler\cli\common.rb:113-123` `self.gem_not_found_message`：`:115` 首行 `Could not find gem '#{missing_gem_name}'.`；`:116` 归一化 alternatives；`:117-118` 小写请求名本身在待选名里 → `Did you mean '#{missing_gem_name.downcase}'?` 短路；`:119-121` 否则 `DidYouMean::SpellChecker#correct`，非空才 `Did you mean #{word_list(suggestions)}?`。
+- 同文件 `:158-170` `self.word_list`：每个词加单引号，1 个直接返回，多个拼成 `'a', 'b' or 'c'`。
+- 调用点 `:125-131` `ensure_all_gems_in_lockfile!`（`update NAME` 经 `cli/update.rb:47`、`pristine NAME` 经 `cli/pristine.rb:10`、`lock --update NAME` 经 `cli/lock.rb:36`）。
+- 2.7.2 同名锚点：`C:\Ruby40-x64\lib\ruby\gems\4.0.0\gems\bundler-2.7.2\lib\bundler\cli\common.rb:96-103`——用 `SimilarityDetector#similar_word_list`，`Did you mean #{suggestions}?` **不带引号**，且无小写短路分支。
+
+### 实现位置
+
+- `src/celerite/cli/commands.cr:1475-1493` `private def self.gem_not_found_message_for(name : String, alternatives : Array(String)) : String`：`:1476` 首行 `Could not find gem '#{name}'.`；`:1477-1479` 小写精确命中 → `message += "\nDid you mean '#{lowered}'?"`；`:1481` `Suggestions.for(name, alternatives)`；`:1483-1488` 单项取 `quoted[0]`、多项 `"'a', 'b' or 'c'"` 拼接（与 `word_list` 同形）；`:1489` `Did you mean #{list}?`。
+- 接线点：`src/celerite/cli/commands_surface.cr:126`（`update`，raise `GemNotFoundError`）、`:3005`（`pristine`）、`src/celerite/cli/commands.cr:2993`（`lock --update`）、`src/celerite/cli/commands_surface.cr:2234`（`info`/`show`）、`src/celerite/cli/commands_install.cr:2142`（`binstubs`）。
+
+### 证据
+
+- 覆盖 spec：`spec/m7_gem_suggestion_spec.cr`，本节点读实测 **8 例**（`lock --update` 4 例：拼写近似 / 大小写短路 / 无建议 / 多项 `or` 拼接；`update NAME` 2 例；`pristine NAME` 2 例）。文件头注释钉参考锚点 `cli/common.rb:113-123`、`:125-132`、`cli/update.rb:47`、`cli/pristine.rb:10`、`word_list` = `cli/common.rb:158-170`；断言形如 `err.should eq("Could not find gem 'json_pur'.\nDid you mean 'json_pure'?\n")`。
+- 差分夹具：`fixtures/differential/gem-did-you-mean/`（6 文件：`command` = `lock --update json_pur`、`stderr-contains` 两行 needle、`deferred-2.7.2`）、`fixtures/differential/update-name-suggestion/`、`fixtures/differential/pristine-name-suggestion/`。
+- 落地提交：`3c685a4` `test(M7 task-141): cover gem "Did you mean" suggestions`（spec 4 例 + `gem-did-you-mean`）；`07b67f5` `test(M7 task-142): cover update NAME / pristine NAME suggestion lines`（另两个夹具，spec 由 4 例增至 8 例）。
+- 逐字结果与反假绿原始输出见 `docs/compat-evidence/2026-11-22.md` 的 task-141 节与 `docs/compat-evidence/2026-11-23.md` 的 task-142 节，本节不重复。
+
+### 已声明差异
+
+- 2.7.2 文本形态不同：建议名不带引号，且大小写短路分支只打首行。三个夹具均以 `deferred-2.7.2` 只钉 4.0.24，celerite 与 4.0.24 逐字一致；这是参考两版之间的差异，不是 celerite 缺陷。
+- 未纳入夹具的接线：`info`/`show`（`commands_surface.cr:2234`）与 `binstubs`（`commands_install.cr:2142`）两条建议接线，`docs/compat-evidence/2026-11-23.md` task-142 节已登记为「未验证」，本条不宣告已证。
+- `outdated` 分支刻意保持单行无建议，未改未验。
+- 本节未改 `src/`、`spec/`、`fixtures/`，未跑编译或差分；spec 例数为静态计数，未执行。
+
+### 取代关系
+
+- 本节的「实现位置」+「证据」取代 task-72 段「`gem_not_found_message` 的 `Did you mean …?` 未实现」这一项，以及结句「三项真未实现项未关闭」中与之对应的那一项。
+- `docs/compat-evidence/2026-11-21.md:192` 的同一断言由 `docs/compat-evidence/2026-11-23.md` 的 task-142 节与本节的引用共同取代（旧行原文按规则保留）。
+- **未被取代、仍然有效**：task-72 段其余两项（`info`/`show` 菜单选中分支无端到端用例；`show`/`info` 的其他重解通知场景未取 oracle），故 `docs/roadmap.md` 的 M7-2 复选框保持 `[ ]`。
