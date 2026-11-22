@@ -71,3 +71,77 @@
 **证据**：`crystal tool format --check src spec` exit 0；`crystal spec spec/m7_show_bundler_path_spec.cr` → `4 examples, 0 failures, 0 errors, 0 pending`；差分夹具 `fixtures/differential/info-bundler-path` 双 profile（4.0.24 / 2.7.2）各 `1 passed, 0 failed`；`30e04fc` 旧二进制跑同一夹具 FAIL，diff 为 `> .../gems` 对 `< .../gems/bundler-4.0.24`。
 
 **已声明差异**：仅覆盖 `--path` 一相，`info bundler` 整块元数据未取证；夹具须用 `env` 写空值覆盖 harness 无条件导出的 `CELERITE_REFERENCE_BUNDLER_LIB`（`unset:` 无效）；期望值取自本机 `C:/Ruby40-x64` 实装，缺 gem 走 `pending!`；未在其他 Ruby 安装上验证。复选框保持 `[ ]`。
+## 2026-11-23：default-gem 与 info 边角形态的 oracle 补齐（task-147）
+
+本节为 L47（task-22 补记）与 L49（task-37 补记）两条遗留「未取 oracle / 未验证」的取代条目；旧行保留不删。
+
+### oracle
+
+一、**`info <default gem>` 分支（L47 遗留）**。夹具 `fixtures/differential/info-default-gem`（`Gemfile` = 索引内无同名候选 + `gem "json"`）内，参考 4.0.24 与 2.7.2 与 celerite 三方逐字一致，exit 0、stderr 为空，stdout 全文：
+
+```
+Writing lockfile to {SANDBOX}/project/Gemfile.lock
+Fetching source index from file:///…/fixtures/gem-index/
+Resolving dependencies...
+  * json (2.18.0)
+	Summary: JSON Implementation for Ruby
+	Homepage: https://github.com/ruby/json
+	Documentation: https://docs.ruby-lang.org/en/master/JSON.html
+	Source Code: https://github.com/ruby/json
+	Changelog: https://github.com/ruby/json/blob/master/CHANGES.md
+	Bug Tracker: https://github.com/ruby/json/issues
+	Path: C:/Ruby40-x64/lib/ruby/gems/4.0.0/gems/json-2.18.0
+	Default Gem: yes
+```
+
+同夹具追加 `info json --version`，两侧逐字同为 `2.18.0`（exit 0、stderr 空）。另有单次探针（未入夹具）取得 `info json --path` = `C:/Ruby40-x64/lib/ruby/gems/4.0.0/gems/json-2.18.0`。
+
+二、**反相 oracle：default-gem 回退不可达的形态**。`Gemfile` 为 `gem "json_pure"` 且锁内 `json_pure (2.8.1)` 未安装时，`info psych`（psych 是解释器默认 gem）两侧均 exit 7、stderr 逐字同一行 `Could not find json_pure-2.8.1 in locally installed gems`。即 `Bundler.definition.specs` 在解析阶段先卡在锁内未安装项，`info` 走不到 `default_gem_spec` 回退——这解释了为何本分支的夹具必须让索引无同名候选（`gem "json"`），而不能用「锁一个未装 gem + 查另一个默认 gem」。
+
+三、**`info <name> --version` 缺目录（L49 遗留）**。新夹具 `fixtures/differential/info-version-installed-spec-without-gemdir`（锁 `json_pure (2.8.1)`，`bundle-preset/ruby/4.0.0/specifications/json_pure-2.8.1.gemspec` 存在、`gems/json_pure-2.8.1` 不存在），命令 `info json_pure --version`：参考与 celerite 均 **exit 0、stdout `2.8.1\n`、stderr 空**。对照同形态的 `info json_pure`（已有夹具 `info-installed-spec-without-gemdir`），两侧 stderr 逐字（路径按 N1 归一）：
+
+```
+The gem json_pure is missing. Gemspec information is still available though:
+  * json_pure (2.8.1)
+	Summary: oracle probe
+	Path: {SANDBOX}/bundle/ruby/4.0.0/gems/json_pure-2.8.1
+```
+
+四、**`check --dry-run`（L47 遗留）两态**。
+
+- 有锁且满足（夹具 `check-dry-run-keeps-lock`）：exit 0、stderr 空、stdout 逐字
+  `Resolving dependencies...` / `The Gemfile's dependencies are satisfied`；`file-equals-4.0.24` 与 `file-equals-2.7.2` 钉住 `Gemfile.lock` 原样未写（该夹具锁内 `BUNDLED WITH 4.0.20` 且 `PLATFORMS java`，若 `--dry-run` 落锁必被改写而失败）。
+- 有锁且缺 gem（新夹具 `check-dry-run-missing`）：exit 1，stdout 空，stderr 逐字三行
+  `The following gems are missing` / ` * json_pure (2.8.1)` / `Install missing gems with \`bundle install\``；新加的 `file-equals`（锁内 `BUNDLED WITH @BUNDLER_VERSION@`，即与当前 profile 不同）同样钉住锁未被写。此态与已有的无 `--dry-run` 夹具 `check-missing` 成对。
+
+### 参考锚点
+
+- `C:\Ruby40-x64\lib\ruby\4.0.0\bundler\cli\info.rb`：第 36-48 行先处理 `--version`/`--path` 两个单字段开关；第 50-73 行组块；第 65 行 `gem_info << "\tDefault Gem: yes\n" if spec.respond_to?(:default_gem?) && spec.default_gem?`；第 68-69 行缺目录时改走 `warn "The gem #{name} is missing. Gemspec information is still available though:\n#{gem_info}"`（`--path` 只给第 42 行那一行的告警）。
+- `bundler-4.0.24/lib/bundler/cli/common.rb:98-101` `self.default_gem_spec(name) = Gem::Specification.find_all_by_name(name).last; gem_spec if gem_spec&.default_gem?`，被 `common.rb:68-96` `select_spec` 在索引无精确/正则命中后追加。**`bundler-2.7.2` 的 `cli/common.rb` 同一方法体逐字相同**（故本族无需 `deferred-2.7.2`）。
+- `C:\Ruby40-x64\lib\ruby\4.0.0\bundler\cli\check.rb:19-33`：`not_installed.any?` 分支打印三行（`error "The following gems are missing"` + 每 gem ` * name (version)` + `warn "Install missing gems with \`bundle install\`"`）并 `exit 1`；否则 `definition.lock(true) unless options[:"dry-run"]` 后 `info "The Gemfile's dependencies are satisfied"`。
+- 2.7.2 同名锚点：`bundler-2.7.2/lib/bundler/cli/info.rb:42`（`installation_missing?` 短路）、`:65`（Default Gem 行）、`:68`（缺目录告警）；`bundler-2.7.2/lib/bundler/cli/check.rb:19/27/29/35`（缺 gem 三行 + `definition.lock(true) unless options[:"dry-run"]`）。两版 `info`/`check` 的输出文案逐字一致，故两个新夹具都不声明 2.7.2 差异。
+
+### 实现位置
+
+- `src/celerite/resolution.cr:973`（注释 `:969-972`）：索引无候选时才 `default_gem_index_spec(name)` 回退，普通索引命中从不混入默认 gem。
+- `src/celerite/cli/commands.cr:2241-2260`（`default_info` 分支）：`--version` 在 `:2244-2247`、`--path` 在 `:2248-2251`、整块在 `:2252-2259`，`Default Gem: yes` 固定在 `:2258`。
+- `src/celerite/cli/commands.cr:2330-2332`：已装 spec 路径的 `info <name> --version` 打印锁内 spec 版本（缺 gem 目录不影响此分支，这正是第三条 oracle 的成因）。
+- `src/celerite/cli/commands.cr:2362`：已装路径的 `Default Gem: yes` 按 `default_gem?(gem_dir, spec.name, spec.version.to_s)`（`:2661`）判定，目录为捆绑安装时不打印。
+- `src/celerite/cli/commands.cr:1714`：`check` 仅在 `!config.frozen? && !rest.includes?("--dry-run") && bridge_available?` 时落锁。
+
+### 证据
+
+- 提交 `56ad07a` `test(M7 task-147): take oracles for the info default-gem branch and the info/check edges`（10 files changed, 66 insertions）。
+- 差分（`script/differential`，`CELERITE_BIN=C:\temp\celerite-t147\bin\celerite.exe`），夹具 `info-default-gem info-version-installed-spec-without-gemdir check-dry-run-missing info-default-gem-fallback info-installed-spec-without-gemdir check-dry-run-keeps-lock check-missing`：
+  - 4.0.24：`differential (4.0.24): 7 passed, 0 failed, 0 skipped (documented deferrals)`，逐行 `PASS info-default-gem (exit=0)` / `PASS info-version-installed-spec-without-gemdir (exit=0)` / `PASS check-dry-run-missing (exit=1)` / `PASS info-default-gem-fallback (exit=0)` / `PASS info-installed-spec-without-gemdir (exit=0)` / `PASS check-dry-run-keeps-lock (exit=0)` / `PASS check-missing (exit=1)`。
+  - 2.7.2（`BUNDLER_REF_VERSION=2.7.2`）：同七行 `PASS`，`differential (2.7.2): 7 passed, 0 failed, 0 skipped (documented deferrals)`。两 profile 均无 `deferred` 声明，即无 `deferred-2.7.2` 文件。
+- spec：`crystal spec spec/m7_installed_discovery_spec.cr` → `24 examples, 0 failures, 0 errors, 0 pending`（本次新增 `info --version prints the gemspec version when the gem dir was deleted`，位于 `spec/m7_installed_discovery_spec.cr:181`，断言 exit 0 / `out == "2.8.1\n"` / `err == ""`）。回归 `spec/m7_check_rewrite_spec.cr spec/m7_check_missing_dependency_spec.cr spec/m7_info_select_spec.cr spec/m7_default_gem_spec.cr spec/m7_default_gem_origin_spec.cr` → `16 examples, 0 failures, 0 errors, 0 pending`。
+- `crystal tool format --check src spec` exit 0（仅既有 2 条 `File.executable?` deprecation warning：`src/celerite/cli/commands_install.cr:1745`、`:1808`）。
+- `git diff 4a513a4..HEAD --check` 无输出。
+
+### 已声明差异
+
+- 未入夹具的 oracle：`info <default gem> --path` 只在探针里取到（`C:/Ruby40-x64/lib/ruby/gems/4.0.0/gems/json-2.18.0`），因 `--path` 族已由 `info-bundler-path` 覆盖，本次未为 default-gem 分支补 `--path` 夹具。
+- 未取证：`show <default gem>`（缺锁内 spec 时的默认 gem 分派）；`check --dry-run` 在「Gemfile 有锁外依赖需重解」态（该态只有 spec `m7_check_missing_dependency_spec.cr` 的 `--dry-run` 用例，无差分夹具）；`info <name> --version` 与「缺目录 + 解释器默认 gem」两个条件的交集形态。
+- 期望值取自本机实装 `C:/Ruby40-x64`（Ruby 4.0.6 系，`json` 2.18.0 / `psych` 5.2.3）：`info-default-gem` 的 `Path` 与 `Default Gem: yes` 依赖该解释器确有同名默认 gem；换解释器版本时该夹具的 oracle 需重取。其他 Ruby 安装、多平台矩阵未验证。
+- 夹具均为最小合成桩（`bundle-preset` 只放一个 stub `gemspec`，`:specifications/json_pure-2.8.1.gemspec`），未收割真实 gem 整树；`fixtures/differential/info-version-installed-spec-without-gemdir` 复用 `info-installed-spec-without-gemdir` 的 `Gemfile` / `Gemfile.lock` / stub `gemspec` 形态，仅换 `command`。
