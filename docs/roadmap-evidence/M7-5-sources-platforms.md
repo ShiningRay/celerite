@@ -41,3 +41,51 @@
 **2026-11-21（task-88 补记）：首次 `bundle install` 已能把工程外 `path` 源整目录复制进 `vendor/cache`（此前只在已有锁时才复制）；`Bundled gems are installed into` 对绝对 `BUNDLE_PATH` 改为保留配置原样（含反斜杠），相对值仍补 `./`。** 
 
 **2026-11-21（task-97 补记）：`BUNDLE_ONLY`/`settings[:only]` 已按 `groups - without - optional + with` 与 `only` 求交（安装/列表/check 只看交集，锁文件仍记全量）；`update --all` 在 `BUNDLE_WITHOUT` 下补印 `Gems in the group 'x' were not updated.` 且不再安装被排除组。差分 4.0.24 6/0、2.7.2 4/0，负对照 0/4。** **（task-102：check 自愈 PATH 段缺 spec/版本漂移，5 形状手工 oracle 见 `docs/compat-evidence/2026-11-21.md`。）** **（回修：仅路径段真实漂移才宣告解析；新增 C 形态护栏夹具。）**
+
+## 2026-11-23：path 源 gemspec glob 的逐层深度边界（task-145）
+
+### oracle
+
+path 源默认 glob 相对**路径源根目录**展开，四种目录层数各取一形，双 profile 逐字同判：
+
+| 夹具 | 布局（相对 path 源根 `vendor/mono`） | 子目录层数 | exit | 结果 |
+|---|---|---|---|---|
+| `path-glob-default-root` | `mono_a.gemspec` | 0 | 0 | 命中，PATH 段 `remote: vendor/mono` + `specs: mono_a (0.1.0)` |
+| `path-glob-depth-one` | `d1/mono_a.gemspec` | 1 | 0 | 命中，锁全文等于同深度 `gems/` 形态 |
+| `path-glob-default-nested` | `gems/mono_a.gemspec` | 1 | 0 | 命中，锁全文逐字断言 |
+| `path-glob-depth-two` | `d1/d2/mono_a.gemspec` | 2 | 7 | **未命中**，stderr `Could not find gem 'mono_a' in source at \`vendor/mono\`.` |
+| `path-glob-default-deep-miss` | `gems/mono_a/mono_a.gemspec` | 2 | 7 | 未命中，路径源归属文案同上 |
+| `path-glob-depth-three` | `d1/d2/d3/mono_a.gemspec` | 3 | 7 | 未命中，路径源归属文案同上 |
+
+边界判据：**命中 ≤ 1 层子目录，≥ 2 层未命中**。与默认 glob 的三支展开一一对应——`{,*,*/*}.gemspec` 展开为 `.gemspec`（字面名）、`*.gemspec`（0 层）、`*/*.gemspec`（1 层），第 2 层起无任何分支可达，故深度是**硬上限**而非贪心/递归搜索。
+
+`d1` 与 `gems` 两种目录名同深度同判，说明命中与否只取决于**层数**，与目录字面名无关（`path-glob-monorepo` 的显式 glob `gems/*/*.gemspec` 命中 2 层则是另一种形态：显式 glob 可越默认上限）。
+
+### 参考锚点
+
+- `bundler-4.0.24/lib/bundler/source/path.rb:14` `DEFAULT_GLOB = "{,*,*/*}.gemspec"`；`:19` `@glob = options["glob"] || DEFAULT_GLOB`。
+- `bundler-4.0.24/lib/bundler/source/path.rb:159-164` `load_spec_files`：目录存在则 `SharedHelpers.glob_files_in_dir(@glob, expanded_path).sort_by { |p| -p.split(File::SEPARATOR).size }`，逐文件 `load_gemspec`，不做递归下降。
+- `bundler-4.0.24/lib/bundler/shared_helpers.rb:242-246` `glob_files_in_dir(glob, base_path)` → `Dir.glob(glob, base: base_path)`，即 glob 相对路径源根求值。
+- `bundler-4.0.24/lib/bundler/source/path.rb:48` 仅当 `@glob != DEFAULT_GLOB` 才把 `glob:` 写进锁；`:52-54` `to_s` = ``source at `<path>` ``（未命中归属文案的来源）。
+
+### 实现位置
+
+- `src/celerite/resolution.cr:2298` `DEFAULT_GLOB = "{,*,*/*}.gemspec"`（注释 `:2295-2297` 锚 `source/path.rb:14`）；`:2296` 默认值不落锁；`:2310-2311`、`:2320-2321` 非默认才追加 `glob` 选项。
+- `src/celerite/resolution.cr:613-617` `load_source_gem_spec` → `@bridge.not_nil!.load_gemspec_dir(dir, glob || DEFAULT_GLOB, name)`（显式传参，不走桥 fallback）。
+- `src/celerite/resolution.cr:1457`、`:1679` 锁侧/源侧 `section.option("glob").as?(String) || DEFAULT_GLOB`；`:1460` `load_gemspec_dir_specs`；`:2086` 取源 glob。
+- `assets/bridge/server.rb:564` `SOURCE_DEFAULT_GLOB`（注释 `:560-563` 要求与 `Resolution::DEFAULT_GLOB` 同步）；`:574-575`、`:601-604` `Dir.glob(File.join(dir, glob))` + 按路径段数降序，与参考同形；`:614` 另一处同法。
+
+### 证据
+
+- 新增夹具双 profile 原始结果行：`PASS path-glob-depth-one (exit=0)`、`PASS path-glob-depth-two (exit=7)`、`PASS path-glob-depth-three (exit=7)`，每个两侧均为 `differential (4.0.24): 1 passed, 0 failed, 0 skipped (documented deferrals)` 与 `differential (2.7.2): 1 passed, 0 failed, 0 skipped (documented deferrals)`，`harness-exit=0`。
+- 新夹具断言组合：`file-equals-4.0.24` / `file-equals-2.7.2`（`path-glob-depth-one`，锁全文逐字）、`stderr-contains`（`depth-two`/`depth-three`，路径源归属文案）、`file-absent`=`Gemfile.lock`（`depth-two`/`depth-three`，证未命中时**不写锁**）、stdout 逐字与项目树路径比较（装具默认，两侧同判）。
+- 既有三个 path-glob 夹具复跑未受影响：`path-glob-default-root` exit 0、`path-glob-default-nested` exit 0、`path-glob-default-deep-miss` exit 7，4.0.24 与 2.7.2 双 profile 各 `1 passed, 0 failed`。
+- `spec/m7_path_glob_default_spec.cr` 已在 spec 级覆盖 0 层命中与 2 层未命中；本轮补的是**差分级逐层夹具**（`docs/compat-evidence/2026-11-19.md:996` 挂账的「未为每个深度单独建夹具」）。
+- 本条同时结清本文档 `:25`（task-39 漂移校正）遗留的「仍缺 E2（d1/d2）与更深的逐层夹具」：E2 对应 `path-glob-depth-two`（exit 7），更深对应 `path-glob-depth-three`（exit 7），oracle 表 E 行的 `d1/` 目录名形态对应 `path-glob-depth-one`（exit 0）。上行原文保留为历史记录，不删改。
+
+### 已声明差异
+
+- **本轮未发现新的 cel/参考分歧**：三个深度上双方 exit 与 stderr 判据一致，未改任何产品代码。
+- 实测与既有 oracle 一致，无口径修正：`docs/compat-evidence/2026-11-19.md:979` 记 E2（`vendor/mono/d1/d2/mono_a.gemspec`）为 exit 7，本轮 `path-glob-depth-two` 同名同深同判；`:978` 记 E 行（`vendor/mono/d1/mono_a.gemspec`）为 exit 0，本轮 `path-glob-depth-one` 复现。task-36 的 oracle 表未把 E2 记成命中，本轮不涉及对该表的更正。
+- 沿用 task-36 已声明差异，未在本轮重测：仅 PATH 归属改 `source at`，GIT/PLUGIN 未命中仍为 rubygems 文案；`file://` 参考索引须含 `specs.4.8.gz`；私有 source 鉴权与磁盘错误未验证；本机 git 族仍受 Low-IL `0xC0000022` 限制。
+- 未覆盖：显式 `glob:` 越过默认上限的逐层形态只由 `path-glob-monorepo`（`gems/*/*.gemspec` 命中 2 层）单点代表，未逐层铺；`cache`/`package` 对多 gemspec path 源的复制仍未取 oracle。未重跑全量 `crystal spec` 与全量差分。
