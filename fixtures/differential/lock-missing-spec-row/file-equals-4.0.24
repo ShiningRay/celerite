@@ -1,0 +1,16 @@
+Gemfile.lock
+GEM
+  remote: http://127.0.0.1:9/
+  specs:
+    child-gem (1.1.1)
+    zroot-gem (1.6.0)
+      child-gem (~> 1.1)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  zroot-gem
+
+BUNDLED WITH
+  4.0.24

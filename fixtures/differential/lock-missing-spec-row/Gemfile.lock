@@ -1,0 +1,13 @@
+GEM
+  remote: http://127.0.0.1:9/
+  specs:
+    zroot-gem (1.6.0)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  zroot-gem
+
+BUNDLED WITH
+  @BUNDLER_VERSION@
