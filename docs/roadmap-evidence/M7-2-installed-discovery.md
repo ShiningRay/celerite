@@ -59,3 +59,15 @@
 **2026-11-21（task-72 判据重写）：已实现且有证据——spec：m7_installed_discovery_spec（23）、m7_list_format_spec（9）、m7_list_groups_plain_env_spec（2）、m7_show_listing_spec（5）、m7_check_rewrite_spec（3）、m7_check_missing_dependency_spec（3）、m7_extra_arguments_spec（4）、m7_info_select_spec（4）；差分：check-installed-spec-without-gemdir、check-gemdir-without-spec、check-gemfile-new-dependency、list-json、list-json-name、list-format-invalid、list-option-conflict、list-multi-group、show-listing-bundler、show-paths-bundler、info-metadata-escapes、info-default-gem-fallback、info-regex-menu、info-extra-argument、show-extra-argument、list-extra-argument（复跑：`crystal spec spec/<name>.cr`；差分 `CELERITE_BIN=bin/celerite.exe bash script/differential <夹具名>`，双 profile 追加 `BUNDLER_REF_VERSION=2.7.2`。）。仍缺（真未实现）——`gem_not_found_message` 的 `Did you mean …?` 未实现；`info`/`show` 菜单选中分支（输入序号）无端到端用例，只覆盖 EOF 退出 0；`show`/`info` 的其他重解通知场景未取 oracle。本机不可验证——其他解释器版本的默认 gem 组合、多平台矩阵、`info bundler` 的 `Path`/元数据随运行中的 bundler 变化（差分里参考经 `CELERITE_REFERENCE_BUNDLER_LIB` 载入检出树、无 `specifications/bundler-<v>.gemspec`，故只能用 `info stringio` 做夹具）。不勾选依据：三项真未实现项未关闭。** 
 
 **2026-11-21（task-93 补记）：show 无参数列举与 --paths 现按名字排序（Bundler 自身参与排序，不再固定首行），show bundler/show bundler --paths 收敛为单行路径，双 profile 差分 show-listing-order/show-paths-order/show-bundler/show-bundler-paths 均 PASS；info bundler 仍为 info 块（未定性），故复选框保持未勾。**
+
+## 2026-11-22：`info bundler --path` 与 `show bundler` 对齐（task-136）
+
+**oracle**：同一已 install 项目内，参考 `bundle info bundler --path` 打印 bundler gem 根；`celerite info bundler --path` 打印其父目录 `<gems>`（少一级）。设 `CELERITE_REFERENCE_BUNDLER_LIB` 时 celerite 仍打印 `<gems>`，即该分支根本没读该变量。
+
+**参考锚点**：`C:\Ruby40-x64\lib\ruby\4.0.0\bundler\cli\info.rb` 的 `print_gem_path` 对 `name == "bundler"` 特判为 `File.expand_path("../../..", __dir__)`；`bundler-4.0.24/lib/bundler/cli/show.rb` 同表达式，故参考侧 `show` 与 `info --path` 必然同值。
+
+**实现位置**：`src/celerite/cli/commands.cr` 的 `info bundler --path` 分支改为复用既有 `show_bundler_path(gem_dir)`（原为内联表达式，锚在 `lib/bundler` 且不读 `CELERITE_REFERENCE_BUNDLER_LIB`）。不改 `show`，不动其他命令。
+
+**证据**：`crystal tool format --check src spec` exit 0；`crystal spec spec/m7_show_bundler_path_spec.cr` → `4 examples, 0 failures, 0 errors, 0 pending`；差分夹具 `fixtures/differential/info-bundler-path` 双 profile（4.0.24 / 2.7.2）各 `1 passed, 0 failed`；`30e04fc` 旧二进制跑同一夹具 FAIL，diff 为 `> .../gems` 对 `< .../gems/bundler-4.0.24`。
+
+**已声明差异**：仅覆盖 `--path` 一相，`info bundler` 整块元数据未取证；夹具须用 `env` 写空值覆盖 harness 无条件导出的 `CELERITE_REFERENCE_BUNDLER_LIB`（`unset:` 无效）；期望值取自本机 `C:/Ruby40-x64` 实装，缺 gem 走 `pending!`；未在其他 Ruby 安装上验证。复选框保持 `[ ]`。
