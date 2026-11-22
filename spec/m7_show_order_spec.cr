@@ -23,6 +23,49 @@ private def show_order_project : Hash(String, String)
   }
 end
 
+# `cli/show.rb:20-21` expands its own `lib/bundler` directory. Under the
+# harness the running Bundler is the upstream checkout that
+# `script/upstream-specs` materialises, which `.gitignore:8` keeps out of the
+# repository.
+private def show_order_upstream_bundler_lib : String
+  File.expand_path("../.upstream-specs/v4.0.24/bundler/lib", __DIR__)
+end
+
+# Without that checkout the spec has to stay self-consistent instead of handing
+# Celerite a path that does not exist. An installed bundler of the profiled
+# version is the very gem `bundle show bundler` reports, so its `lib` is the
+# equivalent reference source.
+private def show_order_installed_bundler_lib : String?
+  output = IO::Memory.new
+  status = Process.run(
+    "ruby",
+    ["-e", %(print(Gem::Specification.find_by_name("bundler", "4.0.24").full_gem_path))],
+    output: output, error: Process::Redirect::Close)
+  return nil unless status.success?
+  gem_dir = output.to_s.strip
+  return nil if gem_dir.empty?
+  lib_dir = File.join(gem_dir, "lib")
+  File.exists?(File.join(lib_dir, "bundler", "setup.rb")) ? lib_dir : nil
+end
+
+# Split out from the lookup above so the fallback stays reachable - and
+# assertable - in an environment where the upstream checkout is present.
+private def show_order_pick_reference_lib(upstream : String, installed : String?) : String
+  return upstream if File.exists?(File.join(upstream, "bundler", "setup.rb"))
+  installed || pending!("needs #{upstream} or an installed bundler 4.0.24 gem")
+end
+
+private def show_order_reference_lib : String
+  upstream = show_order_upstream_bundler_lib
+  return upstream if File.exists?(File.join(upstream, "bundler", "setup.rb"))
+  show_order_pick_reference_lib(upstream, show_order_installed_bundler_lib)
+end
+
+# What `show bundler` prints: the gem directory owning that reference lib.
+private def show_order_reference_gem_dir : String
+  File.expand_path("..", show_order_reference_lib).gsub('\\', '/')
+end
+
 private def with_show_order_env(project : String, & : ->) : Nil
   previous = {} of String => String?
   {
@@ -33,8 +76,9 @@ private def with_show_order_env(project : String, & : ->) : Nil
     "CELERITE_BRIDGE_SERVER"           => File.expand_path("../assets/bridge/server.rb", __DIR__),
     "CELERITE_PROFILE_BUNDLER_VERSION" => "4.0.24",
     # `cli/show.rb:20-21` expands its own `lib/bundler`; under the harness the
-    # running Bundler is the upstream checkout, so mirror that.
-    "CELERITE_REFERENCE_BUNDLER_LIB" => File.expand_path("../.upstream-specs/v4.0.24/bundler/lib", __DIR__),
+    # running Bundler is the upstream checkout when it is present, and an
+    # installed 4.0.24 gem otherwise (see the helpers above).
+    "CELERITE_REFERENCE_BUNDLER_LIB" => show_order_reference_lib,
   }.each do |key, value|
     previous[key] = ENV[key]?
     ENV[key] = value
@@ -100,7 +144,8 @@ describe "task-93 show ordering and bundler output" do
       with_show_order_env(project) { code, out, _ = run_cli(["show", "bundler"]) }
       code.should eq(0)
       out.lines.reject(&.empty?).size.should eq(1)
-      out.should contain("bundler")
+      # `cli/show.rb:20-21`: the path is the gem directory owning `lib/bundler`.
+      out.strip.should eq(show_order_reference_gem_dir)
       out.should_not contain("* bundler")
       out.should_not contain("Summary:")
     end
@@ -114,8 +159,23 @@ describe "task-93 show ordering and bundler output" do
       with_show_order_env(project) { code, out, _ = run_cli(["show", "bundler", "--paths"]) }
       code.should eq(0)
       out.lines.reject(&.empty?).size.should eq(1)
-      out.should contain("bundler")
+      out.strip.should eq(show_order_reference_gem_dir)
       out.should_not contain("* bundler")
     end
+  end
+
+  # `.upstream-specs/` is machine-local (`.gitignore:8`), so the reference lib
+  # must resolve to an installed bundler when the checkout is absent - and that
+  # fallback has to be the thing asserted, not assumed.
+  it "falls back to an installed bundler when the upstream checkout is absent" do
+    absent = File.join(Dir.tempdir, "celerite-show-order-absent-upstream", "v4.0.24", "bundler", "lib")
+    File.exists?(File.join(absent, "bundler", "setup.rb")).should be_false
+    installed = show_order_installed_bundler_lib
+    if installed.nil?
+      pending!("no installed bundler 4.0.24 gem to fall back to")
+    end
+    resolved = show_order_pick_reference_lib(absent, installed.not_nil!)
+    resolved.should eq(installed.not_nil!)
+    File.exists?(File.join(resolved, "bundler", "setup.rb")).should be_true
   end
 end
