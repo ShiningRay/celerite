@@ -68,6 +68,14 @@ private def failure_project(dir : String, gem_name : String, gems : Array(String
   gems.each { |gem| FileUtils.cp(failing_extension_gem(gem), File.join(cache, gem)) }
 end
 
+# Same shape as `failure_project` but without `vendor/cache`: the reference
+# then reports the plain "locally installed gems" branch (see
+# fixtures/differential/install-local-no-cache/).
+private def failure_project_without_cache(dir : String, gem_name : String, version : String) : Nil
+  File.write(File.join(dir, "Gemfile"),
+    "source \"#{failing_extension_remote}\"\n\ngem \"#{gem_name}\", \"#{version}\"\n")
+end
+
 private def failure_gem_root(bundle : String) : String
   File.join(bundle, "ruby", failure_abi)
 end
@@ -140,7 +148,25 @@ describe "M7(5) install failure semantics" do
         with_failure_env(dir) do
           code, _output, errors = run_cli(["install", "--local"])
           code.should eq(7)
-          errors.should contain("Could not find gem 'json_pure' in locally installed gems.")
+          # The fixture creates vendor/cache, so the reference picks the
+          # `sources.cached!` wording (bundler 4.0.24
+          # lib/bundler/source/rubygems.rb:122-136).
+          errors.should contain("in cached gems or installed locally")
+        end
+      end
+    end
+  end
+
+  it "omits the vendor/cache wording when no vendor cache exists" do
+    failure_bridge do
+      with_project({} of String => String) do |dir|
+        failure_project_without_cache(dir, "json_pure", "2.6.0")
+        with_failure_env(dir) do
+          code, _output, errors = run_cli(["install", "--local"])
+          code.should eq(7)
+          # Without vendor/cache the reference falls through to the plain
+          # `sources.local!` wording.
+          errors.should contain("in locally installed gems")
         end
       end
     end
