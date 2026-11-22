@@ -881,7 +881,14 @@ module Celerite
 
         if summary
           deps_count = resolution.evaluation.dependencies.count { |d| !d.gemspec_dev_dep && !hidden_plugins.includes?(d.name) }
-          gems_count = installable.size
+          # `cli/install.rb:93-96` counts `definition.specs`, i.e. the
+          # materialized form of the requested dependencies
+          # (`definition.rb:249-251`). A typed source's inferred
+          # `bundler-source-<type>` gem is only ever installed by
+          # `Plugin::Installer` into `Plugin.root` (`plugin/dsl.rb:39-49` and
+          # `plugin/installer.rb:94`), so it is never part of the application
+          # definition and must not be counted here either.
+          gems_count = installable.count { |spec| !hidden_plugins.includes?(spec.name) }
           # `cli/common.rb:57`: the notice names the excluded groups that still
           # have Gemfile dependencies, in configuration order.
           skipped_groups = skipped_group_names(resolution, without_groups)
