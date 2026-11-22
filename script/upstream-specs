@@ -26,7 +26,34 @@
 #   results/classification evidence (compatibility.md rule 6).
 # - Exits non-zero if rspec reports failures/errors so CI/callers can see the
 #   baseline truth; the generated report is still written.
+# - The harness also proves its own preconditions before trusting an rspec exit
+#   status (task-148): it counts real celerite invocations through a counter file
+#   written by the shim and by the helper override, and it refuses to accept
+#   "0 examples" as a result.
+#
+# Exit codes (task-148; the report is still written for every code except 69/70
+# pre-rspec aborts):
+#   0                     suite ran, drove celerite, and was byte-green
+#   <rspec status> (1..N) suite drove celerite and upstream examples failed
+#                         (baseline truth; 1 is the ordinary "red" case)
+#   69 (EX_UNAVAILABLE)   environment/checkout unusable: the upstream suite ran
+#                         0 examples, or the sparse checkout is incomplete even
+#                         after a re-fetch. Distinguishes "never ran" from
+#                         "ran and failed" and blocks the fake 0-example report.
+#   70 (EX_SOFTWARE)      suite ran examples but did not drive celerite at all
+#                         (real-drive counter == 0): harness/helper wiring broke.
+#   127                   celerite binary not found (unchanged).
+#
+# NOTE: exit 1 is overloaded on purpose - it is rspec's own red status for a
+# genuine baseline run. Callers that must tell "upstream red" from "harness
+# broken" should test for 69/70 explicitly; both are outside rspec's 0..N
+# range because rspec cannot exit above 255-sample counts in practice and never
+# uses these two codes itself.
 set -uo pipefail
+
+# --- exit-code semantics (task-148) -----------------------------------------
+exit_env_unusable=69 # EX_UNAVAILABLE: suite did not run / checkout unusable
+exit_not_driving=70  # EX_SOFTWARE: suite ran but never invoked celerite
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 rev="${UPSTREAM_REV:-v4.0.24}"
@@ -64,6 +91,111 @@ else
   git -C "$repo_root/.upstream-specs/$rev" sparse-checkout add bundler/bin bundler/exe >/dev/null 2>&1 || true
 fi
 
+# --- checkout integrity pre-check (task-148) --------------------------------
+# An existing spec file does NOT imply a usable checkout: a sparse checkout can
+# leave bundler/lib (or bundler/bin, bundler/exe) missing or empty on disk while
+# spec/lock/lockfile_spec.rb is present. That state loads spec_helper against a
+# half-populated bundler tree and rspec dies with LoadError, producing
+# "0 examples, 0 failures, 1 error occurred outside of examples" - a fake report
+# that looks like a clean-ish run. Verify the checkout, repair it once (re-apply
+# sparse-checkout, then re-clone as a last resort), and abort with a distinct
+# exit code if it is still broken.
+checkout_ok=1
+checkout_root="$repo_root/.upstream-specs/$rev"
+# Files whose absence/emptiness proves the sparse checkout did not land.
+checkout_markers=(
+  "bundler/lib/bundler.rb"
+  "bundler/lib/bundler/version.rb"
+  "bundler/spec/lock/lockfile_spec.rb"
+  "bundler/spec/support/helpers.rb"
+)
+
+checkout_missing() {
+  _missing=""
+  for _marker in "${checkout_markers[@]}"; do
+    if [ ! -s "$checkout_root/$_marker" ]; then
+      _missing="$_missing $_marker"
+    fi
+  done
+  # bundler/bin and bundler/exe must exist and be non-empty directories.
+  for _dir in bundler/bin bundler/exe; do
+    if [ ! -d "$checkout_root/$_dir" ] || [ -z "$(find "$checkout_root/$_dir" -mindepth 1 -print -quit 2>/dev/null)" ]; then
+      _missing="$_missing $_dir/"
+    fi
+  done
+  printf '%s' "$_missing"
+}
+
+repair_checkout() {
+  echo "repairing incomplete upstream checkout: $checkout_root" >&2
+  echo "  missing:$1" >&2
+  # 1st attempt: re-apply the sparse-checkout patterns (cheap, no re-clone).
+  git -C "$checkout_root" sparse-checkout set \
+    bundler/spec bundler/lib bundler/bin bundler/exe >/dev/null 2>&1 || true
+  git -C "$checkout_root" checkout -- . >/dev/null 2>&1 || true
+  missing_after="$(checkout_missing)"
+  if [ -z "$missing_after" ]; then
+    echo "  repaired via sparse-checkout re-apply" >&2
+    return 0
+  fi
+  # 2nd attempt: fresh clone (handles a genuinely truncated/corrupt checkout).
+  echo "  sparse re-apply insufficient (still missing:$missing_after); re-cloning" >&2
+  rm -rf "$checkout_root"
+  mkdir -p "$checkout_root"
+  git clone --depth 1 --branch "$rev" --filter=blob:none --sparse \
+    https://github.com/rubygems/rubygems.git "$checkout_root" >/dev/null 2>&1 || true
+  git -C "$checkout_root" sparse-checkout set \
+    bundler/spec bundler/lib bundler/bin bundler/exe >/dev/null 2>&1 || true
+  missing_after="$(checkout_missing)"
+  if [ -z "$missing_after" ]; then
+    echo "  repaired via fresh clone" >&2
+    return 0
+  fi
+  echo "error: upstream checkout at $checkout_root is incomplete and could not be repaired (still missing:$missing_after)" >&2
+  echo "hint: check network access to github.com/rubygems/rubygems and retry, or remove $checkout_root and re-run" >&2
+  return 1
+}
+
+missing="$(checkout_missing)"
+if [ -n "$missing" ]; then
+  echo "upstream checkout incomplete:$missing" >&2
+  if repair_checkout "$missing"; then
+    checkout_ok=1
+  else
+    checkout_ok=0
+  fi
+fi
+
+if [ "$checkout_ok" -ne 1 ]; then
+  echo "error: refusing to run the upstream suite against an incomplete checkout ($checkout_root)" >&2
+  echo "       no report written: a 0-example LoadError report is not evidence of compatibility" >&2
+  exit $exit_env_unusable
+fi
+
+# Record what the checkout claims to be, so a stale/unrelated tree cannot pass
+# silently as the requested revision. This is also the cheap gate for a missing
+# `git`: the upstream suite shells out to `git --version` from
+# `bundler/spec/support/filters.rb:21`, and with no git on PATH that raises
+# Errno::ENOENT during suite setup. rspec then reports "0 examples, 0 failures,
+# 1 error occurred outside of examples" and the harness used to write that up as
+# a tidy-looking report whose non-zero exit came only from rspec counting the
+# load error. Fail here instead: a run that cannot read its own checkout HEAD is
+# an unusable environment, not an upstream failure.
+if ! command -v git >/dev/null 2>&1; then
+  echo "error: git is not on PATH, but the upstream suite requires it" >&2
+  echo "       (bundler/spec/support/filters.rb:21 runs 'git --version'; without it" >&2
+  echo "        rspec loads 0 examples and reports no real compatibility evidence)" >&2
+  echo "       add git to PATH and re-run" >&2
+  exit $exit_env_unusable
+fi
+checkout_rev="$(git -C "$checkout_root" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [ "$checkout_rev" = "unknown" ]; then
+  echo "error: cannot read HEAD of the upstream checkout at $checkout_root" >&2
+  echo "       (not a git work tree, or git failed); refusing to run the suite" >&2
+  exit $exit_env_unusable
+fi
+echo "upstream checkout integrity: ok (HEAD $checkout_rev)"
+
 # Build the fixture gem index the lockfile specs use (myrack 1.0.0 from
 # build_repo2 equivalents) from checked-in gems if present; otherwise the
 # harness falls back to the reference bundle executable to generate it.
@@ -85,9 +217,20 @@ fi
 # docs/upstream-spec-spike.md for the classification of this limitation.
 shim_dir="$repo_root/.upstream-specs/shim"
 mkdir -p "$shim_dir"
+# Real-drive counter (task-148): the shim and the helper override both append a
+# line here for every celerite process they launch, so the harness can prove it
+# drove celerite instead of inferring it from rspec's exit status. The file is
+# truncated before the run and read after it.
+drive_counter="$repo_root/.upstream-specs/celerite-invocations.log"
+: > "$drive_counter"
+export CELERITE_DRIVE_COUNTER="$drive_counter"
+
 cat > "$shim_dir/bundle" <<SHIM
 #!/usr/bin/env bash
 export CELERITE_BRIDGE_SERVER="$repo_root/assets/bridge/server.rb"
+if [ -n "\${CELERITE_DRIVE_COUNTER:-}" ]; then
+  printf '%s\n' "\$\$" >> "\$CELERITE_DRIVE_COUNTER" 2>/dev/null || true
+fi
 exec "$celerite_bin" "\$@"
 SHIM
 chmod +x "$shim_dir/bundle" 2>/dev/null || true
@@ -96,16 +239,19 @@ chmod +x "$shim_dir/bundle" 2>/dev/null || true
 cat > "$shim_dir/bundle.cmd" <<SHIM
 @echo off
 set "CELERITE_BRIDGE_SERVER=$repo_root/assets/bridge/server.rb"
+if defined CELERITE_DRIVE_COUNTER echo %RANDOM%>>"%CELERITE_DRIVE_COUNTER%"
 "$celerite_bin" %*
 SHIM
 cat > "$shim_dir/bundle.bat" <<SHIM
 @echo off
 set "CELERITE_BRIDGE_SERVER=$repo_root/assets/bridge/server.rb"
+if defined CELERITE_DRIVE_COUNTER echo %RANDOM%>>"%CELERITE_DRIVE_COUNTER%"
 "$celerite_bin" %*
 SHIM
 
 echo "celerite binary: $celerite_bin"
 echo "upstream checkout: $repo_root/.upstream-specs/$rev"
+echo "real-drive counter: $drive_counter"
 echo "Note: upstream lockfile specs depend on Bundler's full spec_helper/test"
 echo "infrastructure (fixture repos, tmp gem env, installed bundle bins). PATH"
 echo "shim targets shell-out resolution; in-example helpers may still use"
@@ -164,6 +310,9 @@ fi
   export BUNDLE_GEMFILE=""
   export CELERITE_BRIDGE_SERVER="$repo_root/assets/bridge/server.rb"
   export CELERITE_BIN="$celerite_bin"
+  # Real-drive counter (task-148): the shim appends one line per celerite launch;
+  # the helper override appends one line per in-example drive.
+  export CELERITE_DRIVE_COUNTER="$drive_counter"
   # Optional: skip upstream install_test_deps (avoids network/dev bundle setup,
   # but may leave fixture/base gems unbuilt). Off by default.
   if [ "${CELERITE_SKIP_TEST_DEPS:-}" = "1" ]; then
@@ -189,9 +338,30 @@ if [ -z "$summary" ] && [ $rspec_status -ne 0 ]; then
   summary="rspec exited $rspec_status (no example summary captured)"
 fi
 
-# Evidence that the helpers really drove Celerite (not the upstream binstubs).
+# --- real-drive self-check (task-148) ---------------------------------------
+# Two independent measures, because each alone can lie:
+#   1. counter file  - written by the shim / helper override on every launch
+#   2. output scan   - "celerite"/"celerite.exe" appearing in an invocation line
+# The counter is authoritative when present (it cannot be produced by an
+# unrelated log line), and the output scan is the fallback for callers that run
+# with an externally provided counter.
+drive_counter_count=0
+if [ -f "$drive_counter" ]; then
+  drive_counter_count="$(grep -c . "$drive_counter" 2>/dev/null || true)"
+  drive_counter_count="${drive_counter_count:-0}"
+fi
 celerite_invocations="$(grep -c -E 'celerite(\.exe)? ' "$rspec_out" 2>/dev/null || true)"
 celerite_invocations="${celerite_invocations:-0}"
+if [ "$drive_counter_count" -gt "$celerite_invocations" ]; then
+  celerite_invocations="$drive_counter_count"
+fi
+
+# Parse the example counts so "0 examples" is a first-class failure rather than
+# a harmless-looking summary line.
+examples_total="$(printf '%s' "$summary" | sed -n 's/^\([0-9][0-9]*\) example.*/\1/p' | head -1)"
+examples_total="${examples_total:-0}"
+failures_total="$(printf '%s' "$summary" | sed -n 's/^[0-9][0-9]* examples*, \([0-9][0-9]*\) failure.*/\1/p' | head -1)"
+failures_total="${failures_total:-0}"
 
 # Classify failures from the rspec JSON formatter into environment, fixture and
 # product buckets (bash 3.2 compatible; parsing is done by ruby, which the
@@ -233,6 +403,25 @@ ruby -rjson -r "$repo_root/script/upstream-specs-buckets.rb" -e '
   File.write(out_path, lines.join("\n")) unless out_path.nil?
 ' "$json_out" "$bucket_md"
 
+# --- harness verdict (task-148) ---------------------------------------------
+# Decide what this run actually proved BEFORE writing the report, so the report
+# and the exit code agree and neither can claim success the counters deny.
+harness_rc=$rspec_status
+verdict="ok (rspec exit $rspec_status)"
+if [ "$examples_total" -eq 0 ]; then
+  # rspec loaded no examples: the suite never ran. This is the exact shape a
+  # broken checkout or a missing PATH dependency produces, and it used to be
+  # reported as a tidy "0 examples, 0 failures" body with exit 1 that happened
+  # to be non-zero only because rspec counted the load error itself.
+  verdict="the upstream suite ran 0 examples (environment/checkout unusable)"
+  harness_rc=$exit_env_unusable
+elif [ "$celerite_invocations" -eq 0 ]; then
+  # Examples ran but nothing invoked celerite: the shim/override wiring broke,
+  # so the failures below are NOT evidence about celerite.
+  verdict="the upstream suite did not drive celerite (0 invocations)"
+  harness_rc=$exit_not_driving
+fi
+
 {
   echo "# Upstream lockfile spec results - $rev"
   echo
@@ -245,8 +434,10 @@ ruby -rjson -r "$repo_root/script/upstream-specs-buckets.rb" -e '
   echo "- Celerite binary: \`$celerite_bin\`"
   echo "- Shim: \`.upstream-specs/shim/bundle\` (+ .bat/.cmd) exporting \`CELERITE_BRIDGE_SERVER\` and exec'ing celerite"
   echo "- Sparse checkout: \`bundler/spec bundler/lib bundler/bin bundler/exe\`"
+  echo "- Checkout HEAD: \`$checkout_rev\` (integrity pre-check passed)"
   echo "- Raw output: \`.upstream-specs/rspec-output.txt\` (gitignored, local evidence)"
   echo "- rspec exit status: $rspec_status"
+  echo "- real-drive counter file: \`$drive_counter\` ($drive_counter_count lines)"
   echo
   echo "## Result summary"
   echo
@@ -256,6 +447,7 @@ ruby -rjson -r "$repo_root/script/upstream-specs-buckets.rb" -e '
   if [ "$celerite_invocations" -eq 0 ]; then
     echo "- WARNING: NOT driving celerite (helper override disabled or not applied)"
   fi
+  echo "- harness verdict: $verdict"
   echo
   cat "$bucket_md" 2>/dev/null || { echo "## Failure buckets"; echo; echo "(no failure data)"; }
   echo
@@ -274,4 +466,13 @@ ruby -rjson -r "$repo_root/script/upstream-specs-buckets.rb" -e '
 } > "$report"
 
 echo "wrote $report"
-exit $rspec_status
+case "$verdict" in
+  ok*)
+    ;;
+  *)
+    echo "error: $verdict" >&2
+    echo "       harness exit $harness_rc (rspec exited $rspec_status)" >&2
+    echo "       report: $report" >&2
+    ;;
+esac
+exit "$harness_rc"

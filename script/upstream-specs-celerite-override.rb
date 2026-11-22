@@ -8,6 +8,20 @@
 # and must be classified separately.
 module Spec
   module Helpers
+    # Real-drive counter (task-148): script/upstream-specs points this at a file
+    # it truncates before the run and reads afterwards. One line per in-example
+    # celerite launch proves the suite drove celerite even when the PATH shim is
+    # bypassed (upstream helpers exec the binary directly via sys_exec).
+    def celerite_record_drive
+      path = ENV["CELERITE_DRIVE_COUNTER"]
+      return if path.nil? || path.empty?
+
+      File.open(path, "a") { |file| file.puts(Process.pid) }
+    rescue StandardError
+      # Counting is evidence, never a reason to fail an example.
+      nil
+    end
+
     def celerite_bundle_bin
       ENV["CELERITE_BIN"] || ENV["CELERITE_BUNDLE_BIN"]
     end
@@ -41,6 +55,7 @@ module Spec
       end.join
 
       # Invoke celerite directly (native exe on Windows) rather than via ruby.
+      celerite_record_drive
       sys_exec("#{celerite} #{cmd}#{args}", { env: env, dir: dir, raise_on_error: raise_on_error }, &block)
     end
 
