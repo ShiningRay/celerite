@@ -78,6 +78,22 @@ if [ ! -f "$celerite_bin" ]; then
   exit 127
 fi
 
+# Older in-scope revisions (e.g. v2.7.2) carry `bundler/` as a git submodule
+# (rubygems/rubygems `.gitmodules` -> https://github.com/bundler/bundler.git)
+# instead of as tracked files. A sparse checkout cannot materialise a gitlink,
+# so `bundler/lib` and `bundler/spec` stay absent however the patterns are set,
+# and rspec dies with LoadError - the exact 0-example shape this pre-check
+# exists to catch. Initialise the submodule when the tree declares one.
+init_bundler_submodule() {
+  _submodule_entry="$(git -C "$checkout_root" ls-files -s -- bundler 2>/dev/null || true)"
+  case "$_submodule_entry" in
+    160000*)
+      echo "initialising upstream bundler submodule (gitlink in $rev)"
+      git -C "$checkout_root" submodule update --init --depth 1 bundler >/dev/null 2>&1 || true
+      ;;
+  esac
+}
+
 if [ ! -f "$spec_dir/lock/lockfile_spec.rb" ]; then
   echo "Cloning rubygems/rubygems @ $rev (sparse)..."
   rm -rf "$repo_root/.upstream-specs/$rev"
@@ -90,6 +106,8 @@ else
   # Ensure bin/exe are present for dev_binstub/path resolution in spec support.
   git -C "$repo_root/.upstream-specs/$rev" sparse-checkout add bundler/bin bundler/exe >/dev/null 2>&1 || true
 fi
+checkout_root="$repo_root/.upstream-specs/$rev"
+init_bundler_submodule
 
 # --- checkout integrity pre-check (task-148) --------------------------------
 # An existing spec file does NOT imply a usable checkout: a sparse checkout can
@@ -101,7 +119,7 @@ fi
 # sparse-checkout, then re-clone as a last resort), and abort with a distinct
 # exit code if it is still broken.
 checkout_ok=1
-checkout_root="$repo_root/.upstream-specs/$rev"
+# checkout_root is set above (the submodule initialiser is defined against it).
 # Files whose absence/emptiness proves the sparse checkout did not land.
 checkout_markers=(
   "bundler/lib/bundler.rb"
@@ -138,14 +156,22 @@ repair_checkout() {
     echo "  repaired via sparse-checkout re-apply" >&2
     return 0
   fi
-  # 2nd attempt: fresh clone (handles a genuinely truncated/corrupt checkout).
-  echo "  sparse re-apply insufficient (still missing:$missing_after); re-cloning" >&2
+  # 2nd attempt: re-initialise the bundler submodule when the tree declares one
+  # (a gitlink never lands via sparse-checkout), then fall back to a re-clone.
+  init_bundler_submodule
+  missing_after="$(checkout_missing)"
+  if [ -z "$missing_after" ]; then
+    echo "  repaired via bundler submodule init" >&2
+    return 0
+  fi
+  echo "  submodule init insufficient (still missing:$missing_after); re-cloning" >&2
   rm -rf "$checkout_root"
   mkdir -p "$checkout_root"
   git clone --depth 1 --branch "$rev" --filter=blob:none --sparse \
     https://github.com/rubygems/rubygems.git "$checkout_root" >/dev/null 2>&1 || true
   git -C "$checkout_root" sparse-checkout set \
     bundler/spec bundler/lib bundler/bin bundler/exe >/dev/null 2>&1 || true
+  init_bundler_submodule
   missing_after="$(checkout_missing)"
   if [ -z "$missing_after" ]; then
     echo "  repaired via fresh clone" >&2
@@ -263,6 +289,16 @@ rspec_out="$repo_root/.upstream-specs/rspec-output.txt"
 json_out="$repo_root/.upstream-specs/rspec-output.json"
 bucket_md="$repo_root/.upstream-specs/failure-buckets.md"
 mkdir -p "$(dirname "$rspec_out")"
+
+# Truncate both rspec artifacts *before* the run (task-148). rspec only writes
+# its --out files after the suite finishes; when it dies while loading
+# spec_helper (LoadError, missing gem, missing `tool/`) the previous run's
+# files survive on disk untouched. Reading them afterwards makes the
+# real-drive self-check vouch for a run that never happened - it would report
+# the *previous* example count and invocation count as this run's verdict, i.e.
+# exactly the fake-green report this task exists to eliminate.
+: > "$rspec_out"
+: > "$json_out"
 
 # Upstream fixture repos are built once in spec_helper's before(:suite) hook.
 # build_repo1 (spec/support/builders.rb:31) copies `rake_path` -- resolved by
