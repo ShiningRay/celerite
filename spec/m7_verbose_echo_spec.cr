@@ -9,13 +9,19 @@ require "../src/celerite"
 #
 # Expected lines below were captured from the reference oracle; each case is
 # byte-identical to `bundle <args>` output at bundler 4.0.24.
+# `print_command_echo` (`src/celerite/cli/commands.cr:512-513`) separates the
+# effective verbosity — which also covers `BUNDLE_VERBOSE`, hence the extra
+# `verbose` argument — from the echoed flag `flag_verbose`, which decides whether
+# the `--verbose` token belongs in the line. Every case here drives `--verbose`
+# itself, so the two values coincide; the `BUNDLE_VERBOSE` case below pins the
+# difference through `run_cli`.
 private def verbose_echo(args : Array(String)) : String
   io = IO::Memory.new
   verbose = args.includes?("--verbose")
   retry_value = Celerite::Commands.extract_retry_switch(args)
   stripped = Celerite::Commands.strip_global_flags(args)
   return "" if stripped.empty?
-  Celerite::Commands.print_command_echo(stripped[0], stripped[1..], verbose, retry_value, io)
+  Celerite::Commands.print_command_echo(stripped[0], stripped[1..], verbose, verbose, retry_value, io)
   io.to_s
 end
 
@@ -93,6 +99,34 @@ describe "verbose command echo" do
 
   it "never echoes without --verbose" do
     verbose_echo(["install", "--jobs", "2"]).should eq("")
+  end
+
+  # `BUNDLE_VERBOSE` raises the UI level exactly like the flag
+  # (`settings.rb:21` + `cli.rb#initialize`), so the echo appears -- but it
+  # reproduces what the user typed, so the `--verbose` token is absent.
+  it "echoes under BUNDLE_VERBOSE without the --verbose token" do
+    previous_bundle = ENV["BUNDLE_VERBOSE"]?
+    previous_celerite = ENV["CELERITE_VERBOSE"]?
+    begin
+      ENV["BUNDLE_VERBOSE"] = "1"
+      with_project({"Gemfile" => verbose_echo_gemfile}) do
+        code, out, err = run_cli(["install", "--frozen"])
+        code.should eq(15)
+        out.lines.first.should eq("Running `bundle install --frozen` with bundler 4.0.24")
+        err.should contain("The `--frozen` flag has been removed")
+      end
+    ensure
+      if previous_bundle
+        ENV["BUNDLE_VERBOSE"] = previous_bundle
+      else
+        ENV.delete("BUNDLE_VERBOSE")
+      end
+      if previous_celerite
+        ENV["CELERITE_VERBOSE"] = previous_celerite
+      else
+        ENV.delete("CELERITE_VERBOSE")
+      end
+    end
   end
 
   it "echoes before the removed-flag error" do
