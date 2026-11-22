@@ -376,20 +376,24 @@ spec/m7_prefer_local_spec.cr
 
 ### 新基线
 
-`docs/compat-report.md` 的 `## Current metrics` 与本节 task-148 段的报告快照一致为 **`64 examples, 47 failures`**（17 passed，real-drive 69 次 celerite 调用，`harness verdict: ok`）。取代 `64 examples, 48 failures` 与 roadmap 里的 `64 failures`。
+`docs/compat-report.md` 的 `## Current metrics`（**唯一对外口径**）与入库产物 `.upstream-specs/upstream-lockfile-v4.0.24-20261122T190748Z.md` 一致为 **`64 examples, 47 failures`**（17 passed，real-drive 69 次 celerite 调用，`harness verdict: ok`）。取代 `64 examples, 48 failures` 与 roadmap 里的 `64 failures`；64 − 47 = 17 passed，pass 数与 failures 数须成对引用（旧产物 `…T174318Z.md` 为 64 − 48 = 16 passed）。
 
 ### 48 → 47 的原因
 
-减少的 1 例是 `spec/lock/lockfile_spec.rb:586`（git branch requirement 用例）**flaky 转绿**，**不是产品修复**：该例在旧基线 e71ed06 采集时失败，在 155639c 与本次复采时通过；同一用例在两次采集之间的通过/失败不伴随任何 `src/` 改动。因此 47 只是新采集基线，不得读作「已修好一项 product 缺陷」。
+减少的 1 例是 `spec/lock/lockfile_spec.rb:586`（git branch requirement 用例）**转绿**，**不是产品修复**：该例在 `…T174318Z.md`（48 failures，收录于 `env:low-il-shm` 桶，`:68` 原文 `… git gem with a branch requirement` :: RuntimeError）里失败，在 `…T190748Z.md`（47 failures）里通过；两次采集之间该用例的通过/失败变化不伴随任何 `src/` 改动，属宿主 msys Low-IL 环境抖动。因此 47 只是新采集基线，不得读作「已修好一项 product 缺陷」。
 
-### 分桶口径差异（如实并列，不合并）
+### 分桶口径：对外口径与入库产物
 
-两处来源的 failures 总数同为 47，但分桶分布不同，均为原始记录，不得互相改写：
+**唯一对外口径**是 `docs/compat-report.md` 的 `## Current metrics`：`env:artifice-unreachable 41` / `fixture:fetch-failed 3` / `product:candidates 3`（合计 47）。本节以下数字只作为该口径对应的入库原始产物对照，不改写、也不替代它。
 
-- `docs/compat-report.md` 的 `## Current metrics`（task-146/148 同步）：`env:artifice-unreachable 41` / `fixture:fetch-failed 3` / `product:candidates 3`。
-- 本节 task-148 段的报告快照（`upstream-lockfile-v4.0.24-20261122T184550Z.md`）：`env:artifice-unreachable 43` / `fixture:fetch-failed 1` / `product:candidates 3`。
+仓库内有、且可复核的两份同代产物（`.upstream-specs/` 下，未入 git，本机实存，本节用 `Select-String` 逐行取得）：
 
-差异集中在 env 与 fixture 两桶之间的归属判定（41+3 与 43+1），product 桶两处均为 3 且成员相同；本节不裁断哪种归属为最终口径，仅登记两个来源并存。
+- `upstream-lockfile-v4.0.24-20261122T174318Z.md`（16,688 B）：`:17` `64 examples, 48 failures`（16 passed）、`:19` `- real-drive: 51 celerite invocations`；分桶 `:23` `### env:artifice-unreachable (40)`、`:66` `### env:low-il-shm (2)`、`:71` `### fixture:fetch-failed (3)`、`:77` `### product:candidates (3)`。
+- `upstream-lockfile-v4.0.24-20261122T190748Z.md`（16,726 B）：`:19` `64 examples, 47 failures`（17 passed）、`:21` `- real-drive: 69 celerite invocations`、`:22` `- harness verdict: ok (rspec exit 1)`；分桶 `:26` `### env:artifice-unreachable (41)`、`:70` `### fixture:fetch-failed (3)`、`:76` `### product:candidates (3)`——**无 `env:low-il-shm` 节**。
+
+48 → 47 的分桶变化（**据两表数字推导，未逐例复核**）：`env:low-il-shm` 的 2 条里，一条并入 `env:artifice-unreachable`（40 → 41），另一条即 `spec/lock/lockfile_spec.rb:586`（git branch requirement）转通过（passed 16 → 17）。两表 failures 差 1、passed 差 1，与上述推导自洽；本节未逐例核对分桶成员，故这是推导而非实测结论。
+
+task-148 交付者另报告过一份 `env:artifice-unreachable 43` / `fixture:fetch-failed 1` 的实跑，那是 task-148 私有 worktree 的产物（**未入库、本机已不存在该文件、不可复核**；task-148 段 `:219` 记录其写入路径为 `/c/temp/celerite-t148/.upstream-specs/…`），**不作为口径来源，也不与上两份并列**；如需引用须先入库再复核。
 
 ### product:candidates 三条的现状
 
@@ -406,4 +410,4 @@ spec/m7_prefer_local_spec.cr
 ### 已声明差异
 
 - 本节为数字与归属的登记条目，未跑编译、未跑差分、未新增或修改任何 `src/`、`spec/`、`fixtures/` 文件；47 与两个分桶表均转述既有原始记录，未重采。
-- 48→47 归因（`:586` flaky）依据 task-148 段的差集记录（新增通过 `:622`、新增失败 `:586`），本条未独立重跑该用例。
+- 48→47 归因（`:586` 转通过）依据 task-148 段的差集记录（新增通过 `:622`、新增失败 `:586`）与两份入库产物（`…T174318Z.md`、`…T190748Z.md`）；分桶成员归属为据两表数字的推导，未逐例复核；本条未独立重跑该用例。
