@@ -2430,17 +2430,22 @@ module Celerite
     # differential harness and the bridge both export
     # `CELERITE_REFERENCE_BUNDLER_LIB`).
     # `cli/show.rb:20-21`: `show bundler` prints the directory the running
-    # Bundler expands `../../..` to from its own `lib/bundler`. Under the
+    # Bundler expands `../../..` to from `__dir__`, which is
+    # `<gem>/lib/bundler/cli` - so the answer is the gem root. Under the
     # differential harness that is the reference checkout
     # (`CELERITE_REFERENCE_BUNDLER_LIB` = `<checkout>/lib`); outside it, the
-    # installed gem's own layout decides.
+    # installed gem's own layout decides and both sources of `gem_dir`
+    # (`installed_bundler_dir` returns `full_gem_path`, `bundler_gem_dir`
+    # returns the directory owning `lib/bundler`) already hand in that gem
+    # root. Anchoring on `lib/bundler` instead overshot one level and printed
+    # the shared `<gems>` directory (task-135).
     private def self.show_bundler_path(gem_dir : String) : String
       reference_lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]?
       if reference_lib && !reference_lib.empty?
         root = File.expand_path("..", reference_lib)
         return root if (File.directory?(root) rescue false)
       end
-      File.expand_path("../../..", File.join(gem_dir, "lib", "bundler"))
+      File.expand_path("../../..", File.join(gem_dir, "lib", "bundler", "cli"))
     end
 
     private def self.bundler_gem_dir : String?
