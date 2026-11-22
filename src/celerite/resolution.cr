@@ -1063,7 +1063,17 @@ module Celerite
       # resolved or fetched. When a package is neither installed in the bundle
       # nor present in the app cache the installer reports the not-found
       # message (`installer.rb:81-96`) and no resolve line is printed.
-      if @local_only && @definition.lockfile_exists?
+      # `definition.rb:342-366` + `setup_domain!` (`:186-203`): `--local` only
+      # turns the sources local, it does not skip the resolve. When the Gemfile
+      # names a dependency the lockfile does not carry at all,
+      # `Definition#converge_dependencies` (`:1051-1109`) marks the definition
+      # as changed, so `resolve` leaves `@locked_specs` behind and asks the
+      # local-only source for the new name. That source knows nothing beyond the
+      # installed gems and reports `Could not find gem '<name>' in locally
+      # installed gems.` (resolver.rb:334-361). Reusing the lock here instead
+      # would silently drop the dependency from the resolved set and write a
+      # lock whose DEPENDENCIES section disagrees with its GEM specs.
+      if @local_only && @definition.lockfile_exists? && lockfile_covers_all_dependencies?(deps)
         @resolved_specs = materialize_locked
         gem_specs = @resolved_specs.select { |spec| spec.source_type == "GEM" }
         available = gem_specs.all? do |spec|
@@ -1303,6 +1313,18 @@ module Celerite
     # Suppressed on locked-path installs (the reference prints no
     # "Resolving dependencies..." there).
     property show_resolving : Bool = true
+
+    # `Definition#converge_dependencies` (`definition.rb:1051-1109`): a Gemfile
+    # dependency the lockfile does not list at all counts as an unresolved
+    # change, which sends `Definition#resolve` (`:342-366`) down the resolve
+    # path instead of reusing the locked specs. Callers keep that distinction
+    # for `--local` so a newly named dependency is looked up in the installed
+    # gems (and reported as not found) rather than reused from the lock.
+    private def lockfile_covers_all_dependencies?(deps : Array(Resolver::DepSpec)) : Bool
+      return true unless @definition.lockfile_exists?
+      names = @definition.lockfile!.sources.flat_map(&.specs).map(&.name).to_set
+      deps.all? { |dep| names.includes?(dep.name) }
+    end
 
     private def top_level_deps : Array(Resolver::DepSpec)
       deps = [] of Resolver::DepSpec
