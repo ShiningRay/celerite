@@ -2,7 +2,7 @@
      正文（原行 1-401）逐字快照到 docs/compat-evidence/2026-11-11.md，按日证据日志（原行 402-7410）拆分为 docs/compat-evidence/YYYY-MM-DD.md，
      本文件只保留当前状态与索引。正文结论未改写；仅将被后续迭代取代的指标就地标注取代关系。 -->
 
-# Celerite compatibility report — current status (updated 2026-11-22)
+# Celerite compatibility report — current status (updated 2026-11-23)
 
 本文件是 **当前状态报告**：现在支持到什么程度、哪些明确不支持、已声明的差异、怎么复现。
 逐条原始证据（oracle、参考锚点、实现位置、spec/差分计数、日志路径、历史结论）已按日移入
@@ -14,9 +14,9 @@
 | --- | --- | --- | --- | --- |
 | 差分 4.0.24（全量） | `script/differential` | **218 passed, 14 failed, 3 skipped** | 2026-11-17 | `.tmp-scratch/differential-full-71.log` 为上一档 210/14/2；本条见 [compat-evidence/2026-11-17.md](compat-evidence/2026-11-17.md) |
 | 差分 2.7.2（全量） | `BUNDLER_REF_VERSION=2.7.2 script/differential` | **133 fixtures: 126 passed, 6 failed, 1 skipped**（`add-group` deferred） | 2026-11-13 | `C:\temp\celerite-diff-full-2.7.2-517f69a-rerun.log`；此后只做定向复跑，**未在 424 夹具上重跑全量** |
-| 差分夹具总数 | — | 443 个目录（全量分母 = 443 − 该 profile 的 deferred 数） | 2026-11-22 | `fixtures/differential/*/command` |
+| 差分夹具总数 | — | 454 个目录（全量分母 = 454 − 该 profile 的 deferred 数） | 2026-11-23 | `fixtures/differential/*/command`（`Get-ChildItem fixtures\differential -Directory` 实测；上一档 443 见 2026-11-22） |
 | 全量 `crystal spec` | `crystal spec` | **1003 examples, 0 failures, 0 errors, 0 pending**（`Finished in 15:40 minutes`，EXIT 0；结果绑定 `a9b08c4`，隔离 `TMPDIR`/`HOME` 指向工作区内）。演进：`b99bf12` 编译期失败（`spec/m7_verbose_echo_spec.cr:18`，task-127 `ae1248c` 修）→ `40ad324` 991/86/10 → `eed51d7` 999/5/11（task-128/129 修掉两条 spec 间环境泄漏链，86→5）→ `d9884ff` 1001/0/0/0（task-132/133/134 清掉剩余 5 条）→ `a9b08c4` 1003/0/0/0（task-135 新增 2 例）。前提：不满足「`TMPDIR`/`HOME` 指向工作区内」时套件在编译阶段即失败（见 [roadmap-evidence/M7-suite.md](roadmap-evidence/M7-suite.md)）。此前 **656 examples, 0 failures, 4 errors**（2026-11-18/19）已取代，原记录见 [compat-evidence/2026-11-18.md](compat-evidence/2026-11-18.md) | 2026-11-22（task-132/133/134/135 收尾） | [compat-evidence/2026-11-22.md](compat-evidence/2026-11-22.md)、[roadmap-evidence/M7-suite.md](roadmap-evidence/M7-suite.md) |
-| 上游 lockfile 套件 | `script/upstream-specs`（`CELERITE_SKIP_TEST_DEPS=1`） | **64 examples, 48 failures**（16 passed；分桶 artifice-unreachable 40、low-il-shm 2、fixture:fetch-failed 3、product:candidates 3） | 2026-11-22（task-118，483s，seed 16550） | [compat-evidence/2026-11-22.md](compat-evidence/2026-11-22.md) |
+| 上游 lockfile 套件 | `script/upstream-specs`（`CELERITE_SKIP_TEST_DEPS=1`） | **64 examples, 47 failures**（17 passed；分桶 artifice-unreachable 41、fixture:fetch-failed 3、product:candidates 3；real-drive 69 次、`harness verdict: ok`）。取代 2026-11-22 的 64/48——那 1 条差是 `lockfile_spec.rb:586`（git branch requirement）在 flaky 的 msys Low-IL 上转绿，非产品修复；`script/upstream-specs` 现已自证真驱动并对「环境不可用/未驱动」分别以 69/70 退出（见 [roadmap-evidence/M7-8-upstream-specs.md](roadmap-evidence/M7-8-upstream-specs.md)） | 2026-11-23（task-146/148） | [roadmap-evidence/M7-8-upstream-specs.md](roadmap-evidence/M7-8-upstream-specs.md) |
 
 差分 4.0.24 的历史演进（同一文件里仍并存，读旧条目时注意口径）：115:101/14/0 → 130:123/7/0 → 133:126/7/0 → 135:135/0/1 → 160:160/16/2 → 210:210/14/2 → **218/14/3**。
 其中 2026-11-14 的 `135 passed, 0 failed` 与 2026-11-15 装具 `git-init` 修复期的 `77 passed, 59 failed` 属装具口径轮次，不作产品结论（原证据见 [compat-evidence/2026-11-14.md](compat-evidence/2026-11-14.md)、[compat-evidence/2026-11-15.md](compat-evidence/2026-11-15.md)）。
