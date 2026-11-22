@@ -1,0 +1,6 @@
+The two reference profiles disagree on this surface, so the fixture pins 4.0.24 only.
+Measured on the fixture project (lock --update ..., exit 7 on both profiles):
+  4.0.24 : "Could not find gem 'json_pur'." + "Did you mean 'json_pure'?"   (name quoted)
+  2.7.2  : "Could not find gem 'json_pur'." + "Did you mean json_pure?"     (name unquoted)
+Case-only request (JSON_PURE): 4.0.24 adds "Did you mean 'json_pure'?"; 2.7.2 prints the plain line only.
+celerite matches 4.0.24, the pinned reference profile; the 2.7.2 text is a different message shape, not a celerite defect.
