@@ -1737,17 +1737,40 @@ module Celerite
       format = flag_value_ornext(rest, "--format")
       only_groups = flag_values(rest, "--only-group")
       without_groups = flag_values(rest, "--without-group")
-      definition = Definition.build
-      # Reference Bundler 4.0.24: `bundle list` does not run validate_runtime!
-      # on Ruby mismatch in installed-bundle scenarios; keep listing behavior.
-      config = definition.config
-      lockfile = definition.lockfile!
-
-      # Validate mutually exclusive group filters like the reference.
+      # Validate mutually exclusive group filters like the reference
+      # (`cli/list.rb:15-17` raises before `Bundler.load.specs` at line 19, so
+      # the option conflict wins over both a missing lockfile and resolution).
       if only_groups.any? && without_groups.any?
         stderr.puts "The `--only-group` and `--without-group` options cannot be used together"
         return 15
       end
+
+      definition = Definition.build
+      # Reference Bundler 4.0.24: `bundle list` does not run validate_runtime!
+      # on Ruby mismatch in installed-bundle scenarios; keep listing behavior.
+      config = definition.config
+      # `cli/list.rb:19-29` loads `Bundler.load.specs`, which materializes the
+      # definition from the Gemfile and resolves on demand
+      # (definition.rb:249-251 `specs` -> `materialize`), so `bundle list` works
+      # before the first install instead of failing on the absent lockfile.
+      # Only `check`/`install` ever enable remote sources, so this resolve runs
+      # against the installed gems (`sources.local_only!`) and the lockfile is
+      # deliberately NOT written (definition.rb:401-405 `write_lock` is reached
+      # only from `definition.lock`, which `list` never calls).
+      # A gem that is not installed is a GemNotFound reported as
+      # "... in locally installed gems." plus the install hint, exit 1
+      # (`cli/list.rb:20-25`).
+      lockfile = if definition.lockfile_exists?
+                   definition.lockfile!
+                 else
+                   begin
+                     materialize_lockfile(definition, stdout, local_only: true)
+                   rescue ex : GemNotFoundError
+                     stderr.puts ex.message
+                     stderr.puts "Install missing gems with `bundle install`."
+                     return 1
+                   end
+                 end
 
       all_groups = available_groups(definition, lockfile)
       (only_groups + without_groups).uniq.each do |group|

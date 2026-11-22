@@ -2967,8 +2967,26 @@ module Celerite
       definition = Definition.build
       Commands.validate_runtime!(definition)
       gems = rest.reject(&.starts_with?("--"))
-      lockfile = definition.lockfile!
-      unless gems.empty?
+      # `cli/pristine.rb:10` runs `CLI::Common.ensure_all_gems_in_lockfile!`
+      # before the definition is used, and `common.rb:125-132` short-circuits on
+      # `return unless locked_gems` -- with no lockfile the requested-name check
+      # is a no-op, so an unknown name is not reported (the resolve below only
+      # knows the gems the Gemfile asks for).
+      lockfile = if definition.lockfile_exists?
+                   definition.lockfile!
+                 else
+                   # `cli/pristine.rb:17` `definition.specs` materializes the
+                   # definition from the Gemfile and resolves on demand
+                   # (definition.rb:249-251), so `bundle pristine` works before
+                   # the first install. The resolve is local-only (only
+                   # `check`/`install` enable remote sources) and the lockfile is
+                   # never written (`cli/pristine.rb` never calls
+                   # `definition.lock`); a gem that is not installed raises
+                   # GemNotFound, which exits 7 with the
+                   # "... in locally installed gems." message.
+                   materialize_lockfile(definition, stdout, local_only: true)
+                 end
+      if definition.lockfile_exists? && !gems.empty?
         unknown = gems.find { |g| lockfile.specs.none?(&.name.==(g)) }
         if unknown
           stderr.puts "Could not find gem '#{unknown}'."
