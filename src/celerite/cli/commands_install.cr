@@ -778,7 +778,7 @@ module Celerite
           source = spec.source_info
           next unless source
           source_dir = resolution.ensure_source_dir(spec.name, source)
-          installer.install_source_gem(spec.name, spec.version.to_s, spec.platform, source_dir)
+          installer.install_source_gem(spec.name, spec.version.to_s, spec.platform, source_dir, source.glob)
         end
 
         # --standalone[=GROUP...]: render <install_path>/bundler/setup.rb

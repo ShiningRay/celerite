@@ -361,10 +361,24 @@ module Celerite
     # PATH/GIT source gems are not downloaded; the reference leaves the
     # source checkout in place and materializes only its executable stubs
     # in the bundle bin directory (pinned by `exec-loader`).
-    def install_source_gem(name : String, version : String, platform : String?, source_dir : String) : Bool
+    # `glob` is the glob the source was resolved with (`source/path.rb:19`,
+    # `source/git.rb:15`): the checkout must be searched exactly like the
+    # resolution phase did, otherwise a custom `glob:` never matches here.
+    # A source whose glob finds no gemspec is not an error: the reference
+    # only materializes binstubs for a spec it already has and never
+    # re-reads the checkout (`source/path/installer.rb:32`).
+    def install_source_gem(name : String, version : String, platform : String?, source_dir : String,
+                           glob : String? = nil) : Bool
       return true if @no_install
       full_name = (platform.nil? || platform == "ruby") ? "#{name}-#{version}" : "#{name}-#{version}-#{platform}"
-      info = Bridge::GemSpecInfo.from_json(@bridge.load_gemspec_dir(source_dir).to_json)
+      # A nil `glob` keeps the bridge's `SOURCE_DEFAULT_GLOB`
+      # (`assets/bridge/server.rb:564` = `{,*,*/*}.gemspec`), the same default
+      # `source/path.rb:14` and `resolution.cr:2386 DEFAULT_GLOB` use.
+      info = begin
+        Bridge::GemSpecInfo.from_json(@bridge.load_gemspec_dir(source_dir, glob, name).to_json)
+      rescue Bridge::BridgeError
+        return false
+      end
       return false if info.executables.empty?
 
       target_bin = File.join(@install_root, "bin")
