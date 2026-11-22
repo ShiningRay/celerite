@@ -386,9 +386,18 @@ module Celerite
       end
 
       private def fetch(remote_path : String, path : String, etag_path : String) : String
-        already = @mutex.synchronize { !@fetched.add?(remote_path) }
+        # An endpoint only counts as fetched once its update succeeded: marking
+        # it up front would make a failed fetch (unreachable source) look
+        # "already fetched" to every later call, which would then silently read
+        # the missing cache file as an empty index instead of re-raising. The
+        # reference never observes the difference because a failed fetch aborts
+        # the process, but our callers do swallow the error in places (the
+        # locked-spec staleness probe), and the silently empty index would then
+        # hide the failure from the install path.
+        already = @mutex.synchronize { @fetched.includes?(remote_path) }
         unless already
           @updater.try(&.update(remote_path, path, etag_path))
+          @mutex.synchronize { @fetched.add(remote_path) }
         end
         read(path)
       end

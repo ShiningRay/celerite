@@ -1501,12 +1501,29 @@ module Celerite
       true
     end
 
-    # Reference `current_platform_locked?`: `ruby` covers every local platform
-    # (it is the generic platform for non-Windows hosts), otherwise an exact
-    # local entry is required.
+    # Reference `current_platform_locked?` (definition.rb:844-848): the lockfile
+    # covers the host when one of its platforms is the GENERIC local platform
+    # (`Bundler.generic_local_platform`) or matches the local platform.
+    # `ruby` is that generic platform only where `Gem::Platform.generic`
+    # collapses to it, i.e. not on Windows (`generic_local_platform` is
+    # `universal-mingw` here). A `ruby`-only lock therefore leaves
+    # `@current_platform_missing` set (definition.rb:150) and the reference
+    # re-resolves instead of reusing the lock — measured 4.0.24: unreachable
+    # source + vendor/cache + `ruby` lock exits 17, while an `x64-mingw-ucrt`
+    # lock exits 0.
     def covers_local_platform?(lockfile : Lockfile::Data) : Bool
-      local = Gem::Platform.local.to_s
-      lockfile.platforms.any? { |p| p == "ruby" || p == local }
+      lockfile.platforms.any? { |p| locked_platform_entry_covers_local?(p) }
+    end
+
+    # One `PLATFORMS` entry of the lockfile against the running host.
+    private def locked_platform_entry_covers_local?(entry : String) : Bool
+      return generic_local_platform_is_ruby? if entry == "ruby"
+      return true if entry == Gem::Platform.local.to_s
+      begin
+        Gem::Platform.new(entry).match?(Gem::Platform.local)
+      rescue
+        false
+      end
     end
 
     # True only when the lockfile lists a NON-`ruby` platform that matches the
