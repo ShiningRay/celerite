@@ -1557,6 +1557,19 @@ module Celerite
       # still filter through requested_groups_for.
       requested_groups = requested_groups_for(config, all_groups, [] of String, [] of String)
       locked_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, lockfile.specs.sort_by(&.full_name), requested_groups) : lockfile.specs.sort_by(&.full_name)
+      # `definition.rb:249-251,261-264` + `spec_set.rb:241-266`: `missing_specs`
+      # materializes only the specs reachable from the requested Gemfile
+      # dependencies, so a locked row no dependency edge reaches (e.g. a spec
+      # row nobody references) is never reported missing. Keep the unlocked
+      # behavior when the group filter selected everything, and when the bridge
+      # (and therefore the Gemfile evaluation) is unavailable.
+      if (closure_evaluation = check_evaluation) && !requested_groups.empty?
+        closure_dep_names = closure_evaluation.dependencies.select do |dep|
+          groups = dep.groups.empty? ? ["default"] : dep.groups
+          !(groups & requested_groups).empty?
+        end.map(&.name)
+        locked_specs = filter_locked_specs_by_dependency_closure(closure_dep_names, locked_specs)
+      end
 
       # Reference parity: Gemfile ruby declaration differs from lock RUBY VERSION
       # or is absent from the lock; check prints the re-resolve notice in both
@@ -2695,6 +2708,26 @@ module Celerite
       ensure
         bridge.close
       end
+    end
+
+    # `spec_set.rb:241-266 materialize_dependencies`: the reference walks the
+    # requested dependencies and follows every resolved spec's `dependencies`
+    # edge, so a locked row that no requested dependency (transitively) reaches
+    # is never materialized — and therefore never reported as missing by
+    # `missing_specs` (definition.rb:261-264).
+    def self.filter_locked_specs_by_dependency_closure(dep_names : Array(String), specs : Array(Lockfile::Spec)) : Array(Lockfile::Spec)
+      by_name = specs.to_h { |spec| {spec.name, spec} }
+      seen = Set(String).new
+      queue = dep_names.dup
+      until queue.empty?
+        name = queue.pop
+        spec = by_name[name]?
+        next if spec.nil?
+        next unless seen.add?(name)
+
+        spec.dependencies.each { |dep| queue << dep.name }
+      end
+      specs.select { |spec| seen.includes?(spec.name) }
     end
 
     def self.bridge_available? : Bool

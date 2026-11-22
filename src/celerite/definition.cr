@@ -249,6 +249,12 @@ module Celerite
       # platform ones; our reason list only carries the sources/dependency/
       # checksums entries, so append it before them is not observable.
       reasons << "the gemspecs for path gems changed" if path_specs_changed
+      # `definition.rb:906-921` orders the reasons sources, dependencies,
+      # platforms, path gemspecs, then `@missing_lockfile_dep` and finally the
+      # CHECKSUMS ones.
+      if missing = missing_lockfile_dep(gemfile_dependencies)
+        reasons << "your lockfile is missing \"#{missing}\""
+      end
       if reason = lockfile_update_reason
         reasons << reason
       end
@@ -476,6 +482,13 @@ module Celerite
         elsif normalized_requirements(match.requirements) != wanted
           added << "* #{pretty_dependency(dep.name, wanted)}"
           changed = true
+        elsif locked_version_mismatch?(dep)
+          # `definition.rb:1075-1078`: an unchanged requirement string is not
+          # enough — `Gem::Dependency#matches_spec?` also compares the locked
+          # version. A locked spec the requirement no longer satisfies is a
+          # dependency change (but not a `new_deps` entry, so nothing is listed
+          # under "You have added to the Gemfile").
+          changed = true
         end
       end
       deleted = [] of String
@@ -490,6 +503,41 @@ module Celerite
 
     private def normalized_requirements(requirements : Array(String)?) : Array(String)
       (requirements || [] of String).reject { |value| value == ">= 0" }
+    end
+
+    # `definition.rb:1063,1066-1069`: inside `converge_dependencies` a dependency
+    # that *is* locked in `DEPENDENCIES` (`dep_changed == false`) but has no spec
+    # row is neither a new nor a changed dependency — the reference records it as
+    # `@missing_lockfile_dep` and reports it as
+    # `your lockfile is missing "NAME"` (definition.rb:914).
+    private def missing_lockfile_dep(deps : Array(Bridge::EvaluatedDependency)?) : String?
+      return nil unless deps
+
+      data = lockfile!
+      locked_deps = data.dependencies_section.try(&.dependencies) || [] of Lockfile::Dependency
+      specs = data.sources.flat_map(&.specs)
+      deps.each do |dep|
+        next if locked_deps.none? { |entry| entry.name == dep.name }
+        next if specs.any? { |spec| spec.name == dep.name }
+
+        return dep.name
+      end
+      nil
+    end
+
+    # `Gem::Dependency#matches_spec?` = same name plus
+    # `requirement.satisfied_by?(version)`; `definition.rb:1075-1078` treats a
+    # locked version the requirement no longer satisfies as a dependency change.
+    # The requirement *string* is unchanged here, so nothing is listed under
+    # "You have added to the Gemfile".
+    private def locked_version_mismatch?(dep : Bridge::EvaluatedDependency) : Bool
+      spec = lockfile!.sources.flat_map(&.specs).find { |candidate| candidate.name == dep.name }
+      return false unless spec
+
+      requirement = Gem::Requirement.new(dep.requirements)
+      !requirement.satisfied_by?(Gem::Version.new(spec.version))
+    rescue
+      false
     end
 
     private def pretty_dependency(name : String, requirements : Array(String)) : String

@@ -472,7 +472,7 @@ module Celerite
         # in the lockfile but are never installed. The lock stays complete.
         without_groups = without_group_names(definition)
         requested_groups = requested_group_names(definition, resolution)
-        installable = installable_specs(resolution, specs, requested_groups)
+        installable = installable_specs(resolution, specs, requested_groups, closure_from_all_dependencies: true)
         pending = installable.sort_by(&.full_name).select(&.source_type.==("GEM"))
         if force_reinstall
           force_install, pending = pending.partition do |spec|
@@ -1184,13 +1184,27 @@ module Celerite
     # that only excluded groups reach stays in the lockfile but is never installed.
     private def self.installable_specs(resolution : Resolution,
                                        specs : Array(Resolution::ResolvedSpec),
-                                       requested_groups : Array(String)?) : Array(Resolution::ResolvedSpec)
-      return specs if requested_groups.nil?
-      return [] of Resolution::ResolvedSpec if requested_groups.empty?
-      included = resolution.evaluation.dependencies.select do |dep|
-        groups = dep.groups.empty? ? ["default"] : dep.groups
-        groups.any? { |group| requested_groups.includes?(group) }
-      end
+                                       requested_groups : Array(String)?,
+                                       closure_from_all_dependencies : Bool = false) : Array(Resolution::ResolvedSpec)
+      included = if requested_groups.nil?
+                   # `installer.rb:208` installs `definition.specs`, i.e.
+                   # `materialize(requested_dependencies)` (definition.rb:249-251):
+                   # every requested dependency plus the transitive closure of its
+                   # `dependencies` edges. A locked row no edge reaches (an extra
+                   # spec row nobody references) is never materialized, so it is
+                   # never installed. With no group configuration at all the
+                   # requested set is every Gemfile dependency.
+                   return specs unless closure_from_all_dependencies
+
+                   resolution.evaluation.dependencies
+                 else
+                   return [] of Resolution::ResolvedSpec if requested_groups.empty?
+
+                   resolution.evaluation.dependencies.select do |dep|
+                     groups = dep.groups.empty? ? ["default"] : dep.groups
+                     groups.any? { |group| requested_groups.includes?(group) }
+                   end
+                 end
       by_name = specs.to_h { |spec| {spec.name, spec} }
       seen = Set(String).new
       queue = included.map(&.name)
