@@ -34,8 +34,12 @@ private def binstub_path_project(dir : String, with_json_pure : Bool = true) : H
 end
 
 private def with_binstub_path_env(dir : String, & : ->) : Nil
+  # `BUNDLE_GEMFILE` must be restored even though the blocks below set it: the
+  # project directory it points into is removed by `with_project` on the way
+  # out, so a leaked value would hand the next spec a Gemfile that no longer
+  # exists (`install` then exits 1). Inside the block it stays live as before.
   keys = {"HOME", "USERPROFILE", "GEM_HOME", "GEM_PATH", "BUNDLE_PATH", "BUNDLE_APP_CONFIG",
-          "CELERITE_BRIDGE_SERVER", "CELERITE_PROFILE_BUNDLER_VERSION"}
+          "BUNDLE_GEMFILE", "CELERITE_BRIDGE_SERVER", "CELERITE_PROFILE_BUNDLER_VERSION"}
   saved = keys.map { |key| {key, ENV[key]?} }
   home = File.join(dir, "home")
   Dir.mkdir_p(home)
@@ -58,6 +62,7 @@ describe "binstubs for a PATH source" do
   it "writes the stub pair for a gem that has no cached package" do
     dir = File.tempname("celerite-binstub-path", "proj")
     Dir.mkdir_p(dir)
+    gemfile_before = ENV["BUNDLE_GEMFILE"]?
     begin
       with_binstub_path_env(dir) do
         with_project(binstub_path_project(dir)) do |project|
@@ -80,6 +85,7 @@ describe "binstubs for a PATH source" do
           File.file?(stub + ".cmd").should be_true
         end
       end
+      ENV["BUNDLE_GEMFILE"]?.should eq(gemfile_before)
     ensure
       FileUtils.rm_rf(dir)
     end
@@ -88,6 +94,7 @@ describe "binstubs for a PATH source" do
   it "is silent and does not require a cached .gem" do
     dir = File.tempname("celerite-binstub-path", "proj")
     Dir.mkdir_p(dir)
+    gemfile_before = ENV["BUNDLE_GEMFILE"]?
     begin
       with_binstub_path_env(dir) do
         with_project(binstub_path_project(dir)) do |project|
@@ -101,6 +108,7 @@ describe "binstubs for a PATH source" do
           err.should eq("")
         end
       end
+      ENV["BUNDLE_GEMFILE"]?.should eq(gemfile_before)
     ensure
       FileUtils.rm_rf(dir)
     end
@@ -109,6 +117,7 @@ describe "binstubs for a PATH source" do
   it "covers the path gem through --all as well" do
     dir = File.tempname("celerite-binstub-path", "proj")
     Dir.mkdir_p(dir)
+    gemfile_before = ENV["BUNDLE_GEMFILE"]?
     begin
       with_binstub_path_env(dir) do
         with_project(binstub_path_project(dir)) do |project|
@@ -120,6 +129,7 @@ describe "binstubs for a PATH source" do
           File.file?(File.join(project, "bin", "my-tool")).should be_true
         end
       end
+      ENV["BUNDLE_GEMFILE"]?.should eq(gemfile_before)
     ensure
       FileUtils.rm_rf(dir)
     end
