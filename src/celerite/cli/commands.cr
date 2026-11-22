@@ -2278,8 +2278,12 @@ module Celerite
             return 0
           end
           if rest.includes?("--path")
-            # `cli/info.rb:36-48` print_gem_path special-cases bundler.
-            stdout.puts display_path(File.expand_path("../../..", File.join(gem_dir, "lib", "bundler")))
+            # `cli/info.rb:36-48` print_gem_path special-cases bundler exactly
+            # like `cli/show.rb:20-21`: `File.expand_path("../../..", __dir__)`
+            # from `<gem>/lib/bundler/cli`, i.e. the gem root. Anchor it on the
+            # same helper the `show` branch above uses, so the reference-lib
+            # configuration is honoured here too.
+            stdout.puts display_path(show_bundler_path(gem_dir))
             return 0
           end
           summary, homepage, metadata = read_gemspec_info(gem_dir, "bundler-#{profile_bundler_version}")
