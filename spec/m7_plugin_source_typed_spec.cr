@@ -173,6 +173,12 @@ describe "M7(6) typed plugin source install" do
           stderr.should eq("")
           stdout.should contain("Post-install message from stub-gem:")
           stdout.should contain("Installed stub-gem")
+          # `cli/install.rb:93-96` counts `definition.specs`, the materialized
+          # requested dependencies: the inferred `bundler-source-mpath` gem
+          # lives only under `Plugin.root` (`plugin/installer.rb:94`), so the
+          # summary counts just the source's own gem. Measured against the
+          # 4.0.24/2.7.2 oracles (fixtures/differential/plugin-source-install).
+          stdout.should contain("Bundle complete! 1 Gemfile dependency, 1 gem now installed.")
 
           lock = File.read(File.join(project, "Gemfile.lock"))
           lock.should contain("PLUGIN SOURCE\n  remote: ./stub-path-gem\n  type: mpath\n  specs:\n    stub-gem (1.0.0)\n")
