@@ -29,8 +29,13 @@ end
 
 private def locked_deps_remote : String
   # Downloader appends "/gems/<full name>.gem", so the source root is the
-  # directory that contains the "gems" folder.
-  file_source_url(File.expand_path(File.join(__DIR__, "fixtures", "locked-deps")))
+  # directory that contains the "gems" folder. It also has to serve the gem
+  # index (`specs.4.8`/`info/`/...): healing a stale locked dependency needs
+  # the index spec's dependency list, which a bare "gems" directory cannot
+  # provide. `fixtures/gem-index-locked-deps` is the complete index holding the
+  # same .gem files, and is already the offline source used by the differential
+  # scenarios (`script/differential:192`).
+  file_source_url(File.expand_path(File.join(__DIR__, "..", "fixtures", "gem-index-locked-deps")))
 end
 
 private def locked_deps_gemfile(remote : String) : String
