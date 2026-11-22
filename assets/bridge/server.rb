@@ -65,6 +65,60 @@ def bridge_activate_bundler
   end
 end
 
+# `Bundler::Dsl#eval_gemfile` reports a repeated `gem` declaration through
+# `Bundler.ui.warn` (`dsl.rb:307-323`). The reference evaluates a Gemfile at
+# most once per process (`bundler.rb` `@definition ||=`) and its shell drops
+# repeated identical messages (`ui/shell.rb:39-45`), so one command prints that
+# warning once. A single Celerite command, however, evaluates the same Gemfile
+# from several bridge processes (one per `Bridge::Client`), which replayed the
+# warning once per evaluation. Collect the warnings raised by one evaluation
+# and return them with the response; the native side prints each distinct
+# message once per command.
+class BridgeWarningCollector
+  def initialize(delegate)
+    @delegate = delegate
+    @warnings = []
+  end
+
+  attr_reader :warnings
+
+  # Mirrors `Bundler::UI::Shell#warn` (`ui/shell.rb:39-45`): identical messages
+  # are reported once, and the message is only evaluated lazily when it is used.
+  def warn(message = nil, _newline = nil)
+    text = (message.nil? ? yield : message).to_s
+    return if @warnings.include?(text)
+
+    @warnings << text
+  end
+
+  # Every other UI method (`info`, `confirm`, `error`, `silence`, `level`, ...)
+  # keeps behaving exactly like the real UI.
+  def method_missing(name, *args, &block)
+    @delegate.send(name, *args, &block)
+  end
+
+  def respond_to_missing?(name, include_private = false)
+    @delegate.respond_to?(name, include_private)
+  end
+end
+
+# Runs the block with `Bundler.ui` replaced by a collector and returns the
+# warnings it captured, in first-seen order.
+def bridge_collect_warnings
+  require "bundler"
+  require "bundler/ui"
+
+  collector = BridgeWarningCollector.new(Bundler.ui)
+  previous = Bundler.ui
+  Bundler.ui = collector
+  begin
+    yield
+  ensure
+    Bundler.ui = previous
+  end
+  collector.warnings
+end
+
 def op_ruby_environment(_payload)
   require "rubygems"
   env = {
@@ -127,7 +181,7 @@ def op_evaluate_gemfile(payload)
 
   builder = Bundler::Dsl.new
   contents = File.read(gemfile)
-  builder.eval_gemfile(gemfile, contents)
+  warnings = bridge_collect_warnings { builder.eval_gemfile(gemfile, contents) }
 
   deps = builder.dependencies.map do |dep|
     source = dep.source
@@ -158,6 +212,13 @@ def op_evaluate_gemfile(payload)
     "ruby_engine_version" => ruby_version&.engine_versions&.first,
     "bundler_version" => Bundler::VERSION,
     "gemfile_sha256" => Digest::SHA256.hexdigest(contents),
+    # Warnings raised while evaluating this Gemfile (repeated `gem`
+    # declarations, `dsl.rb:307-323`). They are returned instead of printed so
+    # the native side can emit each distinct message once per command: one
+    # Celerite command talks to several bridge processes, and the reference
+    # prints the warning once (`bundler.rb` `@definition ||=` plus the
+    # `@warning_history` dedup in `ui/shell.rb:39-45`).
+    "warnings" => warnings,
   }
 end
 
@@ -172,8 +233,8 @@ def op_gemspec_paths(payload)
   require "bundler/dsl"
 
   dsl = Bundler::Dsl.new
-  dsl.eval_gemfile(gemfile, File.read(gemfile))
-  { "gemspecs" => dsl.gemspecs.map(&:loaded_from) }
+  warning_list = bridge_collect_warnings { dsl.eval_gemfile(gemfile, File.read(gemfile)) }
+  { "gemspecs" => dsl.gemspecs.map(&:loaded_from), "warnings" => warning_list }
 end
 
 def op_bundler_cache_file(payload)

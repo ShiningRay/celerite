@@ -106,6 +106,11 @@ module Celerite
         stdout = IO::Memory.new
       end
 
+      # Repeated `gem` declaration warnings are raised while the bridge
+      # evaluates the Gemfile and collected per command; `show`, `info` and
+      # `exec` never print them (reference `Bundler.ui.silence`).
+      begin_gemfile_warnings(stderr, command)
+
       # Thor prints the command's manpage for `--help` before the body runs
       # (`bundle install --help` renders bundle-install(1)). For a subcommand
       # class such as `doctor`, the tokens before `--help` become additional

@@ -4,6 +4,7 @@ require "./gem/platform"
 require "./lockfile/parser"
 require "./definition"
 require "./cli/commands"
+require "./cli/gemfile_warnings"
 
 module Celerite
   module CLI
@@ -27,6 +28,7 @@ module Celerite
         Commands.dispatch(args, stdout, stderr)
       ensure
         Definition.default_warning_sink = previous_sink
+        Bridge::GemfileWarnings.finish
       end
     rescue ex : Error
       friendly_error(ex, stderr)

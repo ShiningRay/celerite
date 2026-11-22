@@ -938,6 +938,11 @@ module Celerite
       display_path = gemfile_path.gsub(/\\/, "/")
       initial_lines = File.read(gemfile_path).gsub(/\r\n/, "\n").lines(chomp: false)
 
+      # `Injector#remove` reports the duplicate declarations of the Gemfile it
+      # is about to rewrite (injector.rb:65 evaluates `Bundler.definition`
+      # before `remove_gems_from_gemfile` edits the file).
+      evaluate_gemfile_before_rewrite(definition)
+
       # `Injector#remove_deps` (injector.rb:135-159) announces the file before
       # evaluating it, so this line also precedes a missing-gem error.
       stdout.puts "Removing gems from #{display_path}"

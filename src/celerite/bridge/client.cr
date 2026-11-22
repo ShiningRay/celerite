@@ -23,6 +23,52 @@ module Celerite
       end
     end
 
+    # Repeated-declaration warnings raised while a Gemfile is evaluated
+    # (`dsl.rb:307-323`) are returned by the bridge instead of printed, because
+    # one Celerite command evaluates the same Gemfile from several bridge
+    # processes. The reference prints such a warning once per command: it
+    # evaluates a Gemfile once per process (`bundler.rb` `@definition ||=`) and
+    # its shell drops repeated identical messages (`ui/shell.rb:39-45`). This
+    # ledger reproduces that per-command behaviour on the native side.
+    module GemfileWarnings
+      @@sink : IO? = nil
+      @@seen = Set(String).new
+      @@silenced = false
+
+      # Starts a command's ledger. `silenced` mirrors commands whose reference
+      # implementation wraps its evaluation in `Bundler.ui.silence`.
+      def self.begin(sink : IO, silenced : Bool = false) : Nil
+        @@sink = sink
+        @@seen.clear
+        @@silenced = silenced
+      end
+
+      def self.finish : Nil
+        @@sink = nil
+        @@seen.clear
+        @@silenced = false
+      end
+
+      # Prints every unseen warning, mirroring `UI::Shell#tell_err`
+      # (`ui/shell.rb:147-160`): a message that already ends with a newline is
+      # written verbatim, otherwise one is appended.
+      def self.record(warnings : Array(String)) : Nil
+        sink = @@sink
+        return if sink.nil? || @@silenced
+
+        warnings.each do |warning|
+          next if warning.empty? || @@seen.includes?(warning)
+          @@seen << warning
+          if warning.ends_with?('\n')
+            sink.print(warning)
+          else
+            sink.puts(warning)
+          end
+          sink.flush
+        end
+      end
+    end
+
     struct RubyEnvironment
       include JSON::Serializable
       getter ruby_version : String
@@ -168,6 +214,9 @@ module Celerite
       getter ruby_engine_version : String?
       getter bundler_version : String
       getter gemfile_sha256 : String
+      # Warnings raised while the bridge evaluated this Gemfile (repeated `gem`
+      # declarations); the ledger prints each distinct message once per command.
+      getter warnings : Array(String) = [] of String
     end
 
     # Client for the JSON Lines bridge server. One process per client; the
@@ -241,7 +290,9 @@ module Celerite
       end
 
       def evaluate_gemfile(path : String) : GemfileEvaluation
-        GemfileEvaluation.from_json(request("evaluate_gemfile", {"gemfile" => path}).to_json)
+        evaluation = GemfileEvaluation.from_json(request("evaluate_gemfile", {"gemfile" => path}).to_json)
+        GemfileWarnings.record(evaluation.warnings)
+        evaluation
       end
 
       # Specs exposed by a plugin source (`Bundler::Plugin::API::Source#specs`).
@@ -268,7 +319,9 @@ module Celerite
       # Absolute paths of the gemspecs loaded by Gemfile `gemspec` directives,
       # in DSL order (reference: `Bundler::Dsl#gemspecs.map(&:loaded_from)`).
       def gemspec_paths(gemfile : String) : Array(String)
-        request("gemspec_paths", {"gemfile" => gemfile})["gemspecs"].as_a.map(&.as_s)
+        result = request("gemspec_paths", {"gemfile" => gemfile})
+        GemfileWarnings.record(result["warnings"]?.try(&.as_a.map(&.as_s)) || [] of String)
+        result["gemspecs"].as_a.map(&.as_s)
       end
 
       # Every gem visible to the bridge interpreter's RubyGems (system dirs
