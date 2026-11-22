@@ -142,4 +142,69 @@ describe Celerite::GitSource do
       FileUtils.rm_rf(root)
     end
   end
+
+  it "falls back to cached git data when the remote fails" do
+    next pending "git is not available" unless git_available?
+
+    root = File.tempname("celerite-git", "repo")
+    begin
+      init_repo(root)
+      revision = commit_file(root, "lib/a.rb", "VERSION = 1\n", "first")
+
+      bundle_root = File.tempname("celerite-git", "bundle")
+      source = Celerite::GitSource.new(root, bundle_root)
+      source.fetch(branch: "master").should eq(revision)
+      source.revision_cached?(revision).should be_true
+
+      # the remote disappears: every git command against it must now fail
+      FileUtils.rm_rf(root)
+
+      sink = IO::Memory.new
+      previous_sink = Celerite::Definition.default_warning_sink
+      Celerite::Definition.default_warning_sink = sink
+      begin
+        source.fetch(branch: "master").should eq(revision)
+      ensure
+        Celerite::Definition.default_warning_sink = previous_sink
+      end
+      sink.to_s.should contain("Using cached git data because of network errors:")
+      sink.to_s.should contain("git command failed")
+    ensure
+      FileUtils.rm_rf(root)
+    end
+  end
+
+  it "does not fall back when the revision is not cached" do
+    next pending "git is not available" unless git_available?
+
+    root = File.tempname("celerite-git", "repo")
+    begin
+      init_repo(root)
+      commit_file(root, "lib/a.rb", "VERSION = 1\n", "first")
+
+      bundle_root = File.tempname("celerite-git", "bundle")
+      source = Celerite::GitSource.new(root, bundle_root)
+      source.fetch(branch: "master")
+
+      sink = IO::Memory.new
+      previous_sink = Celerite::Definition.default_warning_sink
+      Celerite::Definition.default_warning_sink = sink
+      begin
+        FileUtils.rm_rf(root)
+        # no mirror at all: a failed clone must still raise
+        expect_raises(Celerite::GitError, /git command failed/) do
+          Celerite::GitSource.new(root, File.tempname("celerite-git", "fresh")).fetch(branch: "master")
+        end
+        # a mirror that lacks the requested revision must still raise
+        expect_raises(Celerite::GitError, /git command failed/) do
+          source.fetch(branch: "nosuchbranch")
+        end
+      ensure
+        Celerite::Definition.default_warning_sink = previous_sink
+      end
+      sink.to_s.should_not contain("Using cached git data")
+    ensure
+      FileUtils.rm_rf(root)
+    end
+  end
 end
