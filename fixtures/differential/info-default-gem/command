@@ -1,2 +1,3 @@
 lock
 info json
+info json --version
