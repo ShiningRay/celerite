@@ -129,13 +129,36 @@ describe "lock progress lines" do
     end
   end
 
-  it "stays quiet about resolving once a lockfile exists" do
+  # Measured on the 4.0.24 oracle: a bare `lock` writes a CHECKSUMS section
+  # whose `json_pure (2.6.0)` entry carries no digest, and
+  # `empty_checksums_actionable?` (`definition.rb:642` via `resolve_needed?`)
+  # then forces the next `lock --print` to re-resolve, so stderr keeps both the
+  # index fetch and the resolution announcement. 2.7.2 writes no CHECKSUMS
+  # section at all, so the same shape is silent there (see the example below).
+  it "still announces the resolution while a CHECKSUMS digest is missing" do
     with_project({"Gemfile" => quiet_gemfile}) do |dir|
       with_add_env(dir) do
         run_cli(["lock"])
         code, _out, err = run_cli(["lock", "--print"])
         code.should eq(0)
-        err.should eq("")
+        err.should contain("Fetching source index from")
+        err.should contain("Resolving dependencies...")
+        err.lines.size.should eq(2)
+      end
+    end
+  end
+
+  # 2.7.2 has no CHECKSUMS section, so once the lockfile exists nothing needs
+  # unlocking and `lock --print` reports no progress at all.
+  it "stays quiet about resolving once a lockfile exists" do
+    with_bundler_profile("2.7.2") do
+      with_project({"Gemfile" => quiet_gemfile}) do |dir|
+        with_add_env(dir) do
+          run_cli(["lock"])
+          code, _out, err = run_cli(["lock", "--print"])
+          code.should eq(0)
+          err.should eq("")
+        end
       end
     end
   end
