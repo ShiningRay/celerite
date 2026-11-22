@@ -3114,13 +3114,20 @@ module Celerite
       # and `--add-checksums` only short-circuit when the lockfile is already
       # current (`lock-normalize` and `lock-add-checksums` fixtures: the resolver
       # prints nothing there but does print when the lockfile is stale).
+      # Missing/empty CHECKSUMS entries force the reference to re-resolve too
+      # (`definition.rb:642 empty_checksums_actionable?` via `resolve_needed?`),
+      # so an incomplete digest set keeps the "Resolving dependencies..."
+      # announcement even when the lockfile is otherwise current: measured on
+      # 4.0.24, a first bare `lock` writes `json_pure (2.6.0)` without a digest
+      # and the following `lock --print` prints "Fetching source index from ..."
+      # followed by "Resolving dependencies..." on stderr.
       lockfile_current = lockfile_exists_at_start &&
                          !update && update_names.empty? &&
                          !rest.includes?("--add-platform") && !rest.includes?("--remove-platform") &&
                          !definition.dependency_sources_changed?(resolution.evaluation.dependencies, resolution.evaluation.sources) &&
                          resolution.incomplete_locked_spec_names.empty? &&
                          definition.lockfile_matches_dependencies?(resolution.evaluation.dependencies)
-      if lockfile_current && (print_mode || normalize_platforms || (add_checksums && !checksum_refresh))
+      if lockfile_current && !checksum_refresh && (print_mode || normalize_platforms || add_checksums)
         resolution.show_resolving = false
       end
 
