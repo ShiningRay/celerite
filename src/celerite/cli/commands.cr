@@ -48,7 +48,17 @@ module Celerite
       # on the same UI level as the flag; the flag still wins when the setting
       # is explicitly false.
       env_verbose = env_verbose?
-      ENV["CELERITE_VERBOSE"] = "1" if verbose_requested || env_verbose
+      # The reference derives the UI level per process from `settings[:verbose]`
+      # (`bundler-4.0.24/lib/bundler/cli.rb#initialize`), and `run_cli` drives
+      # several invocations inside one process, so this must be reset to "not
+      # verbose" as well and not only raised: a stale `1` from an earlier
+      # `--verbose` invocation would silently turn on `verbose_debug?`
+      # (`:287-290`) for every later one.
+      if verbose_requested || env_verbose
+        ENV["CELERITE_VERBOSE"] = "1"
+      else
+        ENV.delete("CELERITE_VERBOSE")
+      end
       # `--quiet` raises the UI level to `warn` (bundler/cli/install.rb:11 and
       # friends), so every `info`/`confirm` line disappears while warnings and
       # errors stay on stderr. It is captured before `strip_global_flags` for
@@ -64,6 +74,16 @@ module Celerite
       end
       raw_args = args
       args = strip_global_flags(args)
+      # Thor parses `--retry` into the one-shot CLI object and `retry_count`
+      # (`:591-615`) reads the CLI value before the config, so the override is
+      # re-applied per invocation — including dropped when this invocation has
+      # no `--retry`, otherwise the previous call's budget would leak into the
+      # next one inside a shared process (`run_cli`).
+      if cli_retry
+        ENV["CELERITE_CLI_RETRY"] = cli_retry
+      else
+        ENV.delete("CELERITE_CLI_RETRY")
+      end
 
       # Thor only shifts a leading token when it resolves a command
       # (`thor.rb:591-595`): a switch that is not one of the dash mappings
@@ -232,18 +252,18 @@ module Celerite
           next
         end
         if arg == "--retry" || arg == "-r"
-          if value = args[index + 1]?
-            ENV["CELERITE_CLI_RETRY"] = value unless value.starts_with?("--")
-          end
+          # Purely a parser: the per-invocation `CELERITE_CLI_RETRY` state is
+          # applied once in `dispatch` (which also clears it), so a second
+          # invocation in the same process cannot inherit this one's value.
           skip_next = true
           next
         end
         if arg.starts_with?("--retry=")
-          ENV["CELERITE_CLI_RETRY"] = arg.split("=", 2)[1]? || ""
           next
         end
         if arg == "--verbose" || arg == "-V"
-          ENV["CELERITE_VERBOSE"] = "1"
+          # Same rule as `--retry`: `CELERITE_VERBOSE` is set/cleared in
+          # `dispatch`, never as a side effect of stripping.
           next
         end
         next if GLOBAL_FLAGS.includes?(arg) && index < 2
