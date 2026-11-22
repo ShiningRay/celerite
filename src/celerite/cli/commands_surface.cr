@@ -121,7 +121,9 @@ module Celerite
         locked_names = definition.lockfile!.specs.map(&.name)
         gems.each do |gem_name|
           unless locked_names.includes?(gem_name)
-            raise GemNotFoundError.new("Could not find gem '#{gem_name}'.")
+            # `cli/common.rb:113-123`: the raise carries the Did-you-mean line
+            # over the lockfile names, exactly like `lock --update`.
+            raise GemNotFoundError.new(gem_not_found_message_for(gem_name, locked_names))
           end
         end
       end
@@ -2998,7 +3000,9 @@ module Celerite
       if definition.lockfile_exists? && !gems.empty?
         unknown = gems.find { |g| lockfile.specs.none?(&.name.==(g)) }
         if unknown
-          stderr.puts "Could not find gem '#{unknown}'."
+          # `cli/pristine.rb:10` calls `ensure_all_gems_in_lockfile!`, so the
+          # text is the shared message, Did-you-mean line included.
+          stderr.puts gem_not_found_message_for(unknown, lockfile.specs.map(&.name))
           return 7
         end
       end
