@@ -79,3 +79,77 @@
 （2026-11-15 定位为装具 `git-init` 缺陷并修复）**——`mktemp -d` 的 POSIX 路径交给 `git -C` 时 Git for Windows 与 msys `cp` 解析不同根，`.git` 落到复制目录之外，参考侧因此报 `fatal: repository './gitgem' does not exist`；改为 `$work/gitstage.*` 暂存 + `cygpath -w` 传 `git -C` 后 `add-git`/`add-ref` 双 profile PASS，其余 5 例失败形态转为 celerite 子进程 `sh.exe: *** fatal error - NtCreateDirectoryObject(...): 0xC0000022`（环境；bash 直连 `git clone --mirror` 连跑 3 次均 EXIT 0）、本机 native 构建 `0xC0000022` 8 例（环境）与 2.7.2-only 的 `clean-*` 2 例（已于 2026-11-15 撤销 profile 特例后 PASS），详见 `docs/compat-evidence/2026-11-15.md`）——新增 `fixtures/differential/lock-path-absolute-relative`（`lock`，4.0.24/2.7.2 PASS，负对照回退 PATH 归一即 `remote: foo` 断言失败）与 `fixtures/differential/lock-missing-dependency-edges`（`install`，两侧锁文件逐字相同、`file-contains` 全过；仅参考多打印两次 `Resolving dependencies...`，已按 documented deferral 标记）；装具新增 `@LOCKED_DEPS_INDEX_DIR@` 与 `CELERITE_DIFF_WORK_ROOT` 及每命令输出分片。
 
 **2026-11-15（spec 自包含化）**：`spec/cli_spec.cr` 的 lock platform 往返用例原先只在 `~/.bundle/cache/compact_index` 热缓存存在时通过（隔离 HOME 下 `crystal spec spec/cli_spec.cr:288` 得 `Expected: 0 got: 17`），已改为离线 `fixtures/gem-index` + `file_source_url`、不预置锁文件、三步断言（lock → remove-platform → add-platform 逐字节还原）；`crystal spec spec/cli_spec.cr` 24 examples 0 failures，全量 `crystal spec` 317 examples 0 failures 4 errors（既有 GitSource msys `0xC0000022` 环境）。复选框保持未勾。
+
+## 2026-11-23：上游 lockfile 套件基线的 HEAD 复采（task-146）
+
+### oracle
+
+参考 Bundler 4.0.24 的上游套件 `rubygems/rubygems@v4.0.24` → `bundler/spec/lock/lockfile_spec.rb`，经 `script/upstream-specs` 的 shim 把 in-example 的 `bundle` 真驱动到本仓库二进制（`CELERITE_SKIP_TEST_DEPS=1`，未设 `CELERITE_BUNDLE_HELPER_OVERRIDE=0`）。oracle 即上游 rspec 自身的 examples/failures 计数与异常消息，不是本仓库自造的判据。
+
+### 参考锚点
+
+- 套件入口：`script/upstream-specs`（`repo_root="$(cd "$(dirname "$0")/.." && pwd)"`，`rev="${UPSTREAM_REV:-v4.0.24}"`，报告落 `.upstream-specs/upstream-lockfile-$rev-<UTC>.md`；第 41-46 行解析 `bin/celerite`，不存在时才回落 `bin/celerite.exe`；第 88-92 行 `shim/bundle` 导出 `CELERITE_BRIDGE_SERVER` 并 `exec "$celerite_bin" "$@"`）。
+- 真驱动注入点：`script/upstream-specs-celerite-override.rb:44`（`Spec::Helpers#bundle`）。
+- 被驱动二进制：`bin/celerite.exe`，12,647,441 B，SHA256 `4763E7079E6578A1AB74E308EA44AFCC35614059E78A430188F6CF23DA238DE8`（跑前跑后各核一次，未变）；无扩展名的 `bin/celerite` 在本机不存在。
+- 采集时点：主工作区 HEAD `155639ca0f97263a03115b9b988fab41427ee4ea`（其父 `4a513a4`；`git diff --stat 4a513a4 155639c` 只有 `docs/compat-evidence/2026-11-23.md` +101/-1，即 HEAD 相对 `4a513a4` 只加文档、无源码变化）。
+- 复现命令：`CELERITE_SKIP_TEST_DEPS=1 bash script/upstream-specs`，msys bash `C:\msys64\usr\bin\bash.exe`，`PATH=/c/msys64/usr/bin:/c/msys64/ucrt64/bin:/c/Ruby40-x64/bin:/c/Program Files/Git/cmd:...`，`TMPDIR=/c/temp`；**git 必须在 PATH 上**，否则上游 `spec/support/filters.rb:21` 的 `git --version` 直接 `Errno::ENOENT`、整套件报 `0 examples ... 1 error occurred outside of examples`。
+
+### 实现位置
+
+本次为复采，不改产品代码。产物与快照位置：
+
+- 新基线报告：`.upstream-specs/upstream-lockfile-v4.0.24-20261122T174318Z.md`（16,688 B）。
+- 分桶明细：`.upstream-specs/failure-buckets.md`（由 `script/upstream-specs-buckets.rb` 的 `UpstreamSpecsBuckets.classify` 生成，本机快照 8,828 B）。
+- 原始输出（gitignored）：`.upstream-specs/rspec-output.txt`（367,059 B）、`.upstream-specs/rspec-output.json`（339,817 B）。
+- 旧基线（未删除，仅对照）：`.upstream-specs/upstream-lockfile-v4.0.24-20261122T024315Z.md`（16,683 B），对应 task-118 第五次复采。
+
+### 证据
+
+环境与耗时：`ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x64-mingw-ucrt]`、`git version 2.55.0.windows.3`；START `2026-11-22T17:43:17Z` / END `2026-11-22T17:52:21Z`（墙钟约 9 分 04 秒；rspec 自报 `Finished in 8 minutes 47 seconds (files took 3.6 seconds to load)`，seed 31249）。
+
+原始结果行与退出码：
+
+| 项目 | 本次（HEAD `155639c`） | 旧基线（`e71ed06`） |
+|---|---|---|
+| 结果行 | `64 examples, 48 failures`（16 passed） | `64 examples, 48 failures`（16 passed） |
+| rspec 退出码 | 1 | 1 |
+| real-drive | 51 celerite invocations | 51 celerite invocations |
+| JSON summary | `{"duration":526.7974374,"example_count":64,"failure_count":48,"pending_count":0,"errors_outside_of_examples_count":0}` | — |
+| seed / rspec 自报耗时 | 31249 / `Finished in 8 minutes 47 seconds` | 16550 / `Finished in 7 minutes 57 seconds` |
+
+分桶表（本次）：
+
+| 桶 | 数量 |
+|---|---|
+| `env:artifice-unreachable` | 40 |
+| `env:low-il-shm` | 2 |
+| `fixture:fetch-failed` | 3 |
+| `product:candidates` | 3 |
+| 合计 | 48 |
+
+`product:candidates` 逐条（标题 :: 异常类，行号取自 `rspec-output.json` 的 `file_path:line_number`）：
+
+1. `the lockfile format fills empty CHECKSUMS entries when not frozen, even if every gem is already installed` :: `RSpec::Expectations::ExpectationNotMetError` — `./spec/lock/lockfile_spec.rb:1682`
+2. `the lockfile format with both ruby and specific platform behaves like a lockfile missing dependent specs auto-heals` :: 同类 — `./spec/lock/lockfile_spec.rb:2215`
+3. `the lockfile format with just specific platform behaves like a lockfile missing dependent specs auto-heals` :: 同类 — `./spec/lock/lockfile_spec.rb:2215`
+
+三条均为锁体断言失败（非环境抛出），与旧基线同一集合、消息未见变化。
+
+与旧基线的差集（按 example 标题集合比对，两次均 64 例）：
+
+- 新增通过（1 条）：`the lockfile format generates a lockfile with a ref for a single pinned source, git gem with a tag requirement` — `./spec/lock/lockfile_spec.rb:622`（旧基线中该例在失败集）。
+- 新增失败（1 条）：`the lockfile format generates a lockfile with a ref for a single pinned source, git gem with a branch requirement` — `./spec/lock/lockfile_spec.rb:586`，`RuntimeError`，调用链 `spec/lock/lockfile_spec.rb:594` ← `spec/support/helpers.rb:288 install_gemfile` ← `script/upstream-specs-celerite-override.rb:44 bundle` ← `spec/support/helpers.rb:191 sys_exec` ← `spec/support/subprocess.rb:97 sh` ← `spec/support/command_execution.rb:25 raise_error!`；消息含 `git command failed: git clone --mirror ...` 与 `1 [main] sh (30648) C:\Program Files\Git\usr\bin\sh.exe: *** fatal error - NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0S5-1888ae32e00d56aa): 0xC0000022`、`fatal: Could not read from remote repository.`，属下方声明的 msys Low-IL 环境族，不是产品缺陷。
+- 仍失败（47 条）：48 条失败减去 1 条新增失败，47 条与旧基线共有且状态未变。
+- 合计口径自洽：16 通过 + 48 失败 = 64；通过数 16 与旧基线相同（1 进 1 出）。
+- 桶间漂移（状态仍是 failed，非转绿/转红）：`... correct GIT section, but also under an incorrect GEM section, with a higher version, and with no explicit Gemfile requirement` 由 `env:artifice-unreachable` 移到 `env:low-il-shm`；`the lockfile format is conservative with dependencies of git gems` 由 `env:low-il-shm` 移到 `env:artifice-unreachable`。
+
+16 条通过例（`file:line`）：`:1119`、`:777`、`:1154`、`:744`、`:1648`、`:2144`、`:1479`、`:477`、`:2088`、`:1468`、`:622`、`:1933`、`:2410`、`:1084`、`:550`、`:1189`（均在 `./spec/lock/lockfile_spec.rb`）。
+
+2.7.2 profile：**未复采成功**。`UPSTREAM_REV=v2.7.2 CELERITE_SKIP_TEST_DEPS=1 bash script/upstream-specs` 于 `2026-11-22T17:54:50Z` 起、`17:55:49Z` 止（约 1 分钟），得 `0 examples, 0 failures, 1 error occurred outside of examples`、`real-drive: 0 celerite invocations`、`WARNING: NOT driving celerite`、退出码 1，报告 `.upstream-specs/upstream-lockfile-v2.7.2-20261122T175451Z.md`（3,204 B），报错 `LoadError: cannot load such file -- .../.upstream-specs/v2.7.2/bundler/spec/lock/lockfile_spec.rb`。诊断：该 checkout 的 `git sparse-checkout list` 仍写着 `bundler/bin`/`bundler/exe`/`bundler/lib`/`bundler/spec`，但 `bundler/` 在磁盘上为空（脚本先 re-clone 再 reindex、未校验 sparse 路径是否落地）。既有 `upstream-lockfile-v2.7.2-20261113T161443Z.md` 报的是逐字相同的 `LoadError` 与同一计数行，即本机从未采到过 2.7.2 baseline；此为装具/检出缺陷，非本次改动所致。
+
+### 已声明差异
+
+- **旧基线 `64 examples, 48 failures` 采集于 `e71ed06`（task-118，2026-11-22 02:43Z），已被本条 HEAD `155639c` 的复采结果取代。** 总数、real-drive、桶总数均未变，故 M7-8 的待办状态不因本次复采改变；取代关系仅在于「基线时点」与上列 ±1 例的构成变化。
+- 环境族在本机不可消除，本节不据其判定产品差异：① 宿主 Ruby 缺 `sinatra`/`artifice`（`require 'sinatra/base'` → LoadError），`env:artifice-unreachable` 40 条属此类；② msys Low-IL 下的 `0xC0000022`（`NtCreateDirectoryObject`）使部分 git 源用例在任何二进制下都失败，本轮新增失败的 `lockfile_spec.rb:586` 即此族；③ 上游 `tmp/2.1/gems/` 只有 `base`/`remote1`、缺 `remote2`/`system`，`fixture:fetch-failed` 3 条属此类。
+- 本次未做多次采样，`8 minutes 47 seconds` 与 seed 31249 均为单次观测；`product:candidates` 三条选在本次未做逐条差分定位，故只记入桶、不宣称产品结论变化。
+- 2.7.2 profile 未取得有效 baseline（见上），本条不对 2.7.2 作任何结论。
