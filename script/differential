@@ -280,11 +280,29 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
   # The exact path-root mismatch was not reproduced in isolation (a standalone
   # replay of the old commands produced a valid `.git`), so the mechanism stays
   # a hypothesis while the fix itself is verified.
+  # Staging is validated, never assumed (task-154). A stub that is empty on
+  # disk — e.g. a directory recorded as a gitlink (mode 160000) with no
+  # `.gitmodules`, which materializes as an empty dir in every fresh
+  # clone/worktree — still satisfies `[ -d ]`, and `git commit` then fails
+  # with "nothing to commit". The harness used to ignore both that failure
+  # and the `git add` exit code, hand each sandbox a zero-commit bare repo
+  # and keep running, so "the fixture is unavailable" came out as the same
+  # differential failure on both sides, indistinguishable from a real
+  # product difference. Any stub that yields no commit now aborts the run.
   if [ -f "$fixture_dir/git-init" ]; then
     staging="$(mktemp -d "$work/gitstage.XXXXXX")"
     staging_win="$(cygpath -w "$staging")"
-    while IFS= read -r rel; do
-      [ -d "$fixture_dir/extra/$rel" ] || continue
+    # `|| [ -n "$rel" ]` also processes a final manifest line that lacks a
+    # trailing newline; without it that entry is silently skipped and the
+    # stub never reaches the validation below.
+    while IFS= read -r rel || [ -n "$rel" ]; do
+      rel="${rel%$'\r'}"
+      [ -n "$rel" ] || continue
+      if [ ! -d "$fixture_dir/extra/$rel" ]; then
+        echo "error: git-init manifest for fixture '$name' lists 'extra/$rel', which does not exist; refusing to continue" >&2
+        rm -rf "$staging"
+        exit 2
+      fi
       rm -rf "$staging/$rel"
       mkdir -p "$staging/$rel"
       cp -r "$fixture_dir/extra/$rel/." "$staging/$rel/"
@@ -294,11 +312,25 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
       GIT_AUTHOR_DATE="2026-01-01T00:00:00Z" GIT_COMMITTER_DATE="2026-01-01T00:00:00Z" \
         git -C "$staging_win/$rel" -c core.autocrlf=false -c commit.gpgsign=false \
         init -q -b master >/dev/null
-      git -C "$staging_win/$rel" -c core.autocrlf=false add -A
+      add_code=0
+      git -C "$staging_win/$rel" -c core.autocrlf=false add -A || add_code=$?
+      commit_code=0
       GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.test \
       GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.test \
       GIT_AUTHOR_DATE="2026-01-01T00:00:00Z" GIT_COMMITTER_DATE="2026-01-01T00:00:00Z" \
-        git -C "$staging_win/$rel" -c commit.gpgsign=false commit -q -m init
+        git -C "$staging_win/$rel" -c commit.gpgsign=false commit -q -m init || commit_code=$?
+      HEAD_COUNT=0
+      HEAD_COUNT="$(git -C "$staging_win/$rel" rev-list --count HEAD 2>/dev/null)" || HEAD_COUNT=0
+      [ -n "$HEAD_COUNT" ] || HEAD_COUNT=0
+      # Validate BEFORE the stub is copied into either sandbox: a zero-commit
+      # repo must never reach a side, or the two sides agree on a broken
+      # fixture and the failure reads as a product difference.
+      if [ "$add_code" -ne 0 ] || [ "$commit_code" -ne 0 ] || [ "$HEAD_COUNT" -eq 0 ]; then
+        echo "error: git-init fixture stub 'extra/$rel' produced no commit (empty or unreadable stub); refusing to continue" >&2
+        echo "error:   fixture='$name' staging='$staging_win/$rel' add_exit=$add_code commit_exit=$commit_code head_commits=$HEAD_COUNT" >&2
+        rm -rf "$staging"
+        exit 2
+      fi
       # Tags cannot be committed into the tree, so fixtures list them in an
       # optional `git-tag` TSV manifest (`<rel>\t<tag>`); tag the staged repo
       # here, before it is copied into both sandboxes.
