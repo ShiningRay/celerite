@@ -1,0 +1,2 @@
+The dependencies in your gemfile changed, but the lockfile can't be updated
+Run `bundle install` elsewhere and add the updated Gemfile.lock to version

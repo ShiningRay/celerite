@@ -1,0 +1,19 @@
+GEM
+  remote: file:///@INDEX_DIR@/
+  specs:
+    json_pure (2.8.1)
+    thor (1.3.2)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  json_pure
+
+CHECKSUMS
+  bundler (4.0.24) sha256=16ca64e20816a0cf151a948fb141d788602996d2b4d73577b74388fe84fa98bc
+  json_pure (2.8.1) sha256=6a877929ba9d4fa0808ccc38656d1b15d138b2aa0aa32037ee05abea13427ace
+  thor (1.3.2) sha256=eef0293b9e24158ccad7ab383ae83534b7ad4ed99c09f96f1a6b036550abbeda
+
+BUNDLED WITH
+   4.0.24

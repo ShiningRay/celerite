@@ -1,0 +1,2 @@
+Your lockfile is missing "json_pure", but can't be updated because frozen mode
+Run `bundle install` elsewhere and add the updated Gemfile.lock to version
