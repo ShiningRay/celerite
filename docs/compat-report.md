@@ -192,7 +192,8 @@ script/profile                    # refresh profile numbers
 
 ## Evidence index
 
-- 逐日证据日志：[docs/compat-evidence/README.md](compat-evidence/README.md)（含 12 个文件清单与 211 个节的标题索引 + 锚点行）。
+- 兼容性断言账本（按子项组织的结论：现在有哪些断言成立、凭什么成立、怎么重跑）：[docs/compat-claims/README.md](compat-claims/README.md)。
+- 逐日证据日志（过程档案）：[docs/compat-evidence/README.md](compat-evidence/README.md)（含 12 个文件清单与 211 个节的标题索引 + 锚点行）。
 - 治理前的报告头部（原行 1-401，含 2026-11-11 task-2 本地校验、2026-11-15 env/console/gem 模板子节、97 夹具的 M0–M6 归类清单、当时的环境与免责声明）：[docs/compat-evidence/2026-11-11.md](compat-evidence/2026-11-11.md)。
 - 夹具证据转储（生成的逐例对比）：`docs/compat-matrix/generated/differential-4.0.24-2026-11-11.md`、`cli-4.0.24.md`、`cli-2.7.2.md`、`upstream-lockfile-v4.0.24.md`。
 - 主题矩阵（手写）：`docs/compat-matrix/`（lockfile-sections.md、gemfile-dsl.md、cli-commands.md、config-keys.md）。
