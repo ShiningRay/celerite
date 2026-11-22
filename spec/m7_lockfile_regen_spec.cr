@@ -28,8 +28,18 @@ private def regen_index_remote : String
   file_source_url(File.expand_path(File.join(__DIR__, "..", "fixtures", "gem-index")))
 end
 
-private def regen_gemfile(remote : String, specs : String, deps : String) : String
-  "GEM\n  remote: #{remote}/\n  specs:\n#{specs}\nPLATFORMS\n  ruby\n\nDEPENDENCIES\n#{deps}\n\nBUNDLED WITH\n   4.0.24\n"
+# `definition.rb:844-848` (`current_platform_locked?`): a `ruby` entry only
+# covers the host when `Bundler.generic_local_platform` is `ruby` (Windows
+# reports `universal-mingw`), so a reusable lock must also name the host
+# platform. The default below keeps every reuse precondition satisfiable; the
+# ruby-only variant is covered by its own example.
+private def regen_platforms : String
+  "  ruby\n  #{Celerite::Gem::Platform.local}\n"
+end
+
+private def regen_gemfile(remote : String, specs : String, deps : String,
+                          platforms : String = regen_platforms) : String
+  "GEM\n  remote: #{remote}/\n  specs:\n#{specs}\nPLATFORMS\n#{platforms}\nDEPENDENCIES\n#{deps}\n\nBUNDLED WITH\n   4.0.24\n"
 end
 
 describe "lockfile regeneration" do
@@ -67,6 +77,33 @@ describe "lockfile regeneration" do
           resolution = Celerite::Resolution.new(Celerite::Definition.build, false, client)
           resolution.progress = IO::Memory.new
           resolution.reuse_locked?.should be_true
+          resolution.resolve!(reuse: true).map(&.name).should eq(["thor"])
+        end
+      end
+    end
+  end
+
+  # `definition.rb:844-848` + `:150` + `:635`: a `ruby`-only `PLATFORMS` entry
+  # does NOT cover a host whose `generic_local_platform` differs from `ruby`
+  # (Windows: `universal-mingw`), so `@current_platform_missing` is set and
+  # `something_changed?` forces a re-resolve. Reusing the lock here would hide
+  # the whole index fetch — measured 4.0.24: `install` against an unreachable
+  # source with a `ruby`-only lock and a populated `vendor/cache` exits 17,
+  # while the same tree with `x64-mingw-ucrt` locked exits 0.
+  it "re-resolves when the lockfile only covers `ruby` on a non-ruby host" do
+    pending! "ruby not available" unless ruby_available?
+    skip = Celerite::Gem::Platform.new("ruby").match?(Celerite::Gem::Platform.local)
+    pending! "generic local platform is ruby" if skip
+    remote = regen_index_remote
+    with_regen_bridge do
+      with_project({
+        "Gemfile"      => %(source "#{remote}"\n\ngem "thor"\n),
+        "Gemfile.lock" => regen_gemfile(remote, "    thor (1.3.2)\n", "  thor\n", platforms: "  ruby\n"),
+      }) do
+        with_client do |client|
+          resolution = Celerite::Resolution.new(Celerite::Definition.build, false, client)
+          resolution.progress = IO::Memory.new
+          resolution.reuse_locked?.should be_false
           resolution.resolve!(reuse: true).map(&.name).should eq(["thor"])
         end
       end

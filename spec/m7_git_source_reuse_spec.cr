@@ -31,11 +31,20 @@ private def git_reuse_lock(index : String, options : String, version : String = 
     io << "  specs:\n"
     io << "\nPLATFORMS\n"
     io << "  ruby\n"
+    # `definition.rb:844-848`: a `ruby` entry covers the host only where the
+    # generic local platform is `ruby`; every other host needs its own entry,
+    # otherwise `@current_platform_missing` (`:150`) forces a re-resolve and
+    # the reuse gate must stay false.
+    io << "  " << git_reuse_local_platform << "\n"
     io << "\nDEPENDENCIES\n"
     io << "  ckeditor!\n"
     io << "\nBUNDLED WITH\n"
     io << "   4.0.24\n"
   end
+end
+
+private def git_reuse_local_platform : String
+  Celerite::Gem::Platform.local.to_s
 end
 
 private def path_reuse_gemspec(name : String, version : String) : String
@@ -120,6 +129,7 @@ describe "git source reuse" do
 
       PLATFORMS
         ruby
+        #{Celerite::Gem::Platform.local}
 
       DEPENDENCIES
         pathgem!
@@ -158,6 +168,7 @@ describe "git source reuse" do
 
       PLATFORMS
         ruby
+        #{Celerite::Gem::Platform.local}
 
       DEPENDENCIES
         pathgem!

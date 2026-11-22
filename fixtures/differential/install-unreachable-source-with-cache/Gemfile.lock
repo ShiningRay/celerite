@@ -1,0 +1,13 @@
+GEM
+  remote: http://127.0.0.1:9/
+  specs:
+    plain-gem (0.2.0)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  plain-gem
+
+BUNDLED WITH
+    @BUNDLER_VERSION@
