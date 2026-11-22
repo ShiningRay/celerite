@@ -2964,14 +2964,20 @@ module Celerite
       # reference re-resolves and may promote the gem. Opt into that here.
       resolution.drop_incomplete_locked_specs = true
       # `cli/lock.rb:47` calls `configure_gem_version_promoter` only when
-      # `--update` is given; `common.rb:134-148` then uses the requested level
-      # or `:major`, and `prefer_patch` (the `--strict` flag / the setting)
-      # tightens it to patches. Without this wiring `lock --patch --update`
-      # promoted json_pure 2.6.0 to 2.8.1 instead of staying on the patch line.
+      # `--update` is given; `common.rb:134-144` then takes the requested level,
+      # or `:patch` when no level was asked for and `prefer_patch` is set
+      # (`common.rb:136` appends `:patch` to `patch_level`), or `:major`
+      # otherwise. Without this wiring `lock --patch --update` promoted
+      # json_pure 2.6.0 to 2.8.1 instead of staying on the patch line, and
+      # `BUNDLE_PREFER_PATCH=true lock --update` did the same because the
+      # `:major` default overrode the setting.
       if update || !update_names.empty?
-        resolution.version_promotion = requested_promotion_level(rest) || "major"
-        resolution.version_promotion_strict =
-          rest.includes?("--strict") || definition.config["prefer_patch"] == true
+        level = requested_promotion_level(rest)
+        level = "patch" if level.nil? && definition.config["prefer_patch"] == true
+        resolution.version_promotion = level || "major"
+        # `common.rb:141`: `strict` comes from the flag only, never from
+        # `prefer_patch` (which selects the level instead).
+        resolution.version_promotion_strict = rest.includes?("--strict")
       end
       # Nothing to unlock and `DEPENDENCIES` already matches the Gemfile: the
       # reference resolves nothing, so plain `lock` prints only "Writing

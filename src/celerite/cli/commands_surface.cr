@@ -227,9 +227,13 @@ module Celerite
           stderr.puts "Provide only one of the following options: #{conflicts.join(", ")}"
           return 15
         end
-        resolution.version_promotion = Commands.requested_promotion_level(rest)
-        resolution.version_promotion_strict =
-          rest.includes?("--strict") || definition.config["prefer_patch"] == true
+        # `cli/common.rb:134-144`: the level is the requested one, else `:patch`
+        # when `prefer_patch` is set (`:136` appends it before `level.first`),
+        # else `:major`; `strict` is the flag alone (`:141`).
+        update_level = Commands.requested_promotion_level(rest)
+        update_level = "patch" if update_level.nil? && definition.config["prefer_patch"] == true
+        resolution.version_promotion = update_level || "major"
+        resolution.version_promotion_strict = rest.includes?("--strict")
 
         # BUNDLED WITH semantics: update does not auto-switch -it records
         # the running bundler version in the rewritten lockfile (pinned
