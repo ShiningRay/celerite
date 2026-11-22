@@ -1,4 +1,5 @@
 require "./errors"
+require "./definition"
 require "digest/sha1"
 require "file_utils"
 
@@ -40,8 +41,16 @@ module Celerite
       Digest::SHA1.hexdigest(input)
     end
 
-    def revision_cached? : Bool
-      Dir.exists?(mirror)
+    # True when `revision` is present in the local mirror, mirroring the
+    # reference's `GitProxy#has_revision_cached?` (`git cat-file -e <rev>`):
+    # the question is whether the *revision* is cached, not whether the mirror
+    # directory exists.
+    def revision_cached?(revision : String) : Bool
+      return false unless Dir.exists?(mirror)
+      run("git", ["cat-file", "-e", revision], mirror)
+      true
+    rescue GitError
+      false
     end
 
     # Clones/updates the bare mirror and returns the revision for the ref.
@@ -51,10 +60,20 @@ module Celerite
     # accident (reference: `Bundler::Source::Git#revision_for`).
     def fetch(branch : String? = nil, tag : String? = nil, ref : String? = nil) : String
       FileUtils.mkdir_p(File.dirname(mirror))
-      unless Dir.exists?(mirror)
-        run("git", ["clone", "--mirror", @remote, mirror])
-      else
-        run("git", ["fetch", "--quiet", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"], mirror)
+      begin
+        unless Dir.exists?(mirror)
+          run("git", ["clone", "--mirror", @remote, mirror])
+        else
+          run("git", ["fetch", "--quiet", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"], mirror)
+        end
+      rescue ex : GitError
+        # Reference: `Source::Git#fetch` (`source/git.rb:416-420`) warns and
+        # keeps going when the remote cannot be reached. Degrade only when the
+        # mirror already holds the revision we are about to use — otherwise the
+        # error stands (`git_proxy.rb:400-406` decides cache freshness by
+        # probing the revision, not by the directory existing).
+        raise ex unless revision_cached_for?(branch: branch, tag: tag, ref: ref)
+        Definition.default_warning_sink.puts "Using cached git data because of network errors:\n#{ex.message}"
       end
       revision_for(branch: branch, tag: tag, ref: ref)
     end
@@ -62,16 +81,7 @@ module Celerite
     # Resolves a revision without fetching (used when the lockfile already
     # pins a revision and the mirror is present).
     def revision_for(branch : String? = nil, tag : String? = nil, ref : String? = nil) : String
-      target =
-        if branch
-          "refs/heads/#{branch}"
-        elsif tag
-          "refs/tags/#{tag}"
-        elsif ref
-          ref
-        else
-          "HEAD"
-        end
+      target = revision_target(branch: branch, tag: tag, ref: ref)
       output = run("git", ["rev-parse", "--verify", "#{target}^{commit}"], mirror).strip
       raise Error.new("git revision not found for #{target} in #{@remote}") if output.empty?
       output
@@ -108,6 +118,22 @@ module Celerite
       return true if remote.starts_with?("/") || remote.starts_with?("\\")
       return true if remote.matches?(/\A[A-Za-z]:[\\\/]/)
       !remote.includes?("://") && !remote.matches?(/\A[\w.-]+@[\w.-]+:/)
+    end
+
+    private def revision_target(branch : String? = nil, tag : String? = nil, ref : String? = nil) : String
+      if branch
+        "refs/heads/#{branch}"
+      elsif tag
+        "refs/tags/#{tag}"
+      elsif ref
+        ref
+      else
+        "HEAD"
+      end
+    end
+
+    private def revision_cached_for?(branch : String? = nil, tag : String? = nil, ref : String? = nil) : Bool
+      revision_cached?(revision_target(branch: branch, tag: tag, ref: ref))
     end
 
     private def run(executable : String, args : Array(String), chdir : String? = nil) : String
