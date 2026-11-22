@@ -1126,7 +1126,8 @@ module Celerite
             false
           end
         end
-        @progress.puts "Resolving dependencies..." if @show_resolving && available && !platform_ready
+        healed = available && heal_missing_locked_spec_rows
+        @progress.puts "Resolving dependencies..." if @show_resolving && (healed || (available && !platform_ready))
         return @resolved_specs
       end
 
@@ -1190,6 +1191,7 @@ module Celerite
           # otherwise re-resolves `without` the offending spec.
           stale = stale_locked_dependency_full_names
           if stale.empty?
+            heal_missing_locked_spec_rows
             return @resolved_specs
           end
           if @definition.config["frozen"] == true
@@ -1745,6 +1747,93 @@ module Celerite
         ResolvedSpec.new(spec.name, spec.version, spec.platform, dependencies, spec.checksum,
           spec.source_index, spec.source_type, spec.source_info, spec.source_remote,
           spec.required_ruby_version, spec.required_rubygems_version, spec.default_gem)
+      end
+      changed
+    end
+
+    # `definition.rb:699-708` + `spec_set.rb:125-129,241-270`: the reference
+    # materializes the locked graph by walking the dependency closure
+    # (`materialize_dependencies` pushes `materialization.dependencies` back onto
+    # the worklist and appends a materialization for every visited name), so a
+    # lockfile that records a spec's edge but not the spec row itself gains that
+    # row from the rich source. `lazy_specification.rb:260-268` detects the
+    # mismatch as `IncorrectLockfileDependencies` and `definition.rb:702-705`
+    # answers with `reresolve_without([spec])`.
+    #
+    # The reuse/local path materializes straight from the lockfile rows
+    # (`materialize_locked`), so nothing is ever appended: the missing rows stay
+    # missing and the installer then reports fewer gems than the reference. The
+    # locked versions are kept (`reresolve_without` only deletes from the
+    # resolution base, `definition.rb:782-785`, while the promoter keeps
+    # receiving the untouched `@originally_locked_specs`, `definition.rb:1323`),
+    # so a row added here must never upgrade an existing one.
+    #
+    # Only rows the local sources can actually satisfy take part: installed
+    # specs and the app cache (`source/rubygems.rb:69-76`) are the only
+    # candidates a `--local` source knows, and an unresolvable edge must stay
+    # untouched so the installer keeps reporting the missing package.
+    # Returns true when at least one spec row was appended or one edge rewritten.
+    private def heal_missing_locked_spec_rows : Bool
+      rows = @resolved_specs.select { |spec| spec.source_type == "GEM" }
+      gossip = {} of String => Resolver::IndexSpec
+      queue = rows.map(&.name)
+      until queue.empty?
+        name = queue.shift
+        locked = rows.find { |spec| spec.name == name }
+        next if locked.nil?
+        candidate = local_index_specs(name).find { |spec| spec.full_name == locked.full_name }
+        next if candidate.nil?
+        edge_names = candidate.dependencies.map(&.name).reject("bundler")
+        locked_names = locked.dependencies.map(&.name)
+        edge_names.each do |edge|
+          next if locked_names.includes?(edge)
+          child_index = local_index_specs(edge).find do |spec|
+            candidate.dependencies
+              .select { |dep| dep.name == edge }
+              .all? { |dep| dep.requirement.satisfied_by?(spec.version) }
+          end
+          next if child_index.nil?
+          next if rows.any? { |spec| spec.full_name == child_index.full_name }
+          queue << child_index.name
+          gossip[child_index.name] = child_index
+        end
+      end
+      return false if gossip.empty?
+
+      added = Set(String).new
+      changed = false
+      @resolved_specs = @resolved_specs.map do |spec|
+        extra = [] of Lockfile::SpecDependency
+        if added.add?(spec.full_name)
+          candidate = local_index_specs(spec.name).find { |entry| entry.full_name == spec.full_name }
+          extra = candidate.nil? ? [] of Lockfile::SpecDependency : candidate.dependencies.compact_map do |dep|
+            child = gossip[dep.name]?
+            next if child.nil?
+            next if spec.dependencies.any? { |existing| existing.name == dep.name }
+            Lockfile::SpecDependency.new(dep.name, dep.requirement.to_lock_requirements)
+          end
+        end
+        missing = gossip[spec.name]?
+        if extra.empty? && missing.nil?
+          next spec
+        end
+        changed = true
+        dependencies = spec.dependencies + extra
+        ResolvedSpec.new(spec.name, spec.version, spec.platform, dependencies, spec.checksum,
+          spec.source_index, spec.source_type, spec.source_info, spec.source_remote,
+          spec.required_ruby_version, spec.required_rubygems_version, spec.default_gem)
+      end
+      gossip.each_value do |entry|
+        next if added.includes?(entry.full_name)
+        changed = true
+        dependencies = entry.dependencies.compact_map do |dep|
+          next if dep.name == "bundler"
+          Lockfile::SpecDependency.new(dep.name, dep.requirement.to_lock_requirements)
+        end
+        platform = entry.platform_ruby? ? nil : entry.platform.to_s
+        @resolved_specs << ResolvedSpec.new(entry.name, entry.version, platform, dependencies,
+          entry.checksum, 0, "GEM", nil, primary_remote, entry.required_ruby_version,
+          entry.required_rubygems_version)
       end
       changed
     end
