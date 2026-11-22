@@ -64,6 +64,14 @@ private def with_index_missing_bridge(&)
   end
 end
 
+# The message embeds the fixture's *absolute* path, so its length follows the
+# checkout path. Size the wide terminal off the message itself instead of a
+# fixed column count, otherwise the assertion silently depends on how deep the
+# repository lives.
+private def index_missing_wide_columns : String
+  (index_missing_message.size + 20).to_s
+end
+
 private def with_index_missing_columns(columns : String?, &)
   previous = ENV["THOR_COLUMNS"]?
   if columns
@@ -86,10 +94,10 @@ describe "M7(4) GEM source index fetch failure" do
   it "reports Could not fetch specs from, retries three times and exits 17" do
     with_index_missing_bridge do
       with_project({"Gemfile" => index_missing_gemfile}) do
-        # Wide terminal: this example pins wording and ordering, not wrap
-        # points (the fixture's absolute path decides where the wrap lands, and
-        # `differential index-missing-specs` pins the 80-column rendering).
-        with_index_missing_columns("400") do
+        # Wide enough for the whole message on one line: this example pins
+        # wording and ordering, not wrap points (`differential
+        # index-missing-specs` pins the 80-column rendering).
+        with_index_missing_columns(index_missing_wide_columns) do
           code, out, err = run_cli(["install"])
 
           code.should eq(17)
@@ -119,10 +127,12 @@ describe "M7(4) GEM source index fetch failure" do
           end
           lines[0..2].each { |line| line.size.should be > 80 }
           # The final message goes through `Commands.word_wrap` at the default
-          # width: the reference's break after "from" is reproduced here (the
-          # wide-column example above proves the break comes from the width,
-          # not from a hard-coded newline in the message).
-          err.should contain("Could not fetch specs from\n")
+          # width. The break point moves with the checkout path length, so
+          # only assert that the first wrapped line is a strict prefix of the
+          # message: the width cut it, not a hard-coded newline.
+          first_wrapped = lines[3]
+          index_missing_message.starts_with?(first_wrapped).should be_true
+          first_wrapped.size.should be < index_missing_message.size
           lines[3..].join("\n").gsub(/\s+/, " ").strip.should eq(index_missing_message.gsub(/\s+/, " ").strip)
         end
       end
