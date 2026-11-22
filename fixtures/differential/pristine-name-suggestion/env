@@ -1,0 +1,1 @@
+CELERITE_BRIDGE_SERVER=@INDEX_DIR@/../../assets/bridge/server.rb

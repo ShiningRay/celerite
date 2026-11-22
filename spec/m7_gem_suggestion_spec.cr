@@ -6,10 +6,11 @@ require "./spec_helper"
 # raises `gem_not_found_message(name, locked_names)` for a name the lockfile
 # does not carry (`cli/common.rb:113-123`): the plain `Could not find gem
 # 'NAME'.` line, plus a `Did you mean ...?` line when the lowercased name is
-# itself locked or when `Suggestions` finds a near miss. Only the `lock
-# --update` path is wired to that helper in celerite
-# (`src/celerite/cli/commands.cr:2993`); these examples pin the helper's three
-# text shapes through it.
+# itself locked or when `Suggestions` finds a near miss. celerite wires
+# `lock --update` (`src/celerite/cli/commands.cr:2993`), `update`
+# (`src/celerite/cli/commands_surface.cr:126`) and `pristine`
+# (`src/celerite/cli/commands_surface.cr:3004`) to that helper; these examples
+# pin the helper's three text shapes and both newly wired commands.
 private def gem_suggestion_index_url : String
   index = File.expand_path("../fixtures/gem-index", __DIR__).gsub('\\', "/")
   "file:///#{index.sub(%r{^/}, "")}"
@@ -114,6 +115,54 @@ describe "gem name suggestions" do
       code.should eq(7)
       out.should be_empty
       err.should eq("Could not find gem 'aad'.\nDid you mean 'aac' or 'aab'?\n")
+    end
+  end
+
+  # `cli/update.rb:47` runs `ensure_all_gems_in_lockfile!` for a scoped update,
+  # so the misspelled name carries the same suggestion line. Measured against
+  # bundler 4.0.24: exit 7, empty stdout, the two lines below verbatim.
+  it "suggests the near miss for `update NAME`" do
+    with_gem_suggestion_project do
+      code, out, err = run_cli(["update", "json_pur"])
+      code.should eq(7)
+      out.should be_empty
+      err.should eq("Could not find gem 'json_pur'.\nDid you mean 'json_pure'?\n")
+      err.lines.size.should eq(2)
+    end
+  end
+
+  # Case-only mismatch through the `update` wiring: the lowercased locked name
+  # is echoed (same short-circuit as `lock --update`).
+  it "reports the lowercased locked name for `update NAME`" do
+    with_gem_suggestion_project do
+      code, out, err = run_cli(["update", "JSON_PURE"])
+      code.should eq(7)
+      out.should be_empty
+      err.should eq("Could not find gem 'JSON_PURE'.\nDid you mean 'json_pure'?\n")
+      err.lines.size.should eq(2)
+    end
+  end
+
+  # `cli/pristine.rb:10` shares the guard; the reference prints the identical
+  # pair and exits 7.
+  it "suggests the near miss for `pristine NAME`" do
+    with_gem_suggestion_project do
+      code, out, err = run_cli(["pristine", "json_pur"])
+      code.should eq(7)
+      out.should be_empty
+      err.should eq("Could not find gem 'json_pur'.\nDid you mean 'json_pure'?\n")
+      err.lines.size.should eq(2)
+    end
+  end
+
+  # And the case-only branch through `pristine`.
+  it "reports the lowercased locked name for `pristine NAME`" do
+    with_gem_suggestion_project do
+      code, out, err = run_cli(["pristine", "JSON_PURE"])
+      code.should eq(7)
+      out.should be_empty
+      err.should eq("Could not find gem 'JSON_PURE'.\nDid you mean 'json_pure'?\n")
+      err.lines.size.should eq(2)
     end
   end
 end
