@@ -244,3 +244,77 @@ specs_with_different_dep_lines=16  order_only=16  content_different=0
 - **未验证项**：①install 进程的数值退出码未取到——`Start-Process -PassThru` 在本环境返回空 `ExitCode`（对照命令 `celerite --version` 同样为空，而直调 `$LASTEXITCODE=0`），成功仅由末两行完成提示与 stderr 0 行推定；②如④，参考侧未在本轮重跑；③只跑一次 install，未验证二次运行是否仍不重写锁。
 
 **结论：锁维度未解释差异 = 0。** M7-9 的 Rails 规模行在 task-175 之后于本机锁层面闭合，但因参考侧未重跑、安装树未逐文件比较，仍不据此恢复「该 profile 兼容」的声明。
+
+
+## 2026-11-23：安装树、`check`、`exec` 的逐项比对与未解释差异收口（task-194）
+
+### 任务
+
+`docs/roadmap.md:149` 的闭合判据是「记录所有有意兼容差异及理由；未解释差异为零后才恢复『该 profile 兼容』的声明」。task-179 只把**锁维度**做到逐字节相同（10663 B / 64 条 spec / `c76c7df6…a199b1`），本任务在同一把 oracle 锁下把**安装树**、`check`、`exec`、`binstubs` 一并比完，并给出未解释差异清单。全程不改产品代码；发现可修处只报最小落点。
+
+### 环境与配方
+
+- worktree `C:\temp\celerite-t194`，HEAD `954f2d5`；`crystal build src/cli.cr -o bin/celerite.exe` exit 0，产物 12772691 B（两条 `File.executable?` 弃用告警，`src/celerite/cli/commands_install.cr:1760`、`:1823`）。
+- 两侧探针 `.tmp-scratch/probe-cel`、`.tmp-scratch/probe-ref`：`Gemfile` 两行（`source "https://rubygems.org"` + `gem "rails", "8.0.2"`，51 B）、`Gemfile.lock` = oracle 副本（10663 B，sha256 `c76c7df696da12c829933aa0a22904aa2742bc73f7f19a971fb3e92d86a199b1`），各自隔离的 `bundle/`、`home/`、`tmp/`。
+- 运行环境（两侧相同）：`PATH` 前置 `C:\msys64\usr\bin;C:\msys64\ucrt64\bin;C:\Ruby40-x64\bin;C:\Ruby40-x64\msys64\usr\bin`，`SSL_CERT_FILE=C:/msys64/usr/ssl/cert.pem`，`BUNDLE_PATH=<probe>\bundle`、`BUNDLE_GEMFILE=<probe>\Gemfile`、`BUNDLE_USER_HOME=<probe>\home`，`TMPDIR`/`TMP`/`TEMP`/`HOME`/`USERPROFILE`/`CRYSTAL_CACHE_DIR` 全在 worktree 内。
+- 参考侧：`& 'C:\Ruby40-x64\bin\ruby.exe' 'C:\Ruby40-x64\lib\ruby\gems\4.0.0\gems\bundler-4.0.24\exe\bundle'`。install 两侧各只跑一次，未重试。
+
+### 实测一：`install` 与安装树
+
+- cel：`bin\celerite.exe install` exit 0，705 s，stdout 131 行、stderr 0 行；ref：exit 0，148 s，stdout 131 行、stderr 0 行。两侧 stdout 形状相同：`Fetching ` 各 65 行（首行 `Fetching gem metadata from https://rubygems.org/.........`）、`Installing ` 各 64 行且逐行集合完全相同，末两行逐字同为 `Bundle complete! 1 Gemfile dependency, 64 gems now installed.` 与 `Bundled gems are installed into ./bundle`；`Resolving dependencies...` 两侧均 0 次。
+- 两侧锁均未被改写：10663 B / sha256 `c76c7df696da12c829933aa0a22904aa2742bc73f7f19a971fb3e92d86a199b1`。
+- 全树逐文件比对（`Get-ChildItem -Recurse -File` + SHA256，两侧探针路径归一后再比；脚本与结果 `.tmp-scratch/compare.ps1`、`.tmp-scratch/compare.json`、`.tmp-scratch/sets-summary.txt`）：文件数 cel 4479 / ref 4480，`only_in_cel=0`、`only_in_ref=1`、`content_diff=39`、纯路径差异 0。
+- 集合级全部相等（`only_*` 均为 0）：`gems` 目录名 64/64；`specifications/*.gemspec` 文件名 + 内容 sha256 64/64；`cache/*.gem` 文件名 + 内容 sha256 64/64；`extensions/` 递归相对路径 28/28；`*.so` 相对路径 22/22；`bin/` 文件名 24/24。
+- 差异明细（共 40 个文件条目）：(a) `only_in_ref` 唯一一条 `ruby/4.0.0/plugins/rdoc_plugin.rb`（61 B，内容 `require_relative '../gems/rdoc-8.1.0/lib/rubygems_plugin.rb'`），cel 侧 `plugins/` 为空；(b) 12 个 `bin/*.bat`（cel 32 B / ref 34 B，去掉 CR 后逐字节相同 ⇒ 仅 LF vs CRLF）；(c) 14 个 `.so`（`extensions/x64-mingw-ucrt/4.0.0/<gem>/` 与 `gems/<gem>/lib/` 各 7 个，cel 侧均更小：date_core 232960/236544、rbs_extension 296448/299008、bigdecimal 125952/128512、console 47616/50688、cparse 20992/24576、escape 14848/17920、websocket_mask 9728/12800；22 个 `.so` 中 8 个逐字节相同）；(d) 13 个构建日志（8 个 `gem_make.out` + 5 个 `mkmf.log`，后者只在 bigdecimal/date/erb/io-console/rbs 出现）。
+
+### 实测二：`.so` 与构建日志的差因
+
+- `racc/cparse.so` 内嵌标识：cel `GCC: (Rev6, Built by MSYS2 project) 16.2.0`，ref `GCC: (Rev5, Built by MSYS2 project) 16.1.0`；`C:\msys64\ucrt64\bin\gcc.exe --version` = Rev6 16.2.0，`C:\Ruby40-x64\msys64\ucrt64\bin\gcc.exe --version` = Rev5 16.1.0。
+- 两侧 `mkmf.log` 的 PATH 串前缀不同：ref 为 `.;C:/Ruby40-x64/lib;C:\Ruby40-x64\bin;C:\Ruby40-x64\msys64\ucrt64\bin;C:\Ruby40-x64\msys64\usr\bin;` + 本任务前置项 + 基线；cel 为 `.;C:/Ruby40-x64/lib;` + 本任务前置项 + 基线（无 Ruby 自带 msys64 目录）。故 extconf 解析到不同发行版的 `gcc`，`.so` 字节随工具链而变。**是谁在扩展构建前把 Ruby 自带 msys64 目录加进 PATH，本轮未定位（未验证）。** 对照组：plain ruby / `celerite exec ruby` / `bundle exec ruby` 打印的 PATH 前 6 段只差各自 `bundle/ruby/4.0.0/bin` 前置，其余完全一致，故不是 shell 层的 PATH 差异。
+- 13 个日志把探针路径、`.gem.<日期>-<pid>-<rand>` 临时名与 CR 归一后仍不同，唯一实质差：ref 用 `make -j3`（并带 GNU make 4.4 的 jobserver 告警 4 行），cel 用不带 `-j` 的 `make`，故 ref 每个 `gem_make.out` 多 4 行、尺寸大 279–355 B。机制：`assets/bridge/server.rb:551` 为 `Gem::Ext::Builder.new(spec, build_args).build_extensions`，未传 `build_jobs`（`n_jobs` 为 nil ⇒ 串行）；参考侧 `bundler-4.0.24/lib/bundler/rubygems_gem_installer.rb:108-112` 的 `build_jobs` 取 `acquired_jobs || Bundler.settings[:jobs] || super`，`settings.rb:309` 回落 `processor_count`，本机 `Etc.nprocessors=8`，实测为 `-j3`。两侧 `gem_make.out` 的其余差异只是探针路径与 gem 临时名。
+
+### 实测三：`check`
+
+- cel `celerite check`：exit 0，stdout 恰一行 `The Gemfile's dependencies are satisfied`，stderr 空。
+- ref `bundle check`：exit 0，stdout 同一行，stderr 空。**两侧逐字相同。**
+
+### 实测四：`exec`
+
+- `celerite exec ruby -e "require 'rails'; puts Rails::VERSION::STRING"` exit 0 → `8.0.2`；ref 侧 `bundle exec ...` 同样 exit 0 → `8.0.2`。
+- `-e "puts $LOAD_PATH.grep(/bundle|gems/).first(3)"`：cel 为 `C:/Ruby40-x64/lib/ruby/gems/4.0.0\gems\bundler-4.0.24\lib`、`<probe-cel>/bundle/ruby/4.0.0/gems/rails-8.0.2/lib`、`.../railties-8.0.2/lib`；ref 同序同条目，但分隔符全为 `/`。路径集合与顺序等价，仅分隔符拼法不同。
+- 首跑因 PowerShell 吞掉双引号变成 `require rails`，两侧同为 `-e:1:in '<main>': undefined local variable or method 'rails' ... (NameError)` exit 1 —— 命令构造问题，不计入产品差异。
+
+### 实测五：`binstubs`
+
+- `binstubs rack`：两侧 exit 0，stderr 同为 `There are no executables for the gem rack.`，未生成 `bin/`。
+- `binstubs rails`：两侧 exit 0，stderr 首句同为 `rails has no executables, but you may want one from a gem it depends on.`；候选清单不同：cel 只有 `railties has: rails`，ref 另有 `bundler has: bundle, bundler`。
+- `binstubs railties`：两侧 exit 0 且无输出，`bin/rails`（353 B，sha256 `fc2e5c7c95ab2e6ae244c28ec6d921f3397ed86849058ea7654fff6c66992ea2`）与 `bin/rails.cmd`（395 B，sha256 `a39627abd96a42071ff5390e8b694c9181f4ffe4aa92afb20723d11ce6676e70`）**逐字节相同**。
+
+### 未解释差异清单
+
+| # | 差异内容 | 是否有意（锚点 / 已声明） | 是否已解释 |
+| --- | --- | --- | --- |
+| 1 | `plugins/rdoc_plugin.rb` 仅参考侧存在（cel 侧 `plugins/` 为空） | 未声明；无参考行为锚点可援引，我方 `src/` 全库无 `plugins`/`plugindir` 处理，即未实现 RubyGems 写 plugin 的副作用 | **否** |
+| 2 | 12 个 `bin/*.bat` 行结束符 LF vs CRLF（去 CR 后逐字节相同） | 未声明；我方 stub 写出用 LF，参考侧写 CRLF | **否**（机制已定位，可一句话修或声明为等价差异） |
+| 3 | 14 个 `.so` 字节不同（嵌入 GCC Rev6 16.2.0 vs Rev5 16.1.0） | 未声明；属宿主工具链族，按治理口径不得记为已解释 | **否**（根因未定位） |
+| 4 | 13 个构建日志不同（`make` vs `make -j3`、PATH 串前缀） | 未声明；`-j3` 一侧机制明确（我方未传 `build_jobs`），PATH/工具链一侧与 #3 同源 | **否** |
+| 5 | `binstubs rails` 候选清单少 `bundler has: bundle, bundler` | 未声明；机制未定位（疑与参考侧把 bundler 自身算入可建议 gem 有关，本轮未读码确认） | **否** |
+
+- 已排除的差异：来自 `gem_make.out` 的探针路径与 `.gem.<pid>-<rand>` 临时名（归一后相同）；`exec` 的 `$LOAD_PATH` 分隔符拼法（条目与顺序相同，功能等价）。两侧 `check` 输出、`install` 完成提示、`Installing` 行集合、`binstubs railties` 产物均逐字节相同。
+
+### 判定
+
+**未解释差异 = 5（类），共 40 个文件条目 + 1 条 stderr 文本差异。** 构成：plugin 写出缺失 1 条文件、`bin/*.bat` 换行 12 条、`.so` 工具链 14 条、构建日志 13 条、`binstubs rails` 候选清单 1 处文本。
+
+因此 `docs/roadmap.md:149` 的闭合判据**未满足**：M7-9 行不勾选，「该 profile 兼容」的声明不恢复。其中 #1/#2/#4 的机制已定位，若要归零需先决定「实现」还是「登记为有意差异」；#3/#5 的机制未定位，按治理口径不得计入已解释。
+
+最小落点（本轮不改码，仅记录）：#1 我方安装路径未调用 RubyGems 写 plugin 的步骤（`assets/bridge/server.rb:499` 构造 `Gem::Installer` 前后，未验证具体需调 `write_plugins`）；#2 stub 生成的 bat 模板使用 LF（模板位置未定位，未验证）；#4 `assets/bridge/server.rb:551` 的 `Gem::Ext::Builder.new(spec, build_args)` 未传 `n_jobs`。
+
+### 未验证项
+
+- 扩展构建前 PATH 被谁改写（#3/#4 的根因）未定位；只证明了「两侧 PATH 在该时刻不同」与「`.so` 内嵌 GCC 版本不同」。
+- 两侧 install 耗时 705 s vs 148 s **不可互为基线**（工具链不同、我方全程串行构建、缓存状态不同）。
+- 未跑全量 `crystal spec`、未跑 `script/differential` 门禁；本任务只做端到端实测与文档。
+- 未在 Linux / 其它 Ruby ABI 复验；未验证重复 install 的幂等性。
+- #1 缺失 plugin 的实际功能影响（在该 `BUNDLE_PATH` 下 `gem` CLI 是否加载 rdoc plugin）未跑。
+- #5 的机制未读码确认，仅记录观测差异。

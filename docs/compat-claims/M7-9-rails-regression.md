@@ -51,3 +51,13 @@
 - 边界：rails 夹具不入库（本机 `C:\temp\rails-min\`），端到端结论不可从仓库复现，入库判据只覆盖同形态的差分门禁。两次运行中一次在 `make` 缺失处 exit 5 且锁未被改写，一次 exit 0；锁字节与 spec 行数同 oracle，spec 依赖行次序有 16 处不同但内容等价。原生扩展构建仍受宿主限制。
 - 生效：task-174（72398c0）
 - 取代：C-M7-9-003
+
+## C-M7-9-006 rails 规模安装树的集合级内容与 `check`/`exec` 语义两侧一致，但逐文件字节仍存未解释差异，该 profile 兼容声明未恢复
+
+- 状态：未验证
+- 参考行为（4.0.24）：`bundle install` 在同一把锁下装出 64 个 gem（`Bundle complete! 1 Gemfile dependency, 64 gems now installed.`），`bundle check` 打印 `The Gemfile's dependencies are satisfied` 并 exit 0，`bundle exec` 能 `require "rails"` 得到 `8.0.2`，`bundle binstubs railties` 写出 `bin/rails` + `bin/rails.cmd`
+- 我方行为：`celerite install` 在同一把锁下装出同样的 64 个 gem 目录、64 个 gemspec、64 个 `.gem`、28 条 `extensions/` 路径、22 个 `.so`、24 个 `bin/` 文件，集合级与参考侧完全相等；`celerite check` exit 0 且输出逐字相同；`celerite exec ruby` 同样得到 `8.0.2`；`celerite binstubs railties` 产物逐字节相同。但逐文件比对仍有 5 类未解释差异：`plugins/rdoc_plugin.rb` 仅参考侧存在（我方未实现 RubyGems 写 plugin）、12 个 `bin/*.bat` 为 LF 而参考为 CRLF、14 个 `.so` 因扩展构建时 `gcc` 解析到不同发行版（内嵌 `GCC: (Rev6…) 16.2.0` vs `GCC: (Rev5…) 16.1.0`）而字节不同、13 个构建日志因 `assets/bridge/server.rb:551` 未传 `build_jobs`（`make` vs `make -j3`）而不同、`binstubs rails` 候选清单少 `bundler has: bundle, bundler`
+- 判据：`bash script/differential install-check`（入库门禁，同形态 install；本轮未执行）；端到端判据为两侧各一次 `celerite install` / `bundle install`（隔离 `BUNDLE_PATH`/`BUNDLE_USER_HOME`/`SSL_CERT_FILE`，`PATH` 前置 `C:\msys64\usr\bin;C:\msys64\ucrt64\bin;C:\Ruby40-x64\bin;C:\Ruby40-x64\msys64\usr\bin`），再跑 `celerite check` / `bundle check`、`celerite exec ruby -e "require 'rails'; puts Rails::VERSION::STRING"`、`celerite binstubs railties`，安装树用 `Get-ChildItem -Recurse -File` + SHA256 `Compare-Object`；原始命令、输出与计数见 `../roadmap-evidence/M7-9-rails-regression.md` 的 task-194 节
+- 边界：rails 规模探针不入库（本机 `C:\temp\celerite-t194\.tmp-scratch\probe-cel` / `probe-ref`），端到端结论不可从仓库复现；本轮无入库判据，未跑 `script/differential` 与全量 `crystal spec`。扩展构建前 PATH 的改写者未定位，故 `.so`/日志的差异只证明「工具链不同」不证明「不可归零」。两侧 install 耗时 705 s / 148 s 不可互为基线。未覆盖 Linux 与其它 Ruby ABI。因未解释差异 ≠ 0，本断言不判「已实现」，`docs/roadmap.md:149` 的复选框不勾选
+- 生效：task-194（基线 `954f2d5`）
+- 取代：无，补充 C-M7-9-005 的锁外维度
