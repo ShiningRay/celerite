@@ -8,9 +8,15 @@
 # structured results or structured errors — stderr/stdout Ruby text is never
 # parsed back.
 #
-# Protocol v1 request:  {"proto":1,"id":N,"op":"...","payload":{...}}
-# Protocol v1 response: {"proto":1,"id":N,"ok":true,"result":{...}}
-#                       {"proto":1,"id":N,"ok":false,"error":{"class":..,"message":..}}
+# Protocol request:  {"proto":1|2,"id":N,"op":"...","payload":{...}}
+# Protocol response: {"proto":<request proto>,"id":N,"ok":true,"result":{...}}
+#                    {"proto":<request proto>,"id":N,"ok":false,"error":{"class":..,"message":..}}
+#
+# Versions 1 and 2 are both accepted and every response echoes the request's
+# own version, so a client that still speaks v1 keeps reading envelopes it
+# understands. v2 adds the `features` capability list to `ping`; an
+# unsupported `proto` is rejected with `ProtocolError` on the highest version
+# this server speaks.
 #
 # The bridge runs the Gemfile through the real Bundler::Dsl so arbitrary Ruby
 # DSL semantics match the reference exactly. Which Bundler is loaded is chosen
@@ -21,17 +27,28 @@ require "stringio"
 require "digest"
 require "rbconfig"
 
-BRIDGE_PROTO = 1
+# Highest version this server speaks; requests in BRIDGE_PROTO_SUPPORTED are
+# served and their own version is echoed back.
+BRIDGE_PROTO = 2
+BRIDGE_PROTO_MIN = 1
+BRIDGE_PROTO_SUPPORTED = (BRIDGE_PROTO_MIN..BRIDGE_PROTO).to_a.freeze
+
+# Capabilities advertised through `ping.features`. Only list what this process
+# can actually serve: a client that probes `features` and then calls the op
+# would turn a premature advertisement into `UnknownOp`. `evaluate_batch`
+# (roadmap L161, slices S2-S4) joins this list in the slice that implements the
+# op, not before.
+BRIDGE_FEATURES = %w[evaluate_gemfile gemspec_paths plugin_gemfile_eval].freeze
 
 def bridge_emit(response)
   $stdout.puts JSON.generate(response)
   $stdout.flush
 end
 
-def bridge_error(id, klass, message, status = nil)
+def bridge_error(id, klass, message, status = nil, proto: BRIDGE_PROTO)
   error = { "class" => klass, "message" => message }
   error["status"] = status if status
-  bridge_emit("proto" => BRIDGE_PROTO, "id" => id, "ok" => false, "error" => error)
+  bridge_emit("proto" => proto, "id" => id, "ok" => false, "error" => error)
 end
 
 def bridge_platform_string
@@ -922,9 +939,9 @@ def op_plugin_gemfile_eval(payload)
   { "plugin_names" => dependencies.map(&:name) }
 end
 
-def bridge_dispatch(id, op, payload)
+def bridge_dispatch(id, op, payload, proto)
   result = case op
-           when "ping"          then { "proto" => BRIDGE_PROTO, "ruby" => RUBY_VERSION }
+           when "ping"          then { "proto" => proto, "ruby" => RUBY_VERSION, "features" => BRIDGE_FEATURES }
            when "ruby_environment" then op_ruby_environment(payload)
            when "evaluate_gemfile" then op_evaluate_gemfile(payload)
            when "gemspec_paths"   then op_gemspec_paths(payload)
@@ -946,11 +963,11 @@ def bridge_dispatch(id, op, payload)
     when "ssl_openssl_versions" then op_ssl_openssl_versions(payload)
     when "ssl_probe" then op_ssl_probe(payload)
            else
-             return bridge_error(id, "UnknownOp", "unknown bridge op #{op.inspect}")
+             return bridge_error(id, "UnknownOp", "unknown bridge op #{op.inspect}", proto: proto)
            end
-  bridge_emit("proto" => BRIDGE_PROTO, "id" => id, "ok" => true, "result" => result)
+  bridge_emit("proto" => proto, "id" => id, "ok" => true, "result" => result)
 rescue Exception => e # rubocop:disable Lint/RescueException — bridge boundary: everything is reported, nothing escapes
-  bridge_error(id, e.class.name.to_s, e.message.to_s, (e.status_code if e.respond_to?(:status_code)))
+  bridge_error(id, e.class.name.to_s, e.message.to_s, (e.status_code if e.respond_to?(:status_code)), proto: proto)
 end
 
 loop do
@@ -962,9 +979,13 @@ loop do
 
   request = JSON.parse(line)
   id = request["id"]
-  unless request["proto"] == BRIDGE_PROTO
-    bridge_error(id, "ProtocolError", "unsupported proto #{request["proto"].inspect}")
+  proto = request["proto"]
+  # An unsupported version cannot be echoed back as-is (the peer would reject
+  # the envelope before reading the error), so the rejection speaks the highest
+  # version this server understands.
+  unless proto.is_a?(Integer) && BRIDGE_PROTO_SUPPORTED.include?(proto)
+    bridge_error(id, "ProtocolError", "unsupported proto #{proto.inspect}", proto: BRIDGE_PROTO)
     next
   end
-  bridge_dispatch(id, request["op"], request["payload"] || {})
+  bridge_dispatch(id, request["op"], request["payload"] || {}, proto)
 end

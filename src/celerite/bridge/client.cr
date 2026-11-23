@@ -5,8 +5,14 @@ require "../errors"
 
 module Celerite
   module Bridge
-    # Protocol version shared with assets/bridge/server.rb (architecture §2.2).
-    PROTOCOL = 1
+    # Protocol versions shared with assets/bridge/server.rb (architecture §2.2).
+    # The server accepts every version in `PROTOCOL_MIN..PROTOCOL` and echoes
+    # the request's own version, so a peer that only speaks the minimum still
+    # receives an envelope it can read. `PROTOCOL` is what this client sends;
+    # any response in the range is accepted, anything outside it is a
+    # `ProtocolError`.
+    PROTOCOL     = 2
+    PROTOCOL_MIN = 1
 
     # Counters behind `CELERITE_BRIDGE_STATS` (M8 baseline: one process, one
     # line). The variable is off when unset, empty, or exactly "0"; any other
@@ -337,6 +343,24 @@ module Celerite
       getter warnings : Array(String) = [] of String
     end
 
+    # Answer to `ping`. `features` is the server's capability list, which is how
+    # a client decides whether an op it knows about exists on the other side.
+    # A server that predates the declaration omits the field; that says what it
+    # cannot do, so it degrades to an empty set instead of failing the call.
+    struct Ping
+      getter ruby : String
+      getter features : Array(String)
+
+      def initialize(@ruby : String, @features : Array(String) = [] of String)
+      end
+
+      def self.from_json(result : JSON::Any) : Ping
+        ruby = result["ruby"]?.try(&.as_s?) || ""
+        features = result["features"]?.try(&.as_a?).try(&.compact_map(&.as_s?)) || [] of String
+        new(ruby, features)
+      end
+    end
+
     # Client for the JSON Lines bridge server. One process per client; the
     # server stays alive across requests and exits on stdin EOF.
     #
@@ -490,9 +514,10 @@ module Celerite
         @process.wait unless @process.terminated?
       end
 
-      def ping : String
-        result = request("ping")
-        result["ruby"].as_s
+      # Negotiation probe: the Ruby version plus the server's capability list.
+      # An older server answers without `features`; see `Ping.from_json`.
+      def ping : Ping
+        Ping.from_json(request("ping"))
       end
 
       # The bridge process's Ruby environment never changes for a given spawn,
@@ -784,7 +809,8 @@ module Celerite
       end
 
       private def finish_response(id : Int32, response : JSON::Any) : JSON::Any
-        unless response["proto"].as_i? == PROTOCOL
+        proto = response["proto"].as_i?
+        unless proto && proto >= PROTOCOL_MIN && proto <= PROTOCOL
           raise BridgeError.new("ProtocolError", "unsupported bridge proto #{response["proto"]?}")
         end
         unless response["id"].as_i? == id
