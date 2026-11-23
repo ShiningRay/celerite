@@ -1,0 +1,8 @@
+# The private source answers 403 for the compact-index entry points and for
+# the legacy index it falls back to, so the failure is attributed to the
+# source URI instead of being served from `specs.4.8.gz`.
+/versions	403
+/info/	403
+/specs.4.8.gz	403
+/latest_specs.4.8.gz	403
+/prerelease_specs.4.8.gz	403

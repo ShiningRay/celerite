@@ -1,0 +1,2 @@
+# Private source rejects anonymous requests.
+/	401

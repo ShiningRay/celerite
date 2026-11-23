@@ -1,0 +1,10 @@
+Retrying download gem from http://127.0.0.1:8765/ due to error (2/4): Gem::RemoteFetcher::FetchError bad response Forbidden 403 (http://127.0.0.1:8765/gems/json_pure-2.8.1.gem)
+Retrying download gem from http://127.0.0.1:8765/ due to error (3/4): Gem::RemoteFetcher::FetchError bad response Forbidden 403 (http://127.0.0.1:8765/gems/json_pure-2.8.1.gem)
+Retrying download gem from http://127.0.0.1:8765/ due to error (4/4): Gem::RemoteFetcher::FetchError bad response Forbidden 403 (http://127.0.0.1:8765/gems/json_pure-2.8.1.gem)
+Bundler::HTTPError: Could not download gem from http://127.0.0.1:8765/ due to
+underlying error <bad response Forbidden 403
+(http://127.0.0.1:8765/gems/json_pure-2.8.1.gem)>
+An error occurred while installing json_pure (2.8.1), and Bundler cannot
+continue.
+In Gemfile:
+  json_pure
