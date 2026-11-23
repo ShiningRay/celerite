@@ -112,6 +112,7 @@
 - 判据：`bash script/differential path-cache-multi-gemspec path-package-multi-gemspec cache-all-path cache-no-all-path`；`crystal spec spec/m7_cache_multi_gemspec_spec.cr`；`crystal spec spec/m7_cache_all_path_spec.cr`
 - 边界：2.7.2 上 `cache-all-path`、`path-cache-multi-gemspec`、`path-package-multi-gemspec` 均记 `deferred-2.7.2`（2.7.2 的 `cache`/`package` 固定写 `cache_all: false`，两侧都不复制）；path 源不产出 `<cache>/*.gem` 归档（`cache`/`package` 两侧逐字节一致，无 `.gem`），见 C-M7-5-012 的 `  * <file>.gem` 行只针对远端包
 - 生效：task-84（d95df5a）；task-187 修正目录名为源目录 basename 并补多 gemspec 差分
+- 补记（task-198）：4.0.24 手工 oracle 复核「工程外 path 源首次 install」——`C:\temp\orc198` 下 `gem "pgem", path: "C:/temp/orc198/pgem-sibling-x"`（gemspec 内 `spec.name = "pgem"`）首装产出 `vendor/cache/pgem-sibling-x/{pgem.gemspec,lib/pgem.rb,.bundlecache}`，无 `vendor/cache/pgem`，与本条命名规则一致；参考只有「工程内跳过 / 工程外复制」一档，没有「工程外用 gem 名」的第二档。`spec/m7_install_app_cache_spec.cr` 原断言 gem 名属过期期望，已改为源目录 basename；新增差分 `path-cache-out-of-project`（4.0.24 PASS，2.7.2 记 `deferred-2.7.2`）。src 未改。
 - 取代：无
 
 ## C-M7-5-012 `install` / `update` / `add` 在工程内存在 `vendor/cache` 时刷新缓存并逐包打印 `  * <file>.gem`
