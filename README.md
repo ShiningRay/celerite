@@ -45,10 +45,15 @@ compatibility boundary. Performance is a measured goal, not an unconditional cla
 - Keep a controlled Ruby compatibility bridge for arbitrary Ruby DSL, native
   extension builds, and third-party Bundler plugins.
 - Verify behavior with differential tests and the upstream Bundler test suite
-  (current v4.0.24 lockfile baseline: 64 examples, 54 failed / 10 passed;
-  buckets artifice 38 / low-IL 8 / fetch 6 / product 2, collected 2026-11-19
-  16:32 by task-32; not recollected after tasks 33–59; see
-  ``docs/compat-evidence/2026-11-19.md`` task-32).
+  (current v4.0.24 lockfile baseline: 64 examples, 47 failed / 17 passed;
+  buckets artifice-unreachable 41 / fixture:fetch-failed 3 /
+  product:candidates 3; real-drive 69 celerite invocations, harness verdict
+  `ok`; collected 2026-11-22, kept current in
+  [the compatibility report](docs/compat-report.md) under `Current metrics`.
+  The earlier snapshot — 64 examples, 54 failed / 10 passed; buckets artifice
+  38 / low-IL 8 / fetch 6 / product 2, collected 2026-11-19 16:32 by task-32 —
+  is superseded and preserved as history: it was not recollected after tasks
+  33–59 and is recorded in ``docs/compat-evidence/2026-11-19.md`` task-32).
 
 ## Non-goals
 
@@ -130,16 +135,23 @@ gem install bundler -v 2.7.2
 The harness runs each fixture in its own sandbox. Most fixtures are offline, but
 `http-index` fixtures start a loopback HTTP server on `127.0.0.1`. Known limits:
 Low-IL Windows hosts block some git-source fixtures (`0xC0000022`). Deferrals are
-per profile: 12 fixtures are deferred for the 2.7.2 profile (`add-group`,
-`cache-all-platforms`, `cache-path-removed`, `check-path-removed`,
-`config-deprecated-get`, `config-get-user-cache`, `gem-default`, `gem-no-git`,
-`git-submodules`, `issue-no-gemfile`, `plugin-source-disabled`, `removed-viz`)
+per profile: 26 fixtures carry the `deferred-2.7.2` marker (`add-group`,
+`add-option-conflicts`, `cache-all-path`, `cache-all-platforms`,
+`cache-path-removed`, `cache-rerun-existing-cache`,
+`check-frozen-extra-locked-spec`, `check-frozen-locked-version-mismatch`,
+`check-frozen-missing-locked-spec`, `check-path-removed`,
+`config-deprecated-get`, `config-get-user-cache`,
+`doctor-default-cli-command`, `gem-default`, `gem-did-you-mean`, `gem-no-git`,
+`git-submodules`, `install-force-ruby-platform-locked`,
+`install-path-source-app-cache-first`, `issue-no-gemfile`,
+`plugin-source-disabled`, `pristine-name-suggestion`, `removed-viz`,
+`update-group-missing`, `update-group-present`, `update-name-suggestion`)
 and 5 for 4.0.24 (`cache-all-platforms`, `git-submodules`, `issue-no-gemfile`,
 `plugin-source-disabled`, `show-outdated-verbose-272`); marker
-`deferred-<version>`, `script/differential:638-639`. It compares exit codes,
+`deferred-<version>`, `script/differential:742-743`. It compares exit codes,
 stdout/stderr, the project tree, and optional content probes —
-`installed-tree` (`:509`), `first-line` (`:520`), `file-equals` (`:528-535`),
-`file-contains` (`:553`) and `file-absent` (`:569`).
+`installed-tree` (`:593`), `first-line` (`:604`), `file-equals` (`:612-629`),
+`file-contains` (`:634-645`) and `file-absent` (`:648-664`).
 
 Glob patterns such as `*.gemspec` are expanded by the Windows `ruby.exe` argv
 layer before Bundler sees them; Bundler itself stores the `glob` option verbatim
