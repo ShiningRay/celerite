@@ -1,0 +1,17 @@
+GEM
+  remote: http://127.0.0.1:9/
+  specs:
+    achild-gem (1.0.0)
+    zdep-root (1.0.0)
+      achild-gem (~> 1.0)
+      zchild-gem (~> 1.0)
+    zchild-gem (1.0.0)
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  zdep-root
+
+BUNDLED WITH
+  @BUNDLER_VERSION@
