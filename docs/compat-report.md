@@ -136,17 +136,31 @@ documented instead of silently emulated:
 ## Upstream spec suite coverage boundary
 
 The committed `script/upstream-specs` targets only the **lockfile family** of
-the upstream Bundler spec suite (pinned `v4.0.24` revision). The recorded result
-under `docs/compat-matrix/generated/upstream-lockfile-v4.0.24.md` is
-**64 examples, 53 failures** (11 passed; 2026-11-22 task-114 采集), still not a passing gate. It is retained as a failure
-baseline for M7.
+the upstream Bundler spec suite (pinned `v4.0.24` revision). Three successive
+baselines are recorded below, newest first; all three are kept.
 
-> 取代关系（task-169 加注）：上述 **64 examples, 53 failures**（11 passed，2026-11-22 task-114 采集）已被 2026-11-23 的 **64 examples, 47 failures**（17 passed）取代，见 [roadmap-evidence/M7-8-upstream-specs.md](roadmap-evidence/M7-8-upstream-specs.md) 与 [compat-evidence/2026-11-23.md](compat-evidence/2026-11-23.md) 的「过期证据结论的取代条目（task-158）」；此处保留 task-114 当日的记录。
+- **Current baseline: 64 examples, 45 failures** (19 passed; buckets
+  `env:out-of-process-artifice` 44 / `fixture:fetch-failed` 1 /
+  `env:low-il-shm` 0 / `product:candidates` 0; real-drive 69; collected
+  2026-11-23 by task-193). This is the authoritative number in `## Current
+  metrics` above; it supersedes the 47-failure intermediate below.
+- **Intermediate baseline: 64 examples, 47 failures** (17 passed; buckets
+  `env:out-of-process-artifice` 41 / `fixture:fetch-failed` 3 /
+  `product:candidates` 3; collected 2026-11-22, task-146/task-158). It
+  superseded the 53-failure collection and is itself superseded by the
+  45-failure run above.
+- **Earliest historical collection: 64 examples, 53 failures** (11 passed;
+  collected 2026-11-22 by task-114; recorded under
+  `docs/compat-matrix/generated/upstream-lockfile-v4.0.24.md`). It is the oldest
+  of the three and has been superseded twice — first by 47, then by 45 — and is
+  retained as a failure baseline for M7 only as history.
+
+> 取代关系（task-209 更新，2026-11-24）：**53**（2026-11-22 task-114，最早的历史采集）→ **47**（2026-11-22 task-146/task-158，中间态）→ **45**（2026-11-23 task-193，当前口径，见 `## Current metrics`）。三值均保留，不删历史；见 [roadmap-evidence/M7-8-upstream-specs.md](roadmap-evidence/M7-8-upstream-specs.md) 与 [compat-evidence/2026-11-23.md](compat-evidence/2026-11-23.md) 的「过期证据结论的取代条目（task-158）」及 task-193 节。
 
 **本迭代脚本变更（未重跑 rspec）**：移除 `script/upstream-specs` 中吞掉失败的
 `|| true`（line 64 附近），使 rspec 非零退出时脚本按 `pipefail` 传播非零退出码；
 保留既有 64 failures 失败基线记录逻辑/文案。由于本迭代未执行上游 spec，
-上述 64 failures 仍为既有记录，不能视为本次运行结果。（task-169 加注：该基线数字此后已被 2026-11-23 的 **64 examples, 47 failures**（17 passed）取代，见 [roadmap-evidence/M7-8-upstream-specs.md](roadmap-evidence/M7-8-upstream-specs.md) 与 [compat-evidence/2026-11-23.md](compat-evidence/2026-11-23.md) 的「过期证据结论的取代条目（task-158）」；本节的脚本变更陈述仍成立，但不得再引 64/53 或 64/48 当作当前基线。）
+上述 64 failures 仍为既有记录，不能视为本次运行结果。（task-209 加注：这些历史值已依次被 47 与当前的 45 取代；本节的脚本变更陈述仍成立，但不得再引 64/53、64/48 或 64/47 当作当前基线，当前口径见 `## Current metrics` 的 45。）
 
 The remaining families (resolver, runtime, resource, plugins, etc.) have selected
 differential behavior only; `docs/upstream-spec-spike.md` records the initial

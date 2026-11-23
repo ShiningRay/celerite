@@ -6,7 +6,7 @@
 
 - 状态：已实现
 - 参考行为（4.0.24）：上游 `bundle` 调用统一走 `spec/support/helpers.rb:70-100` 的 `def bundle(cmd, options = {}, &block)`，它取 `bundle_bin`（默认 `installed_bindir.join("bundle")`）并把 `:env`/`:dir`/`:raise_on_error` 从 options 里摘出来，其余转成 `" --#{k} #{v}"` 形式的 argv。
-- 我方行为：`script/upstream-specs:86-105` 在 shim 目录写 `bundle`/`bundle.cmd`/`bundle.bat` 并把该目录前置进 `PATH`；`:174-176` 默认把 `rspec_pre_args` 设为 `-r script/upstream-specs-celerite-override.rb`；`script/upstream-specs-celerite-override.rb:15-30` 重写 `Spec::Helpers#bundle`，按 `CELERITE_BIN` 取二进制、映射 `:env`/`:raise_on_error`/`:dir` 并清空 `BUNDLE_GEMFILE`。
+- 我方行为：`script/upstream-specs:244-276` 在 shim 目录写 `bundle`/`bundle.cmd`/`bundle.bat` 并把该目录前置进 `PATH`；`:357-362` 默认把 `rspec_pre_args` 设为 `-r script/upstream-specs-celerite-override.rb`；`script/upstream-specs-celerite-override.rb:29-60` 重写 `Spec::Helpers#bundle`，按 `CELERITE_BIN` 取二进制、映射 `:env`/`:raise_on_error`/`:dir` 并清空 `BUNDLE_GEMFILE`。
 - 判据：`bash script/upstream-specs`
 - 边界：`CELERITE_SKIP_TEST_DEPS=1` 时跳过上游 `install_test_deps`（`spec/support/rubygems_ext.rb:30-32`、`:58-67`），故部分用例依赖的 dev 依赖不在场。
 - 生效：task-8（默认加载 override）
@@ -16,7 +16,7 @@
 
 - 状态：已实现
 - 参考行为（4.0.24）：基线驱动即上游 binstub 自身，此时套件结果不代表 Celerite。
-- 我方行为：`script/upstream-specs:175` 只在 `CELERITE_BUNDLE_HELPER_OVERRIDE` 不为 `0` 时才注入 `-r` override；`:193` 用 `grep -c -E 'celerite(\.exe)? '` 统计真实驱动次数写进 `- real-drive: <n> celerite invocations`（`:255`），为 0 时打印 `- WARNING: NOT driving celerite (helper override disabled or not applied)`（`:257`）。
+- 我方行为：`script/upstream-specs:357-362` 只在 `CELERITE_BUNDLE_HELPER_OVERRIDE` 不为 `0` 时才注入 `-r` override；`:389` 用 `grep -c -E 'celerite(\.exe)? '` 统计真实驱动次数写进 `- real-drive: <n> celerite invocations`（`:482`），为 0 时打印 `- WARNING: NOT driving celerite (helper override disabled or not applied)`（`:484`）。
 - 判据：`CELERITE_BUNDLE_HELPER_OVERRIDE=0 bash script/upstream-specs`
 - 边界：警告只是报告行，不改变退出码；误以为「跑过」的风险由该行与 real-drive 计数共同承担。
 - 生效：task-8
@@ -26,9 +26,9 @@
 
 - 状态：已实现
 - 参考行为（4.0.24）：上游套件以 rspec 退出码表达「有失败」，harness 不得吞掉。
-- 我方行为：`script/upstream-specs:29` 为 `set -uo pipefail`；`:179-183` 的 rspec 调用行不带 `|| true`；`:184` 记 `rspec_status=$?`，报告仍照常写完（`:201-274`），`:277` 为 `exit $rspec_status`。
+- 我方行为：`script/upstream-specs:52` 为 `set -uo pipefail`；`:364`/`:366` 的 rspec 调用行不带 `|| true`；`:369` 记 `rspec_status=$?`，报告仍照常写完（`:461-502`），`:514` 为 `exit "$harness_rc"`（`harness_rc` 默认等于 `rspec_status`）。
 - 判据：`bash script/upstream-specs`
-- 边界：脚本里仍有若干 `|| true`（`:64` 的 sparse-checkout、`:76-78` 的 gem fetch/generate_index、`:93` 的 chmod、`:144-147` 的探测、`:185`/`:187`/`:193` 的 tail/grep 统计），它们都不在 rspec 退出码通路上；`docs/compat-report.md` 里「移除 line 64 附近 `|| true`」的措辞指向那次 rspec 管道改动，而非 `:64` 本身。
+- 边界：脚本里仍有若干 `|| true`（`:107` 的 sparse-checkout、`:234-236` 的 gem fetch/generate_index、`:262` 的 chmod、`:325-337` 的探测、`:370`/`:372`/`:389` 的 tail/grep 统计），它们都不在 rspec 退出码通路上；`docs/compat-report.md` 里「移除 line 64 附近 `|| true`」的措辞指向那次 rspec 管道改动，而非 `:64` 本身。
 - 生效：task-8（2026-11-10）
 - 取代：无
 
@@ -36,7 +36,7 @@
 
 - 状态：已声明差异
 - 参考行为（4.0.24）：上游 Bundler 的 spec 树包含 resolver/runtime/resource/plugins 等多个家族；只跑 lockfile 家族不能替代整体兼容性结论。
-- 我方行为：`script/upstream-specs:179` 只把 `spec/lock/lockfile_spec.rb` 传给 rspec。
+- 我方行为：`script/upstream-specs:364`/`:366` 只把 `spec/lock/lockfile_spec.rb` 传给 rspec。
 - 判据：`bash script/upstream-specs`
 - 边界：其余家族只有选定差分行为覆盖；`docs/upstream-spec-spike.md` 记录初始适用性评估；pending 与未执行用例、以及「由参考 Ruby runtime 提供」的行为都不算通过——覆盖边界的正式措辞在 `../compat-report.md` 的 `## Upstream spec suite coverage boundary` 节。
 - 生效：task-8
@@ -146,7 +146,7 @@
 
 - 状态：已实现
 - 参考行为（4.0.24）：上游套件测的是 CLI 行为，二进制从哪来不属于套件职责。
-- 我方行为：`script/upstream-specs:40-52` 只检查 `bin/celerite` 或 `bin/celerite.exe` 是否存在，缺失则 `:51` 退出 127，全程不调用 `shards build`。
+- 我方行为：`script/upstream-specs:68-79` 只检查 `bin/celerite` 或 `bin/celerite.exe` 是否存在，缺失则 `:78` 退出 127，全程不调用 `shards build`。
 - 判据：`bash script/upstream-specs`
 - 边界：套件结果绑定当时的二进制时间戳，结论只在同一构建上可比；换构建后必须重采。
 - 生效：task-8
@@ -164,13 +164,13 @@
 
 ## C-M7-8-017 补充 CHECKSUMS digest 与 `path_expander` 锁体行的两处未对齐
 
-- 状态：已声明差异
+- 状态：已取代
 - 参考行为（4.0.24）：`spec/lock/lockfile_spec.rb:1682`（`fills empty CHECKSUMS entries when not frozen, even if every gem is already installed`）要求把每个已安装 gem 的 CHECKSUMS digest 补齐；`spec/lock/lockfile_spec.rb:2215` 要求自愈后锁体含 `path_expander (1.1.1)` 行。
 - 我方行为：未改代码；复采中该两处仍为失败，归入 `product:candidates`，尚未取到 oracle 也未修复。
 - 判据：`bash script/upstream-specs`
 - 边界：本轮只做到「定性为产品候选」，具体差异字节与参考写法的对照仍需一轮离线 oracle；在取到 oracle 之前不得当作已对齐。
 - 生效：task-118
-- 取代：无
+- 取代：C-M7-8-021（task-193 复采后 product 候选归零）
 
 ## C-M7-8-018 完整锁里指向 `bundler` 的依赖边不再让锁被误判为不完整而重写
 
@@ -201,3 +201,13 @@
 - 边界：跨进程桩注入不可能，非产品缺口；该桶在 real-drive 下结构性不可判定，只有改跑参考侧 Ruby 驱动或另建「桩代理」通道（把 Rack app 跑成真 HTTP server 并允许改源 host）才能取得期望输出。故该桶条数不得读作兼容性缺口，其转绿/转红也不得记作修复或回归。
 - 生效：task-193（`script/upstream-specs-buckets.rb` 的桶名与注释）
 - 取代：无（仅更名；C-M7-8-005 正文里的桶名列表已同步为 `env:out-of-process-artifice`）
+
+## C-M7-8-021 task-193 复采后 product 候选为 0：`spec/lock/lockfile_spec.rb:1682` 归 artifice 桶、`:2215` 由 task-149 修复
+
+- 状态：已实现
+- 参考行为（4.0.24）：`:1682`（`fills empty CHECKSUMS entries when not frozen, even if every gem is already installed`）要求把每个已安装 gem 的 CHECKSUMS digest 补齐；`:2215` 要求自愈后锁体含 `path_expander (1.1.1)` 行。两例在上游均应为绿，失败即产品差异。
+- 我方行为：task-193 复采（`.upstream-specs/upstream-lockfile-v4.0.24-20261123T132826Z.md`）`product:candidates` 为 0：`:1682` 的失败错误面改为 `Could not reach host`，按规则表归 `env:out-of-process-artifice`，属装具跨进程限制、非产品缺口（见 C-M7-8-020）；`:2215` 由 task-149 的锁缺 spec 行自愈修复转绿。
+- 判据：`bash script/upstream-specs`；`bash script/differential lock-missing-spec-row`；逐条定性见 `../compat-evidence/2026-11-23.md` 的 task-193 节。
+- 边界：两条的「产品候选」定性撤销以 task-193 的 50 条逐条表为准；task-209 未重跑套件，`product:candidates` 计数未独立复核。`:1682` 的下游 CHECKSUMS digest 行为在离线 `file://` 形态下仍无 oracle（见 C-M7-8-017 边界）。
+- 生效：task-193
+- 取代：C-M7-8-017

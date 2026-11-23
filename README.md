@@ -45,14 +45,19 @@ compatibility boundary. Performance is a measured goal, not an unconditional cla
 - Keep a controlled Ruby compatibility bridge for arbitrary Ruby DSL, native
   extension builds, and third-party Bundler plugins.
 - Verify behavior with differential tests and the upstream Bundler test suite
-  (current v4.0.24 lockfile baseline: 64 examples, 50 failed / 14 passed;
-  buckets artifice-unreachable 38 / low-IL 9 / fixture:fetch-failed 3, with
-  product:candidates at zero; real-drive 69 celerite invocations, harness verdict
-  `ok`; collected 2026-11-23 by task-178, kept current in
-  [the compatibility report](docs/compat-report.md) under `Current metrics`.
-  The 47-failure line — 64 examples, 47 failed / 17 passed; buckets artifice 41 /
-  fetch 3 / product 3, collected 2026-11-22 — is superseded and preserved as
-  history. The artifice bucket is not merely unrun: it is structurally
+  (current v4.0.24 lockfile baseline: 64 examples, 45 failed / 19 passed;
+  buckets `env:out-of-process-artifice` 44 / `fixture:fetch-failed` 1 /
+  `env:low-il-shm` 0 / `product:candidates` 0; real-drive 69 celerite invocations,
+  harness verdict `ok`; collected 2026-11-23 by task-193, kept current in
+  [the compatibility report](docs/compat-report.md) under `Current metrics`).
+  The 50-failure snapshot — 64 examples, 50 failed / 14 passed; buckets
+  `env:out-of-process-artifice` 38 / `env:low-il-shm` 9 / `fixture:fetch-failed` 3,
+  with `product:candidates` at zero; real-drive 69, harness verdict `ok`;
+  collected 2026-11-23 by task-178 — is a historical snapshot, superseded by the
+  2026-11-23 45/44/1/0 run above, and preserved as history. The 47-failure line —
+  64 examples, 47 failed / 17 passed; buckets artifice 41 / fetch 3 / product 3,
+  collected 2026-11-22 — is superseded and preserved as history. The artifice
+  bucket is not merely unrun: it is structurally
   undecidable under real-drive, because celerite runs as a native executable and
   cannot receive the RSpec `RUBYOPT=-r` stub injected into child processes;
   installing `sinatra` only cleared the reference-side `LoadError` (sinatra load
