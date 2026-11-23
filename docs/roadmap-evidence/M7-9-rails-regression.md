@@ -358,3 +358,53 @@ specs_with_different_dep_lines=16  order_only=16  content_different=0
 - 未复跑 rails 规模端到端；#3（`.so` gcc 版本）与 #5（`binstubs rails` 候选清单）未动，仍按 task-194 记为未解释。
 - 未在 Linux/其它 Ruby ABI 复验；plugin 在真实 `BUNDLE_PATH` 下由 `gem` CLI 加载的功能影响未跑。
 - `m7_install_app_cache_spec.cr:103` 的既存失败未修（超出本任务范围），仅证明与本次改动无关。
+## 2026-11-23：binstubs 运行时依赖候选与 M7-9 差异收口（task-202）
+
+### oracle
+
+- 最小探针 `C:\temp\bs-probe`：`Gemfile` 为 `source "file:///<repo>/fixtures/gem-index"` 加 `gem "a", path: "a"`；`a.gemspec` 中 `s.files = []` 且 `s.add_dependency "bundler", ">= 1.15.0"`。参考 4.0.24 `bundle lock --local` exit 0，锁的 PATH 段为 `a (1.0.0)` 带 `bundler (>= 1.15.0)` 边、**无** bundler spec 行；CHECKSUMS 段为 `a (1.0.0)` 与 `bundler (4.0.24) sha256=16ca64e20816a0cf151a948fb141d788602996d2b4d73577b74388fe84fa98bc`。
+- 参考 `bundle binstubs a`（4.0.24 与 2.7.2 各自独立跑，均 exit 0）stderr 逐字两行：
+  `a has no executables, but you may want one from a gem it depends on.`
+  `  bundler has: bundle, bundler`
+- 修改前 celerite 在同一探针（喂入参考 4.0.24 生成的 `Gemfile.lock`）上 exit 0，stderr 只有 `There are no executables for the gem a.`，即复现 #5。
+- 无种子锁时 celerite 侧 `install --local` 打印 `version solving has failed`、exit 6：celerite 解析器不为 path gem 的 bundler 边合成 spec（C-M7-9-004 只覆盖锁写出），属另一问题。夹具因此随附锁文件，且 `binstubs` 前不跑 `install`（参考侧不装也能出候选，且锁逐字节不变）。
+
+### 参考锚点
+
+- `cli/binstubs.rb:34-40`：`spec = Bundler.definition.specs.find { |s| s.name == gem_name }`，随后 `installer.generate_bundler_executable_stubs(spec, installer_opts)`。
+- `installer.rb:92-118`：`spec.name == "bundler"` 时直接告警返回；`binstubs` 命令且 `spec.executables.empty?` 时遍历 `spec.runtime_dependencies`，取 `@definition.specs[dep].first.executables`，非空者收集后打印 `"#{spec.name} has no executables, but you may want one from a gem it depends on."` 与逐条 `  #{name} has: #{bins.join(", ")}`；全空才打印 `There are no executables for the gem #{spec.name}.`。
+- `definition.rb:249-251` 的 `specs = materialize(requested_dependencies)` 与 `definition.rb:756-757` 把运行中的 bundler 注入 `specs["bundler"]`，故 `definition.specs["bundler"].first.executables == ["bundle", "bundler"]`，而 `locked_gems.specs["bundler"] == []`（锁里没有 bundler 的 spec 行）。
+- `spec_set.rb:98-101` 的 `SpecSet#[]` 返回数组，参考取 `.first`。
+
+### 我方行为与实现位置
+
+- `src/celerite/cli/commands_install.cr:2157-2172`：显式 `binstubs <gem>` 的无可执行文件分支不再只查锁内 `targets`，每个运行时依赖改由 `runtime_dependency_spec_info` 解析。
+- `:2285-2304` 新增 `private def self.runtime_dependency_spec_info(...)`：依赖已在 `targets` 中则沿用 `binstub_spec_info`；否则仅对 `bundler` 回落到 Ruby 安装自身的 `<ruby_default_dir || default_gem_dir>/specifications/bundler-<profile 版本>.gemspec`（缺失时 `Dir.glob("bundler-*.gemspec")` 且优先精确文件名），经 `bridge.load_installed_spec` 读取可执行文件与 bindir；读不到即按「不可用」跳过。无锁行、非已装 gem 的依赖不会被凭空补出。
+- `:2306-2314` 抽出 `binstub_payload_info`，GEM/PATH/GIT/已装 bundler 四条路径共用同一份 `executables`/`bindir`/`dependencies` 解析；`:2264-2269` 对 GEM 源的依赖名按名字排序——参考从锁物化的 GEM spec 其依赖行即锁文件顺序（字典序），rails 实测参考先 `bundler` 后 `railties`，与我方 `s.gemspec` 声明序相反。
+- 既有 `binstubs` 成功路径（写 `bin/` 文件）与文件内容未改：`binstubs railties` 的两侧产物仍逐字节相同（task-194 已测，本轮回归夹具覆盖）。
+
+### 证据
+
+- 新夹具 `fixtures/differential/binstubs-runtime-dependency-candidates`（`Gemfile` + 参考 4.0.24 锁 + `extra/a/a.gemspec`，`command` 仅 `binstubs a`）：`bash script/differential binstubs-runtime-dependency-candidates` 在 4.0.24 与 2.7.2 均 `1 passed, 0 failed`。
+- 反假绿：`CELERITE_BIN=C:\temp\celerite-pre202\bin\celerite.exe`（同 commit `2cbc9f6`、改动前二进制）跑同一夹具，两 profile 均 FAIL，逐字：
+  `1,2c1`
+  `< a has no executables, but you may want one from a gem it depends on.`
+  `<   bundler has: bundle, bundler`
+  `---`
+  `> There are no executables for the gem a.`
+- 回归：`bash script/differential binstubs binstubs-flags binstubs-path-removed binstubs-path-source binstubs-shebang binstubs-shebang-line binstubs-template`，4.0.24 与 2.7.2 均 `7 passed, 0 failed`。
+- `crystal spec spec/m7_binstubs_path_source_spec.cr spec/m7_binstubs_template_spec.cr`：7 examples、0 failures；`crystal tool format --check src spec` exit 0；`git diff --check` exit 0。
+- rails 规模终验（两侧各一次 `install` 加一次 `binstubs rails`，同一把 oracle 锁 `c76c7df696da12c829933aa0a22904aa2742bc73f7f19a971fb3e92d86a199b1`，隔离 `bundle/`/`home/`/`tmp/`，`SSL_CERT_FILE=C:/msys64/usr/ssl/cert.pem`，`PATH` 含 `C:\Ruby40-x64\msys64\usr\bin`）：两侧 install 均 exit 0、末两行相同；安装树 cel 4480 / ref 4480 个文件，`only_in_cel=0`、`only_in_ref=0`、`content_diff=27`（14 个 `.so` + 13 个构建日志，与 task-199 同类同数）；三把锁（oracle、ref、cel）sha256 均 `c76c7df6…199b1`，未被改写。
+- `binstubs rails` 候选文本两侧现为同样三行：`rails has no executables, but you may want one from a gem it depends on.` / `  bundler has: bundle, bundler` / `  railties has: rails`。字节层仍差换行：ref 129 B（CRLF）、cel 126 B（LF），系 Ruby 文本模式重定向与 Crystal 直接写 stderr 的平台差异，非候选内容差异。
+
+### 已声明差异与未验证
+
+- 剩余安装树差异只有两类，均已归因为宿主工具链而非产品行为：① 14 个 `.so` 的内嵌 GCC 版本（ref 经 `Gem.pre_install` 钩子前置 RubyInstaller MSYS2，`Rev5 16.1.0`；cel 的 bridge 直调 `Gem::Ext::Builder`，PATH 保持探针 `Rev6 16.2.0`）；② 13 个构建日志因 `make` 的 `-j` 与 PATH 串文本不同（cel 固定 `-j8`，ref 为 jobserver 动态 `-j3`/`-j2`）。两类都不改变产物集合与可执行语义。
+- 未覆盖：多可执行依赖的候选**顺序**只有 rails 规模实测支撑（GEM 源按锁行序），PATH/GIT 源多依赖顺序未单独取证；夹具只有一个可执行依赖，未钉顺序。
+- 未覆盖：无种子锁时 celerite 对「path gem 依赖 bundler」的解析失败（exit 6）未修，属解析器合成 bundler spec 的问题，与本任务候选层改动无关。
+- 未复跑：本次 rails 终验只各跑一次 `install`，未验证重复 install 的幂等与耗时；未在 Linux/其它 Ruby ABI 复验。
+- 反假绿只跑新夹具；既有 binstubs 夹具的改动前对照沿用 task-194/196 记录。
+
+### 判定
+
+`binstubs` 候选清单的产品侧差异已对齐（含候选顺序），安装树剩余 27 个内容差异全部归因为宿主工具链，集合级差异为 0；M7-9 的最后一处产品侧可见差异关闭。是否勾选 `docs/roadmap.md:149` 由首辅按本文件与 claims 结论裁定（本任务禁改该文件）。
