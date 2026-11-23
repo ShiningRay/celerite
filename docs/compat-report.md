@@ -12,11 +12,13 @@
 
 | 家族 | 命令 | 最近记录 | 采集日期 | 日志 / 出处 |
 | --- | --- | --- | --- | --- |
-| 差分 4.0.24（全量） | `script/differential` | **218 passed, 14 failed, 3 skipped** | 2026-11-17 | `.tmp-scratch/differential-full-71.log` 为上一档 210/14/2；本条见 [compat-evidence/2026-11-17.md](compat-evidence/2026-11-17.md) |
-| 差分 2.7.2（全量） | `BUNDLER_REF_VERSION=2.7.2 script/differential` | **133 fixtures: 126 passed, 6 failed, 1 skipped**（`add-group` deferred） | 2026-11-13 | `C:\temp\celerite-diff-full-2.7.2-517f69a-rerun.log`；此后只做定向复跑，**未在 424 夹具上重跑全量** |
-| 差分夹具总数 | — | 454 个目录（全量分母 = 454 − 该 profile 的 deferred 数） | 2026-11-23 | `fixtures/differential/*/command`（`Get-ChildItem fixtures\differential -Directory` 实测；上一档 443 见 2026-11-22） |
+| 差分 4.0.24（全量） | `script/differential` | **218 passed, 14 failed, 3 skipped** | 2026-11-17 | `.tmp-scratch/differential-full-71.log` 为上一档 210/14/2；本条见 [compat-evidence/2026-11-17.md](compat-evidence/2026-11-17.md)。**自 2026-11-17 后未在 HEAD 上重跑全量**，218/14/3 只是当日记录；当时的分母已过期——当前实测夹具总数为 457（见下行「差分夹具总数」），218 不再对应现在的全量分母（task-169 订正） |
+| 差分 2.7.2（全量） | `BUNDLER_REF_VERSION=2.7.2 script/differential` | **133 fixtures: 126 passed, 6 failed, 1 skipped**（`add-group` deferred） | 2026-11-13 | `C:\temp\celerite-diff-full-2.7.2-517f69a-rerun.log`；此后只做定向复跑，**未在 424 夹具上重跑全量**（424 是 2026-11-13 那次采集时的夹具分母，按治理规则保留原文；当前实测夹具总数为 457，见下行。task-169 加注） |
+| 差分夹具总数 | — | **457** 个目录（全量分母 = 457 − 该 profile 的 deferred 数） | 2026-11-23（task-169 复测） | `fixtures/differential/*/command`（`Get-ChildItem fixtures\differential -Directory` 实测 457，且 457 个目录全部含 `command`；上一档 454 见 [compat-evidence/2026-11-23.md](compat-evidence/2026-11-23.md) 的「M7-docs 文档-代码一致性清单（task-160）」，443 见 2026-11-22） |
 | 全量 `crystal spec` | `crystal spec` | **1039 examples, 0 failures, 0 errors, 0 pending**（`Finished in 45:58 minutes`，EXIT 0；结果绑定 `17f163e`，临时根 `TMPDIR`=`HOME`=`<工作区>/.tmp-scratch/d/{tmp,home}`，距盘符 67 字符）。演进：`b99bf12` 编译期失败（`spec/m7_verbose_echo_spec.cr:18`，task-127 `ae1248c` 修）→ `40ad324` 991/86/10 → `eed51d7` 999/5/11（task-128/129 修掉两条 spec 间环境泄漏链，86→5）→ `d9884ff` 1001/0/0/0（task-132/133/134 清掉剩余 5 条）→ `a9b08c4` 1003/0/0/0（task-135）→ `17f163e` **1039/0/0/0**（task-137 修掉索引失败吞并、task-157/161 等新增用例；同轮修掉 `spec/m7_build_args_spec.cr` 缺索引与 `spec/m7_remove_failure_modes_spec.cr` 折行断言两条假红）。前提六条（原生形态 / 落在 checkout 内 / 真实而非 junction / `core.longpaths` / 不与并发会话共享 / 临时根距盘符 ≤67 字符）见 [compat-claims/M7-suite.md](compat-claims/M7-suite.md) C-M7-suite-004 与 [compat-evidence/2026-11-23.md](compat-evidence/2026-11-23.md)；不满足时套件可能编译期即失败或带一批路径几何假红。此前 **656 examples, 0 failures, 4 errors**（2026-11-18/19）已取代，原记录见 [compat-evidence/2026-11-18.md](compat-evidence/2026-11-18.md) | 2026-11-23 | [compat-evidence/2026-11-23.md](compat-evidence/2026-11-23.md)、[compat-claims/M7-suite.md](compat-claims/M7-suite.md) |
 | 上游 lockfile 套件 | `script/upstream-specs`（`CELERITE_SKIP_TEST_DEPS=1`） | **64 examples, 47 failures**（17 passed；分桶 artifice-unreachable 41、fixture:fetch-failed 3、product:candidates 3；real-drive 69 次、`harness verdict: ok`）。取代 2026-11-22 的 64/48——那 1 条差是 `lockfile_spec.rb:586`（git branch requirement）在 flaky 的 msys Low-IL 上转绿，非产品修复；`script/upstream-specs` 现已自证真驱动并对「环境不可用/未驱动」分别以 69/70 退出（见 [roadmap-evidence/M7-8-upstream-specs.md](roadmap-evidence/M7-8-upstream-specs.md)） | 2026-11-23（task-146/148） | [roadmap-evidence/M7-8-upstream-specs.md](roadmap-evidence/M7-8-upstream-specs.md) |
+
+夹具 deferred 标记实测（2026-11-23 task-169 复测，`Get-ChildItem fixtures\differential -Recurse -File -Filter deferred-<profile>`）：**2.7.2 profile = 26 个**、**4.0.24 profile = 5 个**（`cache-all-platforms`、`git-submodules`、`issue-no-gemfile`、`plugin-source-disabled`、`show-outdated-verbose-272`）。按本表的分母口径，2.7.2 全量分母现为 457 − 26 = **431**、4.0.24 现为 457 − 5 = **452**；这两个分母都尚未在 HEAD 上重跑全量，上面的全量行仍只是各自采集日的记录。
 
 差分 4.0.24 的历史演进（同一文件里仍并存，读旧条目时注意口径）：115:101/14/0 → 130:123/7/0 → 133:126/7/0 → 135:135/0/1 → 160:160/16/2 → 210:210/14/2 → **218/14/3**。
 其中 2026-11-14 的 `135 passed, 0 failed` 与 2026-11-15 装具 `git-init` 修复期的 `77 passed, 59 failed` 属装具口径轮次，不作产品结论（原证据见 [compat-evidence/2026-11-14.md](compat-evidence/2026-11-14.md)、[compat-evidence/2026-11-15.md](compat-evidence/2026-11-15.md)）。
@@ -47,11 +49,11 @@ every normalization rule (not yet complete).
 
 | 项 | 值 |
 | --- | --- |
-| 报告依据的最后已知 HEAD | `c3b9a6f`（`docs(M7 task-117): 补记锁定 spec 行缺失时的重解析差异与证据`）；历史快照 HEAD=`8e91a2f` |
+| 报告依据的最后已知 HEAD | `75bafcc`（主仓 `main` = `75bafcc13c83befa49fc8e2bc7402cace5b52871`，`docs(M7): record the GEM_HOME prefix-comparison gap as a known implementation gap`；**task-169 实测的当前 HEAD，不是上表任何指标的重跑基线**）；本条此前记录的 `c3b9a6f`（`docs(M7 task-117): 补记锁定 spec 行缺失时的重解析差异与证据`）与历史快照 HEAD=`8e91a2f` 保留为历史 |
 | Ruby 参考 | 4.0.6 x64-mingw-ucrt（另测 2.7.2 profile） |
 | Crystal | 1.22.1 |
 | git | 2.55.0.windows.3 (Windows x64, win32) |
-| 宿主限制 | msys Low-IL 下子进程 `0xC0000022`（git 源夹具与原生扩展构建）；`make`/racc 不可用；http-index 夹具需 `CELERITE_DIFF_EXTRA_PATH='/c/Program Files/nodejs'` |
+| 宿主限制 | msys Low-IL 下子进程 `0xC0000022`（git 源夹具与原生扩展构建）；`make` 默认不在 `PATH`（`Get-Command make` 未命中；`C:\Ruby40-x64\msys64\usr\bin\make.exe` = GNU Make 4.4.1，把该目录前置到 `PATH` 后可编译 nio4r 2.7.5 原生扩展）——此前「`make` 不可用」的判断已过期（task-169 订正）；`racc` 1.8.1 随 Ruby 4.0.6 安装且可运行（`racc.bat --version` → `racc version 1.8.1`，`cparse.so` 位于 `C:\Ruby40-x64\lib\ruby\gems\4.0.0\extensions\x64-mingw-ucrt\4.0.0\racc-1.8.1\racc\`），但它在原生扩展构建中的作用**未验证**；http-index 夹具需 `CELERITE_DIFF_EXTRA_PATH='/c/Program Files/nodejs'` |
 
 ## Explicitly unsupported / untested (no false claims)
 
@@ -138,10 +140,12 @@ under `docs/compat-matrix/generated/upstream-lockfile-v4.0.24.md` is
 **64 examples, 53 failures** (11 passed; 2026-11-22 task-114 采集), still not a passing gate. It is retained as a failure
 baseline for M7.
 
+> 取代关系（task-169 加注）：上述 **64 examples, 53 failures**（11 passed，2026-11-22 task-114 采集）已被 2026-11-23 的 **64 examples, 47 failures**（17 passed）取代，见 [roadmap-evidence/M7-8-upstream-specs.md](roadmap-evidence/M7-8-upstream-specs.md) 与 [compat-evidence/2026-11-23.md](compat-evidence/2026-11-23.md) 的「过期证据结论的取代条目（task-158）」；此处保留 task-114 当日的记录。
+
 **本迭代脚本变更（未重跑 rspec）**：移除 `script/upstream-specs` 中吞掉失败的
 `|| true`（line 64 附近），使 rspec 非零退出时脚本按 `pipefail` 传播非零退出码；
 保留既有 64 failures 失败基线记录逻辑/文案。由于本迭代未执行上游 spec，
-上述 64 failures 仍为既有记录，不能视为本次运行结果。
+上述 64 failures 仍为既有记录，不能视为本次运行结果。（task-169 加注：该基线数字此后已被 2026-11-23 的 **64 examples, 47 failures**（17 passed）取代，见 [roadmap-evidence/M7-8-upstream-specs.md](roadmap-evidence/M7-8-upstream-specs.md) 与 [compat-evidence/2026-11-23.md](compat-evidence/2026-11-23.md) 的「过期证据结论的取代条目（task-158）」；本节的脚本变更陈述仍成立，但不得再引 64/53 或 64/48 当作当前基线。）
 
 The remaining families (resolver, runtime, resource, plugins, etc.) have selected
 differential behavior only; `docs/upstream-spec-spike.md` records the initial
@@ -194,7 +198,7 @@ script/profile                    # refresh profile numbers
 ## Evidence index
 
 - 兼容性断言账本（按子项组织的结论：现在有哪些断言成立、凭什么成立、怎么重跑）：[docs/compat-claims/README.md](compat-claims/README.md)。
-- 逐日证据日志（过程档案）：[docs/compat-evidence/README.md](compat-evidence/README.md)（含 12 个文件清单与 211 个节的标题索引 + 锚点行）。
+- 逐日证据日志（过程档案）：[docs/compat-evidence/README.md](compat-evidence/README.md)（含 12 个文件清单与 233 个节的标题索引 + 锚点行；task-169 复测：233 是按 `^## ` 实测的节数，211 为治理拆分当时的旧值，见 [compat-evidence/README.md](compat-evidence/README.md) 的「节数」列说明）。
 - 治理前的报告头部（原行 1-401，含 2026-11-11 task-2 本地校验、2026-11-15 env/console/gem 模板子节、97 夹具的 M0–M6 归类清单、当时的环境与免责声明）：[docs/compat-evidence/2026-11-11.md](compat-evidence/2026-11-11.md)。
 - 夹具证据转储（生成的逐例对比）：`docs/compat-matrix/generated/differential-4.0.24-2026-11-11.md`、`cli-4.0.24.md`、`cli-2.7.2.md`、`upstream-lockfile-v4.0.24.md`。
 - 主题矩阵（手写）：`docs/compat-matrix/`（lockfile-sections.md、gemfile-dsl.md、cli-commands.md、config-keys.md）。
