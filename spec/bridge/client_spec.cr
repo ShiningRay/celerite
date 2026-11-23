@@ -27,7 +27,9 @@ module Celerite
     it "pings across the protocol" do
       pending! "ruby not available" unless ruby_available?
       with_client do |client|
-        client.ping.should match(/\d+\.\d+\.\d+/)
+        ping = client.ping
+        ping.ruby.should match(/\d+\.\d+\.\d+/)
+        ping.features.should contain("evaluate_gemfile")
       end
     end
 
