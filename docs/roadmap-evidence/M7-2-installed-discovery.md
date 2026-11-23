@@ -195,3 +195,59 @@ Did you mean 'json_pure'?
 - 本节的「实现位置」+「证据」取代 task-72 段「`gem_not_found_message` 的 `Did you mean …?` 未实现」这一项，以及结句「三项真未实现项未关闭」中与之对应的那一项。
 - `docs/compat-evidence/2026-11-21.md:192` 的同一断言由 `docs/compat-evidence/2026-11-23.md` 的 task-142 节与本节的引用共同取代（旧行原文按规则保留）。
 - **未被取代、仍然有效**：task-72 段其余两项（`info`/`show` 菜单选中分支无端到端用例；`show`/`info` 的其他重解通知场景未取 oracle），故 `docs/roadmap.md` 的 M7-2 复选框保持 `[ ]`。
+## 2026-11-23：M7-2 行的闭合判据审计（task-182）
+
+本节为首辅裁断 `docs/roadmap.md:142` 的 M7-2 行提供依据，**不动复选框**。状态以 `docs/compat-claims/M7-2-installed-discovery.md` 的 17 条账本为准（本轮实测：17/17 状态字段为「已实现」，但 C-M7-2-004/006/009 在「边界」内嵌已声明差异，C-M7-2-010/011 在「边界」内嵌未取 oracle 的分支）。claims 正文行号已漂移，下表为本轮实测现值。本节未执行 `crystal spec` 或 `bash script/differential`。
+
+### 子项拆解与逐项状态
+
+| # | 子项 | 证据（文件:行号 / claim / 夹具） | 状态 |
+|---|---|---|---|
+| 1 | 已安装判定改读 `<root>/specifications/<full_name>.gemspec` | `src/celerite/cli/commands_surface.cr:1671-1724`、`:1760` `installed_spec_file?`；C-M7-2-001；`check-installed-spec-without-gemdir`、`check-gemdir-without-spec`、`list-installed-spec-without-gemdir` | 已实现 |
+| 2 | `check` 不再把锁内 gem 一律视为 missing | `src/celerite/cli/commands.cr:1520` `run_check`、`:1714`/`:1725` 缺失三行、`:1758` 满足文案；C-M7-2-012/013；`check-rewrites-lock`、`check-dry-run-keeps-lock`、`check-gemfile-new-dependency` | 已实现 |
+| 3 | `list` 的 gem 发现 | `src/celerite/cli/commands.cr:1780`、`:1935` 缺 gem 文案（exit 1）；C-M7-2-003/007；`list-gem-entirely-missing`、`list-only-group`、`list-multi-group` | 已实现 |
+| 4 | `show` / `info` 的 gem 发现与路径/元数据 | `src/celerite/cli/commands.cr:2020` `show_info`、`:2131`/`:2135` 缺失文案、`:2155` 列举；C-M7-2-002/003/010/011；`show-info-installed`、`info-reverse-dependencies-path`、`info-default-gem-fallback`、`info-regex-menu` | 已实现（菜单「输入序号选中」分支除外，见缺项） |
+| 5 | group 过滤 | `src/celerite/cli/commands.cr:2782` `filter_locked_specs_by_groups`；C-M7-2-007/008；`show-group-ignored`、`show-missing-installed`；`spec/m7_installed_discovery_spec.cr:338-373` | 已实现 |
+| 6 | `with` / `without`（BUNDLE_WITH / --only-group / --without-group） | `src/celerite/cli/commands.cr:2758-2778` `requested_groups_for`；`spec/m7_installed_discovery_spec.cr:378-407`（`check honors BUNDLE_WITH=test` 两例）、`:409-460`（list 的 `--only-group`/`--without-group`）；夹具 `install-without-group`、`install-without-two-groups`、`install-only-group`、`check-only-group`、`list-only-group`、`list-multi-group` | 实现与判据俱在，**账本无专条 claim** |
+| 7 | path 安装状态 | `src/celerite/cli/commands_surface.cr:1677-1680`；C-M7-2-001；`list-path-only-group`、`list-path`、`check-path`、`show-info-installed` | 已实现 |
+| 8 | Git 安装状态 | `src/celerite/cli/commands_surface.cr:1681-1684`、`:1822` `installed_git_checkout`；C-M7-2-011 边界；`spec/m7_installed_discovery_spec.cr:225-260` 三例；差分 `git-installed-discovery` 因本机 msys Low-IL `0xC0000022` 阻塞 | 单元已实现、差分未验证 |
+
+### oracle
+
+- 参考侧：4.0.24 / 2.7.2 的 `Bundler::Definition#check!`、`SpecSet#missing_specs_for`、`LazySpecification#materialize`、`Bundler::CLI::List/Show/Info`、`Bundler::Settings` 的组过滤；逐条结论见 C-M7-2-001…017。
+- 可重跑判据：上表夹具的 `bash script/differential <fixture>`；`crystal spec spec/m7_installed_discovery_spec.cr spec/m7_show_order_spec.cr spec/m7_info_select_spec.cr spec/m7_list_format_spec.cr`。
+
+### 参考锚点
+
+- `cli/check.rb:27-31`、`definition.rb:261-264`、`spec_set.rb:154-162`、`lazy_specification.rb:224-229`、`rubygems_integration.rb:434-440`（C-M7-2-001 正文所载）。
+- `cli/list.rb:19-25`、`cli/show.rb:19-30`、`cli/info.rb:36-48`、`cli/common.rb:68-111`、`settings.rb` 组语义（C-M7-2-002/003/010 正文所载）。
+- 以上参考行号引自 claims 正文，本轮未打开参考检出复核。
+
+### 实现位置
+
+- `src/celerite/cli/commands_surface.cr:1671-1764`：PATH/GIT/PLUGIN/RubyGems bundle/系统 gem/默认 gem 六路发现；`:1822` `installed_git_checkout`。
+- `src/celerite/cli/commands.cr:1520`（check）、`:1780`（list）、`:2020`（show/info）、`:2758`（组集合）、`:2782`（按组过滤）。
+
+### 证据
+
+- 夹具与 spec 文件名经本轮列目录与 grep 核实存在；claims 记为已跑 PASS，本轮未重跑。
+- `spec/m7_installed_discovery_spec.cr` 的 with/without 断言在 `:378-407` 与 `:409-460`；Git checkout 断言在 `:225-260`。
+- 全量 spec 基线仍为首辅交底的 `38021fc`（1058/0/0/17），本轮未在 `2ad9b66` 重跑；`38021fc..HEAD` 仅 docs 变更。
+
+### 已声明差异
+
+- C-M7-2-004：未设 `CELERITE_REFERENCE_BUNDLER_LIB` 且宿主无已安装 bundler 时，`show --paths` 省略 bundler 行（参考恒有）。
+- C-M7-2-006：普通环境探针中参考把宿主已安装的 `thor` 纳入候选，我方非 `--local`/`--prefer-local` 路径只看索引。
+- C-M7-2-009：`file://C:/...` 两斜杠写法参考可解析、我方报不同源 not-found（规范写法一致）。
+- C-M7-2-011：`git-installed-discovery` 长期受本机 msys Low-IL 阻塞，claim 明写「不作本条通过判据」。
+
+### 裁断建议
+
+**不可勾**。17 条 claim 虽全为「已实现」，但本行文字要求的三处（`show`/`info` 发现、group、path/Git）仍有未闭环：
+
+1. `info`/`show` 菜单「输入序号选中」分支无端到端用例（C-M7-2-010 边界；本文件 `:197` 记为仍然有效）。本机可做：spec 以 stdin 喂序号。
+2. `show`/`info` 的其他重解通知场景未取 oracle（本文件 `:197`）。本机可做，但需先把「其他场景」列全。
+3. Git 安装状态无差分：`git-installed-discovery` 被 msys Low-IL `0xC0000022` 阻塞，只有单元 spec。本机不可做（需提权/换宿主）。
+4. with/without 无专条 claim：实现、spec、夹具均在，账本未固化。本机可做：补 claim，不改实现。
+
+另：全量 spec 未在 `2ad9b66` 重跑，勾选前建议至少跑一次 M7-2 定向回归。

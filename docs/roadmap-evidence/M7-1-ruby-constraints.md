@@ -29,3 +29,56 @@
 **2026-11-21（task-77）：`bundle cache` 现读 `cache_path` 设置（env 与 `.bundle/config`），`--cache-path` 优先，输出打印设置原值；`app_config_env` spec 的期望串按 task-56 的正斜杠形态归一（该 spec 在基线即红）。复选框保持 `[ ]`。** 
 
 **2026-11-22（task-119）：frozen 锁校验对齐参考三处——锁 `specs:` 空但 `DEPENDENCIES` 有条目（参考 `definition.rb:1068-1069` 的 `@missing_lockfile_dep`，修前我方 `check` exit 1 / `install` exit 0 静默重解析）、锁里多一行无人引用的 spec 行（参考 `definition.rb:973-1015` 只校验已锁定 spec 的依赖边，修前我方 `check` 误报缺 thor 且 `install` 真装 thor）、锁版本不满足 Gemfile 需求（参考 `definition.rb:1075-1078` 的 `matches_spec?`，修前我方 `install` exit 0 装下不满足约束的 2.6.0）；修后 A/C 两侧均 exit 16 且 stderr 逐字一致，B `check` 两侧 exit 0 且不再多装 thor。新增差分夹具 `check-frozen-missing-locked-spec`/`check-frozen-extra-locked-spec`/`check-frozen-locked-version-mismatch`（4.0.24 三条 PASS，2.7.2 标 deferred）与 `spec/m7_frozen_lock_validation_spec.cr`（5 例 0 失败）；反假绿：21fb01f 旧二进制跑三个新夹具 0 passed / 3 failed；4.0.24 全部 `*frozen*`/`*check*` 回归 47 passed / 0 failed。非 frozen 路径按任务书未改（A/B 的 `check` 在非 frozen 下仍与参考不同，见 `docs/compat-evidence/2026-11-22.md` task-119 节）。复选框保持 `[ ]`。**
+## 2026-11-23：M7-1 行的闭合判据审计（task-182）
+
+本节为首辅裁断 `docs/roadmap.md:141` 的 M7-1 行提供依据，**不动复选框**。状态以 `docs/compat-claims/M7-1-ruby-constraints.md` 的 17 条账本为准（本轮实测：已实现 14、未验证 2、已声明差异 1）；claims 正文内的源码行号已整体漂移，下表行号为本轮实测现值。本节未执行 `crystal spec` 或 `bash script/differential`。
+
+### 子项拆解与逐项状态
+
+| # | 子项 | 证据（文件:行号 / claim / 夹具） | 状态 |
+|---|---|---|---|
+| 1 | 当前 Ruby 的约束过滤（gem 元数据 `required_ruby_version`） | `src/celerite/resolver/source.cr:312-316`（`:313`）；C-M7-1-002；`ruby-metadata-fail`、`ruby-metadata-remote-fail`、`ruby-metadata-boundary-fail`、`ruby-metadata-exact-match` | 已实现 |
+| 2 | RubyGems 的约束过滤（`required_rubygems_version`） | `src/celerite/resolver/source.cr:314`；C-M7-1-003；`rubygems-metadata-fail`、`rubygems-metadata-remote-fail`、`rubygems-metadata-boundary-fail`、`rubygems-metadata-pessimistic-match` | 已实现 |
+| 3 | Gemfile 目标 Ruby 的运行时校验 | `src/celerite/cli/commands.cr:1335` `validate_ruby_runtime!`；`src/celerite/ruby_runtime.cr:17`；`src/celerite/errors.cr:522` `RubyVersionMismatch`（exit 18）；C-M7-1-001；`ruby-requirement-mismatch`、`ruby-target-match`、`check-satisfied-nolock-ruby` | 已实现 |
+| 4 | engine / engine_version | 同 #3 校验链；C-M7-1-001；`ruby-engine-match`、`ruby-engine-mismatch`、`ruby-engine-version-mismatch`、`ruby-engine-patchlevel-match`；`spec/m7_ruby_runtime_spec.cr` | 已实现 |
+| 5 | patchlevel | `src/celerite/ruby_runtime.cr:17`；C-M7-1-006、C-M7-1-012；`ruby-patchlevel-match`、`ruby-patchlevel-mismatch`、`install-patchlevel-mismatch`；`spec/m7_ruby_patchlevel_spec.cr` | 已实现 |
+| 6 | ABI 约束过滤 | `src/celerite/resolution.cr:164-172` `InstallPaths.ruby_abi(_for)`；C-M7-1-015；仅 `spec/m7_ruby_constraints_spec.cr` 的 `Celerite::InstallPaths` 纯逻辑例 | 未验证 |
+| 7 | `ResolutionSource#ruby_requirement_satisfied?` 完整实现 | `src/celerite/resolver/source.cr:312-316`：`:313` 比 `required_ruby_version`，`:314` 比 `required_rubygems_version`，二者同时满足才 true；调用点 `:228`、`:455`；C-M7-1-002/003 | 已实现 |
+| 8 | `--ruby` 更新锁内 `RUBY VERSION` | C-M7-1-017；`fixtures/differential/update-ruby` 只含 `command`/`Gemfile`/`Gemfile.lock`，`grep RUBY VERSION` 无命中；claims 自述仅手工探针 | 未验证 |
+
+### oracle
+
+- 参考侧：4.0.24 与 2.7.2 的 `Bundler::Definition#validate_runtime!`、`Bundler::RubyVersion`、RubyGems `Gem::Specification#required_ruby_version` / `required_rubygems_version` 与 ABI 口径；逐条结论已固化在 C-M7-1-001…017。
+- 可重跑判据：上表夹具对应的 `bash script/differential <fixture>`，以及 `crystal spec spec/m7_ruby_constraints_spec.cr spec/m7_ruby_runtime_spec.cr spec/m7_ruby_patchlevel_spec.cr spec/m7_ruby_runtime_enforcement_spec.cr spec/m7_resolver_ruby_constraints_spec.cr`。
+
+### 参考锚点
+
+- `lib/bundler/definition.rb:494-523` `validate_runtime!`、`lib/bundler/resolver.rb:34`（C-M7-1-016 正文所载）。
+- `lib/bundler/definition.rb:445-452` `locked_ruby_version`（C-M7-1-017 正文所载）。
+- `rubygems.rb:906-907` `ruby_api_version`（C-M7-1-015 正文所载）。
+- 以上参考行号引自 claims 正文，本轮未打开参考检出复核。
+
+### 实现位置
+
+- `src/celerite/resolver/source.cr:312-316`（过滤谓词）、`:321` / `:325`（运行中 Ruby/RubyGems 版本）。
+- `src/celerite/ruby_runtime.cr:17`；`src/celerite/errors.cr:522`。
+- `src/celerite/cli/commands.cr:1335`（`validate_ruby_runtime!`）。
+- `src/celerite/resolution.cr:164-172`（ABI 推导，仅被安装路径/extensions 目录消费，未参与候选过滤）。
+
+### 证据
+
+- 夹具与 spec 文件名均经本轮 `Test-Path`/列目录核实存在；claims 记为已跑 PASS，本轮未重跑。
+- 首辅交底的 `38021fc` 全量 spec（1058 examples / 0 failures / 0 errors / 17 pending）只覆盖 spec，不覆盖差分；`git diff --stat 38021fc..HEAD` 只动 docs 5 文件，代码态可折算。
+- 全量差分最近一次记录仍是本文件 2026-11-12 行：130 fixtures、123 passed、7 failed（失败均为 racc/make 环境类），此后只有定向轮次，**未全量重跑**。
+
+### 已声明差异
+
+- C-M7-1-016：无 bridge 的降级构建跳过运行时校验、`check` 省略重解通知；属有意 best-effort，不计为通过。
+- ABI 一项另有一层口径问题：参考 Bundler 侧未发现独立 ABI 过滤分支，ABI 只进入安装路径；M7-1 行文把 ABI 写成「约束过滤」，与参考行为不完全对齐。
+
+### 裁断建议
+
+**不可勾，还缺 2 项**：
+
+1. C-M7-1-015（ABI）：只有纯逻辑单元例，无差分夹具。本机可做单 ABI（4.0.0 路径）差分，或把本项改写成「ABI 仅参与安装路径」并标已声明差异；多 ABI 矩阵本机不可做（无第二 Ruby 宿主）。
+2. C-M7-1-017（`--ruby` 更新锁内 `RUBY VERSION`）：现有 `update-ruby` 夹具未断言该行。本机可做：扩展夹具断言更新前后 `RUBY VERSION`，或新增专用夹具。

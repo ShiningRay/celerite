@@ -195,3 +195,61 @@ C 组刻意用「引擎侧 profile 环境变量 = 2.7.2、参考侧仍 4.0.24」
 - **未覆盖**：`docs/compat-claims/M7-3-placeholders.md` 断言账本本轮**未**同步（该路径属禁改范围），本轮证据仅落在本文件。
 - **未勾选**：`docs/roadmap.md` 的 M7-3 行本轮不动（尚未到勾选条件），本文件为 M7-3 子项实证流水。
 - **已声明**：Windows 上空环境值被 OS 删除，故「设为空串」在 Windows 上与「未设」不可区分；spec 第 6 例因此只钉 `"   "`/`" 2.7.2 "` 的原样语义，空串的等价性以裸探针实测结论记录，未写成可跨平台的断言。
+## 2026-11-23：M7-3 行的闭合判据审计（task-182）
+
+本节为首辅裁断 `docs/roadmap.md:143` 的 M7-3 行提供依据，**不动复选框**。状态以 `docs/compat-claims/M7-3-placeholders.md` 的 35 条账本为准（本轮实测：已实现 25、已声明差异 5、未实现 2、未验证 3）。claims 正文行号已漂移，下表为本轮实测现值。本节未执行 `crystal spec` 或 `bash script/differential`。
+
+### 子项拆解与逐项状态
+
+| # | 子项 | 证据（文件:行号 / claim / 夹具） | 状态 |
+|---|---|---|---|
+| 1 | `fund` 的真实 metadata（`funding_uri`） | `src/celerite/cli/commands_surface.cr:2044` `fund_group_flag`、`:2065` `fund_requested_groups`、`:2123` `read_source_funding_uri`、`:2145` `read_funding_uri`；C-M7-3-001、002、003、004、005、007 已实现；C-M7-3-006 已声明差异；`fund-path`、`fund-groups`、`fund-groups-without`、`fund-no-lockfile`；`spec/m7_fund_spec.cr`、`spec/m7_fund_group_spec.cr`、`spec/m7_funding_summary_spec.cr` | 已实现（除已声明差异） |
+| 2 | `gem` 模板 | `src/celerite/gem_template.cr:22` `render`、`:25` `asset_path("gem_render.rb")`、`:61` `help_text(profile)`；`src/celerite/cli/commands_surface.cr:3750` `gem`；C-M7-3-008…013 已实现；C-M7-3-014、016 已声明差异；C-M7-3-015 未实现；`gem-no-git`、`gem-default`、`gem-options`、`gem-ext`、`gem-invalid`；`spec/m7_gem_template_spec.cr`、`spec/m7_gem_options_spec.cr` | 部分未闭合 |
+| 3 | `console` 行为 | `assets/bridge/console_boot.rb:26-32`（组 → `Bundler.require`）、`:58` 回退文案、`:63`/`:67` `irb is not available` + `exit 1`、`:72` `console.start`；`src/celerite/cli/commands_surface.cr:3666` `console`、`:3721` `console_boot_path`；C-M7-3-017…019 已实现；C-M7-3-020 已声明差异；C-M7-3-021 未验证；`console-group`；`spec/m7_console_spec.cr` | 部分未闭合 |
+| 4 | `env` 行为 | `src/celerite/cli/commands_surface.cr:1154` `env`、`:1248` `print_gemfile_sections`；C-M7-3-022…025、029、034 已实现；C-M7-3-030、035 未验证；C-M7-3-033 已声明差异；`env-gemspec`、`issue-no-gemfile`、`issue-missing-gems`、`issue-satisfied`、`help-tree-fallback`；`spec/m7_env_output_spec.cr`、`spec/m7_issue_report_spec.cr` | 部分未闭合 |
+| 5 | 避免硬编码 Bundler 版本 | `src/celerite/profile.cr:9-26`（`CELERITE_PROFILE_BUNDLER_VERSION` 覆盖，单一默认值 `:15`）；`src/celerite/cli/commands.cr:2451` `profile_bundler_version`；C-M7-3-026；本轮 grep 非注释字面量仅 `profile.cr:15`、`release_metadata.cr:11-12`、`commands_install.cr:2185` | 已实现 |
+| 6 | 避免硬编码时间戳 | `src/celerite/release_metadata.cr:10-20` `RELEASES` 为各发布版 build metadata 常量（`2026-11-05`/`3b396e4` 等），`bundle version` 不取 `Time.now`；C-M7-3-025；`spec/m7_version*`（既有版本输出 spec） | 已实现 |
+| 7 | 避免硬编码运行环境 | `env` 读真实 `Gem.path`/`Gem.bindir`/配置目录（C-M7-3-022、023、024、034）；`src` 内 `Time.utc` 仅用于 resolution cooldown（`resolution.cr:746`、`:770`、`commands_surface.cr:3243`），不进入 build metadata 或 env 输出 | 已实现 |
+| 8 | `doctor` 完整诊断（账本内，但本行未点名） | C-M7-3-031 未实现；本行文字只列 fund/gem/console/env | 账本未闭合，行文不阻塞 |
+
+### oracle
+
+- 参考侧：4.0.24 与 2.7.2 的 `Bundler::CLI::Fund/Gem/Console/Env/Issue/Doctor`、`Bundler::GemHelper` 模板、`Bundler::BuildMetadata`；逐条结论见 C-M7-3-001…035。
+- 可重跑判据：上表夹具的 `bash script/differential <fixture>`；`crystal spec spec/m7_fund_spec.cr spec/m7_gem_template_spec.cr spec/m7_gem_options_spec.cr spec/m7_console_spec.cr spec/m7_env_output_spec.cr spec/m7_issue_report_spec.cr`。
+
+### 参考锚点
+
+- `lib/bundler/cli/fund.rb`、`lib/bundler/cli/gem.rb`、`lib/bundler/cli/console.rb`、`lib/bundler/cli/env.rb`、`lib/bundler/cli/issue.rb`、`lib/bundler/build_metadata.rb`（claims 各条「参考行为」所载）。
+- `assets/bridge/console_boot.rb:34-39` 注释另引 `cli/console.rb:38-45` 的三个 start 常量；`:53-56` 明写不镜像 `Gem::BUNDLED_GEMS.force_activate`。
+- 以上参考行号引自 claims 正文与源码注释，本轮未打开参考检出复核。
+
+### 实现位置
+
+- `src/celerite/cli/commands_surface.cr:1154`（env）、`:2044-2145`（fund）、`:3666-3721`（console）、`:3750`（gem）。
+- `src/celerite/gem_template.cr:22-61`；`src/celerite/release_metadata.cr:10-20`；`src/celerite/profile.cr:9-26`。
+- `assets/bridge/console_boot.rb:24-72`。
+
+### 证据
+
+- 夹具与 spec 文件名经本轮列目录核实存在；claims 记为已跑 PASS，本轮未重跑。
+- `assets/bridge/console_boot.rb` 的组分派（`:26-31`）与回退链（`:49-70`）已逐行核对。
+- 全量 spec 基线仍为首辅交底的 `38021fc`（1058/0/0/17），本轮未在 `2ad9b66` 重跑。
+
+### 已声明差异
+
+- C-M7-3-006：`BUNDLE_WITHOUT` 命中 `--group` 时参考崩溃，本实现不复刻。
+- C-M7-3-014：`gem --edit` / `--bundle` 显式报不支持并 exit 1。
+- C-M7-3-016：2.7.2 的 `gem` 模板与成功链接不同，两个 gem 夹具在该 profile 下 deferred。
+- C-M7-3-020：console 在独立 ruby 子进程中运行，不是参考的进程内 `console.start`；因此「完整 console 行为」只是子进程语义下的完整。
+- C-M7-3-033：无手册页的命令回退 Thor `command_help`，本命令 option 表未复刻。
+
+### 裁断建议
+
+**不可勾，还缺 4 项**（均直接命中本行文字）：
+
+1. C-M7-3-015（未实现）：`gem` 的交互式问卷（test/CI/linter/license/COC/changelog）未实现。本机可做：实现问答，或把交互分支明确降级为已声明差异并从「gem 模板」行文剥离。
+2. C-M7-3-021（未验证）：IRB 可用时的交互式 console 会话未验证。本机难做（需交互 TTY 与可用 IRB 环境）。
+3. C-M7-3-030（未验证）：无 Gemfile 时参考 `issue` 回溯宿主机 user config，双方输出不可逐字比对。本机不可逐字做（需另一宿主机/纯净 user config），只能登记边界。
+4. C-M7-3-035（未验证）：`env` 的多 `gemspec` 指令顺序与去重未验证。本机可做：`env-gemspec` 夹具加两个 gemspec。
+
+另：C-M7-3-031（`doctor` 完整诊断）未实现，但本行文字未点名 doctor，是否阻塞由首辅按 M7-3 账本口径裁定。已声明差异 5 条需首辅明确接受（尤其 020 的子进程语义）后，才可按「已声明差异不算缺项」计。
