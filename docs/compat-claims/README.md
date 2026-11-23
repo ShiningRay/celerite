@@ -279,7 +279,7 @@
 | C-M7-6-035 | 插件 source 的非空 `options_to_lock` 落进 `PLUGIN SOURCE` 段 | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'bash script/differential plugin-source-lock-options'` |
 | C-M7-6-036 | 远端 `--source` 插件安装的成功路径（`plugin-source-ok`） | 未验证 | [M7-6-plugins.md](M7-6-plugins.md) | `'bash script/differential plugin-source-ok'` |
 | C-M7-6-037 | 无 Gemfile / 全局插件根下安装时 hooks 的落盘 | 未验证 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_install_source_spec.cr'` |
-| C-M7-6-038 | `plugin install --git/--branch/--ref` 的 git checkout 端到端 | 未验证 | [M7-6-plugins.md](M7-6-plugins.md) | `'bash script/differential plugin-git-local plugin-git-local2'` |
+| C-M7-6-038 | `plugin install --git/--branch/--ref` 的 git checkout 端到端 | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'bash script/differential plugin-git-install'（新夹具，双 profile PASS）+ 'cr…` |
 | C-M7-6-039 | 缺失 load path 的告警在参考里按每次 hook 重复，我方每命令一次 | 已声明差异 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_hook_failure_spec.cr'` |
 | C-M7-6-040 | 失败回滚删除 `--path` 源目录只对三类注册失败复刻 | 已声明差异 | [M7-6-plugins.md](M7-6-plugins.md) | `'bash script/differential plugin-conflict-command plugin-conflict-sour…` |
 | C-M7-6-041 | 参考同进程二次加载导致每 spec 触发两次的重复注册未复刻 | 已声明差异 | [M7-6-plugins.md](M7-6-plugins.md) | `'bash script/differential plugin-hook-per-gem'` |
@@ -321,6 +321,7 @@
 | C-M7-8-015 | harness 只探测既有 celerite 二进制，不自行重建 | 已实现 | [M7-8-upstream-specs.md](M7-8-upstream-specs.md) | `'bash script/upstream-specs'` |
 | C-M7-8-016 | 套件结论只覆盖 4.0.24 profile，2.7.2 未复采 | 未验证 | [M7-8-upstream-specs.md](M7-8-upstream-specs.md) | `'UPSTREAM_REV=v2.7.2 bash script/upstream-specs'` |
 | C-M7-8-017 | 补充 CHECKSUMS digest 与 `path_expander` 锁体行的两处未对齐 | 已声明差异 | [M7-8-upstream-specs.md](M7-8-upstream-specs.md) | `'bash script/upstream-specs'` |
+| C-M7-8-018 | 完整锁里指向 `bundler` 的依赖边不再让锁被误判为不完整而重写 | 已实现 | [M7-8-upstream-specs.md](M7-8-upstream-specs.md) | `'bash script/differential install-keeps-lock-with-bundler-edge'；'cryst…` |
 | C-M7-9-001 | `VersionUnion` 的区间扫描不再提前耗尽无上界一侧，多 `!=` 排除的 union 保持完整 | 已实现 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'crystal spec spec/m7_resolver_version_union_intersect_spec.cr'` |
 | C-M7-9-002 | 锁文件按本地平台变体物化，不退回 ruby 变体 | 已实现 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'crystal spec spec/m7_platform_variant_selection_spec.cr'；'bash script…` |
 | C-M7-9-003 | Rails 8.0.2 真实应用的端到端安装未通过，该 profile 的兼容声明未恢复 | 未验证 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'bash script/differential install-check'（同形态的入库回归门禁；rails 规模夹具不入库，端到端无…` |
@@ -345,6 +346,9 @@
 | C-cross-007 | 安装后的 `.gemspec` 采用 RubyGems stub 格式，与参考模式一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential install-force'` |
 | C-cross-008 | Ruby 运行时场景走参考的 `bundler/setup`，不是独立轻量 Ruby 运行时 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential ruby-api'` |
 | C-cross-009 | 并发下载按 name/version/platform 做进程内 single-flight 去重，不声称分布式互斥 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'crystal spec spec/process_lock_spec.cr'` |
+| C-cross-010 | `BUNDLE_GEMFILE` 指向缺失路径时，读类命令统一报单行 `<绝对路径> not found` 并 exit 10 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential gemfile-env-missing'；'crystal spec spec/m7_g…` |
+| C-cross-011 | `BUNDLE_GEMFILE` 指向缺失路径时，写类命令保留 exit 1 的裸 `Errno::ENOENT`，未复刻参考的崩溃报告 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential gemfile-env-missing'` |
+| C-cross-012 | `--gemfile` 指向缺失文件时报单行 `<展开路径> not found` 并 exit 10，折行交给统一的 word_wrap | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'` |
 
-合计 234 条断言（已实现 188 · 已声明差异 25 · 未实现 6 · 未验证 15）。
+合计 238 条断言（已实现 192 · 已声明差异 26 · 未实现 6 · 未验证 14）。
 <!-- END GENERATED INDEX -->
