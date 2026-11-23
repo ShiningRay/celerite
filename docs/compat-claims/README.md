@@ -346,6 +346,9 @@
 | C-M7-docs-003 | 引用历史结论写「compat-evidence 日期文件 + 节标题」，不写 `compat-report.md:<行号>` | 已实现 | [M7-docs-sync.md](M7-docs-sync.md) | `'bash script/differential install-check'；'grep -rn "compat-report\.md:…` |
 | C-M7-docs-004 | `docs/roadmap.md` 只维护任务陈述与复选框，流水落 `docs/roadmap-evidence/`，不写行号 | 已实现 | [M7-docs-sync.md](M7-docs-sync.md) | `'bash script/differential install-check'；'grep -rn "roadmap\.md:[0-9]"…` |
 | C-M7-docs-005 | 被取代的旧结论保留原文，由新条目写明取代关系，不回改旧条目 | 已实现 | [M7-docs-sync.md](M7-docs-sync.md) | `'bash script/differential install-check'；'grep -n "保留原文" docs/compat-e…` |
+| C-M7-docs-006 | README、compat-report、roadmap 三处对同一度量给出口径一致的陈述 | 已实现 | [M7-docs-sync.md](M7-docs-sync.md) | `门禁 'bash script/differential install-check'（EXIT 0）；三处口径 'Select-Strin…` |
+| C-M7-docs-007 | 历史度量行标注对应 commit / 工作树，旧值只标取代、不静默改写 | 已实现 | [M7-docs-sync.md](M7-docs-sync.md) | `门禁 'bash script/differential install-check'（EXIT 0）；采集点与旧值 '$l=(Get-Co…` |
+| C-M7-docs-008 | 度量计数只出现在 `docs/compat-report.md` 的 `## Current metrics`，不外溢到 README / roadmap | 已实现 | [M7-docs-sync.md](M7-docs-sync.md) | `门禁 'bash script/differential install-check'（EXIT 0）；外溢检查 'Select-Strin…` |
 | C-M7-suite-001 | verbose 回显 spec 的实参对齐六参签名，全套件编译期失败消除 | 已实现 | [M7-suite.md](M7-suite.md) | `'crystal spec spec/m7_verbose_echo_spec.cr'` |
 | C-M7-suite-002 | spec 间 `BUNDLE_GEMFILE` 泄漏链已被 env 复原切断 | 已实现 | [M7-suite.md](M7-suite.md) | `'crystal spec spec/m7_binstubs_path_source_spec.cr'` |
 | C-M7-suite-003 | CLI 每次调用重算 verbose 与 retry 开关，不继承上一次调用 | 已实现 | [M7-suite.md](M7-suite.md) | `'crystal spec spec/m7_cli_state_isolation_spec.cr'` |
@@ -367,5 +370,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 255 条断言（已实现 208 · 已声明差异 35 · 未实现 4 · 未验证 3 · 已取代 5）。
+合计 258 条断言（已实现 211 · 已声明差异 35 · 未实现 4 · 未验证 3 · 已取代 5）。
 <!-- END GENERATED INDEX -->
