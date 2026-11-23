@@ -513,11 +513,40 @@ def op_generate_bin_stubs(payload)
     File.chmod(script_path, 0o755) unless Gem.win_platform?
     if Gem.win_platform?
       bat_path = "#{script_path}.bat"
-      File.binwrite(bat_path, installer.send(:windows_stub_script, destination, executable))
+      # RubyGems writes the stub in text mode (`installer.rb:427-437`:
+      # `File.open(..., "w") { |file| file.puts ... }`), which turns the LF
+      # template into CRLF on Windows. Keep that path instead of writing the
+      # bytes ourselves: a binwrite leaves lone LF and a 32-byte stub.
+      File.open(bat_path, "w") do |file|
+        file.write(installer.send(:windows_stub_script, destination, executable))
+      end
     end
     written << executable
   end
   { "executables" => written }
+rescue StandardError => e
+  { "error" => e.message, "backtrace" => e.backtrace.first(4) }
+end
+
+# Write `plugins/<gem>_plugin.rb` for an installed gem exactly as
+# `Gem::Installer#install` does (`installer.rb:475-488`): the library discovers
+# `lib/rubygems_plugin.rb` through the spec and writes the `require_relative`
+# stub, so neither the file name nor the body is re-typed here.
+def op_generate_plugins(payload)
+  require "rubygems/installer"
+  require "rubygems/package"
+  gem_path = payload["gem_path"]
+  installer = Gem::Installer.at(gem_path,
+                                install_dir: payload["install_root"],
+                                ignore_dependencies: true,
+                                document: [])
+  # `Gem::Installer#spec` returns `@package.spec` (`installer.rb:253-255`), not
+  # whatever `@spec` is set to, so the package spec itself must learn where the
+  # gem was published: `BasicSpecification#plugins` globs `lib/rubygems_plugin.rb`
+  # under `full_gem_path` (`basic_specification.rb:317-319`).
+  installer.spec.full_gem_path = payload["gem_dir"].to_s.tr("\\", "/") unless payload["gem_dir"].to_s.empty?
+  installer.send(:generate_plugins)
+  { "plugins" => installer.spec.plugins }
 rescue StandardError => e
   { "error" => e.message, "backtrace" => e.backtrace.first(4) }
 end
@@ -548,7 +577,21 @@ def op_build_extension(payload)
   spec.full_gem_path = gem_dir
   spec.extension_dir = destination
   build_args = payload["build_args"] ? payload["build_args"].to_s.split(" ") : []
-  Gem::Ext::Builder.new(spec, build_args).build_extensions
+  # Reference hands Bundler's `build_jobs` to RubyGems
+  # (`rubygems_gem_installer.rb:108-115` -> `installer.rb:819-823`), which turns
+  # it into `make -jN` (`ext/builder.rb:24-47`). 4.0.24 honours `BUNDLE_JOBS`
+  # (unset -> `Etc.nprocessors`, `settings.rb:230,309`); 2.7.2 has no override
+  # and falls through to the RubyGems default `Etc.nprocessors + 1`.
+  jobs = if payload["jobs_mode"].to_s == "rubygems"
+    require "etc"
+    Etc.nprocessors + 1
+  elsif payload["build_jobs"].to_s.empty?
+    require "etc"
+    Etc.nprocessors
+  else
+    payload["build_jobs"].to_i
+  end
+  Gem::Ext::Builder.new(spec, build_args, Gem.target_rbconfig, jobs).build_extensions
   File.write(gem_build_complete, "")
   { "built" => spec.extensions, "complete" => gem_build_complete }
 rescue StandardError => e
@@ -890,6 +933,7 @@ def bridge_dispatch(id, op, payload)
     when "load_installed_spec" then op_load_installed_spec(payload)
            when "write_installed_spec" then op_write_installed_spec(payload)
            when "generate_bin_stubs" then op_generate_bin_stubs(payload)
+           when "generate_plugins" then op_generate_plugins(payload)
            when "build_extension" then op_build_extension(payload)
            when "load_gemspec_dir" then op_load_gemspec_dir(payload)
             when "load_gemspec_dir_specs" then op_load_gemspec_dir_specs(payload)

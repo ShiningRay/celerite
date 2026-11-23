@@ -67,6 +67,23 @@ module Celerite
       value.to_s.split(" ").reject(&.empty?)
     end
 
+    # `BUNDLE_JOBS`/`jobs` reaches `Gem::Ext::Builder` in the reference
+    # (`rubygems_gem_installer.rb:108-115`); nil means "use Etc.nprocessors".
+    private def build_jobs : Int32?
+      cfg = @config
+      return nil unless cfg
+      value = cfg["jobs"]
+      return nil if value.nil? || value.to_s.empty?
+      value.to_s.to_i?
+    end
+
+    # 2.7.2 has no `build_jobs` override (`bundler-2.7.2/lib/bundler/
+    # rubygems_gem_installer.rb:104-127` calls RubyGems' implementation), so its
+    # build uses the RubyGems default; 4.x honours `BUNDLE_JOBS`.
+    private def build_jobs_mode : String
+      Celerite::Profile.bundler_version.starts_with?("2.") ? "rubygems" : "bundler"
+    end
+
     def installed?(name : String, version : String, platform : String?) : Bool
       full_name = (platform.nil? || platform == "ruby") ? "#{name}-#{version}" : "#{name}-#{version}-#{platform}"
       spec_path = File.join(@install_root, "specifications", "#{full_name}.gemspec")
@@ -243,7 +260,7 @@ module Celerite
             FileUtils.rm_rf(extension_dir)
             build_args = config_build_args(name)
             build_result = @bridge.build_extension(
-              File.join(target_gems, full_name), extension_dir, name, gem_file, target_rbconfig, build_args
+              File.join(target_gems, full_name), extension_dir, name, gem_file, target_rbconfig, build_args, build_jobs, build_jobs_mode
             )
             if build_result["error"]?
               raise InstallError.new(extension_failure_message(name, version, full_name, build_result))
@@ -259,6 +276,16 @@ module Celerite
           Dir.children(bin_dir).each do |child|
             File.rename(File.join(bin_dir, child), File.join(target_bin, child))
           end
+        end
+
+        # `plugins/<gem>_plugin.rb` is part of RubyGems' install step
+        # (`installer.rb:475-488`); run it after publishing so the generated
+        # `require_relative` points at the final `gems/` directory.
+        plugin_result = @bridge.generate_plugins(
+          File.join(target_cache, "#{full_name}.gem"), @install_root, File.join(target_gems, full_name)
+        )
+        if error = plugin_result["error"]?
+          raise Error.new("plugin generation failed for #{full_name}: #{error.as_s}")
         end
 
         true

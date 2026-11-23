@@ -446,6 +446,13 @@ module Celerite
         request("generate_bin_stubs", {"gem_path" => gem_path, "destination" => destination, "gem_dir" => gem_dir})
       end
 
+      # `plugins/<gem>_plugin.rb`: RubyGems writes it during `install`
+      # (`installer.rb:475-488`); paths are the published install root so the
+      # `require_relative` body points at the final `gems/` directory.
+      def generate_plugins(gem_path : String, install_root : String, gem_dir : String) : JSON::Any
+        request("generate_plugins", {"gem_path" => gem_path, "install_root" => install_root, "gem_dir" => gem_dir})
+      end
+
       def load_gemspec_dir(dir : String, glob : String? = nil, name : String? = nil) : GemSpecInfo
         payload = {"dir" => dir} of String => String
         payload["glob"] = glob if glob
@@ -461,10 +468,12 @@ module Celerite
         Array(GemSpecSummary).from_json(request("load_gemspec_dir_specs", payload)["specs"].to_json)
       end
 
-      def build_extension(gem_dir : String, destination : String, name : String, gem_path : String, target_rbconfig : String? = nil, build_args : Array(String)? = nil) : JSON::Any
+      def build_extension(gem_dir : String, destination : String, name : String, gem_path : String, target_rbconfig : String? = nil, build_args : Array(String)? = nil, build_jobs : Int32? = nil, jobs_mode : String? = nil) : JSON::Any
         payload = {"gem_dir" => gem_dir, "destination" => destination, "name" => name, "gem_path" => gem_path} of String => String
         payload["target_rbconfig"] = target_rbconfig if target_rbconfig
         payload["build_args"] = build_args.join(" ") if build_args && !build_args.empty?
+        payload["build_jobs"] = build_jobs.to_s if build_jobs
+        payload["jobs_mode"] = jobs_mode if jobs_mode
         request("build_extension", payload, limit: nil)
       end
 
