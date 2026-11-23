@@ -122,10 +122,11 @@ describe "bridge protocol version range" do
     features.should contain("evaluate_gemfile")
     features.should contain("gemspec_paths")
     features.should contain("plugin_gemfile_eval")
-    # `evaluate_batch` is roadmap L161 slice S2. Advertising an op that does
-    # not exist would turn a feature probe into `UnknownOp`; the slice that
-    # implements it adds it here (and to BRIDGE_FEATURES).
-    features.should_not contain("evaluate_batch")
+    # `evaluate_batch` is roadmap L161 slice S2: the op exists now, so the
+    # advertisement names it. Advertising an op that does not exist would turn
+    # a feature probe into `UnknownOp`, so this line and `BRIDGE_FEATURES` move
+    # together.
+    features.should contain("evaluate_batch")
   end
 
   it "treats a response without features as an empty capability set" do
