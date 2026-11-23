@@ -56,9 +56,27 @@ private def with_read_only(path : String, &)
   {% end %}
 end
 
-private def permission_expected_stderr(path : String) : String
-  message = Celerite::PermissionError.new(path, :write).message
-  Celerite::Commands.word_wrap(message, Celerite::CLI.terminal_width) + "\n"
+# `lock` reports the `PermissionError` through the unified word wrap
+# (`src/celerite/cli.cr:52-61` -> `Commands.word_wrap`, `commands.cr:1205-1214`),
+# and the message embeds the *expanded* lockfile path. At the 80-column default
+# the break points therefore move with the temp root's length (the geometry that
+# made `9e01625` red under `C:\t\sp225` and green under
+# `C:\t\cel\.tmp-scratch\sp225`). Pinning 30 columns removes that coupling: the
+# fixed words already exhaust each line and the path is far wider than 30
+# columns, so every break below holds for any temp root. Same restore shape as
+# `spec/m7_add_options_spec.cr:41-53` and `spec/m7_source_index_missing_spec.cr:75-91`.
+private def with_permission_columns(columns : String, &) : Nil
+  previous = ENV["THOR_COLUMNS"]?
+  begin
+    ENV["THOR_COLUMNS"] = columns
+    yield
+  ensure
+    if previous
+      ENV["THOR_COLUMNS"] = previous
+    else
+      ENV.delete("THOR_COLUMNS")
+    end
+  end
 end
 
 describe "filesystem permission errors" do
@@ -70,12 +88,25 @@ describe "filesystem permission errors" do
       }) do |dir|
         lock_path = File.join(dir, "Gemfile.lock")
         with_read_only(lock_path) do
-          code, output, errors = run_cli(["lock"])
-          code.should eq(23)
-          output.should contain("Resolving dependencies...")
-          errors.should contain("There was an error while trying to write to")
-          errors.should contain("It is likely that you need to grant write permissions for that path.")
-          errors.should eq(permission_expected_stderr(File.expand_path(lock_path).gsub('\\', "/")))
+          with_permission_columns("30") do
+            code, output, errors = run_cli(["lock"])
+            code.should eq(23)
+            output.should contain("Resolving dependencies...")
+            # Coarse wording checks, then the 30-column rendering written out
+            # literally. The expectation must not be produced by the code under
+            # test (`word_wrap`) or it would only prove self-consistency.
+            errors.should contain("There was an error while")
+            errors.should contain("It is likely that you need to")
+            errors.should contain("that path.")
+            errors.should eq(
+              "There was an error while\n" \
+              "trying to write to\n" \
+              "`#{File.expand_path(lock_path).gsub('\\', "/")}`.\n" \
+              "It is likely that you need to\n" \
+              "grant write permissions for\n" \
+              "that path.\n"
+            )
+          end
         end
       end
     end

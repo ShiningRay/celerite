@@ -93,6 +93,28 @@ private def run_fund(rest : Array(String) = [] of String) : Tuple(Int32, String,
   {code, output.to_s, errors.to_s}
 end
 
+# `fund` renders the `PathError` through the unified word wrap
+# (`src/celerite/cli/commands.cr:1205-1214` via `cli.cr:52-61`), and the message
+# embeds the temp project's *absolute* path. At the 80-column default the break
+# points therefore follow the temp root's length (task-225: red under
+# `C:\t\sp225`, green under `C:\t\cel\.tmp-scratch\sp225`). Pinning 30 columns
+# removes that coupling: the fixed words fill each line by themselves and the
+# path is always far wider than 30 columns, so the rendering below holds for any
+# temp root. Restore shape copied from `spec/m7_add_options_spec.cr:41-53`.
+private def with_fund_columns(columns : String, &) : Nil
+  previous = ENV["THOR_COLUMNS"]?
+  begin
+    ENV["THOR_COLUMNS"] = columns
+    yield
+  ensure
+    if previous
+      ENV["THOR_COLUMNS"] = previous
+    else
+      ENV.delete("THOR_COLUMNS")
+    end
+  end
+end
+
 private def with_fund_project(extra : Hash(String, String) = {} of String => String, &)
   with_fund_bridge do
     with_project(fund_group_project_files(extra)) do |dir|
@@ -183,29 +205,28 @@ describe "M7 fund --group" do
   it "reports a missing PATH dependency like Bundler's PathError (exit 13)" do
     with_fund_project do |dir|
       FileUtils.rm_rf(File.join(dir, "vendor", "beta"))
-      code, out, err = run_fund
-      code.should eq(13)
-      out.should eq("")
       missing = File.join(dir, "vendor", "beta").gsub('\\', "/")
-      # source/path.rb:198-204 emits one line; ui/shell.rb:167-171 wraps it at
-      # the terminal width, so a long absolute path lands on its own line.
-      err.should eq("The path\n`#{missing}`\ndoes not exist.\n")
 
-      # The wrap is derived from the terminal width, not hardcoded: a wide
-      # terminal keeps the whole sentence on a single line.
-      previous = ENV["THOR_COLUMNS"]?
-      begin
-        ENV["THOR_COLUMNS"] = "1000"
+      # 30 columns: the message wraps into the same three lines whatever the
+      # project path happens to be, because none of the fixed words can share a
+      # line with any part of the path.
+      with_fund_columns("30") do
+        code, out, err = run_fund
+        code.should eq(13)
+        out.should eq("")
+        # source/path.rb:198-204 emits one line; ui/shell.rb:167-171 wraps it,
+        # so here the path owns its line. Expectation is a literal, not
+        # `Commands.word_wrap` applied to the message.
+        err.should eq("The path\n`#{missing}`\ndoes not exist.\n")
+      end
+
+      # The breaks above come from the pinned width, not from a hardcoded
+      # newline: a wide terminal keeps the whole sentence on a single line.
+      with_fund_columns("1000") do
         wide_code, wide_out, wide_err = run_fund
         wide_code.should eq(13)
         wide_out.should eq("")
         wide_err.should eq("The path `#{missing}` does not exist.\n")
-      ensure
-        if previous
-          ENV["THOR_COLUMNS"] = previous
-        else
-          ENV.delete("THOR_COLUMNS")
-        end
       end
     end
   end
