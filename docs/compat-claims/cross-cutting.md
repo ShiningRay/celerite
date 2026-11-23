@@ -114,10 +114,30 @@
 
 ## C-cross-012 `--gemfile` 指向缺失文件时报单行 `<展开路径> not found` 并 exit 10，折行交给统一的 word_wrap
 
-- 状态：已实现
+- 状态：已取代
 - 参考行为（4.0.24；2.7.2 同族）：`lib/bundler/definition.rb:38` 的消息是单行拼接；`friendly_errors.rb:31-36` 对 BundlerError 以 `wrap: true` 输出；`ui/shell.rb:139`/`:151` 只在 `wrap: true` 时折行，`:167-171` 的 `word_wrap` 按 `Thor::Terminal.terminal_width`（默认 80，`< 10` 回落 80）重折。
 - 我方行为：`src/celerite/cli/commands.cr:1107-1110` 的 `--gemfile` 分支只抛单行消息（去掉了旧的字面 `\n`），`src/celerite/errors.cr:264-266` 的 `wrap? == true` 让它走统一折行，按 `THOR_COLUMNS` 决定行宽。
 - 判据：`bash script/differential check-gemfile-missing`
 - 边界：`spec/m7_gemfile_not_found_message_spec.cr` 当前 4 例 3 失败——它仍按修复前的「不折行/固定两行」写断言，更正由 task-171 承担；短路径、长路径、`THOR_COLUMNS=40` 三形态两侧逐字一致。`install --gemfile <缺失>` 不在此列：参考走 `bundler.rb:501` 的 ENOENT（见 C-cross-011）。
 - 生效：task-168（1fc1b9d）
-- 取代：无
+- 取代：C-cross-014
+
+## C-cross-013 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序
+
+- 状态：已实现
+- 参考行为（4.0.24）：`installer.rb:207` 按 `Bundler.settings[:jobs]` 建线程池，`installer/parallel_installer.rb:112-119` 的 `install_with_worker` 把每个 spec 交给 `worker.rb:94-104` 的 worker 队列，`source/rubygems.rb:216` 在各自线程里打印 `Installing <gem>`；两条同时完成的 gem 谁先打印不由解析顺序决定。
+- 我方行为：`src/celerite/cli/commands_install.cr:576`/`:639` 逐 spec 串行打印 `Installing <gem>`，`:745-753` 的注释固定「一次一个 spec 的确定 Fetching/Installing 配对」；`script/differential:126` 的 awk 把连续 `^Fetching ` 与 `^Installing ` 行一起进缓冲排序（`:127-146` 的冲刷逻辑不变），覆盖这一不可判定面。
+- 判据：`bash script/differential pristine-named binstubs-shebang`
+- 边界：只有连续段内排序，被非 `Fetching`/`Installing` 行打断的两段各自独立排序；该差异属参考侧的线程非确定性，不是我方输出与参考语义不一致。
+- 生效：task-170（881b68d）、task-173（374811a）
+- 取代：C-M7-7-003
+
+## C-cross-014 `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致
+
+- 状态：已实现
+- 参考行为（4.0.24；2.7.2 同族）：`definition.rb:38` 抛单行 `<路径> not found`，`friendly_errors.rb:35` 以 `wrap: true` 输出，`ui/shell.rb:167-171` 的 `word_wrap` 按 `Thor::Terminal.terminal_width`（默认 80，取值 `< 10` 回落 80）重折，故短路径单行、超列宽折成以 `not found` 结尾的两行。
+- 我方行为：`src/celerite/errors.cr:259-267` 的 `GemfileNotFound` 带 status 10 与 `wrap? == true`；`src/celerite/cli.cr:46-55` 的 `friendly_error` 在 `wrap?` 为真时调 `Commands.word_wrap(message, terminal_width)`，`:57-63` 的 `terminal_width` 读 `THOR_COLUMNS`；`src/celerite/cli/commands.cr:1205-1214` 是同一折行算法的移植，`:1107-1110` 的 `--gemfile` 分支只抛单行消息。
+- 判据：`bash script/differential check-gemfile-missing`；`crystal spec spec/m7_gemfile_not_found_message_spec.cr`
+- 边界：三形态（短路径默认宽度单行、`THOR_COLUMNS=40` 两行、60 字符长路径默认宽度两行）两侧逐字一致，唯一字节差是行尾 CRLF 与 LF。`install --gemfile <缺失>` 不在本条：参考走 `bundler.rb:501` 的 ENOENT（C-cross-011）。
+- 生效：task-168（1fc1b9d）、task-171（59c31f0）
+- 取代：C-cross-012

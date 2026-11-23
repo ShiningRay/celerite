@@ -242,6 +242,7 @@
 | C-M7-5-029 | 安装结束后不留 `bundler.lock`，并按参考补齐 `ruby/<abi>` 下的记账目录 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential install-bundle-layout'；'crystal spec spec/m7…` |
 | C-M7-5-030 | Linux gnu / musl 平台匹配只做到平台字符串归一，真实 Linux ABI 运行矩阵未验证 | 未验证 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'crystal spec spec/gem/platform_spec.cr'` |
 | C-M7-5-031 | 多 Ruby ABI 的平台变体选择只在宿主 `x64-mingw-ucrt` 上取证，跨 ABI 矩阵未验证 | 未验证 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential multi-platform-lock multi-platform-install m…` |
+| C-M7-5-032 | `add --strict` 在 install 阶段失败时保留已追加的 Gemfile 与已改写的锁，注入阶段失败时不写盘 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential add-strict'；'crystal spec spec/m7_add_strict…` |
 | C-M7-6-001 | `plugin install --path` 把 plugins.rb 声明的命令写入项目索引 `commands:` | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_commands_spec.cr' 与 'bash script/differen…` |
 | C-M7-6-002 | 索引中登记的插件命令先于 `bundler-<name>` PATH 回退分发 | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_commands_spec.cr'` |
 | C-M7-6-003 | `help <插件命令>` 以 `--help` 执行插件命令 | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_commands_spec.cr'` |
@@ -286,7 +287,7 @@
 | C-M7-6-042 | 插件加载失败的 `--- ERROR REPORT TEMPLATE ---` 段未复刻 | 已声明差异 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_hook_failure_spec.cr'` |
 | C-M7-7-001 | `script/differential` 头部逐条列出 N1–N10 十条归一化规则 | 已实现 | [M7-7-differential-harness.md](M7-7-differential-harness.md) | `'bash script/differential env-report install-check'` |
 | C-M7-7-002 | 退出码与 N1–N7 之外的 stdout/stderr 逐字且同序比较 | 已实现 | [M7-7-differential-harness.md](M7-7-differential-harness.md) | `'bash script/differential install-fresh'` |
-| C-M7-7-003 | 只有 N7 对连续 `Fetching ` 行排序，其余语义行序不变 | 已实现 | [M7-7-differential-harness.md](M7-7-differential-harness.md) | `'bash script/differential install-fresh'` |
+| C-M7-7-003 | 只有 N7 对连续 `Fetching ` 行排序，其余语义行序不变 | 已取代 | [M7-7-differential-harness.md](M7-7-differential-harness.md) | `'bash script/differential install-fresh'` |
 | C-M7-7-004 | N5 只删除 `## Environment` 体、保留标题，删到下一个 `## ` 标题为止 | 已实现 | [M7-7-differential-harness.md](M7-7-differential-harness.md) | `'bash script/differential env-report'` |
 | C-M7-7-005 | N8 把两侧的 C 编译器统一到 Ruby 自带工具链，`CELERITE_DIFF_EXTRA_PATH` 可追加目录 | 已实现 | [M7-7-differential-harness.md](M7-7-differential-harness.md) | `'bash script/differential native-ext'` |
 | C-M7-7-006 | N9 对安装树里的编译产物只比存在性与可加载性，不比字节 | 已实现 | [M7-7-differential-harness.md](M7-7-differential-harness.md) | `'bash script/differential native-ext'` |
@@ -324,8 +325,9 @@
 | C-M7-8-018 | 完整锁里指向 `bundler` 的依赖边不再让锁被误判为不完整而重写 | 已实现 | [M7-8-upstream-specs.md](M7-8-upstream-specs.md) | `'bash script/differential install-keeps-lock-with-bundler-edge'；'cryst…` |
 | C-M7-9-001 | `VersionUnion` 的区间扫描不再提前耗尽无上界一侧，多 `!=` 排除的 union 保持完整 | 已实现 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'crystal spec spec/m7_resolver_version_union_intersect_spec.cr'` |
 | C-M7-9-002 | 锁文件按本地平台变体物化，不退回 ruby 变体 | 已实现 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'crystal spec spec/m7_platform_variant_selection_spec.cr'；'bash script…` |
-| C-M7-9-003 | Rails 8.0.2 真实应用的端到端安装未通过，该 profile 的兼容声明未恢复 | 未验证 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'bash script/differential install-check'（同形态的入库回归门禁；rails 规模夹具不入库，端到端无…` |
+| C-M7-9-003 | Rails 8.0.2 真实应用的端到端安装未通过，该 profile 的兼容声明未恢复 | 已取代 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'bash script/differential install-check'（同形态的入库回归门禁；rails 规模夹具不入库，端到端无…` |
 | C-M7-9-004 | 锁文件渲染不在 GEM 段列出 bundler 自身，其 CHECKSUMS 条目由自校验块唯一写出 | 已实现 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'bash script/differential lock-normalize'；'crystal spec spec/m7_lock_r…` |
+| C-M7-9-005 | rails 8.0.2 规模下锁已完整时 `install` 不再把锁收缩成 1 条 spec，装出的 gem 集合与 oracle 锁一致 | 已实现 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'bash script/differential install-check'；端到端复跑步骤与原始数字见 '../roadmap-evi…` |
 | C-M7-docs-001 | 新证据写入当日的 `docs/compat-evidence/YYYY-MM-DD.md`，同日多条追加到文件末尾 | 已实现 | [M7-docs-sync.md](M7-docs-sync.md) | `'bash script/differential install-check'；'ls docs/compat-evidence/2026…` |
 | C-M7-docs-002 | 主报告只保留当前状态与索引，不再追加流水 | 已实现 | [M7-docs-sync.md](M7-docs-sync.md) | `'bash script/differential install-check'；'grep -n "不再追加流水" docs/compat…` |
 | C-M7-docs-003 | 引用历史结论写「compat-evidence 日期文件 + 节标题」，不写 `compat-report.md:<行号>` | 已实现 | [M7-docs-sync.md](M7-docs-sync.md) | `'bash script/differential install-check'；'grep -rn "compat-report\.md:…` |
@@ -348,7 +350,9 @@
 | C-cross-009 | 并发下载按 name/version/platform 做进程内 single-flight 去重，不声称分布式互斥 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'crystal spec spec/process_lock_spec.cr'` |
 | C-cross-010 | `BUNDLE_GEMFILE` 指向缺失路径时，读类命令统一报单行 `<绝对路径> not found` 并 exit 10 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential gemfile-env-missing'；'crystal spec spec/m7_g…` |
 | C-cross-011 | `BUNDLE_GEMFILE` 指向缺失路径时，写类命令保留 exit 1 的裸 `Errno::ENOENT`，未复刻参考的崩溃报告 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential gemfile-env-missing'` |
-| C-cross-012 | `--gemfile` 指向缺失文件时报单行 `<展开路径> not found` 并 exit 10，折行交给统一的 word_wrap | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'` |
+| C-cross-012 | `--gemfile` 指向缺失文件时报单行 `<展开路径> not found` 并 exit 10，折行交给统一的 word_wrap | 已取代 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'` |
+| C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
+| C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 238 条断言（已实现 192 · 已声明差异 26 · 未实现 6 · 未验证 14）。
+合计 242 条断言（已实现 194 · 已声明差异 26 · 未实现 6 · 未验证 13 · 已取代 3）。
 <!-- END GENERATED INDEX -->

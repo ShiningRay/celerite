@@ -24,13 +24,13 @@
 
 ## C-M7-9-003 Rails 8.0.2 真实应用的端到端安装未通过，该 profile 的兼容声明未恢复
 
-- 状态：未验证
+- 状态：已取代
 - 参考行为（4.0.24）：`bundle _4.0.24_ lock` 对只含 `source "https://rubygems.org"` 与 `gem "rails", "8.0.2"` 的项目 exit 0 并写出锁文件
 - 我方行为：`celerite lock` 在同一夹具上 exit 0，DEPENDENCIES / PLATFORMS / BUNDLED WITH 三段与参照逐字节一致；`celerite install` 在原生扩展构建处被宿主限制阻塞（未为此改 `src/`）
 - 判据：`bash script/differential install-check`（同形态的入库回归门禁；rails 规模夹具不入库，端到端无入库判据）
 - 边界：夹具仅存于本机 `C:\temp\rails-min\`，不可从仓库复现；msys Low-IL 的 `0xC0000022` 与原生扩展构建属宿主环境阻塞。判据只覆盖差分门禁，不构成该 profile 的兼容声明，故记未验证
 - 生效：M7(9) 期间（2026-11-14 / 2026-11-16 / 2026-11-19 三轮探测）
-- 取代：无
+- 取代：C-M7-9-005
 
 ## C-M7-9-004 锁文件渲染不在 GEM 段列出 bundler 自身，其 CHECKSUMS 条目由自校验块唯一写出
 
@@ -41,3 +41,13 @@
 - 边界：只覆盖锁文件写出路径；rails-min 上的逐字节对照依赖不入库夹具，形态以差分夹具为准；判据本轮未执行，仅核实文件存在
 - 生效：M7(9) K'' 轮（2026-11-14）
 - 取代：无
+
+## C-M7-9-005 rails 8.0.2 规模下锁已完整时 `install` 不再把锁收缩成 1 条 spec，装出的 gem 集合与 oracle 锁一致
+
+- 状态：已实现
+- 参考行为（4.0.24）：`bundle _4.0.24_ install` 在锁已覆盖 Gemfile 依赖时按锁安装，不重写 GEM 段的 spec 集合，装完打印 `Bundle complete! 1 Gemfile dependency, 64 gems now installed.`
+- 我方行为：`src/celerite/resolution.cr:1504` 在 `lockfile_covers_dependencies?` 的 spec 依赖边循环里 `next if edge.name == "bundler"`，`:1411` 由 `reuse_locked_resolution?` 调用，故 rails 的 `bundler (>= 1.15.0)` 边不再让完整锁被判为未覆盖而重跑解析；`install` 保留锁的 spec 集合并按锁安装。
+- 判据：`bash script/differential install-check`；端到端复跑步骤与原始数字见 `../roadmap-evidence/M7-9-rails-regression.md` 的 task-174 节
+- 边界：rails 夹具不入库（本机 `C:\temp\rails-min\`），端到端结论不可从仓库复现，入库判据只覆盖同形态的差分门禁。两次运行中一次在 `make` 缺失处 exit 5 且锁未被改写，一次 exit 0；锁字节与 spec 行数同 oracle，spec 依赖行次序有 16 处不同但内容等价。原生扩展构建仍受宿主限制。
+- 生效：task-174（72398c0）
+- 取代：C-M7-9-003

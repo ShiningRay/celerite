@@ -313,3 +313,13 @@
 - 边界：宿主只有 `x64-mingw-ucrt` 一种 ABI；`BUNDLER_REF_VERSION=2.7.2` 换的是参考 Bundler 版本，不是第二个 Ruby ABI；Linux / macOS ABI 与多 Ruby 版本矩阵没有任何证据
 - 生效：task-3（d130bbb）
 - 取代：无
+
+## C-M7-5-032 `add --strict` 在 install 阶段失败时保留已追加的 Gemfile 与已改写的锁，注入阶段失败时不写盘
+
+- 状态：已实现
+- 参考行为（4.0.24）：`injector.rb` 的 Gemfile 追加（`:47` `append_to(gemfile_path, build_gem_lines(@options[:conservative_versioning]))`）与锁改写（`:50` `@definition.lock`）都发生在 `cli/add.rb:22` 的 `perform_bundle_install` 之前；解析已成功而 install 阶段失败时两处写入均已落盘，注入阶段抛错则一个文件都没写过。
+- 我方行为：`src/celerite/cli/commands_surface.cr:574-575` 在 installer 之前先 `persist_add_lockfile` 写锁，`:577-579` 的 rescue 只在 probe/relock 失败时用备份还原 Gemfile，`:598` 的 installer 调用在该 rescue 之外，故 install 阶段失败保留已追加的 Gemfile 与已改写的锁；`resolution.cr:2437` 的 `inject_dependency!` 失败时 `commands_surface.cr:577-579` 还原 Gemfile 且不写锁。
+- 判据：`bash script/differential add-strict`；`crystal spec spec/m7_add_strict_write_spec.cr`
+- 边界：该 spec 有临时根长度前提——临时根距盘符不超过 67 字符，且 `TMPDIR`/`TMP`/`TEMP`/`HOME`/`USERPROFILE` 都指向它，否则 bridge 缓存路径越过 Windows `MAX_PATH`，`add` 以 exit 1 的内部错误失败而非 7。sourced add（`--path`/`--git`/`--github`/`--source`）不做注入，见 `commands_surface.cr:632` 的 `sourced_add?`。锁文件另有 json_pure sha256 行的已知差异（+72 B），不在本条范围。
+- 生效：task-167（67196b2）
+- 取代：无

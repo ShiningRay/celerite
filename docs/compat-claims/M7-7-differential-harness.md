@@ -24,13 +24,13 @@
 
 ## C-M7-7-003 只有 N7 对连续 `Fetching ` 行排序，其余语义行序不变
 
-- 状态：已实现
+- 状态：已取代
 - 参考行为（4.0.24）：规范只允许「runs of consecutive `Fetching ` lines are sorted」（并行下载顺序非语义），其余行序精确（`docs/differential-normalization.md:17`、`:21-22`）。
 - 我方行为：`script/differential:125-147` 用 awk 只把连续 `^Fetching ` 行读进缓冲、遇到非 `Fetching` 行先对缓冲插入排序再原样打印，END 再冲刷一次。
 - 判据：`bash script/differential install-fresh`
 - 边界：不连续的 `Fetching` 行不排序（同一实现与 `docs/differential-normalization.md:17` 一致）。
 - 生效：task-3（M7(7) 于 2026-11-14 验收）
-- 取代：无
+- 取代：C-cross-013
 
 ## C-M7-7-004 N5 只删除 `## Environment` 体、保留标题，删到下一个 `## ` 标题为止
 
