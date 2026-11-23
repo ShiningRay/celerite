@@ -173,3 +173,13 @@
 - 边界：`Did you mean?` 建议行未实现；`--help` 的 manpage 文本不复刻
 - 生效：2026-11-15 批次（task 号未记录）
 - 取代：无
+
+## C-M7-2-018 install、check、list 的组集合按 BUNDLE_WITH / BUNDLE_WITHOUT / BUNDLE_ONLY 收敛，list 另有 --only-group / --without-group
+
+- 状态：已实现
+- 参考行为（4.0.24 = 2.7.2）：`definition.rb:1251-1255 requested_groups` 先算 `groups - settings[:without] - optional_groups + settings[:with]`，非空的 `settings[:only]` 再取交集；`definition.rb:286-288 requested_dependencies = dependencies_for(requested_groups)`，install 与 check 的安装集和缺失判定都走它；`settings.rb:53-57` 把 `only` / `with` / `without` 列为数组键；`cli/list.rb:9-19` 单独解析 `--without-group` / `--only-group`（两者互斥），`:86-89` 只在 `--only-group` 时对组集取交集，`:19-25` 用该组集筛 spec
+- 我方行为：`requested_groups_for`（`src/celerite/cli/commands.cr:2760-2782`）按同一公式算组集，`filter_locked_specs_by_groups`（`:2784` 起）用 Gemfile 求值的 group 映射筛锁内 spec；`check` 在 `:1621-1623`、`list` 在 `:1847` 与 `:1873-1878`、`show` / `info` 在 `:2110-2113` 调用；`list` 的 `--only-group` / `--without-group` 解析与「组不存在」校验在 `:1802-1803`、`:1839-1845`
+- 判据：`bash script/differential install-without-group install-without-two-groups install-only-group check-only-group list-only-group list-multi-group`（task-184 本轮 6 passed / 0 failed）；`crystal spec spec/m7_installed_discovery_spec.cr`（`:378-407` 的 `check honors BUNDLE_WITH=test` 两例、`:409-460` 的 list `--only-group` / `--without-group` 例）
+- 边界：组语义只在 `install` / `check` / `list` 上取 oracle；`show` / `info` 的组过滤由 C-M7-2-008 覆盖，本条不重复断言。`install-without-*` 只用 `BUNDLE_WITHOUT` 环境变量验证，未逐一取 `bundle install --without` 开关的 oracle；`check` 不接受 `--only-group`（参考 Thor 报 `Unknown switches`，见 `spec/m7_installed_discovery_spec.cr:425-436`），故 `check-only-group` 走 `BUNDLE_ONLY`
+- 生效：task-184（本轮，基线 `77c231c`）
+- 取代：无

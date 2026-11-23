@@ -251,3 +251,129 @@ Did you mean 'json_pure'?
 4. with/without 无专条 claim：实现、spec、夹具均在，账本未固化。本机可做：补 claim，不改实现。
 
 另：全量 spec 未在 `2ad9b66` 重跑，勾选前建议至少跑一次 M7-2 定向回归。
+
+## 2026-11-23：M7-2 的菜单选中与重解通知收口（task-184）
+
+基线 `77c231c`，在 worktree `C:\temp\celerite-t184` 上执行；参考为 4.0.24（`C:\Ruby40-x64`，ruby 4.0.6），celerite 由本 worktree 的 `crystal build src/cli.cr -o bin/celerite.exe` 产出。反假绿旧二进制取自 `77c231c` 的同配方构建（`C:\temp\celerite-pre184\bin\celerite.exe`）。本节只收口 task-182 的四个缺项，不改 `docs/roadmap.md` 复选框。
+
+### 四个缺项的结论
+
+| 缺项 | 结论 |
+|---|---|
+| 1. `info` / `show` 菜单「输入序号选中」无端到端用例 | **已处理**。参考 oracle 已取；修 1 处提示符空格；新增 4 个差分夹具 + `spec/m7_info_menu_select_spec.cr`（5 例） |
+| 2. 其他重解通知场景未取 oracle | **已处理**。场景已从 `show_info` 调用链列全（5 条），取 oracle 3 类；`show --verbose` 的 3 行 debug 通知为**已声明差异**，未修、不加假红夹具 |
+| 3. with/without 无专条 claim | **已处理**。新增 C-M7-2-018；6 个既有夹具本轮重跑 6 passed；`compat-claims-index --check` EXIT=0（244 条） |
+| 4. Git 安装状态无差分（只报告） | **已处理（只报告，且结论与 task-182 相反）**。本轮重跑 `git-installed-discovery` **PASS (exit=0)**，不再阻塞；未改 C-M7-2-011 的状态与边界文字 |
+
+### oracle
+
+#### 1）菜单选中（参考 4.0.24）
+
+项目：`C:\temp\celerite-t184\oracle-menu`，Gemfile 为 `source "file://.../fixtures/gem-index"` + `gem "json_pure"`，`BUNDLE_PATH=<proj>\vendor\bundle`；`bundle install --quiet` 后锁内只有 `json_pure (2.8.1)`。`bundle info json` 的候选为 `[json_pure]` 加解释器默认 gem `json (2.18.0)`，共 2 项。stdin 分别喂 `1`、`2`、`0`、`99`（各带 LF）。以下逐字记录，TAB 以 `\t` 标记，行尾已把参考的 CRLF 归一为 LF。
+
+answer `1`，exit 0，stderr 空：
+
+```text
+1 : json_pure
+2 : json
+0 : - exit -
+>    * json_pure (2.8.1)
+\tSummary: JSON Implementation for Ruby
+\tHomepage: https://ruby.github.io/json
+\tDocumentation: https://ruby.github.io/json/doc/index.html
+\tSource Code: https://github.com/ruby/json
+\tWiki: https://github.com/ruby/json/wiki
+\tChangelog: https://github.com/ruby/json/blob/master/CHANGES.md
+\tBug Tracker: https://github.com/ruby/json/issues
+\tPath: C:/temp/celerite-t184/oracle-menu/vendor/bundle/ruby/4.0.0/gems/json_pure-2.8.1
+```
+
+answer `2`，exit 0，stderr 空（菜单三行同上，从 `> ` 起不同）：
+
+```text
+>    * json (2.18.0)
+\tSummary: JSON Implementation for Ruby
+\tHomepage: https://github.com/ruby/json
+\tDocumentation: https://docs.ruby-lang.org/en/master/JSON.html
+\tSource Code: https://github.com/ruby/json
+\tWiki: https://github.com/ruby/json/wiki
+\tChangelog: https://github.com/ruby/json/blob/master/CHANGES.md
+\tBug Tracker: https://github.com/ruby/json/issues
+\tPath: C:/Ruby40-x64/lib/ruby/gems/4.0.0/gems/json-2.18.0
+\tDefault Gem: yes
+```
+
+answer `0` 与 `99`，exit 0，stderr 空，stdout 只有菜单加提示符且**无尾随换行**：
+
+```text
+1 : json_pure
+2 : json
+0 : - exit -
+> <SP><SP>
+```
+
+（末行是 `>` 加两个空格；参考实现对 `0`、越界值与 EOF 都不打印 gem 块。）
+
+我方修复前：提示符是 `"> "`（一个空格），仅 EOF 时补一个空格；answer `1` / `2` 时 info 块前只有 3 个空格，参考是 4 个。修复后按同一项目形态重跑四个 answer，CRLF→LF 归一后 stdout 与参考逐字相同，exit 全 0，stderr 空。
+
+#### 2）重解通知（参考 4.0.24）
+
+| 场景 | 触发条件（我方实现） | 参考行为 | 我方行为 | 判据 |
+|---|---|---|---|---|
+| A. `show --verbose` 列举 | `verbose_listing`（`src/celerite/cli/commands.cr:2053`）为真且无位置参数 | `Fetching remote specs for outdated check...` + 空行；随后 `Re-resolving dependencies because bundler is unlocking Using a local server, bundler won't use the CompactIndex API`（reason 尾空格使两条共用一行）+ `Fetching source index from file:///.../gem-index/` + `Resolving dependencies...` + `Gems included by the bundle:` + `Found no changes, using resolution from the lockfile` + 逐 gem verbose 块 | 前两行与 `Fetching`/`Resolving`/listing 一致，但**缺** `Re-resolving...`、`Using a local server...`、`Found no changes...` 三行 | oracle 见下；未加入差分夹具（加了会红），记为已声明差异 |
+| B. 无 lockfile | `resolved_from_gemfile`（`:2081`）为真，`:2086-2100` 现场解析 | `Bundler.load` 的解析在 `Bundler.ui.silence` 内，stdout 无解析通知 | `Resolution.new(definition, false)` 未设 `progress`，无解析通知 | `bash script/differential show-no-lockfile-installed show-no-lockfile-missing` → 2 passed（两侧均 exit 7）；`spec/m7_show_no_lockfile_spec.cr` |
+| C. 锁内 spec 行缺失（依赖仍在） | 有 lockfile，`:2101-2103` 只 `definition.lockfile!` 解析 | `Bundler.load.lock` 在 silence 内重解，stdout 只有 gem 块，exit 0 | 不重解，输出 gem 块，exit 0 | `spec/m7_info_resolution_notice_spec.cr` 第 1 例 |
+| D. 锁的 source 与 Gemfile 不一致 | 同上 | 同上，stdout 只有 gem 块，exit 0 | 同上 | `spec/m7_info_resolution_notice_spec.cr` 第 2 例 |
+| E. `show --outdated`（仅 2.7.2 的废弃告警路径） | `outdated_deprecated` 使 `verbose_listing` 为真（`:2032-2040`、`:2053`） | 未单独取 oracle | 与 A 同一分支，同样缺三行 debug | **未验证**（不在本条判据内） |
+
+场景 A 的 oracle（参考，lock 与 Gemfile 匹配，`json_pure 2.8.1` 已装；节选到 `Found no changes...`，verbose 块尾部省略）：
+
+```text
+Fetching remote specs for outdated check...
+
+Re-resolving dependencies because bundler is unlocking Using a local server, bundler won't use the CompactIndex API
+Fetching source index from file:///C:/Users/ShiningRay/projects/ShiningRay/celerite/fixtures/gem-index/
+Resolving dependencies...
+Gems included by the bundle:
+Found no changes, using resolution from the lockfile
+* bundler (4.0.24)
+  Summary: The best way to manage your application's dependencies
+  Homepage: https://bundler.io
+  Status: Up to date
+* json_pure (2.8.1)
+...
+```
+
+场景 C 的 oracle（参考 `bundle info json_pure`，锁内 `    json_pure (2.8.1)` 行已删、依赖行保留）：stdout 只有 info 的 gem 块（以 `  * json_pure (2.8.1)` 起），无任何解析/`Fetching` 通知，exit 0，stderr 空。场景 D（锁 remote 改写为 `fixtures/gem-index-legacy`，gem 已装）参考同样只有 gem 块，exit 0，stderr 空。
+
+### 参考锚点
+
+- 菜单：`cli/common.rb:68-96 select_spec`（精确名 → 正则 → 追加默认 gem）、`:103-111 ask_for_spec_from`（`<n> : <name>`、`0 : - exit -`、`Bundler.ui.ask("> ")`）；vended Thor 的 `ask_simply` 把 `[statement, nil].join(" ")`，故提示符是 `">  "`；`cli/info.rb:50-73 print_gem_info` 以 `"  * name (version)"` 起。
+- 重解通知：`cli/info.rb:11-15` 与 `cli/show.rb:13-17` 把 `validate_runtime!` / `load.lock` 包在 `Bundler.ui.silence`；`cli/show.rb:10`、`:58-64 fetch_latest_specs` 先打印 `Fetching remote specs for outdated check...`，silence `definition.remotely!`/`Bundler.reset!`，随后 `definition.specs` 在 silence 外；`ui/shell.rb:53-57` 的 `debug`；`definition.rb:351/359` 与 `fetcher.rb:275` 的 debug 文案；`definition.rb:866-876` 的 `resolve_needed_reason`；`resolver.rb:34` 的 `Resolving dependencies...`。
+- 组语义：`definition.rb:1251-1255 requested_groups`、`:286-288 requested_dependencies`、`settings.rb:53-57`、`cli/list.rb:9-19`、`:86-89`。
+
+### 实现位置
+
+- 菜单提示符：`src/celerite/cli/commands.cr:2220-2236`（`stdout.print ">  "` 恒发；删除 EOF 专用补空格）。
+- verbose 列举：`:2066-2076`（`remote.progress = stdout`）。
+- 无锁现场解析：`:2081`、`:2086-2100`；有锁：`:2101-2103`。
+- 重解通知缺失点：`show_info` 整体没有 `Bundler.ui.debug` 对应物（`Re-resolving...`/`Using a local server...`/`Found no changes...` 的既有打印器在 `commands_surface.cr:261-275` 与 `commands.cr:333-338`，只被 update/install 路径调用）。
+- 组过滤：`requested_groups_for`（`:2760-2782`）、`filter_locked_specs_by_groups`（`:2784` 起）；调用点 `check` `:1621-1623`、`list` `:1802-1803`/`:1839-1847`/`:1873-1878`、`show`/`info` `:2110-2113`。
+- 差分夹具 stdin 通道：`script/differential` 头部 N11 说明与 `:470-476`（参考）、`:500-516`（celerite）。
+
+### 证据
+
+- 菜单夹具：`fixtures/differential/info-menu-select/`、`info-menu-select-default/`、`info-menu-select-exit/`、`info-menu-select-out-of-range/`，各含 `stdin`（内容 `1`/`2`/`0`/`99` + LF）与 command `install --quiet`、`info json`；`bash script/differential` 四个全 PASS (exit=0)。反假绿：同一四例在 `C:\temp\celerite-pre184\bin\celerite.exe` 上 0 passed / 4 failed，差异为 `>    * json_pure` vs `>   * json_pure`（4 vs 3 空格）与 EOF `>  ` vs `> `。
+- 菜单 spec：`spec/m7_info_menu_select_spec.cr` 5 例；因进程内 `run_cli`（`spec/spec_helper.cr:60-65`）不收 stdin，spec 用 `Process.run(bin, ["info","json"], chdir:, env:, input: IO::Memory.new(...), output:, error:)` 起 `../bin/celerite.exe`；断言 answer 1/2 的 info 块、0/99/EOF 的纯菜单与 exit 0。
+- 重解通知 spec：`spec/m7_info_resolution_notice_spec.cr` 2 例（对应场景 C、D）；断言 exit 0、含 `  * json_pure (2.8.1)`、不含 `Resolving dependencies`/`Re-resolving`/`Found changes from the lockfile`/`Fetching`，stderr 空。
+- 本轮实跑：两个新 spec 合计 `7 examples, 0 failures, 0 errors, 0 pending`；`crystal tool format --check src spec` EXIT=0；组夹具 6 passed / 0 failed；`show-no-lockfile-installed`、`show-no-lockfile-missing` 2 passed；`git-installed-discovery` **PASS (exit=0)**。
+- claims：C-M7-2-018 追加于 `docs/compat-claims/M7-2-installed-discovery.md`；`ruby script/compat-claims-index` 输出 `compat-claims: 244 claims, index written (12 files)`，`--check` 输出 `compat-claims: 244 claims, index up to date`，EXIT=0。
+- 缺项 4 的实测输出：`PASS git-installed-discovery (exit=0)` / `differential (4.0.24): 1 passed, 0 failed, 0 skipped (documented deferrals)` / EXIT=0；保留的参考侧输出含 `Fetching ./gitgem`、`Bundle complete! 1 Gemfile dependency, 1 gem now installed.`、`* gitgem (0.2.0 f967e49)` 与 `SANDBOX/bundle/ruby/4.0.0/bundler/gems/gitgem-f967e49f1787`。说明先前 `0xC0000022` 是本机宿主侧阻塞，本轮宿主环境已可执行 `git clone --mirror`；未为此改 C-M7-2-011 的「不作本条通过判据」边界，也未把它升格为跨宿主保证。
+
+### 已声明差异
+
+- `show --verbose`（以及 2.7.2 的 `show --outdated`）缺三行参考 debug 通知：`Re-resolving dependencies because bundler is unlocking …`、`Using a local server, bundler won't use the CompactIndex API`、`Found no changes, using resolution from the lockfile`。原因：`show_info` 未接 `Bundler.ui.debug` 等价通道，`fetch_latest_specs` 的 unlocking reason 也未算。修它要动 show 的解析路径与 debug 开关，超出本轮「收口夹具/spec/claim」的范围，故只记差异；不加会红的夹具。
+- 菜单候选依赖参考侧默认 gem：oracle 的 `json (2.18.0)` 来自本机 Ruby 4.0.6 的 default gem，spec 因此只断言 `json (` 前缀、`docs.ruby-lang.org` 与 `Default Gem: yes`，不钉死 2.18.0 的完整元数据。
+- 菜单 oracle 只取 4.0.24；2.7.2 的菜单提示符与 `default_gem_spec` 行为未单独复采，C-M7-2-010 的「4.0.24 = 2.7.2」在本轮仍是继承结论，不是新 oracle。
+- 场景 E（`show --outdated` 的 2.7.2 废弃路径）与「锁需重解 + `--verbose`」组合未取 oracle；场景 C/D 只比对 stdout/stderr/exit，未比对参考是否静默改写 `Gemfile.lock`。
+- 缺项 4 只证明本机本轮可跑通 `git-installed-discovery`，不证明其他宿主不再触发 msys Low-IL `0xC0000022`。

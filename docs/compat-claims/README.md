@@ -145,6 +145,7 @@
 | C-M7-2-015 | install --local 未命中文案随 vendor/cache 是否存在分档 | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential install-local-vendor-cache install-local-ind…` |
 | C-M7-2-016 | info 与 show 拒绝第二个位置参数，list 的 usage 行不带 [OPTIONS] | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential info-extra-argument show-extra-argument list…` |
 | C-M7-2-017 | check、list、show、info 在读 Gemfile 之前拒绝未知开关 | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential unknown-switch-check unknown-switch-list unk…` |
+| C-M7-2-018 | install、check、list 的组集合按 BUNDLE_WITH / BUNDLE_WITHOUT / BUNDLE_ONLY 收敛，list 另有 --only-group / --without-group | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential install-without-group install-without-two-gr…` |
 | C-M7-3-001 | `fund` 从已安装 specifications 的 `funding_uri` metadata 打印资助信息 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'crystal spec spec/m7_fund_spec.cr'` |
 | C-M7-3-002 | `fund` 优先从 PATH/GIT 源的 gemspec 读 `funding_uri` | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential fund-path'` |
 | C-M7-3-003 | `fund --group` 按标量语义取组、重复后者覆盖且不切分逗号 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential fund-groups fund-group-development'` |
@@ -355,5 +356,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 243 条断言（已实现 198 · 已声明差异 27 · 未实现 6 · 未验证 9 · 已取代 3）。
+合计 244 条断言（已实现 199 · 已声明差异 27 · 未实现 6 · 未验证 9 · 已取代 3）。
 <!-- END GENERATED INDEX -->
