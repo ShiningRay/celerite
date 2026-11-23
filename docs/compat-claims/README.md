@@ -222,7 +222,7 @@
 | C-M7-5-008 | path 源按 gemspec 自身的 name 匹配请求，未命中即报错且不写锁 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential path-source-missing-gem plugin-source-missin…` |
 | C-M7-5-009 | glob 变化是否重解由「锁侧 path+glob 下可见 gemspec 的 name/version 集」决定，而非 glob 字符串 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential path-gemspec-bump-reresolves check-frozen-pa…` |
 | C-M7-5-010 | `check` 重写锁文件时保留 PATH / GIT / PLUGIN SOURCE 段与既有 CHECKSUMS | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential check-rewrite-keeps-path-source check-rewrit…` |
-| C-M7-5-011 | `cache` / `package` 把工程外 path 源整目录复制进 `<cache>/<gem name>/` 并打 `.bundlecache` | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential cache-all-path cache-no-all-path'；'crystal s…` |
+| C-M7-5-011 | `cache` / `package` 把工程外 path 源整目录复制进 `<cache>/<源目录名>/` 并打 `.bundlecache` | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential path-cache-multi-gemspec path-package-multi-…` |
 | C-M7-5-012 | `install` / `update` / `add` 在工程内存在 `vendor/cache` 时刷新缓存并逐包打印 `  * <file>.gem` | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential install-refreshes-app-cache'；'crystal spec s…` |
 | C-M7-5-013 | 首次 `install` 也把工程外 path 源复制进 `vendor/cache`，绝对 `BUNDLE_PATH` 原样渲染 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential install-path-source-app-cache-first'；'crysta…` |
 | C-M7-5-014 | 私有 source 的 401 按是否带凭据分派 `AuthenticationRequiredError` / `BadAuthenticationError`，均以 17 退出且不重试 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'crystal spec spec/m7_authentication_errors_spec.cr'；'bash script/diff…` |
@@ -244,6 +244,7 @@
 | C-M7-5-030 | Linux gnu / musl 平台匹配只做到平台字符串归一，真实 Linux ABI 运行矩阵未验证 | 未验证 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'crystal spec spec/gem/platform_spec.cr'` |
 | C-M7-5-031 | 多 Ruby ABI 的平台变体选择只在宿主 `x64-mingw-ucrt` 上取证，跨 ABI 矩阵未验证 | 未验证 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential multi-platform-lock multi-platform-install m…` |
 | C-M7-5-032 | `add --strict` 在 install 阶段失败时保留已追加的 Gemfile 与已改写的锁，注入阶段失败时不写盘 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential add-strict'；'crystal spec spec/m7_add_strict…` |
+| C-M7-5-033 | 显式深层 `glob:` 让 path 源越过默认两层深度解析，未命中以 exit 7 报参考 not-found 文案 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential path-glob-explicit-deep path-glob-explicit-d…` |
 | C-M7-6-001 | `plugin install --path` 把 plugins.rb 声明的命令写入项目索引 `commands:` | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_commands_spec.cr' 与 'bash script/differen…` |
 | C-M7-6-002 | 索引中登记的插件命令先于 `bundler-<name>` PATH 回退分发 | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_commands_spec.cr'` |
 | C-M7-6-003 | `help <插件命令>` 以 `--help` 执行插件命令 | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_commands_spec.cr'` |
@@ -356,5 +357,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 244 条断言（已实现 199 · 已声明差异 27 · 未实现 6 · 未验证 9 · 已取代 3）。
+合计 245 条断言（已实现 200 · 已声明差异 27 · 未实现 6 · 未验证 9 · 已取代 3）。
 <!-- END GENERATED INDEX -->

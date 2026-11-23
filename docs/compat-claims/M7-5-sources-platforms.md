@@ -104,14 +104,14 @@
 - 生效：task-44a（882763b）
 - 取代：无
 
-## C-M7-5-011 `cache` / `package` 把工程外 path 源整目录复制进 `<cache>/<gem name>/` 并打 `.bundlecache`
+## C-M7-5-011 `cache` / `package` 把工程外 path 源整目录复制进 `<cache>/<源目录名>/` 并打 `.bundlecache`
 
 - 状态：已实现
-- 参考行为（4.0.24）：`lib/bundler/source/path.rb:84-96 cache` 在 `Bundler.settings[:cache_all]`（4.x 默认 true，`lib/bundler/settings.rb:88`）且源在工程外时 `rm_rf` 后 `cp_r` 整目录到 `<cache>/<gem name>/` 并 `touch .bundlecache`，工程内源跳过；`lib/bundler/runtime.rb:131-142 cache` 决定遍历哪些 spec
-- 我方行为：`src/celerite/cli/commands_surface.cr:2537-2548 copy_tree`（纯 Crystal 递归复制，沙箱 Low IL 下 `cp -r` 子进程不可用），调用点 `:2685` / `:2692` / `:2703`
-- 判据：`bash script/differential cache-all-path cache-no-all-path`；`crystal spec spec/m7_cache_all_path_spec.cr`
-- 边界：2.7.2 上 `cache-all-path` 记 `deferred-2.7.2`（2.7.2 的 `cache` 固定写 `cache_all: false`，不复制）；monorepo glob 多 gemspec 源的复制未取 oracle，仍挂账
-- 生效：task-84（d95df5a）
+- 参考行为（4.0.24）：`lib/bundler/source/path.rb:84-96 cache` 在 `Bundler.settings[:cache_all]`（4.x 默认 true，`lib/bundler/settings.rb:88`）且源在工程外时 `rm_rf` 后 `cp_r` 整目录到 `app_cache_path` 并 `touch .bundlecache`，工程内源跳过；`app_cache_path` = `Bundler.app_cache(custom).join(app_cache_dirname)`（`:141-147`），而 `app_cache_dirname` = `name` = `File.basename(expanded_path.to_s)`（`:72-74`、`:110-112`），即**path 源自己的目录名**，不是任一 gemspec 的 name；多 gemspec 源因此整体落在同一个 `<cache>/<源目录名>/` 下；`lib/bundler/runtime.rb:131-142 cache` 决定遍历哪些 spec
+- 我方行为：`src/celerite/cli/commands_install.cr:1097 self.cache` → `:1240-1271 cache_path_sources`（目录名 `File.basename(source_path)` 于 `:1257-1260`，逐子项 `cp_r` 于 `:1269`，`touch .bundlecache` 于 `:1271`）；install 期刷新 `:1284 refresh_app_cache` → `:1424-1453`（同一 basename 取法于 `:1441-1444`，复制 `:1451`，打标 `:1453`）
+- 判据：`bash script/differential path-cache-multi-gemspec path-package-multi-gemspec cache-all-path cache-no-all-path`；`crystal spec spec/m7_cache_multi_gemspec_spec.cr`；`crystal spec spec/m7_cache_all_path_spec.cr`
+- 边界：2.7.2 上 `cache-all-path`、`path-cache-multi-gemspec`、`path-package-multi-gemspec` 均记 `deferred-2.7.2`（2.7.2 的 `cache`/`package` 固定写 `cache_all: false`，两侧都不复制）；path 源不产出 `<cache>/*.gem` 归档（`cache`/`package` 两侧逐字节一致，无 `.gem`），见 C-M7-5-012 的 `  * <file>.gem` 行只针对远端包
+- 生效：task-84（d95df5a）；task-187 修正目录名为源目录 basename 并补多 gemspec 差分
 - 取代：无
 
 ## C-M7-5-012 `install` / `update` / `add` 在工程内存在 `vendor/cache` 时刷新缓存并逐包打印 `  * <file>.gem`
@@ -322,4 +322,14 @@
 - 判据：`bash script/differential add-strict`；`crystal spec spec/m7_add_strict_write_spec.cr`
 - 边界：该 spec 有临时根长度前提——临时根距盘符不超过 67 字符，且 `TMPDIR`/`TMP`/`TEMP`/`HOME`/`USERPROFILE` 都指向它，否则 bridge 缓存路径越过 Windows `MAX_PATH`，`add` 以 exit 1 的内部错误失败而非 7。sourced add（`--path`/`--git`/`--github`/`--source`）不做注入，见 `commands_surface.cr:632` 的 `sourced_add?`。锁文件另有 json_pure sha256 行的已知差异（+72 B），不在本条范围。
 - 生效：task-167（67196b2）
+- 取代：无
+
+## C-M7-5-033 显式深层 `glob:` 让 path 源越过默认两层深度解析，未命中以 exit 7 报参考 not-found 文案
+
+- 状态：已实现
+- 参考行为（4.0.24 = 2.7.2）：`lib/bundler/source/path.rb:14` 的 `DEFAULT_GLOB = "{,*,*/*}.gemspec"` 只覆盖至两层；`:45-50` 仅当 `@glob != DEFAULT_GLOB` 才在 PATH 段写 `  glob: <glob>`；`:164 load_spec_files` 用 `SharedHelpers.glob_files_in_dir(@glob, expanded_path)` 枚举，`**` 递归到任意深度并按目录深度降序（深层先）匹配 gemspec 自身 name；未命中时解析器在 `lib/bundler/resolver/base.rb:117` 抛 `GemNotFound`，文案 `Could not find gem '<name>' in source at \`<path>\`.`，CLI 以 7 退出且不写锁
+- 我方行为：`src/celerite/resolution.cr:2487 DEFAULT_GLOB = "{,*,*/*}.gemspec"`，`:2499-2500` / `:2509-2510` 只在非默认 glob 时写 `glob:`；枚举经 bridge `assets/bridge/server.rb:571-633` 的 `Dir.glob(File.join(dir, glob))`（`**` 有效，深层先），未命中按参考 not-found 文案以 exit 7 报错（夹具用 `stderr-contains` 逐字锁定）；`src/celerite/glob.cr` 只服务无分隔符的 basename 模式，不参与 path glob
+- 判据：`bash script/differential path-glob-explicit-deep path-glob-explicit-deep-miss`；显式深层夹具断言锁内 `remote: mono` + `glob: gems/**/*.gemspec` + `zed (0.1.0)` 且 install exit 0；窄 glob（`gems/a/b/*/*.gemspec`，比实际路径多一层，不匹配）断言两侧 stdout 空、stderr 逐字 not-found、无 `Gemfile.lock`、exit 7
+- 边界：本机只取 4.0.24 与 2.7.2 两 profile，未覆盖非 Windows 宿主；含分隔符的 glob 依赖 Ruby bridge 的 `Dir.glob`，Crystal 侧 `Glob.paths` 不适用（见 C-M7-5-023）；深层命中与「glob 收窄但 name/version 集不变是否重解」的交互未在本条展开（锁侧集合判据见 C-M7-5-009）
+- 生效：task-187
 - 取代：无
