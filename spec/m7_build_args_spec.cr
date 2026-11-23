@@ -8,8 +8,14 @@ require "../src/celerite"
 #
 # The fixture gem's `ext/extconf.rb` records `ARGV.inspect` into
 # `$CELERITE_BUILD_ARGS_MARKER` and writes a no-op Makefile, so the build needs
-# no compiler. Fixture: `spec/fixtures/build-args/gems/build-args-demo-1.0.0.gem`
+# no compiler. Gem: `spec/fixtures/build-args/gems/build-args-demo-1.0.0.gem`
 # (built offline with `ruby -S gem build`, mirroring `spec/fixtures/locked-deps`).
+#
+# The index the two implementations read lives in `fixtures/gem-index-build-args`
+# (rebuild with `script/build-build-args-index.rb`): a `file:` GEM source is
+# served from the legacy index only (`bundler-4.0.24 fetcher.rb:271-280`), so
+# without `<remote>specs.4.8.gz` both sides stop at
+# `Could not fetch specs ...` exit 17 before any build argument is passed.
 BUILD_ARGS_GEM_NAME = "build-args-demo"
 
 private def with_build_args_bridge(&)
@@ -67,7 +73,7 @@ private def build_args_env(extra : Hash(String, String?), marker : String) : Has
 end
 
 private def build_args_remote : String
-  file_source_url(File.expand_path("fixtures/build-args", __DIR__))
+  file_source_url(File.expand_path("../fixtures/gem-index-build-args", __DIR__))
 end
 
 private def build_args_project : Hash(String, String)

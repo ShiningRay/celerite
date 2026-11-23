@@ -95,8 +95,12 @@ describe "M7(3) bundle remove failure modes" do
         code.should eq(4)
         display = File.join(dir, "Gemfile").gsub('\\', "/")
         out.should eq("Removing gems from #{display}\n")
-        err.should contain("`nosuchgem` is not specified in")
-        err.should contain("so it could not be removed.")
+        # The message carries the project's absolute Gemfile path, so where the
+        # 80-column wrap falls depends on the temp root's length; the reference
+        # wraps identically. Compare on flattened whitespace.
+        flattened = err.gsub(/\s+/, " ")
+        flattened.should contain("`nosuchgem` is not specified in #{display}")
+        flattened.should contain("so it could not be removed.")
         err.lines.size.should be >= 2 # wrapped, not one long line
         File.read(File.join(dir, "Gemfile")).should eq(remove_gemfile)
       end
