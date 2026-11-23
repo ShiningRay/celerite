@@ -1,0 +1,2 @@
+plugin install gitplugin --git ./gitplugin --branch master
+plugin list
