@@ -6,6 +6,18 @@ require "./spec_helper"
 # so an install-stage failure leaves both files rewritten on disk. A failure
 # raised while injecting itself happens before `append_to`, so the Gemfile
 # keeps its original bytes.
+#
+# Prerequisite: run this spec with its temporary root at most 67 characters from
+# the drive letter, and point `TMPDIR`, `TMP`, `TEMP`, `HOME` and `USERPROFILE`
+# all at that one root (see `docs/compat-report.md`, `Environment`, and
+# precondition (f) of `C-M7-suite-004` in `docs/compat-claims/M7-suite.md`).
+# With a longer root the bridge's own bundle cache path
+# `home/.bundle/cache/compact_index/<hash>-<slug>/info-*` crosses the Windows
+# `MAX_PATH` limit and the run dies with
+# `celerite internal error: Unable to create directory: …: 文件名或扩展名太长。`,
+# which makes `add` exit 1 instead of the 7 asserted below. That is an
+# environment constraint of the same family as precondition (f), **not** a
+# difference in product behaviour.
 private def add_strict_index : String
   file_source_url(File.expand_path("../fixtures/gem-index", __DIR__))
 end
