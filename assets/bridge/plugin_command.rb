@@ -53,6 +53,15 @@ else
     raise "command `#{command}` is not registered in the plugin index" if plugin.nil?
     root = (index["plugin_paths"] || {})[plugin]
     raise "plugin `#{plugin}` has no recorded path in the index" if root.nil?
+    # The reference loads a plugin command through
+    # `Plugin.load_plugin(name)` (plugin.rb:345-375), which does
+    # `Gem.add_to_load_path(*index.load_paths(name))` (:354, :372) before
+    # `load path.join("plugins.rb")`. Without that, a `plugins.rb` whose first
+    # line is `require "<plugin gem>"` dies with `LoadError: cannot load such
+    # file -- <plugin gem>` even though the plugin is installed correctly.
+    Array((index["load_paths"] || {})[plugin]).each do |path|
+      $LOAD_PATH.unshift(path.to_s) unless $LOAD_PATH.include?(path.to_s)
+    end
     load File.join(root.to_s, "plugins.rb")
     klass = (Bundler::Plugin.instance_variable_get(:@commands) || {})[command]
     raise "command `#{command}` was not registered by #{plugin}" if klass.nil?

@@ -9,13 +9,20 @@ module Celerite
   # Layout (observed from the reference):
   # - bare mirror: `<bundle_path>/ruby/<abi>/cache/bundler/git/<base_name>-<sha1(uri)>/`
   # - checkout:    `<bundle_path>/ruby/<abi>/bundler/gems/<base_name>-<revision[0,12]>/`
-  # - the checkout keeps its .git (shallow clone from the mirror)
+  # - the checkout keeps its .git: `git clone --no-checkout` from the mirror,
+  #   then `git fetch --depth 1 <revision>` + `git reset --hard`, exactly as
+  #   `Source::GitProxy#copy_to` does (hence its FETCH_HEAD/ORIG_HEAD/shallow).
   class GitSource
     getter base_name : String
     getter scope : String
     getter mirror : String
     getter checkout_root : String
     getter remote : String
+    # Revision the last `checkout` materialized, and the directory it produced.
+    # Callers that need the checkout (the plugin installer) take it from here
+    # rather than re-deriving it from a filesystem glob.
+    property revision : String?
+    property checkout_dir : String?
 
     def initialize(@remote : String, @bundle_root : String)
       @base_name = GitSource.base_name(remote)
@@ -88,18 +95,49 @@ module Celerite
     end
 
     # Ensures the checkout for the revision exists; returns its directory.
+    #
+    # The clone/fetch sequence mirrors `Bundler::Source::Git::GitProxy#copy_to`
+    # (`source/git/git_proxy.rb:137-175`): clone the bare mirror without a
+    # checkout, point `origin` back at the real remote, fetch the pinned
+    # revision, then `reset --hard` it into the working tree. A plain
+    # `clone` + `checkout` produces the same files but a *different* `.git`
+    # (no `FETCH_HEAD` / `ORIG_HEAD` / `shallow`, and `origin` left pointing at
+    # the local mirror), and the reference's checkout directory is part of the
+    # plugin materialization tree compared by the differential harness.
     def checkout(revision : String, submodules : Bool) : String
       short = revision[0, 12]
       destination = File.join(checkout_root, "#{base_name}-#{short}")
+      @revision = revision
+      @checkout_dir = destination
       unless Dir.exists?(destination)
         FileUtils.mkdir_p(File.dirname(destination))
-        run("git", ["clone", "--quiet", "--no-hardlinks", mirror, destination])
-        run("git", ["checkout", "--quiet", revision], destination)
+        run("git", ["clone", "--no-checkout", "--quiet", mirror, destination])
+        run("git", ["remote", "set-url", "origin", @remote], destination)
+        # `GitProxy#copy_to` then does `File.chmod((mode | 0o777) & ~File.umask)`;
+        # Crystal's stdlib has no `File.umask` and the call is a no-op on
+        # Windows, so it is intentionally omitted here.
+        run("git", ["config", "uploadpack.allowAnySHA1InWant", "true"], mirror)
+        run("git", ["fetch", "--force", "--quiet", *extra_fetch_args, mirror, revision], destination)
+        run("git", ["reset", "--hard", revision], destination)
         if submodules
           run("git", submodule_update_args, destination)
         end
       end
       destination
+    end
+
+    # `GitProxy#copy_to` fetches the pinned revision with
+    # `extra_fetch_args(ref)` (`git_proxy.rb:551-555`), which is
+    # `[path, *depth_args, ref]`; `depth_args` is `["--depth", "1"]` for a
+    # shallow source (`:545-549`, and `shallow?` is true for a branch ref,
+    # `:561-563`). The mirror is passed as the fetch *source* instead of the
+    # configured URI because `run` already resolved it.
+    #
+    # Do not add `--` before the positionals: the mirror is a `C:\...` path,
+    # and git then parses it as a pathspec and aborts with
+    # `fatal: invalid refspec 'C:\...'`.
+    private def extra_fetch_args : Array(String)
+      ["--depth", "1"]
     end
 
     # `git submodule update` refuses `file://` transports since git 2.38

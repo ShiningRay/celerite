@@ -2230,10 +2230,22 @@ module Celerite
         revision = source.revision || git.fetch(branch: source.branch, tag: source.tag, ref: source.ref)
         source.revision = revision
         git.checkout(revision, source.submodules == true)
+        # Record the instance: its `checkout_dir` / `mirror` / `revision` are
+        # the only authoritative locations of what was just materialized.
+        git_sources[name] = git
+        git.checkout_dir.not_nil!
       else
         raise Error.new("unsupported source type #{source.type} for #{name}")
       end
     end
+
+    # Git sources materialized by `ensure_source_dir`, keyed by gem name.
+    # Callers that need the checkout or the bare mirror (the plugin installer
+    # copies both into the plugin tree) read them here instead of re-deriving
+    # the directory name — in particular, never via a `Dir.glob` over a
+    # `File.join`-built pattern, which mixes `\` and `/` on Windows and matches
+    # nothing (`glob.cr` header).
+    getter git_sources = {} of String => GitSource
 
     def install_path_root : String
       InstallPaths.install_path(@definition.config)

@@ -2665,33 +2665,51 @@ module Celerite
           # Git materialization happens during resolution (the plugin source
           # is cloned/checked out by `ensure_source_dir`); gems stay in the
           # bundler/gems checkout directory, like regular git gems.
+          #
+          # The checkout and the bare mirror are taken from the `GitSource`
+          # resolution recorded for this gem. They must NOT be re-derived with
+          # `Dir.glob(File.join(root, "bundler", "gems", "<base>-*"))`: on
+          # Windows `File.join` returns a mixed `C:/a\b\c` and `Dir.glob`
+          # treats the `\` as an escape, so that pattern matches nothing (see
+          # the header of `glob.cr`). `Celerite::Glob.paths` is not usable
+          # either — its pattern only supports a separator-free basename.
+          git_source = git_remote ? resolution.git_sources[spec.name]? : nil
           plugin_dir = if git_remote
-                         Dir.glob(File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi).gsub('\\', "/"), "bundler", "gems", "#{GitSource.base_name(git_remote)}-*")).first?
+                         git_source.try(&.checkout_dir)
                        else
                          stdout.puts "Fetching #{spec.name} #{spec.version}"
                          stdout.puts "Installing #{spec.name} #{spec.version}"
                          installer.install(spec.name, spec.version.to_s, spec.platform, spec.checksum)
                          File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "gems", spec.full_name)
                        end
+          git_checkout_name = nil
           if git_remote
             Dir.mkdir_p(File.join(plugin_root, "bundler", "gems"))
             # The CELERITE clone lives under `<install_path>/ruby/<abi>/bundler/gems`
             # (GitSource); copy that checkout tree for parity with the plugin
             # materialization tree the reference uses.
             if plugin_dir && Dir.exists?(plugin_dir)
-              dst = File.join(plugin_root, "bundler", "gems", File.basename(plugin_dir.to_s))
+              git_checkout_name = File.basename(plugin_dir.to_s)
+              dst = File.join(plugin_root, "bundler", "gems", git_checkout_name)
               # FileUtils (not `cp -r`): spawning msys cp under this sandbox's
               # Low integrity level dies with 0xC0000022 (same root cause as
               # the git fixtures); a pure-Crystal copy keeps the plugin
               # materialization working here.
               copy_tree(plugin_dir.to_s, dst)
             end
-            cache_root = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "cache", "bundler", "git")
-            Glob.paths(cache_root, "*").each do |dir|
-              next unless Dir.exists?(dir) && Dir.exists?(File.join(dir, "HEAD"))
-              dst = File.join(plugin_root, "cache", "bundler", "git", File.basename(dir))
-              next if Dir.exists?(dst)
-              copy_tree(dir, dst)
+            # Reference `Plugin::Installer::Git#cache_path`
+            # (`plugin/installer/git.rb:22-24`) is the bare mirror itself
+            # (`Plugin.cache/bundler/git/<base>-<uri_hash>`); copy exactly
+            # that one directory. Globbing `<gem_root>/cache/bundler/git`
+            # finds nothing here because a plugin install rewrites
+            # `BUNDLE_PATH` to the temporary bundle directory, so the mirror
+            # lives outside the tree that is searched.
+            if mirror = git_source.try(&.mirror)
+              if Dir.exists?(mirror)
+                dst = File.join(plugin_root, "cache", "bundler", "git", File.basename(mirror))
+                Dir.mkdir_p(File.dirname(dst))
+                copy_tree(mirror, dst)
+              end
             end
           end
           unless git_remote
@@ -2724,7 +2742,12 @@ module Celerite
           end
           index_path = File.join(plugin_root, "index")
           gem_dir = if git_remote
-                      File.join(plugin_root, "bundler", "gems", "#{GitSource.base_name(git_remote)}-#{spec.version}").gsub(/\\/, "/")
+                      # `Plugin::Installer::Git#install_path`
+                      # (`plugin/installer/git.rb:26-28`) is the checkout
+                      # directory itself (`Plugin.root/bundler/gems/
+                      # <base>-<shortref_for_path(revision)>`), i.e. the one
+                      # copied above — not a `gems/<base>-<version>` path.
+                      File.join(plugin_root, "bundler", "gems", git_checkout_name.to_s).gsub(/\\/, "/")
                     else
                       # Installed plugin gems live in the plugin tree
                       # (`<project>/.bundle/plugin/gems/<full>`), not in the
