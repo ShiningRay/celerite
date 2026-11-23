@@ -4,6 +4,7 @@
 # suite see the same world.
 require "./celerite/profile"
 require "./celerite/errors"
+require "./celerite/uri_credentials_filter"
 require "./celerite/gem/version"
 require "./celerite/gem/requirement"
 require "./celerite/gem/platform"

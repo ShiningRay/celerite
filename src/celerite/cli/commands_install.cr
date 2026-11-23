@@ -526,7 +526,7 @@ module Celerite
           if resolution.primary_remote.starts_with?("file:")
             stdout.puts "Fetching source index from #{resolution.primary_remote}"
           else
-            stdout.puts "Fetching gem metadata from #{resolution.primary_remote}."
+            stdout.puts "Fetching gem metadata from #{URICredentialsFilter.credential_filtered_uri(resolution.primary_remote)}."
           end
         end
         # Reference output order: all "Fetching" lines (downloads) first,
@@ -797,7 +797,7 @@ module Celerite
             if remote.starts_with?("file:")
               stdout.puts "Fetching source index from #{remote}"
             else
-              stdout.puts "Fetching gem metadata from #{remote}."
+              stdout.puts "Fetching gem metadata from #{URICredentialsFilter.credential_filtered_uri(remote)}."
             end
           end
         end

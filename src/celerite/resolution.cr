@@ -679,13 +679,13 @@ module Celerite
       return if remote == primary_remote && @index_fetch_logged
       @index_fetch_logged = true if remote == primary_remote
       if remote.starts_with?("file:")
-        @progress.puts "Fetching source index from #{remote}"
+        @progress.puts "Fetching source index from #{URICredentialsFilter.credential_filtered_uri(remote)}"
       else
         # Bundler renders this line only once the fetch is under way (a
         # connection failure prints nothing; see network-unreachable), and it
         # follows the caller's stream split (stdout for `lock`, stderr for
         # `lock --print`) via #progress.
-        @progress.puts "Fetching gem metadata from #{remote}."
+        @progress.puts "Fetching gem metadata from #{URICredentialsFilter.credential_filtered_uri(remote)}."
       end
     end
 
@@ -1044,7 +1044,7 @@ module Celerite
         # and the reference falls back to the legacy index, which logs its own
         # fetch line before the 403 is reported with the source URI
         # (fetcher/compact_index.rb L9-23, fetcher/index.rb L14-19).
-        @progress.puts "Fetching source index from #{remote}"
+        @progress.puts "Fetching source index from #{URICredentialsFilter.credential_filtered_uri(remote)}"
         @progress.puts ""
         raise ex
       rescue ex : Celerite::VersionError
@@ -1302,9 +1302,9 @@ module Celerite
       @index_fetch_logged = true
       @fetch_logged_remotes << remote
       if remote.starts_with?("file:")
-        @progress.puts "Fetching source index from #{remote}"
+        @progress.puts "Fetching source index from #{URICredentialsFilter.credential_filtered_uri(remote)}"
       else
-        @progress.puts "Fetching gem metadata from #{remote}."
+        @progress.puts "Fetching gem metadata from #{URICredentialsFilter.credential_filtered_uri(remote)}."
       end
     end
 
