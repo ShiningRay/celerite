@@ -181,3 +181,13 @@
 - 边界：修复与夹具在 task-166 的分支上（main 为 `1a66a38`/`74fb6e4`），双 profile PASS、spec 1 例通过；本账本所在提交（`045f778`）尚未并入该夹具与 spec，在本树跑判据只会得到 0 例静默通过，合入前不得据此判为已验证。
 - 生效：task-166（1a66a38）
 - 取代：无
+
+## C-M7-8-019 `install` 重写锁时依赖行按字母序输出，锁内容与 `lock` 的产物一致
+
+- 状态：已实现
+- 参考行为（4.0.24）：`lib/bundler/lazy_specification.rb:117` 的 `to_lock` 把 spec 的依赖行按 `dep.to_s` 排序并去重，故 `lock` 与任何重写路径写出的行序都相同
+- 我方行为：`src/celerite/lockfile/model.cr:110-124` 在 GEM 段渲染前对依赖行 `String.build` → `.uniq` → `.sort!`；`src/celerite/resolution.cr:1769-1775` 与 `:1785-1789` 用 `dependency_lock_lines` 做集合比较，纯换序不再算需要修复，故不会多写一次锁或多打一行 `Resolving dependencies...`
+- 判据：`bash script/differential install-rewrites-lock-in-lock-order`；`crystal spec spec/m7_install_lock_dep_order_spec.cr`
+- 边界：夹具用本地合成桩（`extra/vendor/cache`）而非真实 gem；`lock` 之后 `install --local` 不多出 `Resolving dependencies...` 由该夹具的 stdout 对照间接钉住，未单独断写盘次数；渲染时的排序与去重由 spec 钉住
+- 生效：task-175（4b757bc）
+- 取代：无

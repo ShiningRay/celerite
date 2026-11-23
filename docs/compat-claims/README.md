@@ -278,8 +278,8 @@
 | C-M7-6-033 | `plugin new` 报未知子命令 exit 15 | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'bash script/differential plugin-new-unknown' 与 'crystal spec spec/m7_…` |
 | C-M7-6-034 | 远端 `--source` 插件安装的失败路径 exit 7 | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'bash script/differential plugin-source'` |
 | C-M7-6-035 | 插件 source 的非空 `options_to_lock` 落进 `PLUGIN SOURCE` 段 | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'bash script/differential plugin-source-lock-options'` |
-| C-M7-6-036 | 远端 `--source` 插件安装的成功路径（`plugin-source-ok`） | 未验证 | [M7-6-plugins.md](M7-6-plugins.md) | `'bash script/differential plugin-source-ok'` |
-| C-M7-6-037 | 无 Gemfile / 全局插件根下安装时 hooks 的落盘 | 未验证 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_install_source_spec.cr'` |
+| C-M7-6-036 | 远端 `--source` 插件安装的成功路径（`plugin-source-ok`） | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'bash script/differential plugin-source-ok'` |
+| C-M7-6-037 | 无 Gemfile / 全局插件根下安装时 hooks 的落盘 | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'bash script/differential plugin-global-hook-root'；'crystal spec spec/…` |
 | C-M7-6-038 | `plugin install --git/--branch/--ref` 的 git checkout 端到端 | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'bash script/differential plugin-git-install'（新夹具，双 profile PASS）+ 'cr…` |
 | C-M7-6-039 | 缺失 load path 的告警在参考里按每次 hook 重复，我方每命令一次 | 已声明差异 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_hook_failure_spec.cr'` |
 | C-M7-6-040 | 失败回滚删除 `--path` 源目录只对三类注册失败复刻 | 已声明差异 | [M7-6-plugins.md](M7-6-plugins.md) | `'bash script/differential plugin-conflict-command plugin-conflict-sour…` |
@@ -323,6 +323,7 @@
 | C-M7-8-016 | 套件结论只覆盖 4.0.24 profile，2.7.2 未复采 | 未验证 | [M7-8-upstream-specs.md](M7-8-upstream-specs.md) | `'UPSTREAM_REV=v2.7.2 bash script/upstream-specs'` |
 | C-M7-8-017 | 补充 CHECKSUMS digest 与 `path_expander` 锁体行的两处未对齐 | 已声明差异 | [M7-8-upstream-specs.md](M7-8-upstream-specs.md) | `'bash script/upstream-specs'` |
 | C-M7-8-018 | 完整锁里指向 `bundler` 的依赖边不再让锁被误判为不完整而重写 | 已实现 | [M7-8-upstream-specs.md](M7-8-upstream-specs.md) | `'bash script/differential install-keeps-lock-with-bundler-edge'；'cryst…` |
+| C-M7-8-019 | `install` 重写锁时依赖行按字母序输出，锁内容与 `lock` 的产物一致 | 已实现 | [M7-8-upstream-specs.md](M7-8-upstream-specs.md) | `'bash script/differential install-rewrites-lock-in-lock-order'；'crysta…` |
 | C-M7-9-001 | `VersionUnion` 的区间扫描不再提前耗尽无上界一侧，多 `!=` 排除的 union 保持完整 | 已实现 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'crystal spec spec/m7_resolver_version_union_intersect_spec.cr'` |
 | C-M7-9-002 | 锁文件按本地平台变体物化，不退回 ruby 变体 | 已实现 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'crystal spec spec/m7_platform_variant_selection_spec.cr'；'bash script…` |
 | C-M7-9-003 | Rails 8.0.2 真实应用的端到端安装未通过，该 profile 的兼容声明未恢复 | 已取代 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'bash script/differential install-check'（同形态的入库回归门禁；rails 规模夹具不入库，端到端无…` |
@@ -354,5 +355,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 242 条断言（已实现 194 · 已声明差异 26 · 未实现 6 · 未验证 13 · 已取代 3）。
+合计 243 条断言（已实现 197 · 已声明差异 26 · 未实现 6 · 未验证 11 · 已取代 3）。
 <!-- END GENERATED INDEX -->

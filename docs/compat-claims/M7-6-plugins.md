@@ -356,23 +356,25 @@
 
 ## C-M7-6-036 远端 `--source` 插件安装的成功路径（`plugin-source-ok`）
 
-- 状态：未验证
+- 状态：已实现
 - 参考行为（4.0.24）：HTTP 索引上装成插件后打印 `Fetching`/`Installing` 两行、把 gem 物化进插件树 `gems/` `specifications/` `cache/` 与 `extensions/` `doc/` `build_info/` `plugins/` 目录
 - 我方行为：同 C-M7-6-028 的物化路径；该夹具同一二进制在 `docs/compat-evidence/2026-11-19.md` 记为 PASS，在 `docs/compat-evidence/2026-11-15.md:320` 记为因本机原生扩展构建（`racc-1.8.1`）与 `cp.exe 0xC0000022` 失败
 - 判据：`bash script/differential plugin-source-ok`
-- 边界：本机结果不稳定（成功与原生扩展环境失败均有记录），故不声明为已实现；`docs/compat-report.md:128` 的 `dual-passed` 措辞未反映该不稳定
+- 边界：只在本机 Windows + 短路径 worktree 验证：2026-11-23 在本树（`C:\temp\celerite-t180`）用本树二进制对 4.0.24 与 2.7.2 各跑 1 次，均 `PASS (exit=0)`；首辅同日在 `C:\temp\celerite-acc159` @ `1644b1f` 对两 profile 各复跑两次，全部 `PASS (exit=0)`。未在 Linux / macOS 或长路径主工作区复采。
+- 旧结论（保留，原文）：「本机结果不稳定（成功与原生扩展环境失败均有记录），故不声明为已实现；`docs/compat-report.md:128` 的 `dual-passed` 措辞未反映该不稳定」。该理由已被 2026-11-23 的复跑与 task-160 的归因取代：`racc` / `nio4r` 原生扩展失败的真因是 PATH 缺 `make`，前置 `C:\Ruby40-x64\msys64\usr\bin` 后编译成功。
 - 生效：M5 期间
-- 取代：无
+- 取代：本条取代自身在 task-180 前的「未验证 / 本机结果不稳定」结论（旧正文保留）。
 
 ## C-M7-6-037 无 Gemfile / 全局插件根下安装时 hooks 的落盘
 
-- 状态：未验证
+- 状态：已实现
 - 参考行为（4.0.24）：`lib/bundler/plugin.rb:138-158 root` 在非 bundle 时用全局根，`index.rb:54-74` 的 `hooks` 应随之落到 `~/.bundle/plugin/index`
-- 我方行为：`assets/bridge/plugin_command.rb` 与 `src/celerite/plugin_commands.cr:106 declared` 返回 `hooks`，全局 root 的索引写入复用同一 `write_plugin_index`；无专例
-- 判据：`crystal spec spec/m7_plugin_install_source_spec.cr`
-- 边界：该 spec 不覆盖 hooks 落盘；全局根的 hooks 写入既无差分夹具也无 spec，属已知取证缺口
-- 生效：—
-- 取代：无
+- 我方行为：`assets/bridge/plugin_command.rb` 与 `src/celerite/plugin_commands.cr:106 declared` 返回 `hooks`，全局 root 的索引写入复用同一 `write_plugin_index`；task-159 的夹具与 spec 在 `HOME` 与项目目录分离的条件下钉住该分支（项目侧不落 `.bundle`，hooks 进全局索引）
+- 判据：`bash script/differential plugin-global-hook-root`；`crystal spec spec/m7_plugin_global_hook_spec.cr`
+- 边界：夹具与 spec 都用本地合成桩插件（`fixtures/differential/plugin-global-hook-root/extra/hook_plugin`、spec 内临时目录）而非真实 gem 源；只在本机 Windows + 短路径 worktree 验证：2026-11-23 在本树用本树二进制对 4.0.24 与 2.7.2 各跑 1 次均 `PASS (exit=0)`，spec 通过；首辅同日在 `C:\temp\celerite-acc159` @ `1644b1f` 取得同结果。
+- 旧结论（保留，原文）：「该 spec 不覆盖 hooks 落盘；全局根的 hooks 写入既无差分夹具也无 spec，属已知取证缺口」。该缺口已由 task-159 新增的夹具与 spec 补上。
+- 生效：task-159
+- 取代：本条取代自身在 task-180 前的「未验证」结论（旧正文保留）。
 
 ## C-M7-6-038 `plugin install --git/--branch/--ref` 的 git checkout 端到端
 
