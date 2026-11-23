@@ -1098,10 +1098,15 @@ module Celerite
       lockfile = lockfile_env ? flag_value_ornext(rest, "--lockfile") : nil
       # The reference validates the switch after Thor but before the definition
       # is built, so a missing file raises `GemfileNotFound` (exit 10) with the
-      # expanded path and `not found` on its own line.
+      # expanded path interpolated into a *single* line:
+      # `definition.rb:38` says `raise GemfileNotFound, "#{gemfile} not found"`.
+      # The message only ever becomes two lines when the reference's own
+      # `ui/shell.rb:167-171 #word_wrap` re-breaks the line at the terminal
+      # width, which happens for long paths and is a separate mechanism (task-168
+      # declares the unwrapped long-path output as a known difference).
       if gemfile
         expanded = File.expand_path(gemfile)
-        raise GemfileNotFound.new("#{expanded.gsub('\\', "/")}\nnot found") unless File.file?(expanded)
+        raise GemfileNotFound.new("#{expanded.gsub('\\', "/")} not found") unless File.file?(expanded)
       end
       previous_gemfile = ENV["BUNDLE_GEMFILE"]?
       previous_lockfile = ENV["BUNDLE_LOCKFILE"]?
