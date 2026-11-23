@@ -89,3 +89,77 @@ path 源默认 glob 相对**路径源根目录**展开，四种目录层数各�
 - 实测与既有 oracle 一致，无口径修正：`docs/compat-evidence/2026-11-19.md:979` 记 E2（`vendor/mono/d1/d2/mono_a.gemspec`）为 exit 7，本轮 `path-glob-depth-two` 同名同深同判；`:978` 记 E 行（`vendor/mono/d1/mono_a.gemspec`）为 exit 0，本轮 `path-glob-depth-one` 复现。task-36 的 oracle 表未把 E2 记成命中，本轮不涉及对该表的更正。
 - 沿用 task-36 已声明差异，未在本轮重测：仅 PATH 归属改 `source at`，GIT/PLUGIN 未命中仍为 rubygems 文案；`file://` 参考索引须含 `specs.4.8.gz`；私有 source 鉴权与磁盘错误未验证；本机 git 族仍受 Low-IL `0xC0000022` 限制。
 - 未覆盖：显式 `glob:` 越过默认上限的逐层形态只由 `path-glob-monorepo`（`gems/*/*.gemspec` 命中 2 层）单点代表，未逐层铺；`cache`/`package` 对多 gemspec path 源的复制仍未取 oracle。未重跑全量 `crystal spec` 与全量差分。
+## 2026-11-23：M7-5 剩余证据缺口清单（task-160）
+
+本节按 M7-5 任务陈述逐项列「已有证据 / 仍缺什么 / 本机可否验证」。只做清单，不改代码、不改夹具。
+
+### 1. Git tag
+
+- 已有证据：夹具 `fixtures/differential/git-tag`（提交 `4237b06`「test(M7 task-5): add differential fixtures for git tag and glob sources」）；`spec/git_source_spec.cr`。
+- 仍缺：该夹具**当前双 profile 的原始 PASS 行**。本任务未在证据文件中找到 task-154（git-init 桩修复）之后 `git-tag` 的复跑记录。
+- 本机可否验证：**可**（本地 `file://` git 源；git 装具已修）。需一次定向差分复跑取原始输出，本轮未跑。
+
+### 2. Git submodules
+
+- 已有证据：夹具 `fixtures/differential/git-submodules`；两个 profile 均置 `deferred-2.7.2` / `deferred-4.0.24`（实测计数：2.7.2 共 26 个、4.0.24 共 5 个，`git-submodules` 同时在其中）；提交 `254e493`「test(M7 task-3): add git submodules fixture」。`docs/roadmap-evidence/M7-5-sources-platforms.md` 已记为 documented SKIP。
+- 仍缺：**能取到 oracle 的宿主**。参考侧（Bundler 4.0.24）在 git ≥ 2.38 上对 submodule 的 file 传输被 `protocol.file.allow` 策略阻断（本机 git 2.55.0.windows.3），故 oracle 拿不到，不是我方缺陷。
+- 本机可否验证：**否**（参考侧阻断）。改动 `protocol.file.allow=always` 属改参考侧环境，取到的 oracle 不具代表性，不建议。
+
+### 3. Git glob
+
+- 已有证据：task-156 修好并**双 profile PASS**；夹具 `fixtures/differential/git-glob`；`spec/m7_git_source_glob_spec.cr`；证据节见 `docs/compat-evidence/2026-11-23.md` 的「GIT 源自定义 glob 的 gemspec 加载（task-156）」。
+- 仍缺：无（就本行陈述的 git glob 覆盖面而言已闭合）。
+- 本机可否验证：**可**，且已验证。
+
+### 4. 多个 gemspec
+
+- 已有证据：`fixtures/differential/path-glob-monorepo`（显式 glob `gems/*/*.gemspec` 命中 2 层，单点代表）；`fixtures/differential/env-gemspec`；`spec/m7_path_glob_default_spec.cr`；`docs/roadmap-evidence/M7-5-sources-platforms.md` 的 task-145 节。
+- 仍缺：该节自述「`cache`/`package` 对多 gemspec path 源的复制仍未取 oracle」；显式 `glob:` 越过默认上限的**逐层形态**只有 `path-glob-monorepo` 单点代表，未逐层铺。
+- 本机可否验证：**可**（纯本地 `path` 源，无需网络与 git）。
+
+### 5. monorepo
+
+- 已有证据：`fixtures/differential/path-glob-monorepo`（同一 path 源下多子目录多 gemspec）。
+- 仍缺：monorepo 形态下 `lock`/`install`/`cache` 的**完整矩阵**（当前只覆盖锁与命中判定）。
+- 本机可否验证：**可**。
+
+### 6. 私有 source 鉴权
+
+- 已有证据：**裸状态码**的 401/403 映射已实现并有 spec —— `spec/m7_authentication_errors_spec.cr`（`describe "private source authentication errors"` 四例：无凭据 401 → `AuthenticationRequiredError`、错凭据后 401 → `BadAuthenticationError`、403 → `AuthenticationForbiddenError`，全部 status 17 / wrap）；实现侧 `src/celerite/downloader.cr:250-253`、`src/celerite/compact_index/cache.cr:189-190`、`src/celerite/errors.cr:271-300`；凭据来源 `src/celerite/config.cr:519` 的 `credentials_for`。另 `spec/m7_source_index_missing_spec.cr`。
+- 仍缺（两条，性质不同）：
+  1. **差分级 oracle**：`fixtures/differential/` 下无任何以 401/403 为判据的夹具（实测按 `command` 内容检索 `401|403|auth` 零命中；仅有 `lock-gemrc-proxy` / `lock-gemrc-no-proxy`，那是 `~/.gemrc` 代理，不是鉴权）。spec 用的是 spec 内自建 `HTTP::Server`（`spec/m7_authentication_errors_spec.cr:10-23`），只在本进程内证明映射，不与参考侧对照。
+  2. **真未实现（账本已声明）**：`docs/compat-claims/README.md:231` 的 `C-M7-5-018` 记为「`~/.gemrc` 凭据源、`WWW-Authenticate: Basic` 与代理 CONNECT 后的 401 尚未实现」，状态 `未实现`。本轮核实：`src/**/*.cr` 检索 `WWW-Authenticate` **零命中**，`src/celerite/proxy.cr` 只解析 `~/.gemrc` 的 `:http_proxy` / `:no_proxy`（`proxy.cr:66-92`），不读凭据条目 —— 与该断言一致。
+- 本机可否验证：**第 1 条可**（本地起带 401/403 的 HTTP 服务即可造夹具），**第 2 条否**（属功能缺失，非验证问题）。补充：`script/http_index_server.js` 目前只有 `writeHead(404)` 与 `writeHead(200)` 两处（`script/http_index_server.js:17`、`:21`），**不含自定义状态码参数**，故造 401/403 夹具需另写服务或改该脚本（改脚本越出本任务只读范围，本轮未做）。
+
+### 7. 离线安装
+
+- 已有证据：`install-local-no-cache`、`install-local-vendor-cache`、`install-local-vendored-install`、`vendor/cache` 刷新（task-87）、`install-unreachable-source-with-cache`（task-157）、`lock-missing-spec-row`（task-149）、`cache-*` 系列；`spec/m7_vendor_cache_spec.cr`、`spec/m7_install_app_cache_spec.cr`。
+- 仍缺：本任务未发现明确缺口条目；覆盖面已较厚（若要求逐条对齐参考的 `--local` 语义矩阵，需一次专门盘点，本轮未做）。
+- 本机可否验证：**可**，且大部分已验证。
+
+### 8. 磁盘错误与中断清理
+
+- 已有证据：`FilesystemErrors.map` 已落地；`spec/m7_filesystem_errors_spec.cr`、`spec/m7_filesystem_error_mapping_spec.cr`。
+- 仍缺：**差分级**的磁盘错误夹具（如只读目录 / 空间不足下的退出码与文案对齐）；**中断清理**（install 被 Ctrl-C/终止时对半成品 `bundle/` 与临时文件的清理）无任何 spec 或夹具证据。
+- 本机可否验证：磁盘错误**部分可**（只读目录可造；ENOSPC 需配额/虚拟盘，本机未验证）；中断清理**难**（Crystal 在 Windows 上 `Signal` trap 未实现，`docs/compat-report.md` 已声明该边界），且需可控的长时间 install 窗口才能稳定命中，本轮未做。
+
+### 9. Linux gnu/musl 与多 Ruby ABI
+
+- 已有证据：本机为 Windows x64-mingw-ucrt 单 ABI；`docs/compat-report.md` 已声明宿主限制。
+- 仍缺：Linux glibc/musl 平台变体选择、多 Ruby（3.x/4.x）ABI 派生与锁定。
+- 本机可否验证：**否**。需 Linux 宿主或容器，且需多 Ruby 安装（本机 `C:\Ruby40-x64` 只有 ruby 4.0.6 一套）。
+
+### 汇总（本机可否验证）
+
+| 条目 | 本机可否验证 |
+|---|---|
+| git tag | 可（需一次定向复跑） |
+| git submodules | 否（参考侧 protocol.file.allow 阻断） |
+| git glob | 可（已验证，task-156） |
+| 多个 gemspec | 可（`cache`/`package` 多 gemspec 复制未取 oracle） |
+| monorepo | 可 |
+| 私有 source 鉴权 | 裸 401/403 映射可（但无差分夹具）；`WWW-Authenticate`/gemrc 凭据/CONNECT 后 401 属未实现，不可验证 |
+| 离线安装 | 可（覆盖面已厚） |
+| 磁盘错误 | 部分可（ENOSPC 未验证） |
+| 中断清理 | 难（Windows 无 Signal trap），未验证 |
+| Linux gnu/musl + 多 Ruby ABI | 否（需 Linux 宿主与多 Ruby） |
