@@ -391,3 +391,42 @@ worktree `C:\temp\celerite-t195`（基线 `e45f671`）；`PATH` 前置 `C:\msys6
 - `auth-userinfo-source` 在 2.7.2 上的首次批跑被 8765 端口 TIME_WAIT 拦下，只用「等清空后单跑 + 整批复跑」取证一次，没有做端口占用下的确定性回归。
 - `install-local-*` 三个夹具的 stderr 按包含关系比较（声明归一化 N10），不是逐字节相等。
 - 未复跑全量 `crystal spec`，只跑 ⑧ 相关的三个 spec 文件（19 examples）。
+
+## 2026-11-23：M7-5 的磁盘错误 oracle 与 Windows 中断行为（task-213）
+
+- 结论：① 磁盘错误取到差分级 oracle——两种装具可构造形态**两侧都稳定分歧**（每形态两侧各重跑 2 次，逐字一致），按任务令不做夹具，只登记真分歧并给出「是否要修」；② 中断侧证明 Crystal 在 Windows 上不支持 INT 捕获，`Signal::INT.trap` 式对齐不可实现，不硬做，差异保持「已声明」。
+- 参考行为（4.0.24 = 2.7.2，读码；锚点取自已安装 gem `C:\Ruby40-x64\lib\ruby\gems\4.0.0\gems\bundler-4.0.24\lib\bundler\`，`vendor/reference` 的扁平子集里没有这些文件）：
+  - 中断：`worker.rb:115-117 add_interrupt_handler` → `trap("INT") { abort_threads }`（无平台守卫）、`:88-92 abort_threads` 先 `@threads.each(&:exit)` 再 `exit 1`、`:106` 仅在 `@threads` 非空时装；顶层 `friendly_errors.rb:39-41` 打 `\nQuitting...`，Interrupt 在 `:54-60 exit_status` 落 else → 1，`:125 exit FriendlyErrors.exit_status(e)`；`cli/install.rb:10-70` 在 `Installer.install`（`:50`）与 `Bundler.load.cache`（`:53`）之间没有任何 rescue/ensure 清理。2.7.2 同语义（`worker.rb:108` trap、`friendly_errors.rb:40 Quitting...`）。
+  - 磁盘错误：bundle 目录创建走 `bundler.rb:105-112 create_bundle_path`——`mkdir_p(bundle_path) unless bundle_path.exist?` + `rescue Errno::EEXIST` → `raise PathError, "Could not install to path ..."`（PathError status 13）；锁写出走 `shared_helpers.rb:105-127 filesystem_access` → `errors.rb:94-127`。
+- 我方行为：
+  - 中断：`src/celerite/cli/commands_install.cr:1922-1929` 的 `Signal::INT.trap`（`:1923`）在 `{% unless flag?(:windows) %}` 内，且只服务 `bundle exec` 子进程转发（`:1918-1930`）；install 路径无 trap、无固定退出码，Ctrl-C 由宿主直接终止。`src/celerite/installer.cr:293-309,381 clean_partial` 只清失败路径残留，不清中断残留。
+  - 磁盘错误：`src/celerite/filesystem_errors.cr:13 FilesystemErrors.map` 只接到锁文件写出（`src/celerite/lockfile/writer.cr:19-24`，PermissionError 文案在 `src/celerite/errors.cr:341`），bundle 目录创建未接线。
+- 判据（本轮实测，命令与逐字输出）：
+  - 磁盘错误 oracle：`C:\temp\probe-t213\probe2.sh`——每侧独立 `project/home/gems/bundle/tmp` 沙箱 + 同一隔离 env（HOME/USERPROFILE/GEM_HOME/GEM_PATH/BUNDLE_PATH/RUBYOPT/TMP/TEMP/TMPDIR）+ cel 侧 `CELERITE_REFERENCE_BUNDLER_LIB`；Gemfile 为 `source "file:///C:/temp/celerite-t213/fixtures/gem-index"` + `gem "racc"`，命令 `install --jobs 1`。
+
+| 形态 | 侧 | exit | stdout | stderr 逐字 |
+| --- | --- | --- | --- | --- |
+| ① `mkdir Gemfile.lock`（锁路径是目录） | ref | 32 | 空 | `There was an error accessing `<path>`. The underlying system error is Errno::EISDIR: Is a directory @ rb_sysopen - <path>` |
+| ① 同上 | cel | 23 | 整轮安装 + `Bundle complete! 1 Gemfile dependency, 1 gem now installed.` / `Use `bundle info [gemname]` to see where a bundled gem is installed.` | `There was an error while trying to write to `<path>`. It is likely that you need to grant write permissions for that path.` |
+| ② `BUNDLE_PATH=vendor/bundle` 且 `vendor/bundle` 是普通文件 | ref | 13 | 空 | `Could not install to path `<...>/vendor/bundle/ruby/4.0.0` because a file already exists at that path. Either remove or rename the file so the directory can be created.` |
+| ② 同上 | cel | 1 | 空 | `celerite internal error: Unable to create directory: '<...>\vendor\bundle': 当文件已存在时，无法创建该文件。` |
+
+  - 作废候选（同 probe 早轮，实例无效）：首轮 Gemfile 用了 gem-index 里不存在的 `plain-gem`，`attrib +R Gemfile.lock`、`chmod 444 Gemfile.lock`、`vendor/cache` 写成普通文件三种形态在**两侧都于解析阶段 exit 7**（`Could not find gem 'plain-gem' in ... or installed locally.`），磁盘错误未触发，不能当 oracle；换 `racc` 后 ①② 才成立。
+  - 只读形态的装具级障碍：git 不记录只读位，差分夹具 `command` 只跑引擎、不经 shell，无法在两侧各注入 `attrib +R` / `chmod 444`。
+  - 中断探针（`C:\temp\probe-t213\sig.cr`）：`Signal::INT.trap { STDOUT.puts "TRAPPED_INT"; exit 3 }` → `crystal build` exit 0；运行即抛 `Unhandled exception: Not Implemented: Crystal::System::Signal.trap (NotImplementedError)`，栈 `C:\msys64\ucrt64\share\crystal\src\crystal\system\win32\signal.cr:6:5 in 'trap'`、`src\signal.cr:117:5`。
+  - 默认中断行为（`sleeper.exe`，Crystal `sleep 30`，1.5 s 后注入 Ctrl-C）：`exit=-1073741510`（`0xC000013A`），stdout `READY`，stderr `^C`，**没有** `Quitting...`。
+  - 真实 install 注入（`C:\temp\probe-t213\int2.sh` + `inj.ps1`：`Start-Process cmd` → `AttachConsole(pid)` → `SetConsoleCtrlHandler(NULL,true)` → `GenerateConsoleCtrlEvent(0,0)`，每次 3 投递）：参考 racc 原生扩展安装约 6.3 s、celerite 约 2.4 s，注入点 2500 ms / 900 ms，两轮共 14 次投递**全部未中断**（两侧都跑完 `Bundle complete!`，exit 0）。同一机制对 Crystal 进程有效（上面的 `0xC000013A` 即由它产生），对 ruby/celerite 的长 install 不生效，属装具限制；故参考侧 `Quitting...` 的**运行**证据未取到。
+  - 门禁：`crystal tool format --check src spec` → EXIT 0（仅 2 条 `File.executable?` deprecation 警告，`src/celerite/cli/commands_install.cr:1827`、`:1890`）；`git diff --check` → EXIT 0。
+  - spec：`crystal spec spec/m7_filesystem_errors_spec.cr spec/m7_filesystem_error_mapping_spec.cr` → `14 examples, 0 failures, 0 errors, 0 pending`（1.7 s，exit 0）。
+  - 回归（`bash script/differential <fixture>`，`CELERITE_BIN` 指本 worktree 的 `bin/celerite.exe`）：4.0.24 profile 六条 `install-check` / `install-local-vendor-cache` / `install-local-no-cache` / `install-local-new-dep-not-installed` / `lock-missing-spec-row` / `install-keeps-lock-with-bundler-edge` 全 `PASS`（exit 0 / 0 / 7 / 7 / 0 / 0），每条汇总行 `differential (4.0.24): 1 passed, 0 failed, 0 skipped`；`BUNDLER_REF_VERSION=2.7.2` 同样六条全 `PASS`（exit 同前），汇总行 `differential (2.7.2): 1 passed, 0 failed, 0 skipped`。
+  - 断言索引：`& 'C:\Ruby40-x64\bin\ruby.exe' script/compat-claims-index` → `compat-claims: 255 claims, index written (12 files)`（exit 0）；`--check` → `compat-claims: 255 claims, index up to date`（exit 0）。
+- 已声明差异（`C-M7-5-035` 已按本轮结论追加更新，旧正文保留）：
+  - ① 锁路径是目录：文案不同（参考 `Errno::EISDIR: Is a directory @ rb_sysopen` / exit 32，我方 PermissionError 文案 / exit 23），并且**顺序**不同（参考 stdout 为空、先写锁后装；我方装完才写锁，`Bundle complete!` 已经打出）。是否要修：牵动锁写出时机，改动面大于本条，暂不修。
+  - ② bundle 路径被同名文件占位：参考 PathError 13，我方 `internal error` 1（`Unable to create directory` + Windows 中文系统消息）。建议修：把 `filesystem_errors.cr:13` 的映射接到 bundle 目录创建，按 `bundler.rb:105-112` 抛 PathError / exit 13。
+  - ③ INT：参考在并行安装期 trap INT 后打 `Quitting...` 并 exit 1；我方 Windows 上 Crystal 无法 trap（`Signal::INT.trap` 未实现），Ctrl-C 终止码 `0xC000013A`、无该输出、无固定退出码。不修（平台能力缺失），保持已声明差异。
+- 未验证：
+  - 参考侧 Ctrl-C 的运行时证据（`Quitting...` 逐字 + exit 1）**未取到**：14 次投递未生效，只用源码锚点（`worker.rb:115-117`、`friendly_errors.rb:39-41,54-60`），不得当作实测。
+  - 只读锁文件（`attrib +R` / `chmod 444`）、只读 gem 目录、`MAX_PATH` 超限四类形态**未**做 oracle：前两类装具无法表达只读位，后两类未尝试（在 ①② 取得稳定分歧后按任务令停止扩张）。
+  - ENOSPC / EROFS 未构造（本机无小配额卷、无只读文件系统）。
+  - 未做夹具 ⇒ 反假绿（用 `C:\temp\celerite-pre213` 旧二进制跑同一夹具须 FAIL）**不适用**；pre213 旧二进制本轮未构建。
+  - 未改 `src/`，故未复跑 `spec/m7_install*.cr`，也未复跑全量 `crystal spec`。
