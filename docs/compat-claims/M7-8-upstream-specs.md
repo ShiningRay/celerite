@@ -171,3 +171,13 @@
 - 边界：本轮只做到「定性为产品候选」，具体差异字节与参考写法的对照仍需一轮离线 oracle；在取到 oracle 之前不得当作已对齐。
 - 生效：task-118
 - 取代：无
+
+## C-M7-8-018 完整锁里指向 `bundler` 的依赖边不再让锁被误判为不完整而重写
+
+- 状态：已实现
+- 参考行为（4.0.24；2.7.2 同族）：`bundler` 没有自己的 spec 行，参考只在 CHECKSUMS 里合成 `LazySpecification`（`lib/bundler/lockfile_parser.rb:274-276`），它永不进解析器；`SpecSet#validate_deps`（`spec_set.rb:87-96`）在依赖边校验里同层跳过该名字，故指向 `bundler` 的边不会让完整锁看起来未被覆盖。
+- 我方行为：`src/celerite/resolution.cr` 的 `lockfile_covers_dependencies?` 在 spec 依赖边循环首行跳过 `bundler`（与 `:1488` 依赖名循环的 `next if dep.name == "bundler"`、`incomplete_locked_names` 的同类跳过一致），rails 规模的 `bundler (>= 1.15.0)` 边因此不再把 `install` 推回 `run_resolution` 重写锁。
+- 判据：`bash script/differential install-keeps-lock-with-bundler-edge`；`crystal spec spec/m7_install_keeps_lock_with_bundler_edge_spec.cr`
+- 边界：修复与夹具在 task-166 的分支上（main 为 `1a66a38`/`74fb6e4`），双 profile PASS、spec 1 例通过；本账本所在提交（`045f778`）尚未并入该夹具与 spec，在本树跑判据只会得到 0 例静默通过，合入前不得据此判为已验证。
+- 生效：task-166（1a66a38）
+- 取代：无

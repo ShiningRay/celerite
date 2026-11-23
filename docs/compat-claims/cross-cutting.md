@@ -91,3 +91,33 @@
 - 边界：进程内语义，不跨进程
 - 生效：M7 期间
 - 取代：无
+
+## C-cross-010 `BUNDLE_GEMFILE` 指向缺失路径时，读类命令统一报单行 `<绝对路径> not found` 并 exit 10
+
+- 状态：已实现
+- 参考行为（4.0.24；2.7.2 同族）：`lib/bundler/definition.rb:38` 在 `Definition` 构造时 `raise GemfileNotFound, "#{gemfile} not found" unless gemfile.file?`；`shared_helpers.rb:263-265` 的 `find_gemfile` 只做路径解析、不校验存在性；`friendly_errors.rb:35` 以 `wrap: true` 输出该消息并映射 exit 10。命令族：`list`/`check`/`show`/`outdated`/`lock`/`binstubs`/`info`/`platform`/`add`/`remove`/`doctor`/`licenses`/`pristine`/`fund`/`console`。
+- 我方行为：`src/celerite/definition.cr:29-35` 的 `validate_gemfile_env!` 在 `Definition` 构造（`src/celerite/definition.cr:51`）校验 `BUNDLE_GEMFILE` 指向的文件，缺失即抛 `GemfileNotFound`；`src/celerite/cli/commands.cr:126` 按命令打开该开关，`:434` 的 `RAW_GEMFILE_READ_COMMANDS` 把写类命令排除在外，`src/celerite/cli.cr:28` 每次 `CLI.run` 复位；`src/celerite/errors.cr:259-266` 给该异常 status 10 与 `wrap? == true`。
+- 判据：`bash script/differential gemfile-env-missing`；`crystal spec spec/m7_gemfile_env_missing_spec.cr`
+- 边界：差分夹具只跑 `list`/`check`/`platform`（`platform` 由 exit 0 转绿）；写类命令族见 C-cross-011。`spec/m7_gemfile_env_missing_spec.cr:122` 仍钉着 task-168 修复前的 `--gemfile` 两行文案，该例当前为红，属 spec 侧待更正，不影响本条的差分判据（双 profile PASS）。
+- 生效：task-165（486c822）
+- 取代：无
+
+## C-cross-011 `BUNDLE_GEMFILE` 指向缺失路径时，写类命令保留 exit 1 的裸 `Errno::ENOENT`，未复刻参考的崩溃报告
+
+- 状态：已声明差异
+- 参考行为（4.0.24；2.7.2 同族，对应行 `lib/bundler/bundler.rb:524`）：`install`/`update`/`cache`/`package`/`pack`/`env`/`issue` 在 `Bundler.definition` 之前经 `bundler.rb:499-500` 的 `read_file` 读 Gemfile，`shared_helpers.rb:105-106` 的 `filesystem_access` 不转 ENOENT，于是 `friendly_errors.rb:50` 走 `request_issue_report_for`，输出 `bundler.rb:501:in 'File#initialize': No such file or directory @ rb_sysopen - <绝对路径>/Gemfile (Errno::ENOENT)` 加两段 backtrace，exit 1。
+- 我方行为：未对齐，保持原状——这些命令被 `src/celerite/cli/commands.cr:434` 的 `RAW_GEMFILE_READ_COMMANDS` 排除在 `validate_gemfile_env!` 之外，仍以 exit 1 输出一行裸 ENOENT 消息，不产生崩溃报告与 backtrace。
+- 判据：`bash script/differential gemfile-env-missing`
+- 边界：该夹具只覆盖读类命令（C-cross-010），写类族当前无差分夹具，也无 spec 钉住现状；本条的不对齐结论来自逐命令 oracle 对照，见 `../compat-evidence/2026-11-23.md` 的「`BUNDLE_GEMFILE` 指向缺失路径时的错误形态（task-165）」节。`clean`（参考 exit 15）与 `exec`（两侧逐字同形）不在本条范围。
+- 生效：task-165（486c822）
+- 取代：无
+
+## C-cross-012 `--gemfile` 指向缺失文件时报单行 `<展开路径> not found` 并 exit 10，折行交给统一的 word_wrap
+
+- 状态：已实现
+- 参考行为（4.0.24；2.7.2 同族）：`lib/bundler/definition.rb:38` 的消息是单行拼接；`friendly_errors.rb:31-36` 对 BundlerError 以 `wrap: true` 输出；`ui/shell.rb:139`/`:151` 只在 `wrap: true` 时折行，`:167-171` 的 `word_wrap` 按 `Thor::Terminal.terminal_width`（默认 80，`< 10` 回落 80）重折。
+- 我方行为：`src/celerite/cli/commands.cr:1107-1110` 的 `--gemfile` 分支只抛单行消息（去掉了旧的字面 `\n`），`src/celerite/errors.cr:264-266` 的 `wrap? == true` 让它走统一折行，按 `THOR_COLUMNS` 决定行宽。
+- 判据：`bash script/differential check-gemfile-missing`
+- 边界：`spec/m7_gemfile_not_found_message_spec.cr` 当前 4 例 3 失败——它仍按修复前的「不折行/固定两行」写断言，更正由 task-171 承担；短路径、长路径、`THOR_COLUMNS=40` 三形态两侧逐字一致。`install --gemfile <缺失>` 不在此列：参考走 `bundler.rb:501` 的 ENOENT（见 C-cross-011）。
+- 生效：task-168（1fc1b9d）
+- 取代：无
