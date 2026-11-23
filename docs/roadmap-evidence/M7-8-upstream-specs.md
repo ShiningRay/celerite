@@ -411,3 +411,123 @@ task-148 交付者另报告过一份 `env:artifice-unreachable 43` / `fixture:fe
 
 - 本节为数字与归属的登记条目，未跑编译、未跑差分、未新增或修改任何 `src/`、`spec/`、`fixtures/` 文件；47 与两个分桶表均转述既有原始记录，未重采。
 - 48→47 归因（`:586` 转通过）依据 task-148 段的差集记录（新增通过 `:622`、新增失败 `:586`）与两份入库产物（`…T174318Z.md`、`…T190748Z.md`）；分桶成员归属为据两表数字的推导，未逐例复核；本条未独立重跑该用例。
+
+## 2026-11-23：artifice 桶（41 条）的可判定化尝试（task-178）
+
+### 结论（先行）
+
+- **段二成功**：`sinatra 4.2.2` + `rack-protection 4.2.2` 装入系统 GEM_HOME，`require "sinatra/base"` / `require "rack/test"` 均通过。`artifice` gem **不需要**安装：bundler 自带 vendored 实现（`spec/support/artifice/helpers/artifice.rb:1-45`）。
+- **段三证明 41 条 artifice 桶不是「缺 gem」**：装 sinatra 后新基线 `64 examples, 50 failures`，`cannot load such file -- sinatra` 出现 **0 次**，38 条失败体的 stderr 是 `Could not reach host gem.repo2`。真因在 `spec/support/helpers.rb:154-177`：RSpec 侧把 artifice 作为 `RUBYOPT=-r<artifice>.rb` 注入**子进程**，而 celerite 覆盖层把 `:artifice` 直接丢弃并以原生 exe 执行（`script/upstream-specs-celerite-override.rb:39-40`、`:52-57`），故 celerite 永远拿不到桩。
+- 该桶在 real-drive 下**不可判定为通过**：宜改判 `env:out-of-process-artifice`（不适用 / 需参考侧 Ruby 驱动），而不是继续等 gem 清单补全。
+
+### 需求清单（带 文件:行号）
+
+- 上游快照**没有** `bundler/Gemfile`；`bundler.gemspec:1-47` 无任何 `add_development_dependency`。开发依赖由 `tool/bundler/{test_gems,dev_gems,rubocop_gems,standard_gems}.rb` 提供（`spec/support/path.rb:32-45`、`:350-359`），而快照缺 `tool/` 目录（`.upstream-specs/v4.0.24/` 下无 `tool`）⇒ `install_test_deps` 在本快照里无输入可装。这才是 `CELERITE_SKIP_TEST_DEPS=1` 才能跑通的真实原因，不是"网络问题"。
+- artifice 桩本身：`spec/support/artifice/helpers/artifice.rb:1-45`（模块内 `replace_net_http` 换 `Gem::Net::HTTP` 常量），`spec/support/artifice/helpers/rack_request.rb:3` `require "rack/test"`、`:12-20` `include Rack::Test::Methods` + `def connect; end`（不开 socket）。
+- sinatra 侧：`spec/support/artifice/helpers/endpoint.rb:5` `$LOAD_PATH.unshift(*Spec::Path.sinatra_dependency_paths)`，`:7` `require "sinatra/base"`；同类 `spec/support/artifice/windows.rb:5,7`、`spec/support/artifice/endpoint_500.rb:5,7`。
+- sinatra 运行依赖清单由 `spec/support/path.rb:306-317` 写死：`mustermann`、`rack`、`tilt`、`sinatra`、`ruby2_keywords`、`base64`、`logger`、`cgi`；取法为 `Dir[scoped_base_system_gem_path.join("gems/{…}-*/lib")]`（**无版本约束**）。
+- rack/test：`spec/support/artifice/helpers/rack_request.rb:3`；`spec/support/helpers.rb:612-618`（临时把 `GEM_HOME` 切到 `scoped_base_system_gem_path` 再 require）。
+- 套件启动链：`spec/spec_helper.rb:90` `config.before :suite` → `:93` `require_relative "support/rubygems_ext"` → `:94` `Spec::Rubygems.test_setup`；`spec/support/rubygems_ext.rb:30-32` = `install_test_deps unless ENV["RSPEC_FORMATTER_OUTPUT_ID"]`，`:58-65` = 三次 `dev_bundle("install", …)` + `Helpers.install_dev_bundler` + `install_vendored_compact_index`，`:129` `dev_bundle` 用 ``ruby #{Path.dev_binstub}`` 起子进程。`script/upstream-specs:352-356` 在 `CELERITE_SKIP_TEST_DEPS=1` 时导出 `RSPEC_FORMATTER_OUTPUT_ID=celerite-harness` 跳过整段。
+- gem 可得性/扩展：`sinatra 4.2.2` 纯 Ruby、**无原生扩展**（`gem install --no-document` 未触发编译器），依赖 `rack-protection 4.2.2`。本机原已在位：`rack 3.2.9`、`rack-test 2.3.0`、`mustermann 3.1.1`、`tilt 2.9.0`、`base64 0.3.0`、`logger 1.7.0`、`cgi 0.5.2`、`ruby2_keywords 0.0.5`——即 `path.rb:306-317` 清单里**除 sinatra 外全部早已在位**。
+- artifice 引用面：`grep -rl artifice spec --include=*.rb | grep -v '^spec/support/'` = **43 个 spec 文件**；直接 `require` 的仅 `spec/bundler/installer/parallel_installer_spec.rb:16,:106`、`spec/realworld/double_check_spec.rb:29`、`spec/realworld/edgecases_spec.rb:6`，其余靠 `bundle … artifice:` 选项注入（`spec/support/helpers.rb:154-177`）。本套件只跑 `spec/lock/lockfile_spec.rb`，其 artifice 引用 5 处：`:287`、`:380`、`:384`、`:388`、`:440`（均 `artifice: "endpoint_strict_basic_authentication"`）。
+
+### 三步尝试与原始输出
+
+1. `gem install artifice sinatra --no-document`（系统 GEM_HOME `C:\Ruby40-x64\lib\ruby\gems\4.0.0`）实际只装 sinatra：
+
+```
+Successfully installed rack-protection-4.2.2
+Successfully installed sinatra-4.2.2
+2 gems installed
+```
+
+`gem list -l` 实测（节选，全为本机真输出）：
+
+```
+sinatra (4.2.2)
+rack-protection (4.2.2, 4.2.1)
+rack (3.2.9, 3.2.8, 3.2.7, 3.2.6, 3.2.4, 3.1.12)
+rack-test (2.3.0, 2.2.0)
+tilt (2.9.0, 2.7.0, 2.6.0)
+mustermann (3.1.1)
+base64 (0.3.0)
+cgi (0.5.2)
+logger (1.7.0)
+ruby2_keywords (0.0.5)
+```
+
+`artifice` 不在列表里，也不该在——该 gem 与 bundler 自带实现无关。
+
+2. 隔离装 `--install-dir <worktree>\gems` + `GEM_PATH`：**未执行**。第 1 步已成功，按任务给定的优先序无需回退；未做无意义叠装。
+
+3. require 验证（在 `.upstream-specs/v4.0.24/bundler` 下）：
+
+```
+SINATRA OK 4.2.2
+RACKTEST OK 2.3.0
+$ ruby -Ilib -Ispec -e "require 'artifice'"
+-e:1:in 'Kernel#require': cannot load such file -- artifice (LoadError)   # 预期：不需要该 gem
+$ ruby -Ilib -Ispec -e "require 'support/artifice/helpers/artifice'"
+VENDORED-ARTIFICE OK
+```
+
+### 新基线（段三）
+
+- 报告：主工作区 `.upstream-specs/upstream-lockfile-v4.0.24-20261123T085454Z.md`（17,218 B；`.upstream-specs/` 被 `.gitignore:8` 忽略，故不入库）。摘要原文：
+
+```
+## Result summary
+
+64 examples, 50 failures
+
+- real-drive: 69 celerite invocations
+- harness verdict: ok (rspec exit 1)
+```
+
+- 脚本分桶：`env:artifice-unreachable (38)` / `env:low-il-shm (9)` / `fixture:fetch-failed (3)`；`product:candidates` 已归零。
+- 按 `rspec-output.txt` 50 个失败块逐个扫 stderr 重判（不复用脚本按文案的归桶）：
+
+| 签名 | 条数 | 原文关键行 |
+| --- | --- | --- |
+| artifice 桩不可达 | 38 | `Could not reach host gem.repo2. Check your network connection and try again.` |
+| msys Low-IL git | 9 | `0 [main] sh (…): *** fatal error - NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0S5-…): 0xC0000022` |
+| 真网络 fetch | 3 | `Could not verify the SSL certificate for https://rubygems.org/.` → `Fetching bundler 1.8.2` |
+| sinatra 加载失败 | **0** | —（旧桶的「加载缺口」已消除） |
+
+### 例子级差集（旧 `47 failures` → 新 `50 failures`）
+
+- **fail → pass（2）**：`lockfile_spec.rb[1:57:1:1]`、`[1:56:1:1]`（`with both ruby / just specific platform behaves like a lockfile missing dependent specs auto-heals`）。旧表在 `product:candidates` 桶，`RSpec::Expectations::ExpectationNotMetError`。**未证明与 sinatra 有关**：两例不走 artifice（只断言锁自愈），两次采集之间 `src/` 无改动，而 `tmp/2.1` 下的 fixture 缓存跨次复用，故按宿主/缓存态差异记，不计作修复。
+- **fail → fail（45）**：其中 38 条为 `Could not reach host`（见下），7 条为 msys git clone。
+- **改桶（1）**：`:1682`（`fills empty CHECKSUMS entries when not frozen, even if every gem is already installed`）旧在 `product:candidates` 桶，新表落进 `env:artifice-unreachable`——其失败体（第 40/50 块）与前 38 条同一签名 `Invoking … celerite install failed` + `Could not reach host`。故 `product:candidates` 归零是「2 条转绿 + 1 条改桶」的结果，不是三条都修好；`:1682` 的「离线不可验证」判断（见上文 task-140 段）不变。
+- **新增失败（5）**：`:550`（serializes global git sources）、`:586`（git branch requirement）、`:477`（single pinned source, gem with a version requirement）、`:2144`（new gem includes a gem that shouldn't be included）、`:622`（git tag requirement）。五条全部止于同一处 msys 报错，随后 `fatal: Could not read from remote repository.`——与 task-158 记的 `:586` Low-IL 抖动同源，**不是 sinatra 装出来的，也不是产品回归**。
+- 38 条仍失败的真因，原文样板（`generates a simple lockfile for a single source, gem`）：
+
+```
+RuntimeError:
+  Invoking `C:/Users/ShiningRay/projects/ShiningRay/celerite/bin/celerite install` failed with output:
+  ----------------------------------------------------------------------
+  Could not reach host gem.repo2. Check your network connection and try again.
+  ----------------------------------------------------------------------
+# ./spec/support/command_execution.rb:25:in 'Spec::CommandExecution#raise_error!'
+```
+
+- 3 条 fetch 桶真因：`updates the lockfile's bundler version if current ver. is newer, and version was forced through BUNDLER_VERSION` 等三条要求按 `BUNDLER_VERSION` 回落到 bundler 1.8.2，输出为 `Could not verify the SSL certificate for https://rubygems.org/.`，即需要真网络，本机拿不到。
+
+### 为什么不可达（机制，本次实证）
+
+- `spec/support/helpers.rb:154-177`：`:artifice` 不是起服务器，而是 `requires << "#{Path.spec_dir}/support/artifice/#{artifice}.rb"`，再 `env["RUBYOPT"] = opt_add("-r#{r}", env["RUBYOPT"])`——让**子进程自己**加载桩；桩在子进程内替换 `Gem::Net::HTTP`，用 `Rack::Test` 直接投递请求（`rack_request.rb:12-20` 的 `def connect; end`）。全程**不开 socket**。
+- celerite 是原生 exe：`script/upstream-specs-celerite-override.rb:39-40` 先 `options.delete(:load_path)` / `options.delete(:artifice)`，`:52-57` 再 `sys_exec("#{celerite} #{cmd}…")`。因此 celerite 无法加载 `-r` 的 Ruby 桩，只能真解析 `gem.repo1/2/4` 并连网。
+- 推论：装 sinatra 只解除**参考侧进程**的加载障碍（0 处 LoadError），解除不了「原生子进程拿不到桩」。该桶的判定结论是 **real-drive 下恒不可达**，与 gem 清单无关。
+
+### 边界
+
+- 本次只改**本机 gem 环境**（`C:\Ruby40-x64\lib\ruby\gems\4.0.0` 新增 `sinatra 4.2.2`、`rack-protection 4.2.2`），**不在仓库里**；别人 clone 不会自动获得，CI 也不会。
+- 未跑 `v2.7.2` 复采；未跑全量差分；未改 `src/`、`spec/`、`fixtures/`、`script/`、`docs/compat-claims/`、`docs/compat-report.md`、`docs/roadmap.md`。
+- 主工作区 `bin/celerite.exe`（12,763,959 B，2026-11-23 16:43:33）为 `38021fc` 构建，本次未重建；本次仅在主工作区跑 `script/upstream-specs`，副作用是新增 1 份报告并覆写 `.upstream-specs/rspec-output.txt`、`rspec-output.json`、`celerite-invocations.log`；**未删任何既有报告**。
+- 若要真跑这 38 条，需二者之一：(a) 参考侧 Ruby 驱动（非 real-drive）下跑，`-r` 桩可用；(b) 为 celerite 造「桩代理」通道（把 Rack app 跑成真 HTTP server，并让 celerite 的源 host 可改）。二者均为新工作量，本次未做。
+
+### 已声明差异
+
+- 「fail→pass 2 条与 sinatra 无关」是据机制（两例不走 artifice）与「`src/` 未改」推出的判断；旧 run 的原始 `rspec-output.txt` 已被本次覆写，无法逐字复核其 stderr，故标为**推断**而非实测。
+- `env:low-il-shm` 9 条与新增 5 条同属宿主 msys 抖动，未重跑消抖；故 47→50 的净增 3 不得读作 sinatra 造成的回归，也不得读作产品劣化。
+- 本节新基线与分桶不替代 `docs/compat-report.md` 的 `## Current metrics`（唯一对外口径）；如需改口径须另开任务并复采。
