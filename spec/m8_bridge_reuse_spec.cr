@@ -118,4 +118,30 @@ describe "M8 task-221 bridge reuse" do
       output_without.should eq(output)
     end
   end
+
+  # Regression for the first cut of the evaluation cache: `add` rewrites the
+  # Gemfile and then installs, so a cache keyed only by path/size/mtime handed
+  # the install phase the pre-rewrite evaluation (`racc` looked absent and the
+  # run failed at the native build instead of at resolution). A hit now has to
+  # match the digest the bridge reported for the bytes on disk.
+  it "re-evaluates a Gemfile rewritten during the same command" do
+    with_m8_reuse_project("check-gemfile-new-dependency", m8_reuse_fixture_files("check-gemfile-new-dependency")) do |project|
+      gemfile = File.join(project, "Gemfile")
+      Celerite::Bridge::EvaluationCache.begin_run
+      begin
+        client = Celerite::Bridge::Client.shared
+        before = client.evaluate_gemfile(gemfile)
+
+        File.write(gemfile, File.read(gemfile) + "\ngem \"racc\", \"= 1.8\"\n")
+        after = client.evaluate_gemfile(gemfile)
+
+        after.gemfile_sha256.should_not eq(before.gemfile_sha256)
+        after.gemfile_sha256.should eq(Digest::SHA256.hexdigest(File.read(gemfile)))
+        after.dependencies.map(&.name).should contain("racc")
+      ensure
+        Celerite::Bridge::Client.shutdown
+        Celerite::Bridge::EvaluationCache.finish
+      end
+    end
+  end
 end
