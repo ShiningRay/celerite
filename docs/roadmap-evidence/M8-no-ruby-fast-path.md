@@ -160,3 +160,23 @@
 - [未验证] `install` 无变化时参考是否仍写 `vendor/cache`（`ref:cli/install.rb:53` → `Bundler.load.cache`，其写入条件未追到 `runtime.rb` 之外）。
 - [未验证] 组归属缓存与本机 `BUNDLE_WITH`/`WITHOUT` 交互下的 `specs_for` 顺序（`ref:cli/list.rb:94` 之后未再排序，顺序取决于 lockfile specs 顺序）。
 - 已知未做：未跑 `script/differential`（端口 8765 被占），未构建，未改 `src/`。
+
+### 1.2 首辅实测（2026-11-24，HEAD `9098d29`，plain 环境）
+
+上面 §1.1 的推断（"plain 环境下 check 只剩 1 次 spawn、list 1–2 次"）**未被实测支持**，实测与之不同，以此表为准：
+
+配方：`C:\temp\celerite-t219\bin\celerite.exe`（构建自 `9098d29`），临时项目 `C:\temp\m8-measure2`，Gemfile = `source "file:///<repo>/fixtures/gem-index"` + `gem "thor"`，隔离 `HOME`/`USERPROFILE`/`BUNDLE_PATH`，**不设** `CELERITE_BRIDGE_SERVER` 与 `CELERITE_REFERENCE_BUNDLER_LIB`（即 plain 环境），`CELERITE_BRIDGE_STATS=1`，退出码与计数行分别取自 `Start-Process` 的 `ExitCode` 与 stderr。
+
+| 命令 | 场景 | exit | procs | rpc | req_bytes | resp_bytes |
+| --- | --- | --- | --- | --- | --- | --- |
+| `lock` | 冷（无锁、file 源） | 0 | 1 | 6 | 397 | 288102 |
+| `check` | 安装前（缺 gem） | 1 | 2 | 3 | 252 | 2529 |
+| `install` | 首装 | 0 | 2 | 25 | 3429 | 299114 |
+| `install` | 无变化重跑 | 0 | 2 | 18 | 1943 | 295607 |
+| `list` | 已安装 | 0 | 2 | 2 | 196 | 1468 |
+| `show thor` | 已安装 | 0 | 3 | 4 | 350 | 3263 |
+| `lock` | 无变化 | 0 | 1 | 2 | 174 | 855 |
+
+与 §1.1 的差异：`check` 实测 **2** 个进程（不是 1），`list` 实测 **2** 个（不是 1–2 的下界）。结论：`bridge_available?` 只 gate 特定分支的输出/兜底（`:2664-2665`、`:2688-2689`、`commands_surface.cr:1749`），**并不 gate 主 spawn 路径**，故 plain 与探针环境的进程数量级接近；§1.1 后半段的"须以 HEAD 实测收口"已由本表收口，但两张表的夹具不同（本节 1 依赖、`file://` 源；`M8-batch-bridge.md` 是 1 依赖、`BUNDLE_PATH` 双进程实测），**跨表不可逐格相减**。
+
+仍未验证：探针环境（设 `CELERITE_BRIDGE_SERVER`）在同一夹具下的同表数字；`check` 成功路径（安装后）的计数；Rails 规模。
