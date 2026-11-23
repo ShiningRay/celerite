@@ -197,6 +197,11 @@ module Celerite
           return code
         end
       end
+      # 2.7.x `CLI::Install#run` remembers `--path` before it needs the Gemfile
+      # (`cli/install.rb:157-158` `set_command_option_if_given :path`), so a
+      # missing Gemfile still leaves `<root>/.bundle/config` behind. 4.x removed
+      # both the switch and the persistence.
+      remember_path_option(rest)
       definition = Definition.build
       config = definition.config
       # `install --standalone` without an explicit path (and without `--local`)
@@ -1504,12 +1509,12 @@ module Celerite
         # the Gemfile when there is no lockfile yet (cli/clean.rb:14).  The
         # sources stay local-only: clean never fetches the index.
         lockfile = materialize_lockfile(definition, stdout, local_only: true)
-        # specs_to_keep (pinned `Bundler::Runtime#clean`): lockfile specs plus
-        # the running bundler itself (not installed via Source::Rubygems here).
-        # The reference keeps the locked specs for both 4.0.x and 2.7.x; the
-        # earlier 2.7.x "clean everything" special case was an artifact of
-        # differential output truncated by a harness defect and is withdrawn
-        # (2026-11-15).
+        # specs_to_keep (pinned `Bundler::Runtime#clean`): the locked specs,
+        # plus the running bundler itself on 4.0.x. 2.7.x additionally drops
+        # every locked spec whose `full_gem_path` spelling differs from the
+        # filesystem's own casing (see `perform_clean`), which is why
+        # `bundle clean` empties a bundle path configured as `C:/temp/...`
+        # while the volume records `C:/Temp/...`.
         keep_names = lockfile.specs.map(&.full_name).to_set
 
         perform_clean(stdout, install_root, keep_names, lockfile, dry_run)
@@ -1544,12 +1549,30 @@ module Celerite
       # Stale gem dirs, printed per entry (pinned: only gem/git dir removals
       # announce with "Removing <dir name>"; cache/spec/bin go silently).
       gems_dir = File.join(install_root, "gems")
+      strict_spelling = Celerite::Profile.bundler_version.starts_with?("2.")
       stale_gem_dirs = [] of String
+      dropped_names = Set(String).new
       if Dir.exists?(gems_dir)
-        stale_gem_dirs = Dir.children(gems_dir).select do |full_name|
-          Dir.exists?(File.join(gems_dir, full_name)) && !keep_names.includes?(full_name)
+        Dir.children(gems_dir).each do |full_name|
+          full = File.join(gems_dir, full_name)
+          next unless Dir.exists?(full)
+          if !keep_names.includes?(full_name)
+            stale_gem_dirs << full_name
+            dropped_names << full_name
+          elsif strict_spelling && configured_spelling(full) != disk_spelling(full)
+            # 2.7.x `Runtime#clean` compares `spec.full_gem_path` (spelled from
+            # the configured `Gem.dir`) against `Dir["#{Gem.dir}/gems/*"]`,
+            # which reports the entries under their real on-disk names. The
+            # subtraction is a plain `String#-`, so any spelling difference
+            # (drive/directory case on Windows) makes a locked gem look stale.
+            # 4.x globs both sides (`SharedHelpers.glob_files_in_dir`), so the
+            # spellings always agree and the gem is kept.
+            stale_gem_dirs << full_name
+            dropped_names << full_name
+          end
         end
       end
+      kept_names = keep_names - dropped_names
       unless dry_run
         stale_gem_dirs.each do |full_name|
           gem_bin_dir = File.join(gems_dir, full_name, "bin")
@@ -1567,11 +1590,11 @@ module Celerite
         # Silent removals: stale specifications, cache .gem files,
         # extension dirs and git cache mirrors.
         specs_dir = File.join(install_root, "specifications")
-        Dir.children(specs_dir).reject { |f| keep_names.includes?(f.sub(/\.gemspec$/, "")) }
+        Dir.children(specs_dir).reject { |f| kept_names.includes?(f.sub(/\.gemspec$/, "")) }
           .each { |f| File.delete(File.join(specs_dir, f)) } if Dir.exists?(specs_dir)
         cache_dir = File.join(install_root, "cache")
         if Dir.exists?(cache_dir)
-          Dir.children(cache_dir).select(&.ends_with?(".gem")).reject { |f| keep_names.includes?(f.sub(/\.gem$/, "")) }
+          Dir.children(cache_dir).select(&.ends_with?(".gem")).reject { |f| kept_names.includes?(f.sub(/\.gem$/, "")) }
             .each { |f| File.delete(File.join(cache_dir, f)) }
         end
       end
@@ -1582,6 +1605,50 @@ module Celerite
         label = "#{parts[0...-1].join("-")} (#{parts.last})"
         stdout.puts "#{dry_run ? "Would have removed" : "Removing"} #{label}"
       end
+    end
+
+    # 2.7.x persists remembered command line options into the app config
+    # (`Settings#set_command_option` -> `set_local`, because `forget_cli_options`
+    # is off): `install --path vendor/x` therefore writes
+    # `BUNDLE_PATH: "vendor/x"` into `<root>/.bundle/config`, even when the
+    # install then aborts on a missing Gemfile. 4.x removed `--path` and the
+    # persistence, so nothing is written there.
+    private def self.remember_path_option(rest : Array(String)) : Nil
+      return unless profile_2_x?
+      value = flag_value(rest, "--path")
+      return if value.nil? || value.empty?
+      root = begin
+        File.dirname(Definition.find_gemfile)
+      rescue
+        Dir.current
+      end
+      Config.new(root).set_local("path", value)
+    end
+
+    # The spelling this port produced for a bundle path (the configured
+    # `BUNDLE_PATH`/`--path` value, expanded but not case-normalized).
+    private def self.configured_spelling(path : String) : String
+      File.expand_path(path).gsub('\\', "/")
+    end
+
+    # The spelling the filesystem reports for an existing path (`C:/temp/x` ->
+    # `C:/Temp/x`). Reproduces the `Dir[]` glob the 2.7.x cleaner uses without a
+    # platform-specific API: every component is re-read from its parent
+    # directory under its real name.
+    private def self.disk_spelling(path : String) : String
+      parts = File.expand_path(path).gsub('\\', "/").split('/')
+      current = parts.shift.to_s
+      parts.each do |part|
+        dir = current.empty? ? "/" : (current.ends_with?('/') ? current : "#{current}/")
+        entries = begin
+          Dir.children(dir)
+        rescue
+          [] of String
+        end
+        actual = entries.find { |entry| entry.compare(part, case_insensitive: true) == 0 } || part
+        current = current.empty? ? "/#{actual}" : "#{dir}#{actual}"
+      end
+      current.empty? ? "/" : current
     end
 
     # `clean_after_install` (`cli/common.rb:150-156`): `bundle install` and

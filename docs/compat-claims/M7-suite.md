@@ -49,6 +49,7 @@
 - 我方行为：只改 `spec/m7_clean_spec.cr` 的期望与新增夹具，`src/` 未改；`:97`、`:159`、`:164` 断言 `code.should eq(15)`，`:146` 另加无 path 配置下连跑两次的幂等例；产品侧守卫在 `src/celerite/cli/commands_install.cr:1471` 的 `InstallPaths.use_system_gems?(definition.config, bridge.ruby_environment.default_gem_dir)`（`:921` 同类判定）
 - 判据：`crystal spec spec/m7_clean_spec.cr`；`bash script/differential clean-no-path`
 - 边界：只覆盖无 `path` 配置的守卫分支；有 `path` 配置时 clean 的正常删除路径由既有用例覆盖；判据本轮未执行，仅核实文件与夹具存在
+- 补充（task-200）：原「边界」称有 `path` 配置时 clean 的正常删除路径由既有用例覆盖；该路径现补差分证据——2.7.2 参考 `bundler-2.7.2/lib/bundler/runtime.rb:165` 用 `Dir["#{Gem.dir}/gems/*"]`（盘上真实拼写）减 `:178` 的 `spec.full_gem_path`（配置拼写），字符串相减大小写敏感，故配置拼写与盘上不一致时整包判 stale；4.0.24 改用 `SharedHelpers.glob_files_in_dir`（`shared_helpers.rb:242-247`）后两侧同拼写。我方按 `Celerite::Profile.bundler_version` 分档：2.x 走拼写比较（`src/celerite/cli/commands_install.cr:1552`、`:1562`），4.x 保持 basename 比较。判据：`bash script/differential clean-force clean-no-lockfile clean-unused install-clean-after-install removed-flag-path` 双 profile 全 PASS，反假绿（改动前二进制）在 2.7.2 上 0/5；证据见 [2026-11-23.md](../compat-evidence/2026-11-23.md) 的 task-200 节。
 - 生效：task-132（`fd549f0`）
 - 取代：无
 
