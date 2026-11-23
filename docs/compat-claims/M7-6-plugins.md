@@ -376,13 +376,15 @@
 
 ## C-M7-6-038 `plugin install --git/--branch/--ref` 的 git checkout 端到端
 
-- 状态：未验证
-- 参考行为（4.0.24）：`lib/bundler/plugin/installer/git.rb` 把插件 checkout 到 `<plugin_root>/bundler/gems/<name>-<rev>`，并复用 `--branch`/`--ref`
-- 我方行为：`src/celerite/cli/commands_surface.cr:2358-2368` 接受三个 flag 并走 `plugin_install_remote`；`plugin-git-local`/`plugin-git-local2` 在 2026-11-13 记为双 profile PASS，其后多轮回归记为 msys `sh.exe` Low IL `0xC0000022` 环境失败
-- 判据：`bash script/differential plugin-git-local plugin-git-local2`
-- 边界：本机 git 子进程被 Low IL 阻断，无法区分产品行为与环境；插件树路径无独立 oracle；`--branch` 与 `--ref` 同给的 exit 1 断言只在 install 主路径取过 oracle
-- 生效：—
-- 取代：无
+- 状态：已实现
+- 参考行为（4.0.24）：`lib/bundler/plugin/installer/git.rb:15-21` 把插件 checkout 到 `Plugin.root/bundler/gems/<base_name>-<shortref_for_path(revision)>`，`shortref_for_path` = `revision[0..11]`（`source/git.rb:378-380`）；`:7-13` 裸镜为 `Plugin.cache/bundler/git/<base_name>-<uri_hash>`；`:23-25` `root` = `Plugin.root`。`plugin/installer.rb:94` 的 `Bundler.configure_gem_home_and_path(Plugin.root)` 把 `BUNDLE_PATH` 重写到插件根，故 clone 与镜像都落在 `<project>/.bundle/plugin/` 内。`source/git/git_proxy.rb:137-177` `copy_to` 的 `clone --no-checkout` + `remote set-url` + `fetch --force --quiet --depth 1 <revision>` + `reset --hard` 序列决定 checkout 的 `.git` 含 `FETCH_HEAD`/`ORIG_HEAD`/`shallow`。`--branch`/`--ref` 经 `plugin/installer.rb:45-57` 的三条互斥校验后进入 `install_git`（`:59-66`）。
+- 我方行为：`src/celerite/cli/commands_surface.cr:2676-2678` 从 resolution 记录的 `GitSource` 取 `checkout_dir`（`src/celerite/resolution.cr:2236`/`:2249`），`:2692-2698` 拷 checkout、`:2707-2712` 拷裸镜、`:2744-2750` 用 checkout 的 basename 作 index 的 `gem_dir`；`src/celerite/git_source.cr:107-127` 复刻 `copy_to` 序列（`:139-141` 的 `extra_fetch_args` = `["--depth","1"]`）；`assets/bridge/plugin_command.rb:62-65` 在 `load <root>/plugins.rb` 前 unshift index 的 `load_paths`（对齐 `plugin/installer` 之外的另一处参考：`plugin.rb:354`/`:373`）。三个 flag 的接受与校验在 `src/celerite/cli/commands_surface.cr:2358-2368`、`:2581-2595`。
+- 判据：`bash script/differential plugin-git-install`（新夹具，双 profile PASS）+ `crystal spec spec/m7_plugin_git_install_spec.cr`（4 例：物化 / `plugin list` 与命令分发 / `--ref <sha>` / 无 `plugins.rb` 的 exit 29）。
+- 边界：夹具只钉 `--branch master`（`git-init` 无 SHA 占位符，`--ref` 由 spec 覆盖，`--tag` 未覆盖）；参考 `copy_to` 的 `File.chmod(... & ~File.umask)` 未复刻（Crystal 无 `File.umask`，Windows 上为 no-op）；我方 `git fetch` 把镜像作为 source 位置参数传入，故命令形态与参考 `extra_fetch_args` 的顺序不同（产物一致）。
+- 旧结论（保留，原文）：「本机 git 子进程被 Low IL 阻断，无法区分产品行为与环境；插件树路径无独立 oracle；`--branch` 与 `--ref` 同给的 exit 1 断言只在 install 主路径取过 oracle。」（本条已被 task-162 取代：真因是 2669 行的混合分隔符 glob，不是 Low IL）
+- Low IL 残留：本轮全部 git 相关实测（新夹具双 profile、`plugin-uninstall-index` 回归、spec 内 `git init`）在短路径 worktree `C:\temp\celerite-t164` 下均未复现 `0xC0000022`；该现象只在主工作区（长路径）与旧夹具的 gitlink 空桩上出现过，与本条的产品行为无关。
+- 生效：task-162
+- 取代：本条取代自身在 task-73 前后的「未验证 / Low IL 阻断」结论（见上方「旧结论」）。
 
 ## C-M7-6-039 缺失 load path 的告警在参考里按每次 hook 重复，我方每命令一次
 
