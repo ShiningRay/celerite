@@ -355,6 +355,7 @@
 | C-M7-suite-004 | 全量 `crystal spec` 在本机能跑到 `Finished` 汇总行 | 已实现 | [M7-suite.md](M7-suite.md) | `'crystal spec'` |
 | C-M7-suite-005 | `m7_clean` 的期望按参考 `use_system_gems?` 守卫更正为 exit 15 | 已实现 | [M7-suite.md](M7-suite.md) | `'crystal spec spec/m7_clean_spec.cr'；'bash script/differential clean-n…` |
 | C-M7-suite-006 | `m7_show_order` 在参考 lib 缺席时记 `pending!`，不硬失败 | 已实现 | [M7-suite.md](M7-suite.md) | `'crystal spec spec/m7_show_order_spec.cr'` |
+| C-M8-1-001 | 桥统计计数：CELERITE_BRIDGE_STATS 开启时输出 procs/rpc/req_bytes/resp_bytes 一行 | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_bridge_stats_spec.cr'` |
 | C-cross-001 | `bundle exec` 的子进程在 Unix 上随父进程收到 SIGINT/SIGTERM 而终止，Windows 上共享控制台 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'crystal spec spec/m7_exec_spec.cr'` |
 | C-cross-002 | 可直接加载的 Ruby 脚本走 `Kernel.load` 运行时适配器，`disable_exec_load` 可绕过 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential exec-loader exec-loader-disabled exec-thor-v…` |
 | C-cross-003 | install / update / pristine 在 `<bundle_path>/bundler` 上取独占锁，并发运行串行化 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'crystal spec spec/process_lock_spec.cr spec/process_race_spec.cr'` |
@@ -370,5 +371,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 258 条断言（已实现 211 · 已声明差异 35 · 未实现 4 · 未验证 3 · 已取代 5）。
+合计 259 条断言（已实现 212 · 已声明差异 35 · 未实现 4 · 未验证 3 · 已取代 5）。
 <!-- END GENERATED INDEX -->
