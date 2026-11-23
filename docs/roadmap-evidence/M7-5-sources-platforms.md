@@ -163,3 +163,108 @@ path 源默认 glob 相对**路径源根目录**展开，四种目录层数各�
 | 磁盘错误 | 部分可（ENOSPC 未验证） |
 | 中断清理 | 难（Windows 无 Signal trap），未验证 |
 | Linux gnu/musl + 多 Ruby ABI | 否（需 Linux 宿主与多 Ruby） |
+
+## 2026-11-23：M7-5 行的闭合判据审计（task-192）
+
+### 审计口径
+
+- 范围：只读审计 `docs/compat-claims/M7-5-sources-platforms.md`（33 条断言）、本文件既有流水与 `fixtures/differential/`；本轮只追加文档，未改 `src/`、`spec/`、`fixtures/`、`script/`、`docs/compat-claims/`。
+- 判据现跑环境：worktree `C:\temp\celerite-t192`（`954f2d5`）；`New-Item -ItemType Directory -Force bin` 后 `crystal build src/cli.cr -o bin/celerite.exe`（EXIT 0，仅 2 条 `File.executable?` 弃用警告）；`PATH` 前置 `C:\msys64\usr\bin;C:\msys64\ucrt64\bin;C:\Ruby40-x64\bin;`，`TMPDIR=/c/temp`，`CELERITE_BIN=C:\temp\celerite-t192\bin\celerite.exe`；差分默认 4.0.24，`git-tag` 另跑 `BUNDLER_REF_VERSION=2.7.2`；spec 的 `TMPDIR`/`TMP`/`TEMP`/`HOME`/`USERPROFILE`/`CRYSTAL_CACHE_DIR` 全指 `C:\temp\celerite-t192\.tmp-crystal`（距盘符 33 字符，≤67）。
+- 结论三档：`可勾` = 该分句语义已有可执行判据且本轮或既有记录在 4.0.24（必要时含 2.7.2）通过；`不可勾（缺 N 项）` = 至少一项判据缺 oracle / 缺实现 / 缺判据；`本机不可验证` = 判据存在但本机物理上无法产出 oracle。
+- 引用纪律：本节只引断言 ID、证据节标题与夹具名，不引 roadmap 行号或本文件行号。
+
+### 九个分句的判定
+
+| # | 分句 | 结论 | 依据（断言 / 证据节 / 夹具） | 缺口是什么 | 本机可否补 |
+|---|---|---|---|---|---|
+| ① | Git tag | **可勾** | `C-M7-5-003`（状态「未验证」，**已过期**）；证据节「GIT 源自定义 glob 的 gemspec 加载（task-156）」的同族回归清单；夹具 `git-tag`（本轮 4.0.24 与 2.7.2 均 `PASS (exit=0)`） | 无判据缺口；欠账是断言状态未随 task-156 更新 | 能，且本轮已补跑 |
+| ② | Git submodules | **不可勾（缺 1 项）** | `C-M7-5-004`（未验证）；夹具 `git-submodules`（本轮 4.0.24 `SKIP`，deferred） | 缺 oracle：参考侧 git ≥2.38 拒绝 submodule 的 `file` transport（`fatal: transport 'file' not allowed`），我方即便修好也无可比基准 | 不能：参考侧阻断；改 `protocol.file.allow=always` 属改参考环境，取到的 oracle 不具代表性 |
+| ③ | Git glob | **可勾** | `C-M7-5-003`（未验证，已过期）；证据节「GIT 源自定义 glob 的 gemspec 加载（task-156）」（已记双 profile PASS）；夹具 `git-glob`（本轮 4.0.24 `PASS (exit=0)`） | 无判据缺口；同上，状态待改 | 能，且本轮已复跑 |
+| ④ | 多个 gemspec | **可勾** | `C-M7-5-006`/`007`/`011`/`033`（均已实现）；证据节「多 gemspec path 源的 cache/package 与显式深层 glob（task-187）」；夹具 `path-glob-monorepo`、`path-cache-multi-gemspec`、`path-package-multi-gemspec`（本轮均 `PASS (exit=0)`） | 无行级缺口；余量是 2.7.2 上两条 path 夹具记 deferred（2.7.2 的 `cache` 固定 `cache_all: false`，两侧都不复制） | 能 |
+| ⑤ | monorepo | **可勾** | `C-M7-5-002`/`005`/`006`/`009`/`033`（均已实现）；证据节「path 源 gemspec glob 的逐层深度边界（task-145）」与 task-187 节；夹具 `path-glob-monorepo`、`path-glob-explicit-deep`（本轮均 `PASS (exit=0)`） | 无行级缺口；`lock`/`install`/`cache` 全矩阵未逐格铺，属余量 | 能 |
+| ⑥ | 私有 source 鉴权 | **不可勾（缺 1 项）** | `C-M7-5-014`/`015`/`016`（已实现）；`C-M7-5-018`（**未实现**）；证据节「私有 source 的 401/403 差分夹具与 http-status 装具能力（task-186）」；夹具 `auth-401-no-credentials`（本轮 `PASS (exit=17)`） | 缺实现：`~/.gemrc` 凭据源、`WWW-Authenticate: Basic` 质询、代理 `CONNECT` 后的 401 三形态均未做，且无 oracle | 能，但需改 `src/` 并新增 401/407 桩服务，属实现工作，越出本轮只读范围 |
+| ⑦ | 离线安装 | **可勾** | `C-M7-5-019`/`020`/`021`/`022`/`023`（均已实现）；证据节「不可达源 + vendor/cache 时的 install 退出码（task-157）」；夹具 `install-local-vendor-cache`（`PASS (exit=0)`）、`install-local-no-cache`（`PASS (exit=7)`）、`install-local-new-dep-not-installed`（`PASS (exit=7)`） | 无行级缺口；`--local` + git 源、`--local` + `--frozen`、真实 https 离线、多平台 `vendor/cache` 未验证 | 能 |
+| ⑧ | 磁盘错误与中断清理 | **不可勾（缺 2 项）** | 磁盘错误：`C-M7-5-024`/`025`/`027`/`028`/`029`（均已实现，**全部只有 spec 级**）；中断清理：无任何断言、无 spec、无夹具 | 缺判据：磁盘错误无差分级 oracle（只读锁文件是唯一真机形态，ENOSPC/EROFS/EPERM 未真机复现）；中断清理连实现证据都没有——`src/celerite/cli/commands_install.cr` 的 `Signal::INT.trap` 只在 `{% unless flag?(:windows) %}` 分支内（转发给 `bundle exec` 子进程），Windows 安装中断路径无清理契约；`src/celerite/installer.cr` 只做「重跑时清掉上次残留目标」的自愈 | 磁盘错误：部分能（只读目录可造；ENOSPC 需配额盘，不能）；中断清理：不能（Windows 无 `Signal::INT.trap`，且需可控长安装窗口才能稳定命中） |
+| ⑨ | Linux gnu/musl 和多 Ruby ABI 验证 | **本机不可验证（缺 2 项）** | `C-M7-5-030`、`C-M7-5-031`（均未验证）；证据节「M7-5 剩余证据缺口清单（task-160）」；夹具 `multi-platform-lock`（本轮 `PASS (exit=0)`，但只跑宿主单 ABI）；`spec/gem/platform_spec.cr` 本轮 `16 examples, 0 failures` | 只能靠别平台验证：无 Linux 宿主/容器，无第二套 Ruby ABI（本机仅 `C:\Ruby40-x64` 的 `ruby 4.0.6 [x64-mingw-ucrt]`）；`BUNDLER_REF_VERSION=2.7.2` 换的是参考 Bundler 版本而非 ABI。**不记入「已声明差异」**——账本该列仍为 0，本轮未新增差异条目 | 不能：需 Linux 宿主（gnu 与 musl 两套）与多 Ruby 安装 |
+
+### 33 条断言的状态表（只列不改）
+
+| 断言 | 状态 | 是否有可执行判据 | 判据现在还能不能跑 |
+|---|---|---|---|
+| `C-M7-5-001` | 已实现 | 有：差分 `add-git`、`add-ref` | 未复跑；夹具在 |
+| `C-M7-5-002` | 已实现 | 有：spec `m7_source_lock_options_spec.cr` + 差分 `path-glob-monorepo` | 夹具本轮 PASS；spec 未复跑 |
+| `C-M7-5-003` | 未验证 | 有：差分 `git-tag`、`git-glob` | **本轮可跑且 PASS**（`git-tag` 双 profile、`git-glob` 4.0.24）→ 状态已过期 |
+| `C-M7-5-004` | 未验证 | 有：差分 `git-submodules` | 可跑，但两侧 SKIP（本轮 4.0.24 `SKIP`） |
+| `C-M7-5-005` | 已实现 | 有：spec `m7_git_source_reuse_spec.cr` | 未复跑 |
+| `C-M7-5-006` | 已实现 | 有：差分 `path-glob-monorepo` + spec | 夹具本轮 PASS |
+| `C-M7-5-007` | 已实现 | 有：3 个 `path-glob-default-*` + spec | 未复跑；夹具在 |
+| `C-M7-5-008` | 已实现 | 有：`path-source-missing-gem`、`plugin-source-missing-gem` + spec | 未复跑 |
+| `C-M7-5-009` | 已实现 | 有：4 个夹具（`path-gemspec-bump-reresolves` 等） | 未复跑 |
+| `C-M7-5-010` | 已实现 | 有：3 个夹具 + spec | 未复跑 |
+| `C-M7-5-011` | 已实现 | 有：4 个夹具 + 2 spec | `path-cache-multi-gemspec` 本轮 PASS |
+| `C-M7-5-012` | 已实现 | 有：`install-refreshes-app-cache` + spec | 未复跑 |
+| `C-M7-5-013` | 已实现 | 有：`install-path-source-app-cache-first` + spec | 未复跑 |
+| `C-M7-5-014` | 已实现 | 有：`auth-401-no-credentials`、`auth-401-bad-credentials` + spec | 前者本轮 PASS（exit=17） |
+| `C-M7-5-015` | 已实现 | 有：`auth-403-index` + spec | 未复跑 |
+| `C-M7-5-016` | 已实现 | 有：`auth-403-download` + spec | 未复跑 |
+| `C-M7-5-017` | 已实现 | 有：`lock-gemrc-proxy`、`lock-gemrc-no-proxy` + spec | 未复跑 |
+| `C-M7-5-018` | **未实现** | **无独立判据**（所引 spec 只覆盖已实现三档） | 不可跑（无 oracle） |
+| `C-M7-5-019` | 已实现 | 有：3 个 `install-local-*` + spec | `install-local-no-cache` 本轮 PASS（exit=7） |
+| `C-M7-5-020` | 已实现 | 有：`install-local-vendor-cache` + spec | 本轮 PASS（exit=0） |
+| `C-M7-5-021` | 已实现 | 有：`install-local-new-dep-not-installed` + spec | 本轮 PASS（exit=7） |
+| `C-M7-5-022` | 已实现 | 有：仅 spec `m7_prefer_local_spec.cr` | 未复跑 |
+| `C-M7-5-023` | 已实现 | 有：`install-local-vendor-cache` + spec | 本轮 PASS（夹具部分） |
+| `C-M7-5-024` | 已实现 | 有：仅 spec `m7_filesystem_errors_spec.cr` | 本轮 PASS（与 025 合并 14 examples / 0 failures） |
+| `C-M7-5-025` | 已实现 | 有：仅 spec `m7_filesystem_error_mapping_spec.cr` | 本轮 PASS（同上） |
+| `C-M7-5-026` | 已实现 | 有：`lock-preserve-crlf` + spec | 未复跑 |
+| `C-M7-5-027` | 已实现 | 有：仅 spec `m7_install_failure_spec.cr` | 未复跑 |
+| `C-M7-5-028` | 已实现 | 有：仅 spec `m7_install_failure_spec.cr` | 未复跑 |
+| `C-M7-5-029` | 已实现 | 有：`install-bundle-layout` + spec | 未复跑 |
+| `C-M7-5-030` | 未验证 | 有：仅 spec `spec/gem/platform_spec.cr` | 本轮 PASS（16 examples），但只证明平台字符串归一 |
+| `C-M7-5-031` | 未验证 | 有：3 个 `multi-platform-*` + spec | `multi-platform-lock` 本轮 PASS（单 ABI） |
+| `C-M7-5-032` | 已实现 | 有：`add-strict` + spec | 未复跑 |
+| `C-M7-5-033` | 已实现 | 有：`path-glob-explicit-deep`、`path-glob-explicit-deep-miss` | 前者本轮 PASS（exit=0） |
+
+合计：已实现 28、未验证 4（`003`/`004`/`030`/`031`）、未实现 1（`018`）、已声明差异 0。
+
+### `未实现 1` 与 `未验证 4` 的收口判断
+
+| 断言 | 能否在本机收口 | 理由 |
+|---|---|---|
+| `C-M7-5-003`（未验证） | **能，且本轮已收口** | `git-tag` 4.0.24 `PASS (exit=0)`、2.7.2 `PASS (exit=0)`；`git-glob` 4.0.24 `PASS (exit=0)`（task-156 节已记 2.7.2 亦 PASS）。建议下一轮把状态改为「已实现」，判据保留两条夹具；本轮只读，未改 claims。 |
+| `C-M7-5-004`（未验证） | 不能 | 参考侧 git ≥2.38 对 submodule 的 `file` transport 直接拒绝，oracle 取不到；绕过需改参考环境，证据不具代表性。 |
+| `C-M7-5-018`（未实现） | 不能（属实现缺口，不是验证缺口） | 需新增 `~/.gemrc` 凭据读取、`WWW-Authenticate: Basic` 解析与 `CONNECT` 后 401 分派，并各配 401/407 桩；越出本轮只读范围。 |
+| `C-M7-5-030`（未验证） | 不能 | 需 Linux 宿主或容器分别跑 gnu 与 musl 平台变体；本机只有 Windows `x64-mingw-ucrt`。 |
+| `C-M7-5-031`（未验证） | 不能 | 需第二套 Ruby ABI；本机仅 `C:\Ruby40-x64` 的 `ruby 4.0.6 [x64-mingw-ucrt]`，`BUNDLER_REF_VERSION` 不改变 ABI。 |
+
+### 抽跑记录（12 个差分夹具 + 2 次 spec，覆盖全部九个分句）
+
+| 判据 | profile | 原始结果 | 覆盖分句 |
+|---|---|---|---|
+| `bash script/differential git-tag` | 4.0.24 | `PASS git-tag (exit=0)`；`1 passed, 0 failed, 0 skipped` | ① |
+| `bash script/differential git-tag`（`BUNDLER_REF_VERSION=2.7.2`） | 2.7.2 | `PASS git-tag (exit=0)`；`1 passed, 0 failed, 0 skipped` | ① |
+| `bash script/differential git-glob` | 4.0.24 | `PASS git-glob (exit=0)`；`1 passed, 0 failed, 0 skipped` | ③ |
+| `bash script/differential git-submodules` | 4.0.24 | `SKIP git-submodules`（deferred：参考侧 `protocol.file.allow` 阻断）；`0 passed, 0 failed, 1 skipped` | ② |
+| `bash script/differential path-glob-monorepo` | 4.0.24 | `PASS path-glob-monorepo (exit=0)` | ④⑤ |
+| `bash script/differential path-glob-explicit-deep` | 4.0.24 | `PASS path-glob-explicit-deep (exit=0)` | ④⑤ |
+| `bash script/differential path-cache-multi-gemspec` | 4.0.24 | `PASS path-cache-multi-gemspec (exit=0)` | ④ |
+| `bash script/differential path-package-multi-gemspec` | 4.0.24 | `PASS path-package-multi-gemspec (exit=0)` | ④ |
+| `bash script/differential auth-401-no-credentials` | 4.0.24 | `PASS auth-401-no-credentials (exit=17)` | ⑥ |
+| `bash script/differential install-local-vendor-cache` | 4.0.24 | `PASS install-local-vendor-cache (exit=0)` | ⑦ |
+| `bash script/differential install-local-no-cache` | 4.0.24 | `PASS install-local-no-cache (exit=7)`（stderr contains-only，声明归一化 N10） | ⑦ |
+| `bash script/differential install-local-new-dep-not-installed` | 4.0.24 | `PASS install-local-new-dep-not-installed (exit=7)`（stderr contains-only，N10） | ⑦ |
+| `bash script/differential multi-platform-lock` | 4.0.24 | `PASS multi-platform-lock (exit=0)` | ⑨ |
+| `crystal spec spec/m7_filesystem_errors_spec.cr spec/m7_filesystem_error_mapping_spec.cr` | — | `14 examples, 0 failures, 0 errors, 0 pending` | ⑧ |
+| `crystal spec spec/gem/platform_spec.cr` | — | `16 examples, 0 failures, 0 errors, 0 pending` | ⑨ |
+
+- 单夹具重跑次数：均 ≤2（`git-tag` 跑两个 profile 各一次，其余各一次）。
+- 全部命令只读、可重复；未改任何产品代码或夹具。
+- 关键发现：`git-tag`/`git-glob` 在短路径 worktree（`C:\temp\celerite-t192`）+ 前置两个 msys bin 的环境下不再撞 Low-IL `0xC0000022`，因此 `C-M7-5-003` 的「本机无法取证」边界已不成立，`task-160` 清单里「git tag 仍缺一次定向复跑」也已由本轮补齐。
+
+### 最终判定
+
+**如果维持现状（不新增任何夹具/实现），M7-5 行应保持 `[ ]`：是。**
+
+一句话理由：九个分句里 ①③④⑤⑦ 已可勾，但 ② 缺 oracle、⑥ 有一条断言真未实现、⑧ 的中断清理没有任何判据与实现证据、⑨ 必须靠 Linux 宿主与第二套 Ruby ABI 才能验证——四项都不能靠文档或现有判据收口，故整行不得勾选。
+
+未验证项（本轮明确未做）：其余 20 条已实现断言的判据未逐条复跑（只抽跑 12 个夹具 + 2 次 spec）；2.7.2 全量差分未跑；中断清理未做任何注入实验；ENOSPC/EROFS/EPERM 未真机复现。
