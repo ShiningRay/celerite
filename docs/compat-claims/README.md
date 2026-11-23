@@ -125,9 +125,9 @@
 | C-M7-1-012 | 写锁时 RUBY VERSION 记录运行中的解释器版本，2.7.2 额外带 p<patchlevel> | 已实现 | [M7-1-ruby-constraints.md](M7-1-ruby-constraints.md) | `'bash script/differential ruby-target-match'；'crystal spec spec/m7_rub…` |
 | C-M7-1-013 | 解析到平台变体时，进度行带平台后缀 | 已实现 | [M7-1-ruby-constraints.md](M7-1-ruby-constraints.md) | `'bash script/differential lock-platform-variant install-platform-varia…` |
 | C-M7-1-014 | BUNDLE_FORCE_RUBY_PLATFORM 为真时只锁 / 装 ruby 变体 | 已实现 | [M7-1-ruby-constraints.md](M7-1-ruby-constraints.md) | `'bash script/differential install-force-ruby-platform install-force-ru…` |
-| C-M7-1-015 | ABI 约束（ruby_api_version / major.minor.0）只有单元证据 | 未验证 | [M7-1-ruby-constraints.md](M7-1-ruby-constraints.md) | `'crystal spec spec/m7_ruby_constraints_spec.cr'（describe 'Celerite::In…` |
+| C-M7-1-015 | ABI 约束（ruby_api_version / major.minor.0）只有单元证据 | 已声明差异 | [M7-1-ruby-constraints.md](M7-1-ruby-constraints.md) | `'crystal spec spec/m7_ruby_constraints_spec.cr'（describe 'Celerite::In…` |
 | C-M7-1-016 | bridge 不可用时运行时校验被跳过，check 省略重解通知 | 已声明差异 | [M7-1-ruby-constraints.md](M7-1-ruby-constraints.md) | `'bash script/differential check-satisfied-nolock-ruby'；'crystal spec s…` |
-| C-M7-1-017 | 用 --ruby 更新锁内 RUBY VERSION 的路径未加差分夹具 | 未验证 | [M7-1-ruby-constraints.md](M7-1-ruby-constraints.md) | `'bash script/differential update-ruby'；'crystal spec spec/m7_ruby_runt…` |
+| C-M7-1-017 | 用 --ruby 更新锁内 RUBY VERSION 的路径未加差分夹具 | 已实现 | [M7-1-ruby-constraints.md](M7-1-ruby-constraints.md) | `'bash script/differential update-ruby'（夹具的 'Gemfile' 声明 'ruby "~> 4.0.…` |
 | C-M7-2-001 | 已安装判定改用 `<root>/specifications/<full_name>.gemspec`，只有 gem 目录而没有 specification 即判缺失 | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential check-installed-spec-without-gemdir check-ge…` |
 | C-M7-2-002 | specification 在而解包目录缺时 list 仍通过，show 与 info --path 打警告后 exit 0，info 整块信息改走 stderr | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential check-installed-spec-without-gemdir list-ins…` |
 | C-M7-2-003 | specification 与解包目录都缺时 list exit 1、show 与 info exit 7，文案为 `Could not find <full_name> in locally installed gems` | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential list-gem-entirely-missing check-gemdir-witho…` |
@@ -355,5 +355,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 243 条断言（已实现 197 · 已声明差异 26 · 未实现 6 · 未验证 11 · 已取代 3）。
+合计 243 条断言（已实现 198 · 已声明差异 27 · 未实现 6 · 未验证 9 · 已取代 3）。
 <!-- END GENERATED INDEX -->

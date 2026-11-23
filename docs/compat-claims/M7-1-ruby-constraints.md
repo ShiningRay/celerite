@@ -144,11 +144,11 @@
 
 ## C-M7-1-015 ABI 约束（ruby_api_version / major.minor.0）只有单元证据
 
-- 状态：未验证
-- 参考行为（4.0.24 = 2.7.2）：`lib/bundler/rubygems_ext.rb` 路径下由 RubyGems 提供 ABI 口径，`C:/Ruby40-x64/lib/ruby/4.0.0/rubygems.rb:906-907 def self.ruby_api_version` → `@ruby_api_version ||= target_rbconfig["ruby_version"].dup`；Bundler 侧消费该值，无独立过滤分支。
-- 我方行为：`Celerite::InstallPaths` 由运行版本推导 `major.minor.0`；不存在对应的差分夹具。
-- 判据：`crystal spec spec/m7_ruby_constraints_spec.cr`（describe `Celerite::InstallPaths` / it "derives the Ruby ABI as major.minor.0"）
-- 边界：**无差分夹具**，只有纯逻辑单元例；`spec/m7_platform_spec.cr` 在 bridge 不可用时输出「未校验」而非满足，因此本项不得计为已实现。
+- 状态：已声明差异
+- 参考行为（4.0.24 = 2.7.2）：`rubygems.rb:906-907 def self.ruby_api_version` → `@ruby_api_version ||= target_rbconfig["ruby_version"].dup`（本机实读 `C:/Ruby40-x64/lib/ruby/4.0.0/rubygems.rb:906-907`）；Bundler 侧唯一消费点是安装路径：`bundler/shared_helpers.rb` 的 `ruby_scope`、`bundler/settings.rb:256 path = File.join(path, Bundler.ruby_scope) unless use_system_gems?`、`bundler/source.rb:87 "extensions", Gem::Platform.local.to_s, Bundler.ruby_scope,`、`bundler/installer/standalone.rb:35/43/80/86/88`。参考检出 `vendor/reference/v4.0.24/` 与已装 gem `C:\Ruby40-x64\lib\ruby\gems\4.0.0\gems\bundler-4.0.24\lib` 全树 grep `ruby_api_version`/`ruby_scope` 无候选过滤命中——解析器只按 `Gem::Platform` 过滤，ABI 不参与候选筛选。
+- 我方行为：`src/celerite/resolution.cr:132-135 gem_root` 把 ABI 拼进安装根（`<base>/ruby/<abi>`），`:164-173 ruby_abi(_for)` 推导 `major.minor.0`；全部调用点均为安装路径/扩展目录：`src/celerite/installer.cr:51-52 extension_dir_for`（`extensions/<platform>/<abi>/<full_name>`）、`:168`、`:237`、`:298`、`:356`，`src/celerite/resolution.cr:358`、`:809`、`:2249`、`:2275-2276`，`src/celerite/cli/commands_install.cr:29-30`、`:275`、`:317`、`:1390`、`:1493`、`:1691`、`:1985`、`:2113`，`src/celerite/cli/commands_surface.cr:246`、`:382`、`:608`、`:1868`、`:2227`、`:2695`、`:3073`、`:3381`、`:3446`。`src/celerite/resolver/` 全目录对 `abi`/`api_version` 零命中；候选过滤只在 `src/celerite/resolver/source.cr:312-316` 比 `required_ruby_version`/`required_rubygems_version`。
+- 判据：`crystal spec spec/m7_ruby_constraints_spec.cr`（describe `Celerite::InstallPaths` / it "derives the Ruby ABI as major.minor.0"）+ 差分 `bash script/differential update-ruby`（`installed-tree` 标记 `ruby/*/gems`、`ruby/*/specifications`），4.0.24 与 2.7.2 双 profile PASS；本机另以字面量 `ruby/4.0.0/gems`、`ruby/4.0.0/specifications` 跑同一夹具 PASS，钉住安装根确为 `ruby/4.0.0`。
+- 边界：M7-1 行文的「ABI 约束过滤」在参考侧不存在，ABI 仅参与安装路径；多 ABI 矩阵本机无第二 Ruby 宿主，不可验证。`extensions/<platform>/<abi>/` 子目录未单独夹具断言（需要能编译通过的原生扩展桩，本机 racc 属环境类阻塞），仅由 `src/celerite/installer.cr:51-52` 的构造式与 `ruby/*` 安装根断言间接覆盖。`spec/m7_platform_spec.cr` 在 bridge 不可用时输出「未校验」而非满足，不构成本项证据。
 - 生效：M7(1) 期间
 - 取代：无
 
@@ -164,10 +164,10 @@
 
 ## C-M7-1-017 用 --ruby 更新锁内 RUBY VERSION 的路径未加差分夹具
 
-- 状态：未验证
-- 参考行为（4.0.24）：`lib/bundler/definition.rb:445-452 locked_ruby_version` 在「新锁或 ruby 被更新」时取 `Bundler::RubyVersion.system`，声明仍兼容则保留锁内旧值；`--ruby` 走的就是这条更新分支。
-- 我方行为：`src/celerite/resolution.cr:2501` / `:2515 ruby_section_value` 已按同一条件分流（旧锁存在、非 `--ruby` 更新且声明与锁一致时保留锁内值），但该分支只做过手工探针。
-- 判据：`bash script/differential update-ruby`；`crystal spec spec/m7_ruby_runtime_enforcement_spec.cr`
-- 边界：`update-ruby` 夹具未逐字断言 `RUBY VERSION` 的更新前后形态；本节证据来自手工探针，故状态记未验证，不得升级为已实现。
+- 状态：已实现
+- 参考行为（4.0.24）：`vendor/reference/v4.0.24/definition.rb:445-452 locked_ruby_version` 在「新锁或 ruby 被更新」时取 `Bundler::RubyVersion.system`，声明仍兼容则保留锁内旧值；`--ruby` 走的就是这条更新分支。oracle 实测（Gemfile `ruby "~> 4.0.0"`、锁预置 `ruby 3.4.1p0`）：4.0.24 把 `RUBY VERSION` 改写为 `  ruby 4.0.6`（无 `p`、无 patchlevel）；2.7.2 改写为 `   ruby 4.0.6p0`（带 `p0`，缩进 3 空格）。
+- 我方行为：`src/celerite/resolution.cr:2501` / `:2515 ruby_section_value` 已按同一条件分流（旧锁存在、非 `--ruby` 更新且声明与锁一致时保留锁内值）；`--ruby` 下取 `system_ruby_string`，4.x 输出 `ruby 4.0.6`、2.x 输出 `ruby 4.0.6p0`，与上面 oracle 逐字一致。
+- 判据：`bash script/differential update-ruby`（夹具的 `Gemfile` 声明 `ruby "~> 4.0.0"`、`Gemfile.lock` 预置过期 `ruby 3.4.1p0`，`file-equals-4.0.24` / `file-equals-2.7.2` 逐字断言更新后的整份锁，含 `RUBY VERSION`、`CHECKSUMS` 与 `BUNDLED WITH`）；4.0.24 与 2.7.2 双 profile PASS。`crystal spec spec/m7_ruby_runtime_enforcement_spec.cr`
+- 边界：77c231c 的旧二进制跑本夹具同样 PASS——该实现本就存在，本轮补的是断言而非修缺陷，故无 `src/` 改动。反假绿：把 `file-equals-4.0.24` 的期望改回 `ruby 3.4.1p0` 后夹具 FAIL（两侧实际均为 `ruby 4.0.6`，diff 第 20 行），证明该断言非空转。锁内已有 `RUBY VERSION` 且与 Gemfile 声明不同的其他变体（如 engine/engine_version 组合）未逐条 fixture 化。
 - 生效：M7(1) 期间
 - 取代：无

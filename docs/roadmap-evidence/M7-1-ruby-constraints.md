@@ -82,3 +82,62 @@
 
 1. C-M7-1-015（ABI）：只有纯逻辑单元例，无差分夹具。本机可做单 ABI（4.0.0 路径）差分，或把本项改写成「ABI 仅参与安装路径」并标已声明差异；多 ABI 矩阵本机不可做（无第二 Ruby 宿主）。
 2. C-M7-1-017（`--ruby` 更新锁内 `RUBY VERSION`）：现有 `update-ruby` 夹具未断言该行。本机可做：扩展夹具断言更新前后 `RUBY VERSION`，或新增专用夹具。
+
+## 2026-11-23：M7-1 的 --ruby 与 ABI 两项收口（task-183）
+
+本节收口 `## 2026-11-23：M7-1 行的闭合判据审计（task-182）` 列出的最后两条缺项（C-M7-1-017 的 `--ruby` 锁内 `RUBY VERSION` 断言、C-M7-1-015 的 ABI 定性）。**本节不改 `docs/roadmap.md` 复选框**，是否勾选由首辅裁断。
+
+### 一、oracle（参考实现逐字行为）
+
+沙箱 `C:\temp\celerite-t183\o\{ref,cel,ref272,cel272}`，Gemfile 为 `source "file:///.../fixtures/gem-index"` + `ruby "~> 4.0.0"` + `gem "json_pure"` + `gem "thor"`；预置锁由 `bundle lock` 生成后手工插入过期段 `RUBY VERSION` / `   ruby 3.4.1p0`（插在 CHECKSUMS 与 BUNDLED WITH 之间，段序见 `vendor/reference/v4.0.24/lockfile_generator.rb:20-24`）。本机 `ruby -v` = 4.0.6。
+
+- 参考 Bundler 4.0.24（`C:\Ruby40-x64\lib\ruby\gems\4.0.0\gems\bundler-4.0.24\exe\bundle update --ruby`）：EXIT 0，输出 `Fetching source index from file:///...` / `Resolving dependencies...` / `Fetching json_pure 2.8.1` / `Fetching thor 1.3.2` / `Installing json_pure 2.8.1` / `Installing thor 1.3.2` / `Bundle updated!`。锁内 `RUBY VERSION` 由
+
+      RUBY VERSION
+         ruby 3.4.1p0
+
+  变为
+
+      RUBY VERSION
+        ruby 4.0.6
+
+  即：**改写为运行版本、无 `p`、无 patchlevel、缩进 2 空格**。同次 `CHECKSUMS` 得三条 `bundler (4.0.24) sha256=16ca64e20816a0cf151a948fb141d788602996d2b4d73577b74388fe84fa98bc`、`json_pure (2.8.1) sha256=6a877929ba9d4fa0808ccc38656d1b15d138b2aa0aa32037ee05abea13427ace`、`thor (1.3.2) sha256=eef0293b9e24158ccad7ab383ae83534b7ad4ed99c09f96f1a6b036550abbeda`；`BUNDLED WITH` 为 2 空格 + `4.0.24`。
+- 参考 Bundler 2.7.2（`...\bundler-2.7.2\exe\bundle`）：EXIT 0，锁内变为 `RUBY VERSION` / `   ruby 4.0.6p0`（**3 空格缩进、带 `p0`**）；`CHECKSUMS` 只有 json_pure/thor 两行（无 bundler 自校验）；`BUNDLED WITH` 为 3 空格 + `2.7.2`。
+- celerite 侧同形态（`C:\temp\celerite-t183\bin\celerite.exe`，4.0.24 profile 与 `CELERITE_PROFILE_BUNDLER_VERSION=2.7.2` profile 各一次）：标准输出逐行一致、锁逐字一致。故 `--ruby` 的锁内 `RUBY VERSION` 生成路径**两侧一致**，无需改 `src/`。
+
+### 二、参考锚点
+
+- `vendor/reference/v4.0.24/definition.rb:445-452 locked_ruby_version`：447 `if @unlocking_ruby || !@locked_ruby_version` → 448 `Bundler::RubyVersion.system`；`--ruby` 置 `@unlocking_ruby`，走重算分支，否则保留锁内旧值。`cli/update.rb` 的 `--ruby` 开关在参考检出里被扁平化省略，行为以上述 `definition.rb` 分支为准（`vendor/reference/v4.0.24/` 无 `cli/` 目录）。
+- ABI：`C:/Ruby40-x64/lib/ruby/4.0.0/rubygems.rb:906-907 def self.ruby_api_version` → `@ruby_api_version ||= target_rbconfig["ruby_version"].dup`。Bundler 侧唯一消费点是安装路径：`bundler/settings.rb:256 path = File.join(path, Bundler.ruby_scope) unless use_system_gems?`、`bundler/source.rb:87 "extensions", Gem::Platform.local.to_s, Bundler.ruby_scope,`、`bundler/installer/standalone.rb:35/43/80/86/88`。对 `vendor/reference/v4.0.24/` 与已装 gem 树 `C:\Ruby40-x64\lib\ruby\gems\4.0.0\gems\bundler-4.0.24\lib` 全树 grep `ruby_api_version`/`ruby_scope`，解析器（`definition.rb`、`resolver/`、`pub_grub/`）零命中——**参考里没有独立的 ABI 候选过滤分支**。
+
+### 三、实现位置
+
+- `--ruby` 的锁内 `RUBY VERSION`：`src/celerite/resolution.cr:2501` / `:2515 ruby_section_value`（旧锁存在、非 `--ruby` 更新且声明与锁一致时保留锁内值；`--ruby` 下取 system 版本串，4.x 出 `ruby 4.0.6`、2.x 出 `ruby 4.0.6p0`）。
+- ABI：`src/celerite/resolution.cr:132-135 gem_root`（`use_system_gems? ? base : File.join(base, "ruby", abi)`）、`:164-166 ruby_abi`、`:170-173 ruby_abi_for`（`<major>.<minor>.0`）、`src/celerite/installer.cr:51-52 extension_dir_for`（`extensions/<platform>/<abi>/<full_name>`）。ABI 的全部调用点（`src/celerite/resolution.cr:358`、`:809`、`:2249`、`:2275-2276`；`src/celerite/cli/commands_install.cr:29-30`、`:275`、`:317`、`:1390`、`:1493`、`:1691`、`:1985`、`:2113`；`src/celerite/cli/commands_surface.cr:246`、`:382`、`:608`、`:1868`、`:2227`、`:2695`、`:3073`、`:3381`、`:3446`；`src/celerite/installer.cr:168`、`:237`、`:298`、`:356`）均是安装路径/扩展目录。`src/celerite/resolver/` 全目录对 `abi`/`api_version` 零命中，候选过滤只在 `src/celerite/resolver/source.cr:312-316` 比 `required_ruby_version`/`required_rubygems_version`。→ **双方一致：ABI 只进安装路径。**
+
+### 四、证据（可重跑）
+
+夹具 `fixtures/differential/update-ruby/` 已改造：
+
+- `Gemfile` 增加 `ruby "~> 4.0.0"`；`Gemfile.lock` 预置过期段 `RUBY VERSION` / `   ruby 3.4.1p0`；`command` 保持 `update --ruby`。
+- 新增 `file-equals-4.0.24` / `file-equals-2.7.2`：逐字断言更新后的整份锁（`RUBY VERSION`、`CHECKSUMS`、`BUNDLED WITH`、缩进与 `p0` 有无均按 profile 分开）。原夹具只用树比较，而 `script/differential:586` 的 `diff -r --brief ... | grep -v "^Files .* differ$"` 只比路径存在性、不比同名文件内容——这正是 task-182 判「未断言到 `--ruby` 语义」的根因。
+- 新增 `installed-tree`（`ruby/*/gems`、`ruby/*/specifications`）：端到端钉住 ABI 安装根与参考同形。
+
+运行（环境按 task-183 配方：PATH 前置 msys64/Ruby40、`TMPDIR=/c/temp`、`CELERITE_BIN`、`HOME/USERPROFILE`、`CRYSTAL_CACHE_DIR`）：
+
+- 4.0.24：`PASS update-ruby (exit=0)`，`differential (4.0.24): 1 passed, 0 failed, 0 skipped`
+- 2.7.2：`PASS update-ruby (exit=0)`，`differential (2.7.2): 1 passed, 0 failed, 0 skipped`
+- 字面量 ABI 控制：把 `installed-tree` 临时改成 `ruby/4.0.0/gems` / `ruby/4.0.0/specifications` 后 4.0.24 仍 `PASS`，确认安装根确为 `ruby/4.0.0`（随后恢复通配）。
+- 反假绿：`C:\temp\celerite-pre183`（与工作树同 commit 77c231c，用它自身 `src/` 重新编译）跑新夹具 → `PASS`，说明该行为在 77c231c 已存在，本轮是**补断言**而非修缺陷，故本任务无 `src/` 改动、无 `fix(...)` 提交。
+- 负对照（证明断言非空转）：把 `file-equals-4.0.24` 里的期望改回 `  ruby 3.4.1p0` → `FAIL update-ruby`，diff 第 20 行 `<   ruby 3.4.1p0` / `>   ruby 4.0.6`（两侧实际输出相同），随后复原。
+
+### 五、已声明差异 / 未验证
+
+- **已声明差异（C-M7-1-015）**：M7-1 行文写的「ABI 的约束过滤」在参考侧不存在——ABI（`ruby_api_version`）只参与安装路径与 `extensions/<platform>/<abi>/` 目录，从不参与候选筛选；我方行为与之相同，故该项按「行文与参考不完全对齐」记为已声明差异，而非「已实现」。多 ABI 矩阵本机无第二 Ruby 宿主，**不可验证**。
+- **未验证**：`bundle/ruby/<abi>/extensions/<platform>/` 子目录未单独夹具断言——需要能编译通过的原生扩展桩，本机 racc 属环境类阻塞（make/编译链），现有 `installed-tree` 只断言 `ruby/*/gems`、`ruby/*/specifications` 两级安装根；`src/celerite/installer.cr:51-52` 的构造式未由端到端用例覆盖。
+- 锁内 `RUBY VERSION` 的其他变体（engine / engine_version 组合、声明与锁一致时保留旧值的「非 `--ruby`」路径）未逐条 fixture 化；后者的旁证仍是 `spec/m7_ruby_runtime_enforcement_spec.cr`。
+
+### 六、task-182 两条缺项的处置
+
+1. **C-M7-1-017（`--ruby` 更新锁内 `RUBY VERSION`）**：已按上文取 oracle、双版本比对两侧一致，并把现有 `update-ruby` 夹具改造成真正断言该语义的形态（Gemfile 声明 `ruby`、锁预置过期段、`file-equals-<profile>` 逐字断言）；双 profile PASS，反假绿与负对照均已做。状态由 `未验证` 改为 `已实现`。
+2. **C-M7-1-015（ABI「约束过滤」）**：已用参考源码与我方调用点双侧取证，结论为「双方都只在安装路径消费 ABI」，未发现我方 ABI 参与候选过滤，故无需改 `src/`；状态由 `未验证` 改为 `已声明差异`，边界写明 M7-1 行文表述在参考侧不存在、多 ABI 矩阵不可验证；并补了可重跑的端到端判据（差分 `installed-tree` + 字面量 ABI 控制）。
