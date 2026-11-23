@@ -186,3 +186,13 @@ doctor 类（`issue-*`）行为不变（复跑 `issue-no-gemfile`/`issue-missing
 `<No … Gemfile.lock found>` 行），证明比较已生效。
 
 - 夹具 `Gemfile`/`Gemfile.lock` 的复制使用 `copy_fixture_text`：`sed` 只做 `@PLACEHOLDER@` 替换，若源文件含 CRLF，再用 bash 行循环以 `printf '%s\r\n'` 重写（MSYS `grep` 会剥 CR，检测走 `od -tx1 | grep 0d0a`）。`file-crlf` 标记对 4.x 断言「至少 1 个 CRLF 且无孤立 LF」，对 2.7.x 断言 LF（参考在 Windows 文本模式下会归一）。
+
+### 2026-11-23: `file-crlf-both`（两 profile 同断 CRLF）
+
+`file-crlf` 的 2.7.x 分支是为锁文件写的：参考 2.7.x 在 Windows 文本模式读锁后
+把行尾归一成 LF。生成物没有这条 profile 分裂——`Gem::Installer#generate_windows_script`
+（`installer.rb:427-437`）用文本模式 `File.open(..., "w")` + `puts` 写 `.bat`，两个
+profile 都是 CRLF。新增标记 `file-crlf-both`：每行一个 project 相对路径，两侧都要求
+「至少 1 个 CRLF 且无孤立 LF」，违例输出
+`file-crlf-both differs (<path>, <side>): missing CRLF` / `lone LF at byte <n>`。
+`file-equals` 与安装树比较会归一 CRLF，表达不了这条字节级断言。

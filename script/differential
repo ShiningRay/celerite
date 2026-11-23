@@ -663,7 +663,11 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
   # Optional `file-contains` marker: each TSV line is `<path>\t<needle>` and
   # the needle must appear verbatim in that project file on both sides
   # (content probe for Gemfile lines emitted by `bundle add`).
-  if [ -f "$fixture_dir/file-contains" ]; then
+  local contains_marker="$fixture_dir/file-contains"
+  if [ -f "$fixture_dir/file-contains-$bundler_version" ]; then
+    contains_marker="$fixture_dir/file-contains-$bundler_version"
+  fi
+  if [ -f "$contains_marker" ]; then
     while IFS=$'\t' read -r rel needle; do
       [ -z "$rel" ] && continue
       needle="$(printf '%s' "$needle" | sed -e "s|@INDEX_DIR@|$index_dir|g" -e "s|@SCOPED_INDEX_DIR@|$scoped_index_dir|g" -e "s|@LOCKED_DEPS_INDEX_DIR@|$locked_deps_index_dir|g" -e "s|@RUBY_CONSTRAINTS_INDEX_DIR@|$ruby_constraints_index_dir|g" -e "s|@PLATFORM_INDEX_DIR@|$platform_index_dir|g" -e "s|@PLUGIN_INDEX_DIR@|$plugin_index_dir|g" -e "s|@LOCKED_RUBY_INDEX_DIR@|$locked_ruby_index_dir|g" -e "s|@PLUGIN_SOURCE_INDEX_DIR@|$plugin_source_index_dir|g" -e "s|@PLUGIN_GEM_INDEX_DIR@|$plugin_gem_index_dir|g" -e "s|@LEGACY_INDEX_DIR@|$legacy_index_dir|g" -e "s|@RUBY_VERSIONS_INDEX_DIR@|$ruby_versions_index_dir|g" -e "s|@BUNDLER_VERSION@|$bundler_version|g")"
@@ -671,7 +675,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
          ! grep -Fq -- "$needle" "$cel_sandbox/project/$rel" 2>/dev/null; then
         ok=0; detail+="  file-contains differs ($rel): needle=$needle"$'\n'
       fi
-    done < "$fixture_dir/file-contains"
+    done < "$contains_marker"
   fi
 
   # Optional `file-absent` marker: each non-empty line names a project-relative
@@ -737,6 +741,25 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
         fi
       done
     done < "$fixture_dir/file-crlf"
+  fi
+
+  # Optional `file-crlf-both` marker: each line names a project file that must
+  # carry CRLF on BOTH profiles. `file-crlf` above is deliberately
+  # profile-sensitive (2.7.x normalizes lockfiles to LF); generated Windows
+  # stubs have no such profile split, so this marker keeps the byte-level
+  # assertion without inheriting that exception.
+  if [ -f "$fixture_dir/file-crlf-both" ]; then
+    while IFS= read -r rel; do
+      rel="$(printf '%s' "$rel" | tr -d '\r')"
+      [ -z "$rel" ] && continue
+      for side in ref cel; do
+        sandbox="$ref_sandbox"
+        [ "$side" = "cel" ] && sandbox="$cel_sandbox"
+        crlf_msg="$(ruby -e 'd=File.binread(ARGV[0]); abort "missing CRLF" unless d.include?("\r\n"); i=d.index(/(?<!\r)\n/n); abort "lone LF at byte #{i}" if i' "$sandbox/project/$rel" 2>&1)" || {
+          ok=0; detail+="  file-crlf-both differs ($rel, $side): $crlf_msg"$'\n'
+        }
+      done
+    done < "$fixture_dir/file-crlf-both"
   fi
 
   if [ "$ok" = 1 ]; then
