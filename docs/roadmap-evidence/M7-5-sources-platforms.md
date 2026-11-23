@@ -430,3 +430,40 @@ worktree `C:\temp\celerite-t195`（基线 `e45f671`）；`PATH` 前置 `C:\msys6
   - ENOSPC / EROFS 未构造（本机无小配额卷、无只读文件系统）。
   - 未做夹具 ⇒ 反假绿（用 `C:\temp\celerite-pre213` 旧二进制跑同一夹具须 FAIL）**不适用**；pre213 旧二进制本轮未构建。
   - 未改 `src/`，故未复跑 `spec/m7_install*.cr`，也未复跑全量 `crystal spec`。
+
+## 2026-11-23：磁盘错误两形态的错误映射与退出码对齐（task-214）
+
+### 五要素
+
+- **oracle**：worktree `C:\temp\celerite-t214`（基线 `2654f55`），我方二进制 = 该树内 `shards build` 产出的 `bin/celerite.exe`；反假绿树 `C:\temp\celerite-pre214`（同 commit，改动前构建）。环境：`PATH` 前置 `C:\msys64\usr\bin;C:\msys64\ucrt64\bin;C:\Ruby40-x64\bin`；`TMPDIR`/`TMP`/`TEMP`/`HOME`/`USERPROFILE`/`CRYSTAL_CACHE_DIR` 全部指向各自 worktree 内 `.tmp-scratch\{spectmp,home,cache}`（绝对路径 ≤67 字符）；差分侧 `$env:CELERITE_BIN="C:\temp\celerite-t214\bin\celerite.exe"`；参考 CLI = `C:\Ruby40-x64\lib\ruby\gems\4.0.0\gems\bundler-4.0.24\exe\bundle`（2.7.2 profile 用 `$env:BUNDLER_REF_VERSION="2.7.2"` 换参考版本，不是第二个 Ruby）。oracle 由装具本身取得（两侧沙箱同构、同隔离 env），逐字产物留在 `.tmp-scratch\oracle-214\harness\<夹具>\{ref,cel}.{out,err,code}`。与 task-213 转述的差异：**① 的机制被更正**——参考不是「先写锁后安装」，而是在构造 `Definition` 时**读**锁文件就失败，因此 stdout 为空、解析与安装根本没开始；task-213 记的「顺序差异」是误判。② 的 exit/文案与转述一致。
+- **参考锚点**（已安装 gem `C:\Ruby40-x64\lib\ruby\gems\4.0.0\gems\bundler-4.0.24\lib\bundler\`）：
+  - `definition.rb:103-105`：`if lockfile_exists?` → `@lockfile_contents = Bundler.read_file(lockfile)` → `LockfileParser.new`；`definition.rb:665-666` `lockfile_exists?` 用 `File.exist?(lockfile)`（目录也算存在）。
+  - `shared_helpers.rb:105-127 filesystem_access`：`rescue Errno::EISDIR` 不在白名单，落 `:126` 的 `else` → `GenericSystemCallError.new(e, "There was an error #{[:create, :write].include?(action) ? "creating" : "accessing"} \`#{path}\`.")`；`:read` 因此打印 `There was an error accessing`。
+  - `errors.rb:210-219 GenericSystemCallError`：`message` = 原句 + `"\nThe underlying system error is #{@underlying_error.class}: #{@underlying_error}"`；`status_code(32)`。
+  - `bundler.rb:105-112 create_bundle_path`：`mkdir_p(bundle_path) unless bundle_path.exist?` + `rescue Errno::EEXIST` → `raise PathError, "Could not install to path \`#{bundle_path}\` because a file already exists at that path. Either remove or rename the file so the directory can be created."`；`errors.rb:32 class PathError < BundlerError; status_code(13)`。bundle 路径带 `ruby/<abi>` 一级由 `installer.rb:63` 在 `run` 首步调用 `create_bundle_path` 时的 `@bundle_path`（`<path>/ruby/<abi>`）决定。
+  - 进程顺序：`installer.rb:62-96 #run` 是 `create_bundle_path`（`:63`）→ `ProcessLock.lock` → `install(options)`（`:83`）→ `lock`（`:93`），即两条错误都发生在安装动作之前。
+- **实现位置**：
+  - `src/celerite/errors.cr:477-503`：`GenericSystemCallError#initialize(message : String, @underlying_error : Exception, @underlying_label : String? = nil)`，`message` 第二行用 `@underlying_label || underlying_error.class.to_s`；新增 `self.for_eisdir(path)`，把底层错误渲染成 `Errno::EISDIR: Is a directory @ rb_sysopen - <path>`（Crystal 的 `Errno` 是枚举，无法用类名表达），路径 `gsub('\\', "/")`。
+  - `src/celerite/definition.cr:146-175`：`lockfile_text` 首行先判「存在但不是文件」→ `GenericSystemCallError.for_eisdir(@lockfile_path)`；新增 `ensure_lockfile_readable!`（同一判据）。
+  - `src/celerite/cli/commands_install.cr:224`：`definition = Definition.build` 之后、frozen 检查/插件/解析之前调 `definition.ensure_lockfile_readable!`，使失败发生在任何安装动作之前。
+  - `src/celerite/cli/commands_install.cr:48-67`：`ProcessLock.lock(bundle_path : String, display_path : String = bundle_path)` 捕获 `Dir.mkdir_p` 的 `File::Error`，**仅当** `File.exists?(bundle_path) && !File.directory?(bundle_path)` 时抛 `PathError`（显示路径 `.../ruby/<abi>`、正斜杠），其它目录创建失败原样重抛（仍走 `filesystem_errors` 的映射，不会误报 13）。
+  - `src/celerite/cli/commands_install.cr:299` 与 `src/celerite/cli/commands_surface.cr:220`：把 `install_root = InstallPaths.gem_root(...)` 提前算出来并作为 `display_path` 传入；`Dir.mkdir_p(install_root)` 位置不变。
+- **证据**：
+  - 夹具：`fixtures/differential/install-lockfile-path-is-directory/`（`command` 只有 `install`；`extra/Gemfile.lock/pin` 让 git 能提交一个名为 `Gemfile.lock` 的目录；Gemfile 用夹具 index 的 `racc`）与 `fixtures/differential/install-bundle-path-is-file/`（`env` 写 `BUNDLE_PATH=vendor/bundle`，`extra/vendor/bundle` 是普通文件）。不把 `mkdir` 写进 `command`：装具的 `command` 逐行不经 shell 直接喂给引擎，`mkdir` 无法表达；改用 `extra/` 预置目录/文件，理由已在夹具与本节写明。
+  - 双 profile：`bash script/differential install-lockfile-path-is-directory install-bundle-path-is-file` → `PASS install-lockfile-path-is-directory (exit=32)`、`PASS install-bundle-path-is-file (exit=13)`、`differential (4.0.24): 2 passed, 0 failed, 0 skipped`；`BUNDLER_REF_VERSION=2.7.2` 同样 `2 passed, 0 failed, 0 skipped`（两夹具在 2.7.2 与 4.0.24 输出一致，不需要 `deferred-2.7.2`）。
+  - 反假绿：`CELERITE_BIN=C:\temp\celerite-pre214\bin\celerite.exe`（`2654f55` 改动前构建）跑同一批 → `0 passed, 2 failed`；① `exit code: reference=32 celerite=23` + stdout 多出整轮安装 + stderr 三行 PermissionError；② `exit code: reference=13 celerite=1` + `celerite internal error: Unable to create directory: ...`。逐字 diff 见 `../compat-evidence/2026-11-23.md` 的 task-214 节。
+  - 回归：`bash script/differential install-check install-local-vendor-cache install-local-no-cache lock-missing-spec-row install-keeps-lock-with-bundler-edge install-bundle-path-is-file install-lockfile-path-is-directory` → 7 条全 `PASS`（exit 0/0/7/0/0/13/32），`differential (4.0.24): 7 passed, 0 failed, 0 skipped (documented deferrals)`。
+  - spec：`crystal spec spec/m7_filesystem_errors_spec.cr spec/m7_filesystem_error_mapping_spec.cr spec/m7_install_failure_spec.cr` → `19 examples, 0 failures, 0 errors, 0 pending`（exit 0）；因动了安装主流程，另跑全部 `spec/m7_install*.cr` + `spec/m7_lock*.cr`（22 个文件）→ `112 examples, 0 failures, 0 errors, 0 pending`（exit 0）。
+  - 门禁：`crystal tool format --check src spec` exit 0；`git diff --check` exit 0。
+  - 断言索引：`& 'C:\Ruby40-x64\bin\ruby.exe' script/compat-claims-index` → `compat-claims: 258 claims, index written (12 files)`（exit 0）；`--check` → `compat-claims: 258 claims, index up to date`（exit 0）。
+- **已声明差异**：
+  - ENOSPC / EROFS 仍无 oracle：本机无小配额卷、无只读文件系统（与 task-211/213 同）。
+  - 只读锁文件（`attrib +R` / `chmod 444`）仍无夹具：装具 `command` 不经 shell，且 git 不记录只读位。
+  - `Errno::EISDIR` 在 POSIX 宿主上的参考文案未取证：本机只有 Windows，参考在这里落 `EISDIR` 只是因为目标路径是目录；POSIX 上同一形态也应落 `EISDIR`，但未实测。
+
+### 未验证
+
+- `update` 侧也改了 `ProcessLock.lock` 的显示路径（`commands_surface.cr:220`），但只有编译 + spec 覆盖，**没有** `bundle update` 的差分级 oracle（本条的两个夹具都只跑 `install`）。
+- 反假绿只对 `2654f55` 一个旧二进制取证；更早的二进制未跑（无所谓，该 commit 就是本条基线）。
+- 首次手工 oracle 曾用 `env -i` 复刻（`C:\temp\celerite-t214\.tmp-scratch\oracle-214\run-oracle.sh`），cel 侧出现 Ruby rubygems 常量警告与 `bin stub generation failed for racc-1.8.1` 的另一失败，**不当作证据**；本条全部结论取装具路径，手稿与产物仅留档。
+- 未跑全量 `crystal spec`（只跑与改动相关的一个 spec 家族），也未跑全量差分（只跑 7 条回归 + 2 条新夹具）。
