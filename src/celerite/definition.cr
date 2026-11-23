@@ -144,10 +144,28 @@ module Celerite
     end
 
     def lockfile_text : String
+      if File.exists?(@lockfile_path) && !File.file?(@lockfile_path)
+        raise GenericSystemCallError.for_eisdir(@lockfile_path)
+      end
       unless File.file?(@lockfile_path)
         raise LockfileError.new("Could not find #{@lockfile_path} for resolution")
       end
       File.read(@lockfile_path)
+    end
+
+    # The reference reads the lockfile inside the Definition constructor
+    # (`definition.rb:103-105`): `lockfile_exists?` is only `File.exist?`
+    # (`definition.rb:665-666`), so a *directory* at the lockfile path is read
+    # through `SharedHelpers.filesystem_access(path, :read)`
+    # (`shared_helpers.rb:105-127`) and raises `Errno::EISDIR`, wrapped as
+    # GenericSystemCallError "There was an error accessing `<path>`."
+    # (`errors.rb:210-219`, status 32) before anything is installed. Celerite
+    # reads the lockfile lazily, so the install command calls this guard right
+    # after building the definition to fail at the same point.
+    def ensure_lockfile_readable! : Nil
+      return unless File.exists?(@lockfile_path)
+      return if File.file?(@lockfile_path)
+      raise GenericSystemCallError.for_eisdir(@lockfile_path)
     end
 
     def lockfile_exists? : Bool

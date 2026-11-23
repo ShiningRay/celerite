@@ -477,12 +477,27 @@ module Celerite
   class GenericSystemCallError < Error
     getter underlying_error : Exception
 
-    def initialize(message : String, @underlying_error : Exception)
+    # `underlying_label` overrides the class name printed on the second line.
+    # Bundler names errors after Ruby's `Errno::*` classes; Crystal's `Errno` is
+    # an enum, so a faithful `Errno::EISDIR:` prefix has to be passed in.
+    def initialize(message : String, @underlying_error : Exception, @underlying_label : String? = nil)
       super(message)
     end
 
+    # `Errno::EISDIR` raised by reading a path that is a directory. The reference
+    # reaches it through `SharedHelpers#filesystem_access(path, :read)`
+    # (shared_helpers.rb:105-127), whose generic branch prefixes
+    # "There was an error accessing `<path>`." and keeps the OS error verbatim.
+    def self.for_eisdir(path : String) : GenericSystemCallError
+      display = path.gsub('\\', "/")
+      new("There was an error accessing `#{display}`.",
+        Exception.new("Is a directory @ rb_sysopen - #{display}"),
+        "Errno::EISDIR")
+    end
+
     def message : String
-      "#{super}\nThe underlying system error is #{underlying_error.class}: #{underlying_error}"
+      label = @underlying_label || underlying_error.class.to_s
+      "#{super}\nThe underlying system error is #{label}: #{underlying_error}"
     end
 
     def status_code : Int32

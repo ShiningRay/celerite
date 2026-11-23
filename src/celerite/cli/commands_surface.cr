@@ -214,7 +214,12 @@ module Celerite
         if emit_bundler_fetch
           stdout.puts "Fetching source index from #{resolution.primary_remote}"
         end
-        lock = ProcessLock.lock(InstallPaths.install_path(config))
+        # The reference's PathError names the scoped install directory
+        # (`<bundle_path>/ruby/<abi>`), because `create_bundle_path` creates that
+        # one (bundler.rb:105-112).
+        lock = ProcessLock.lock(InstallPaths.install_path(config),
+          InstallPaths.gem_root(config, resolution.bridge.ruby_environment.default_gem_dir,
+            InstallPaths.ruby_abi(resolution.bridge)))
         unless cooldown_flag_valid?(rest, stderr, resolution.bridge_bundler_version)
           return 15
         end

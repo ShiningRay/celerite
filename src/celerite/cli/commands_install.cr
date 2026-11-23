@@ -45,8 +45,22 @@ module Celerite
       getter file : File
       getter path : String
 
-      def self.lock(bundle_path : String) : ProcessLock
-        Dir.mkdir_p(bundle_path)
+      # `display_path` is the scoped install directory (`<bundle_path>/ruby/<abi>`)
+      # named by the reference PathError; it defaults to the lock directory.
+      def self.lock(bundle_path : String, display_path : String = bundle_path) : ProcessLock
+        begin
+          Dir.mkdir_p(bundle_path)
+        rescue ex : File::Error
+          # `Bundler.create_bundle_path` (bundler.rb:105-112) rescues
+          # `Errno::EEXIST` and raises PathError (errors.rb:32, status 13) when a
+          # file occupies the bundle path. Only that shape maps to PathError: any
+          # other mkdir failure keeps its own filesystem-error mapping.
+          raise ex unless File.exists?(bundle_path) && !File.directory?(bundle_path)
+          raise PathError.new(
+            "Could not install to path `#{display_path.gsub('\\', "/")}` because a file " \
+            "already exists at that path. Either remove or rename the file so the directory " \
+            "can be created.")
+        end
         path = File.join(bundle_path, "bundler.lock")
         io = File.open(path, "a+")
         io.flock_exclusive
@@ -203,6 +217,11 @@ module Celerite
       # both the switch and the persistence.
       remember_path_option(rest)
       definition = Definition.build
+      # `bundle install` reads the lockfile while building the definition, so a
+      # directory (or other non-file) at `Gemfile.lock` fails with
+      # `Errno::EISDIR` and exit 32 before any resolution or installation
+      # (definition.rb:103-105; shared_helpers.rb:105-127).
+      definition.ensure_lockfile_readable!
       config = definition.config
       # `install --standalone` without an explicit path (and without `--local`)
       # installs into `./bundle` for this run only 闁?the reference uses
@@ -273,11 +292,12 @@ module Celerite
 
         resolution = Resolution.new(definition, false, bridge)
         resolution.progress = stdout
-        lock = ProcessLock.lock(install_path(config))
         # `Bundler.create_bundle_path` runs before the frozen validation
         # (bundler/installer.rb:63-71), so a deployment install that then fails
-        # still leaves `vendor/bundle/ruby/<abi>` behind.
+        # still leaves `vendor/bundle/ruby/<abi>` behind. The scoped path is also
+        # what `PathError` names when a file occupies the bundle path.
         install_root = InstallPaths.gem_root(config, bridge.ruby_environment.default_gem_dir, InstallPaths.ruby_abi(bridge))
+        lock = ProcessLock.lock(install_path(config), install_root)
         Dir.mkdir_p(install_root)
         Installer.ensure_layout(install_root)
         # `definition.rb:153` (`converge_paths`) only guards the 4.x line; a
