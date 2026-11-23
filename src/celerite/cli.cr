@@ -22,6 +22,7 @@ module Celerite
     # no Celerite-specific usage screen left to print.
 
     def self.run(args : Array(String), stdout : IO, stderr : IO) : Int32
+      Bridge::BridgeStats.begin_run
       # Command families opt out of the `BUNDLE_GEMFILE` existence check
       # (`Commands::RAW_GEMFILE_READ_COMMANDS`); every run starts from the
       # reference default so one command cannot leak the setting into the next.
@@ -41,6 +42,8 @@ module Celerite
       # Unhandled internals: report without pretending compatibility.
       stderr.puts "celerite internal error: #{ex.message}"
       1
+    ensure
+      Bridge::BridgeStats.finish(stderr)
     end
 
     private def self.friendly_error(ex : Error, stderr : IO) : Nil

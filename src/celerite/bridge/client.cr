@@ -7,6 +7,55 @@ module Celerite
     # Protocol version shared with assets/bridge/server.rb (architecture §2.2).
     PROTOCOL = 1
 
+    # Counters behind `CELERITE_BRIDGE_STATS` (M8 baseline: one process, one
+    # line). The variable is off when unset, empty, or exactly "0"; any other
+    # value turns it on. Counting is scoped to one `CLI.run` invocation so
+    # in-process specs observe their own numbers, and the line is written by
+    # the CLI exit point — see docs/compat-claims/M8-batch-bridge.md.
+    module BridgeStats
+      @@procs = 0
+      @@rpc = 0
+      @@req_bytes = 0
+      @@resp_bytes = 0
+
+      def self.enabled? : Bool
+        value = ENV["CELERITE_BRIDGE_STATS"]?
+        !value.nil? && !value.empty? && value != "0"
+      end
+
+      def self.begin_run : Nil
+        return unless enabled?
+        @@procs = 0
+        @@rpc = 0
+        @@req_bytes = 0
+        @@resp_bytes = 0
+      end
+
+      # A bridge client spawns exactly one Ruby subprocess (`Process.new`).
+      def self.record_process : Nil
+        @@procs += 1 if enabled?
+      end
+
+      # `bytes` is the serialized request line including its trailing newline.
+      def self.record_request(bytes : Int32) : Nil
+        return unless enabled?
+        @@rpc += 1
+        @@req_bytes += bytes
+      end
+
+      # `bytes` is the raw response line returned by `IO#gets` (terminator
+      # included); responses that never arrive are not counted.
+      def self.record_response(bytes : Int32) : Nil
+        @@resp_bytes += bytes if enabled?
+      end
+
+      def self.finish(io : IO) : Nil
+        return unless enabled?
+        io.puts "bridge: procs=#{@@procs} rpc=#{@@rpc} req_bytes=#{@@req_bytes} resp_bytes=#{@@resp_bytes}"
+        io.flush
+      end
+    end
+
     class BridgeError < Error
       getter error_class : String
       # Optional `status_code` carried by the Ruby side (Bundler errors know
@@ -247,6 +296,7 @@ module Celerite
         @stdin = @process.input
         @stdout = @process.output
         @ruby_version = "unknown"
+        BridgeStats.record_process
       end
 
       # The compatibility profile's reference Bundler version (docs/compat-matrix).
@@ -507,6 +557,7 @@ module Celerite
           end
           @stdin.puts(line)
           @stdin.flush
+          BridgeStats.record_request(line.bytesize + 1)
 
           finish_response(id, read_response(limit))
         end
@@ -520,6 +571,7 @@ module Celerite
           if line.nil?
             done.send(crash_response("bridge server closed the connection", "BridgeCrashed"))
           else
+            BridgeStats.record_response(line.bytesize)
             begin
               done.send(JSON.parse(line))
             rescue ex
