@@ -1254,7 +1254,12 @@ module Celerite
         source_path = File.expand_path(original, gemfile_root)
         next unless Dir.exists?(source_path)
         next if source_path.gsub('\\', "/").starts_with?(root_prefix)
-        dir_name = source.specs.first?.try(&.name) || File.basename(source_path)
+        # `app_cache_dirname` is `name` = `File.basename(expanded_path.to_s)`
+        # (path.rb:72-74, 110-112): the directory is named after the path
+        # source itself, never after one of the gemspecs it exposes. A
+        # multi-gemspec source keeps its own name, so both gems land under the
+        # same `<cache>/<basename>/` tree.
+        dir_name = File.basename(source_path)
         destination = File.join(cache_target, dir_name)
         # `rm_rf` then `cp_r("<src>/.", dest)`: the reference replaces the
         # whole directory rather than merging into a stale copy.
@@ -1423,7 +1428,7 @@ module Celerite
         # an in-project path source is never copied. `cache_all` defaults to
         # true in 4.x (settings.rb:88 `"BUNDLE_CACHE_ALL" => true`), so only an
         # explicit `false` disables it. The destination directory is named
-        # after the source's gem name (`app_cache_dirname`, path.rb:110-112).
+        # after the path source's basename (`app_cache_dirname`, path.rb:110-112).
         if definition.config["cache_all"] != false && (definition.config["cache_all"] == true || !profile_2_x?)
           root_prefix = gemfile_root.gsub('\\', "/").chomp("/") + "/"
           definition.lockfile!.sources.each do |source|
@@ -1433,7 +1438,10 @@ module Celerite
             source_path = File.expand_path(original, gemfile_root)
             next unless Dir.exists?(source_path)
             next if source_path.gsub('\\', "/").starts_with?(root_prefix)
-            dir_name = source.specs.first?.try(&.name) || File.basename(source_path)
+            # `app_cache_dirname` = `name` = `File.basename(expanded_path.to_s)`
+            # (path.rb:72-74, 110-112), so a multi-gemspec source keeps its own
+            # directory name instead of one gem's name.
+            dir_name = File.basename(source_path)
             destination = File.join(cache_target, dir_name)
             # `rm_rf` then `cp_r("<src>/.", dest)` 闁?the reference replaces the
             # whole directory rather than merging into a stale copy.
