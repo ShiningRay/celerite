@@ -119,14 +119,20 @@ describe "M7 gemfile env missing (task-165)" do
     end
   end
 
-  it "keeps the --gemfile switch wording (two lines) unchanged" do
+  # Corrected by task-171: this example used to pin the *two-line* wording
+  # (`"#{path}\nnot found\n"`) that predated task-168's `1fc1b9d`, which removed
+  # the literal `\n` from the message. The message body is single-line again;
+  # wrapping is the renderer's job (`ui/shell.rb:167-171`), so the width here is
+  # wide enough to keep it on one line.
+  it "keeps the --gemfile switch wording (single line) unchanged" do
     with_project({} of String => String) do
       with_gemfile_env({"BUNDLE_GEMFILE" => nil}, wide_columns(missing_gemfile_env_message)) do
         code, out, err = run_cli(["lock", "--gemfile=Missing.gemfile"])
-        expected = "#{File.expand_path("Missing.gemfile", Dir.current).gsub('\\', "/")}\nnot found\n"
+        expected = "#{File.expand_path("Missing.gemfile", Dir.current).gsub('\\', "/")} not found"
         code.should eq(10)
         out.should eq("")
-        err.should eq(expected)
+        err.should eq("#{expected}\n")
+        err.lines.size.should eq(1)
       end
     end
   end

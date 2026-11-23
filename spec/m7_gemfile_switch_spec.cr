@@ -15,24 +15,55 @@ private def gemfile_switch_project : Hash(String, String)
   }
 end
 
+# The message body stays a single line, but the *rendering* is word-wrapped at
+# the terminal width (`ui/shell.rb:167-171`, migrated on the Celerite side in
+# task-171). `with_project` puts the fixture under `File.tempname`, whose
+# absolute path can outgrow the default 80 columns on its own, so pin the width
+# from the message under test rather than hard-coding one (the lesson from
+# task-137 `4ce6d51` and task-165).
+private def with_columns(columns : String, &) : Nil
+  previous = ENV["THOR_COLUMNS"]?
+  begin
+    ENV["THOR_COLUMNS"] = columns
+    yield
+  ensure
+    if previous
+      ENV["THOR_COLUMNS"] = previous
+    else
+      ENV.delete("THOR_COLUMNS")
+    end
+  end
+end
+
+# A width wide enough to keep `message` on one line, derived from the message.
+private def wide_columns(message : String) : String
+  (message.size + 20).to_s
+end
+
 describe "--gemfile switch" do
   it "reports a missing Gemfile for check" do
     with_project(gemfile_switch_project) do |dir|
-      code, out, err = run_cli(["check", "--gemfile", "missing/Gemfile"])
-      code.should eq(10)
-      out.should eq("")
-      err.should eq("#{dir.gsub('\\', "/")}/missing/Gemfile not found\n")
+      expected = "#{dir.gsub('\\', "/")}/missing/Gemfile not found"
+      with_columns(wide_columns(expected)) do
+        code, out, err = run_cli(["check", "--gemfile", "missing/Gemfile"])
+        code.should eq(10)
+        out.should eq("")
+        err.should eq("#{expected}\n")
+        err.lines.size.should eq(1)
+      end
     end
   end
 
   it "reports a missing Gemfile for lock, update and cache" do
     with_project(gemfile_switch_project) do |dir|
-      expected = "#{dir.gsub('\\', "/")}/missing/Gemfile not found\n"
-      {"lock", "update", "cache"}.each do |command|
-        code, out, err = run_cli([command, "--gemfile", "missing/Gemfile"])
-        code.should eq(10)
-        out.should eq("")
-        err.should eq(expected)
+      expected = "#{dir.gsub('\\', "/")}/missing/Gemfile not found"
+      with_columns(wide_columns(expected)) do
+        {"lock", "update", "cache"}.each do |command|
+          code, out, err = run_cli([command, "--gemfile", "missing/Gemfile"])
+          code.should eq(10)
+          out.should eq(""), command
+          err.should eq("#{expected}\n"), command
+        end
       end
     end
   end
