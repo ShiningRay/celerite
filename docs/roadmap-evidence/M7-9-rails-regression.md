@@ -459,3 +459,11 @@ specs_with_different_dep_lines=16  order_only=16  content_different=0
 ### 判定
 
 M7-9 的闭合判据是「未解释差异为零」而非「逐字节相等」。本轮复核：安装树集合级 4480/4480、`only_in_* = 0`；27 个内容差异全部归因为宿主工具链（14 个 `.so`）与日志文本（13 个构建日志）；`plugins`、`bin/*.bat` 已对齐；`binstubs rails` 三行文本两侧相同；锁未被改写。剩 3 类输出层差异（换行、顺序、进度点）均已归因。**建议 `docs/roadmap.md:149` 勾 `[x]`**，并在 claims 记一条终验断言（C-M7-9-009）承载上述差异；理由：判据要求「解释为零」且有意差异有记录，本轮两者都满足。仍需（非阻塞）的判据：把 rails 规模 install 的 stdout 顺序/换行纳入差分规则、补「同 gcc 不同 `-j`」对照、重复 install 幂等、Linux/其它 ABI。若首辅把「stdout 逐行同序」也视为产品契约，则应保持 `[ ]`，唯一拦路项是第 4 类顺序差异（需先定契约再改实现或加归一化规则）。
+
+## 2026-11-23：M7-9 行勾选裁定（首辅，task-204 之后）
+
+判据回顾：该行要求「记录所有有意兼容差异及理由；未解释差异为零」。task-194 首验留下 5 类未解释差异；task-196 关掉 ①②（`plugins/rdoc_plugin.rb`、`bin/*.bat` 的 CRLF）、task-202 关掉 ⑤（`binstubs rails` 候选清单）、task-199 定位 ③（扩展构建前 PATH 被参考侧 `Gem.pre_install` 钩子改写，我方 bridge 直调 `Gem::Ext::Builder` 不触发该钩子）；task-204 终验两侧各一次 `install` + `binstubs rails`，安装树 **4480 / 4480 文件、`only_in_cel=0`、`only_in_ref=0`、`content_diff=27`**，27 项全部归因：14 个 `.so`（宿主 gcc 16.1.0 vs 16.2.0，源于上述钩子差异）、13 个构建日志（`-j` 参数与 PATH 文本），另有 stdout 顺序/换行/进度点差异。
+
+裁定：**未解释差异 = 0**（27 项均有机制归因并登记为已声明差异，见 `C-M7-9-009`），故 **M7-9 勾 `[x]`**，该 profile 的兼容声明恢复。
+
+未验证：rails 规模探针不入库（不可从仓库复现端到端）；单次运行，未验重复 `install` 幂等；未做同 gcc 不同 `-j` 的隔离对照；未覆盖 Linux 与其它 Ruby ABI。

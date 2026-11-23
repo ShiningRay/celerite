@@ -712,3 +712,11 @@ RuntimeError:
 
 - 上节「未验证」里那条 checksums-refresh-cache-deleted 三处工作根全红，经首辅在本仓官方配方下复核**不复现**：worktree ` `C:\temp\celerite-acc202` ` @ `302cbae`、TMPDIR=/c/temp、CELERITE_BIN=<该 worktree>\bin\celerite.exe、PATH 前置 msys/ucrt64/Ruby40 后跑 ash script/differential checksums-refresh-cache-deleted → `PASS checksums-refresh-cache-deleted (exit=0)` / `1 passed, 0 failed` / EXIT 0。审计者那次把 `TMP`/`TMPDIR`/`TEMP`/`HOME` 都指向 `C:\temp`（而非工作区内目录），与本仓既定配方不符，其 undler.lock 被拒属该配置下的宿主权限现象，**不是产品回归**，也不构成对 4.0.24 全量 468/0 的否定。
 - 因此该条从「未验证（疑回归）」下调为「已排除（审计环境配置问题）」；其余未验证项（45 与 50 的稳态、artifice 逐条 oracle、product:candidates 独立复核）保持不变。
+
+## 2026-11-23：M7-8 行勾选裁定（首辅，task-209 之后）
+
+判据回顾：该行三个分句在 task-205 复审时 ①真实驱动、②退出码如实均为满足，③「保留基线再逐项关闭」因四处口径并存（roadmap 47 / README 50 / boundary 53 / Current metrics 45）不成立。task-209 按首辅裁定统一为 **64 examples, 45 failures**（`env:out-of-process-artifice` 44 / `fixture:fetch-failed` 1 / `env:low-il-shm` 0 / `product:candidates` 0，2026-11-23 task-193 复采），历史值 53 → 47 → 45 三级保留并标注取代关系，claims `C-M7-8-017` 转 `已取代`、新增 `C-M7-8-021`。
+
+裁定：③ 在统一后的口径下成立——`product:candidates` 归零即「其余产品对象逐项关闭」已达成，剩余 45 条均为环境桶（44 条跨进程桩注入结构性不可判定，见 `C-M7-8-020`；1 条夹具 fetch 失败，见 `C-M7-8-005`），不由产品修复关闭。故 **M7-8 勾 `[x]`**。
+
+未验证：task-209 未重跑 `script/upstream-specs`（45/44/1/0 沿用 task-193 采集）；`C-M7-8-005`/`013`/`014` 等条进入 `script/upstream-specs` 的行号仍有漂移，留待单独订正。
