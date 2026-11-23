@@ -359,6 +359,7 @@
 | C-M8-1-002 | 桥复用：一次命令单进程、idle 回收可配置、同一求值不重复 | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_bridge_reuse_spec.cr'（check/list 的 'procs=1'、'CE…` |
 | C-M8-1-003 | 桥协议版本区间与 `ping.features` 能力声明 | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_bridge_proto_spec.cr'——直驱 'server.rb' 的 JSON 行断言…` |
 | C-M8-1-004 | `evaluate_batch` 合并求值面：单请求返回求值结果并按需追加 `gemspecs` | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_batch_eval_spec.cr'——直驱 'server.rb' 的 JSON 行，同一离…` |
+| C-M8-1-005 | `bundle list` 无组选择时不启动 Ruby 桥（plain 环境 procs=0） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_list_no_group_zero_spawn_spec.cr'——plain 环境（隔离 '…` |
 | C-cross-001 | `bundle exec` 的子进程在 Unix 上随父进程收到 SIGINT/SIGTERM 而终止，Windows 上共享控制台 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'crystal spec spec/m7_exec_spec.cr'` |
 | C-cross-002 | 可直接加载的 Ruby 脚本走 `Kernel.load` 运行时适配器，`disable_exec_load` 可绕过 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential exec-loader exec-loader-disabled exec-thor-v…` |
 | C-cross-003 | install / update / pristine 在 `<bundle_path>/bundler` 上取独占锁，并发运行串行化 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'crystal spec spec/process_lock_spec.cr spec/process_race_spec.cr'` |
@@ -374,5 +375,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 262 条断言（已实现 215 · 已声明差异 35 · 未实现 4 · 未验证 3 · 已取代 5）。
+合计 263 条断言（已实现 216 · 已声明差异 35 · 未实现 4 · 未验证 3 · 已取代 5）。
 <!-- END GENERATED INDEX -->

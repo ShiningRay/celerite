@@ -41,3 +41,13 @@
 - 边界：只服务 `include:["gemspecs"]`；`include:["plugins"]` 留待 S3——插件声明走 `Bundler::Plugin::DSL`，在同一请求内并进来会让同一 Gemfile 执行第二次 DSL，重复 `GemfileWarnings` 记账与插件 hook 的写盘副作用，`op_plugin_gemfile_eval` 保持独立；未识别的 `include` 值被忽略而非报错（探测型调用方应降级到旧 op，不得整体失败）；`include` 缺省时结果对象与旧 op 逐字节相同，故不追加 `features`/`runtime` 等段（能力声明由 `ping.features` 承担，这是对 `docs/roadmap-evidence/M8-batch-protocol.md` §5.1 草案的刻意偏离）；带段的请求不经 `EvaluationCache`（缓存存的是求值结果而非段），无段请求与旧 `evaluate_gemfile` 同等吃缓存；本切片**不切换任何命令调用点**（属 S4），`check`/`install`/`show` 的计数与输出不变
 - 生效：M8 期间
 - 取代：无
+
+## C-M8-1-005 `bundle list` 无组选择时不启动 Ruby 桥（plain 环境 procs=0）
+
+- 状态：已实现
+- 参考行为（4.0.24）：`cli/list.rb:19-29` 先 `Bundler.load.specs` 再按 `definition.rb:1251-1254` 的 `values = groups - without - optional + with`（`only` 非空时再取交集）过滤；`with`/`without`/`only` 与两个 group flag 全空时 `values` 等于全部组，`spec_set` 过滤是恒等变换。参考实现本身没有「是否启动 Ruby」这一可观测面，故本项不改任何参考可见输出，只改我方进程结构。
+- 我方行为：`src/celerite/cli/commands.cr:1844` 计算 `groups_requested = !only_groups.empty? || !without_groups.empty? || group_settings_configured?(config)`；`:1845` 仅在为真时求值 `available_groups`（否则占位 `["default"]`，不参与输出），`:1853` 仅在为真时求值 `requested_groups_for`，`:1881-1889` 为假时 `filtered_specs = locked_specs`、为真时保留原 `begin/rescue` 静默降级；新增 `:2798-2804` 的 `group_settings_configured?`（按 `Config#[]` 转换后的值判空：`with`/`without`/`only` 未设时是 `[] of String`，其 `to_s` 为 `"[]"`，不能直接判字符串空），`:2809` 的 `filter_locked_specs_by_groups` 改为复用它，避免两处判定漂移。
+- 判据：`crystal spec spec/m8_list_no_group_zero_spawn_spec.cr`——plain 环境（隔离 `HOME`/`USERPROFILE`/`TMP*`，不设 `CELERITE_BRIDGE_SERVER`/`CELERITE_REFERENCE_BUNDLER_LIB`）下 `CELERITE_BRIDGE_STATS=1` 时 `list`、`list --paths`、`list --name-only`、`list --format=json` 的 `bridge:` 行均为 `procs=0 rpc=0 req_bytes=0 resp_bytes=0`，`list --only-group default` 为 `procs=1`，未知组 `--only-group nope` 仍为 exit 15 与 `` `nope` group could not be found. ``；`Gemfile.lock` 字节前后不变。回归：`crystal spec spec/m7_list_format_spec.cr spec/m7_list_groups_plain_env_spec.cr spec/m7_only_group_spec.cr spec/m7_show_listing_spec.cr spec/m8_bridge_stats_spec.cr`。
+- 边界：验收口径是 **plain 环境**；探针环境（设 `CELERITE_BRIDGE_SERVER`）下 `lock_ruby_unlock_kind`（`commands.cr:1396` 的 `bridge_available?` gate）与 `installed_gem_dir` 的 default-gem 分支（`commands_surface.cr:1749`）会照旧 spawn，`list` 仍为 `procs=1`。`--only-group`/`--without-group` 或 `BUNDLE_WITH`/`BUNDLE_WITHOUT`/`BUNDLE_ONLY`/`.bundle/config` 中任一生效即走旧路径，行为与改动前逐字一致；`available_groups`、未知组校验（`:1846-1851`）、`filter_locked_specs_by_groups` 的 `rescue` 降级、输出分支（`:1895-1944`）均未改动；`list` 本来就只读，不写 `Gemfile.lock`。
+- 生效：M8 期间
+- 取代：无
