@@ -18,6 +18,22 @@ module Celerite
     # definition, so `CLI.run` points this sink at the stderr it was given.
     class_property default_warning_sink : IO = STDERR
 
+    # `BUNDLE_GEMFILE` naming a file that does not exist is only reported when a
+    # command builds the definition, exactly like the reference
+    # (`definition.rb:38`: `raise GemfileNotFound, "#{gemfile} not found"
+    # unless gemfile.file?`; `find_gemfile` itself does not check, see
+    # `shared_helpers.rb:263-267`). Commands whose reference reads the Gemfile
+    # through `Bundler.read_file`/`Plugin.gemfile_install` *before* that point
+    # keep the raw `Errno::ENOENT` report instead
+    # (`Commands::RAW_GEMFILE_READ_COMMANDS`); `CLI.run` resets this per run.
+    class_property validate_gemfile_env : Bool = true
+
+    # Pinned to `definition.rb:38`: the *expanded* path, a space, `not found`.
+    def self.validate_gemfile_env!(path : String) : Nil
+      return if File.file?(path)
+      raise GemfileNotFound.new("#{File.expand_path(path).gsub('\\', "/")} not found")
+    end
+
     def self.build(args : Args = Args.new) : Definition
       new(args)
     end
@@ -32,6 +48,7 @@ module Celerite
     def initialize(args : Args = Args.new)
       @config = Config.new(project_root)
       @gemfile_path = Definition.find_gemfile
+      Definition.validate_gemfile_env!(@gemfile_path) if Definition.validate_gemfile_env
       @lockfile_path = Definition.resolve_lockfile(@gemfile_path, args.lockfile_override)
       @lockfile = nil
     end

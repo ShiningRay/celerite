@@ -250,9 +250,19 @@ module Celerite
   end
 
   # Raised when a Gemfile cannot be located (mirrors Bundler::GemfileNotFound).
+  #
+  # friendly_errors.rb:35 renders every `BundlerError` through
+  # `Bundler.ui.error message, wrap: true`, and ui/shell.rb:167-169 word-wraps at
+  # the terminal width (80 when stdout is not a terminal). A long expanded path
+  # therefore breaks at the space before `not found`, so the width has to be
+  # part of the contract, not an afterthought.
   class GemfileNotFound < Error
     def status_code : Int32
       10
+    end
+
+    def wrap? : Bool
+      true
     end
   end
 

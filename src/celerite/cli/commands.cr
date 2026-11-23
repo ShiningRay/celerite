@@ -115,6 +115,15 @@ module Celerite
         end
       end
       command = expand_deprecated_alias(command, stderr)
+
+      # `BUNDLE_GEMFILE` pointing at a file that does not exist is reported as
+      # `GemfileNotFound` (`definition.rb:38`) only when the command gets as far
+      # as `Bundler.definition`. The families below read the Gemfile *earlier*
+      # through `Bundler.read_file`/`Plugin.gemfile_install` (reference
+      # `bundler.rb:499-503` on the install/update/issue side) or never read it
+      # at all (clean's `require_path_or_force` guard, exit 15), so their
+      # measured behaviour is kept as-is and only recorded as a difference.
+      Definition.validate_gemfile_env = !RAW_GEMFILE_READ_COMMANDS.includes?(command)
       print_command_echo(command, rest, verbose_requested || env_verbose, verbose_requested, cli_retry, stdout)
 
       # `--quiet` is honoured by install/update/add/cache (and `doctor`, whose
@@ -412,6 +421,17 @@ module Celerite
     # (bundler/cli.rb:281 install, :328 update, :418 add, :474 cache);
     # every other command reports `Unknown switches "--quiet"`.
     QUIET_COMMANDS = ["install", "update", "add", "cache", "package", "pack"]
+
+    # Commands whose reference never reaches `Bundler.definition`'s Gemfile
+    # existence check (definition.rb:38) when `BUNDLE_GEMFILE` names a missing
+    # file: they read the Gemfile first through `Bundler.read_file`
+    # (bundler.rb:499-503 -> shared_helpers.rb:106, raw `Errno::ENOENT`) or
+    # `Plugin.gemfile_install` (plugin.rb:105-110), which happens before the
+    # definition is built. `clean` is here too: its `require_path_or_force`
+    # guard (cli/clean.rb:11-24) raises before the Gemfile is read at all.
+    # Measured on 4.0.24 and 2.7.2 (docs/compat-evidence/2026-11-23.md):
+    # env/issue/install/cache/package/pack/update exit 1, clean stays 15.
+    RAW_GEMFILE_READ_COMMANDS = ["install", "update", "cache", "package", "pack", "env", "issue", "clean"]
 
     # Commands `cli_help` lists first, in this exact order (cli.rb:104).
     CLI_HELP_PRIMARY = ["install", "update", "cache", "exec", "config", "help"]

@@ -22,6 +22,10 @@ module Celerite
     # no Celerite-specific usage screen left to print.
 
     def self.run(args : Array(String), stdout : IO, stderr : IO) : Int32
+      # Command families opt out of the `BUNDLE_GEMFILE` existence check
+      # (`Commands::RAW_GEMFILE_READ_COMMANDS`); every run starts from the
+      # reference default so one command cannot leak the setting into the next.
+      Definition.validate_gemfile_env = true
       previous_sink = Definition.default_warning_sink
       Definition.default_warning_sink = stderr
       begin
