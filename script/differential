@@ -436,11 +436,17 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
       http_index_dir="$repo_root/fixtures/gem-index"
     fi
     # Optional status map: private-source fixtures serve 401/403 for selected
-    # path prefixes. The server takes it as an optional third argument; without
-    # the marker the command line is byte-identical to before.
+    # path prefixes. The server takes it as an optional third argument (an empty
+    # string when the fixture has no map, which the server treats as absent).
     http_status_arg=""
     if [ -f "$fixture_dir/http-status" ]; then
       http_status_arg="$fixture_dir/http-status"
+    fi
+    # Optional auth map: requires `Authorization: Basic` on matching prefixes,
+    # answering 401 + `WWW-Authenticate` otherwise.
+    http_auth_arg=""
+    if [ -f "$fixture_dir/http-auth" ]; then
+      http_auth_arg="$fixture_dir/http-auth"
     fi
     # Refuse to reuse a foreign listener: a stale server from an earlier run
     # would silently serve the wrong index and mask harness regressions.
@@ -451,7 +457,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
       skipped=$((skipped + 1))
       return 0
     fi
-    node "$repo_root/script/http_index_server.js" "$http_index_dir" 8765 ${http_status_arg:+"$http_status_arg"} >/dev/null 2>&1 &
+    node "$repo_root/script/http_index_server.js" "$http_index_dir" 8765 "$http_status_arg" ${http_auth_arg:+"$http_auth_arg"} >/dev/null 2>&1 &
     http_server_pid=$!
     # Bounded readiness wait (~10s, 100ms poll). Without this the first command
     # races the server's listen() and fails with ECONNREFUSED. Liveness means

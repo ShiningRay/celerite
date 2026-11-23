@@ -1,0 +1,2 @@
+# Private source: every request needs Basic user:pass.
+/	user:pass

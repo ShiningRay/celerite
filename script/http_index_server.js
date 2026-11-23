@@ -55,8 +55,65 @@ function status_for(url_path) {
   return best;
 }
 
+// Optional fifth argument: an auth-map file. Each non-blank, non-`#` line is
+// `<path-prefix><TAB><user>:<password>`. A request matching the longest prefix
+// must carry the matching `Authorization: Basic ...` header or it gets 401
+// plus `WWW-Authenticate: Basic realm="private"`. Like the status map, a
+// malformed auth map degrades to the plain 200/404 server.
+function load_auth_map(file) {
+  if (!file) return [];
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (err) {
+    console.error(`http_index_server: cannot read auth map ${file}: ${err.message}`);
+    return [];
+  }
+  const entries = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const parts = line.split("\t").map((part) => part.trim());
+    const prefix = parts[0];
+    const credentials = parts[1] || "";
+    if (prefix === "" || !credentials.includes(":")) {
+      console.error(`http_index_server: malformed auth map line ${JSON.stringify(raw)}; serving without auth`);
+      return [];
+    }
+    entries.push({ prefix, expected: "Basic " + Buffer.from(credentials).toString("base64") });
+  }
+  return entries;
+}
+
+const auths = load_auth_map(process.argv[5]);
+
+function auth_for(url_path) {
+  let best = null;
+  for (const entry of auths) {
+    if (url_path.startsWith(entry.prefix) && (best === null || entry.prefix.length > best.prefix.length)) {
+      best = entry;
+    }
+  }
+  return best;
+}
+
 const server = http.createServer((req, res) => {
   const urlPath = decodeURIComponent(new URL(req.url, "http://x").pathname);
+  const auth = auth_for(urlPath);
+  if (auth) {
+    const authorized = (req.headers["authorization"] || "") === auth.expected;
+    if (!authorized) {
+      const body = "denied\n";
+      res.writeHead(401, {
+        "Content-Type": "text/plain",
+        "Content-Length": String(Buffer.byteLength(body)),
+        "WWW-Authenticate": 'Basic realm="private"',
+        Connection: "close",
+      });
+      res.end(body);
+      return;
+    }
+  }
   const override = status_for(urlPath);
   if (override) {
     const body = "denied\n";
