@@ -1,0 +1,3 @@
+Gemfile.lock	remote: ../out
+Gemfile.lock	    pgem (1.0.0)
+vendor/cache/out/lib/pgem.rb	module Pgem

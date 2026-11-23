@@ -125,8 +125,14 @@ describe "M7 install refreshes the app cache" do
         # `Runtime#cache` walks `definition.specs`, so the copy must not depend on
         # a lockfile that the first install has not written yet.
         out_text.should contain("Updating files in vendor/cache")
-        File.file?(File.join(dir, "vendor", "cache", "pgem", "lib", "pgem.rb")).should be_true
-        File.exists?(File.join(dir, "vendor", "cache", "pgem", ".bundlecache")).should be_true
+        # `Path#app_cache_dirname` is `name` = `File.basename(expanded_path.to_s)`
+        # (source/path.rb:72-74, 110-112), so the cache directory is the source
+        # directory's basename, not the gem name and not the first gemspec's name.
+        # Pinned against bundler 4.0.24: an out-of-project path source is copied
+        # to `vendor/cache/<basename>` (task-198 oracle run).
+        dirname = File.basename(sibling)
+        File.file?(File.join(dir, "vendor", "cache", dirname, "lib", "pgem.rb")).should be_true
+        File.exists?(File.join(dir, "vendor", "cache", dirname, ".bundlecache")).should be_true
       ensure
         FileUtils.rm_rf(sibling)
       end
