@@ -334,6 +334,7 @@
 | C-M7-9-004 | 锁文件渲染不在 GEM 段列出 bundler 自身，其 CHECKSUMS 条目由自校验块唯一写出 | 已实现 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'bash script/differential lock-normalize'；'crystal spec spec/m7_lock_r…` |
 | C-M7-9-005 | rails 8.0.2 规模下锁已完整时 `install` 不再把锁收缩成 1 条 spec，装出的 gem 集合与 oracle 锁一致 | 已实现 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'bash script/differential install-check'；端到端复跑步骤与原始数字见 '../roadmap-evi…` |
 | C-M7-9-006 | rails 规模安装树的集合级内容与 `check`/`exec` 语义两侧一致，但逐文件字节仍存未解释差异，该 profile 兼容声明未恢复 | 未验证 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'bash script/differential install-check'（入库门禁，同形态 install；本轮未执行）；端到端判据…` |
+| C-M7-9-007 | 安装副作用三项与参考一致：`plugins/<gem>_plugin.rb`、`bin/*.bat` 的 CRLF、扩展构建的 `-j` | 已实现 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'bash script/differential install-writes-rubygems-plugin install-binst…` |
 | C-M7-docs-001 | 新证据写入当日的 `docs/compat-evidence/YYYY-MM-DD.md`，同日多条追加到文件末尾 | 已实现 | [M7-docs-sync.md](M7-docs-sync.md) | `'bash script/differential install-check'；'ls docs/compat-evidence/2026…` |
 | C-M7-docs-002 | 主报告只保留当前状态与索引，不再追加流水 | 已实现 | [M7-docs-sync.md](M7-docs-sync.md) | `'bash script/differential install-check'；'grep -n "不再追加流水" docs/compat…` |
 | C-M7-docs-003 | 引用历史结论写「compat-evidence 日期文件 + 节标题」，不写 `compat-report.md:<行号>` | 已实现 | [M7-docs-sync.md](M7-docs-sync.md) | `'bash script/differential install-check'；'grep -rn "compat-report\.md:…` |
@@ -360,5 +361,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 248 条断言（已实现 203 · 已声明差异 29 · 未实现 4 · 未验证 9 · 已取代 3）。
+合计 249 条断言（已实现 204 · 已声明差异 29 · 未实现 4 · 未验证 9 · 已取代 3）。
 <!-- END GENERATED INDEX -->

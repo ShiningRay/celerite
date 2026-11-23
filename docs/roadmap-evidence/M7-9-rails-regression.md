@@ -318,3 +318,43 @@ specs_with_different_dep_lines=16  order_only=16  content_different=0
 - 未在 Linux / 其它 Ruby ABI 复验；未验证重复 install 的幂等性。
 - #1 缺失 plugin 的实际功能影响（在该 `BUNDLE_PATH` 下 `gem` CLI 是否加载 rdoc plugin）未跑。
 - #5 的机制未读码确认，仅记录观测差异。
+## 2026-11-23：安装副作用三项的对齐（task-196）
+
+### oracle
+
+- plugin：`Gem::Installer#install` 内部 `generate_plugins` 写 `plugins/<gem>_plugin.rb`（`C:\Ruby40-x64\lib\ruby\4.0.0\rubygems\installer.rb:268,290,475-488`；实际写出在 `installer_uninstaller_utils.rb:7-22`，plugin 发现于 `basic_specification.rb:317-319`）。4.0.24 与 2.7.2 两侧夹具 `install-writes-rubygems-plugin` 均产出 `vendor/bundle/ruby/4.0.0/plugins/plugin-gem_plugin.rb`。
+- bat：`installer.rb:427-437` 以文本模式 `File.open(..., "w") { |f| f.puts }` 写 stub，Windows 上为 CRLF。参考侧 `bat-stub-demo.bat` 34 B，十六进制以 `...\r\n@ruby.exe "%~dpn0" %*\r\n` 收尾；我方修复前 32 B、两处为孤立 `0A`。
+- jobs：4.0.24 `build_jobs = acquired_jobs || settings[:jobs] || super`（`bundler-4.0.24/lib/bundler/rubygems_gem_installer.rb:108-115`），`BUNDLE_JOBS=2` 时 `gem_make.out` 出现 `make -j2`；2.7.2 无该覆写（`bundler-2.7.2/lib/bundler/rubygems_gem_installer.rb:104-127` 直接 `super`），走 RubyGems 默认 `Etc.nprocessors + 1`，本机（`Etc.nprocessors=8`）为 `make -j9`。
+- 关键前提：**带 `Gemfile.lock` 的单 gem 安装无法观察参考并行**。4.0.24 把 job 数压到待装 spec 数，实测 hook 记录 `n_jobs=1 settings_jobs=1`；去掉锁后同一夹具得 `n_jobs=2 settings_jobs=2 MAKEFLAGS="--jobserver-auth=4,5"`，`make` 打印「强制 -j2: 重置 jobserver 模式」。故 `install-ext-jobs` 不带锁；带锁的旧观测（`-j3`）应视为多 gem 场景的结论。
+
+### 参考锚点
+
+- `C:\Ruby40-x64\lib\ruby\4.0.0\rubygems\installer.rb:253-255`：`Gem::Installer#spec` 返回 `@package.spec`，不是 `@spec`；`instance_variable_set(:@spec, ...)` 对 `generate_plugins` 无效，必须改 package spec 的 `full_gem_path`，且反斜杠路径会让 `plugins` glob 返回空——实现里已 `tr("\\", "/")`。
+- `...\rubygems\ext\builder.rb:24-47`：`n_jobs > 1` 且 `MAKEFLAGS` 无 `-j` 时才追加 `-jN`；`:208-225` 把命令行写入 `gem_make.out`，这是判据可钉的依据。
+- `vendor/reference/v4.0.24/settings.rb:230,309`：`settings[:jobs]` 缺省回落 `Etc.nprocessors`。
+
+### 实现位置
+
+- `assets/bridge/server.rb:520`：bat 改为文本模式 `File.open(..., "w")` 调 `windows_stub_script`，CRLF 交给 RubyGems。
+- `assets/bridge/server.rb:535-553`：新增 `op_generate_plugins`，`Gem::Installer.at` + package spec 的 `full_gem_path` + `send(:generate_plugins)`；`bridge_dispatch` 注册 `generate_plugins`。
+- `assets/bridge/server.rb:556-590`：`op_build_extension` 按 `jobs_mode` 传第四参；`rubygems` 模式传 `Etc.nprocessors + 1`。
+- `src/celerite/bridge/client.cr:452,471`：`generate_plugins` 与 `build_extension(..., build_jobs, jobs_mode)`。
+- `src/celerite/installer.cr:83,263,284-288`：`build_jobs_mode`/`build_jobs` 取自 profile 与 `config["jobs"]`，扩展构建下传；`bin` 发布后调用 plugin 生成，失败即 `Error`。
+
+### 证据
+
+- 4.0.24：`install-writes-rubygems-plugin`、`install-binstub-bat-crlf`、`install-ext-jobs` 3 passed 0 failed；2.7.2 同 3 passed。
+- 反假绿（`C:\temp\celerite-pre196\bin\celerite.exe`，两 profile 均 3 failed）逐字：
+  - `Only in SANDBOX/project/vendor/bundle/ruby/4.0.0/plugins: plugin-gem_plugin.rb` + `file-exists violated (...): ref_exists=yes cel_exists=no`
+  - `file-crlf-both differs (vendor/bundle/ruby/4.0.0/bin/bat-stub-demo.bat, cel): missing CRLF`
+  - 4.0.24 `needle=make -j2`、2.7.2 `needle=make -j` 的 `file-contains differs (...gem_make.out)`
+- 回归：`install-check install-rewrites-lock-in-lock-order install-keeps-lock-with-bundler-edge lock-missing-spec-row install-after-lock-keeps-transitive binstubs-shebang` 6 passed。
+- `crystal spec spec/m7_install*.cr spec/m7_binstubs*.cr`：66 examples，1 failure（`spec/m7_install_app_cache_spec.cr:103`）；该用例在基线 `cec5daa`（stash 掉本轮 `installer.cr` 改动后）同样失败，与本任务无关。
+
+### 已声明差异与未验证
+
+- `install-ext-jobs` 用无锁的最小合成 gem，2.7.2 判据只钉 `make -j`（具体并发数取宿主 `Etc.nprocessors + 1`，不入库断言）；4.0.24 钉 `make -j2`。
+- 新增 harness 判据 `file-crlf-both`（两 profile 都要求 CRLF 且无孤立 LF）与 `file-contains-<version>` 覆盖；说明见 `docs/differential-normalization.md`。
+- 未复跑 rails 规模端到端；#3（`.so` gcc 版本）与 #5（`binstubs rails` 候选清单）未动，仍按 task-194 记为未解释。
+- 未在 Linux/其它 Ruby ABI 复验；plugin 在真实 `BUNDLE_PATH` 下由 `gem` CLI 加载的功能影响未跑。
+- `m7_install_app_cache_spec.cr:103` 的既存失败未修（超出本任务范围），仅证明与本次改动无关。
