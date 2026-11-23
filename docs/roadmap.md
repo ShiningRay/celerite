@@ -142,7 +142,7 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 - [x] 修复安装后 `check`、`list`、`show`/`info` 的 gem 发现，不再把所有锁定 gem 固定视为 missing；补齐 group、`with/without` 和 path/Git 安装状态（实证流水逐字迁出至 `docs/roadmap-evidence/M7-2-installed-discovery.md`）
 - [x] 移除或实现占位路径：`fund` 的真实 metadata、`gem` 模板、`console`（子进程语义，已声明差异）与 `env` 行为；避免硬编码 Bundler 版本、时间戳和运行环境（实证流水逐字迁出至 `docs/roadmap-evidence/M7-3-placeholders.md`）
 - [x] 让 mirror、proxy、redirect、retry、SSL CA/client cert、`path.system`、`build.<gem>`、legacy/full index 回退具有真实生效路径；为不支持项快速失败，禁止只解析 flag/config 后静默忽略。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-4-network-options.md`）
-- [ ] 补齐 Git tag/submodules/glob、多个 gemspec、monorepo、私有 source 鉴权、离线安装、磁盘错误与中断清理；验证 Linux gnu/musl 和多 Ruby ABI。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-5-sources-platforms.md`）
+- [ ] 差分判据已覆盖 Git tag/glob、两种多个 gemspec、monorepo、私有 source 鉴权与离线安装（4.0.24 与 2.7.2 两个参考 profile 下均 PASS；Git submodules 两侧 SKIP，`install-local-*` 的 stderr 只按包含关系比较）；本机不可验证的已声明差异为 Git submodules（参考侧 git ≥2.38 拒绝 file transport）、磁盘错误（只有 spec 级判据，没有差分级 oracle）、中断清理（两侧都不清扫残留，但参考会在并行安装期 trap INT 后以退出码 1 结束）与 Linux gnu/musl 加多 Ruby ABI（本机只有一套 Ruby）。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-5-sources-platforms.md`）
 - [x] 插件命令注册、自定义 source、hook 异常和第三方插件 fixture 分别验证；不把 Ruby hook 能运行当作完整插件兼容。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-6-plugins.md`）
 - [x] 修复 `script/differential`：列出所有归一化规则；对有语义的输出禁止排序/删除；安装文件树同时比较相对路径、文件内容、可执行权限和关键 symlink；lockfile 和 Gemfile 直接比较内容。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-7-differential-harness.md`）
 - [x] 修复 `script/upstream-specs`：使锁文件族真实驱动 Celerite，退出码反映失败；保留当前 45 failures 作为失败基线（`env:out-of-process-artifice` 44 / `fixture:fetch-failed` 1，`product:candidates` 0），其余产品对象逐项关闭。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-8-upstream-specs.md`）
