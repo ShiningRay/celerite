@@ -65,8 +65,16 @@ end
 # fall back to the release's own lib dir layout, which is what the reference
 # `bundle` executable loads from (bundler/exe/bundle requires "bundler").
 def bridge_activate_bundler
+  # Idempotent (task-230): one bridge process serves every op of a command
+  # (`Bridge::Client.shared`, task-221), so activation runs once per op. Once
+  # Bundler is loaded the choice is already made and re-unshifting would only
+  # reorder $LOAD_PATH. A Bundler that a previous op (or the host) loaded before
+  # activation is caught by `bridge_ensure_bundler_version!` in the evaluation
+  # path — it must never be silently accepted here.
+  return if defined?(Bundler)
+
   if lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]
-    $LOAD_PATH.unshift(lib) unless lib.empty?
+    $LOAD_PATH.unshift(lib) unless lib.empty? || $LOAD_PATH.include?(lib)
     return
   end
 
@@ -79,8 +87,41 @@ def bridge_activate_bundler
     candidate = File.join(Gem.default_dir, "gems", "bundler-#{version}", "lib")
     raise unless File.directory?(candidate)
 
-    $LOAD_PATH.unshift(candidate)
+    $LOAD_PATH.unshift(candidate) unless $LOAD_PATH.include?(candidate)
   end
+end
+
+# Raised when the shared bridge process already holds a Bundler other than the
+# one the command pinned. Reported through the ordinary bridge error envelope
+# (`bridge_dispatch`), so the native side surfaces `error_class`
+# "BundlerVersionMismatch" instead of a result computed by the wrong release.
+class BundlerVersionMismatch < StandardError
+end
+
+# The Bundler version this command pinned. `CELERITE_PROFILE_BUNDLER_VERSION`
+# is the explicit request; `CELERITE_REFERENCE_BUNDLER_VERSION` is the older
+# env-only switch that `bridge_activate_bundler` already honours.
+def bridge_expected_bundler_version
+  version = ENV["CELERITE_PROFILE_BUNDLER_VERSION"].to_s
+  version = ENV["CELERITE_REFERENCE_BUNDLER_VERSION"].to_s if version.empty?
+  version.empty? ? nil : version
+end
+
+# Explicit guard (task-230): the Gemfile that gets evaluated, the lock that gets
+# rendered and the "Using bundler X" line that gets printed must all describe
+# the pinned release. `require "bundler"` is a no-op once *any* Bundler is
+# loaded, so a wrong version cannot be fixed after the fact — fail loudly.
+def bridge_ensure_bundler_version!
+  expected = bridge_expected_bundler_version
+  return if expected.nil?
+  return unless defined?(Bundler) && Bundler.const_defined?(:VERSION)
+
+  loaded = Bundler::VERSION
+  return if loaded == expected
+
+  raise BundlerVersionMismatch,
+        "Bundler version mismatch in the shared bridge process: " \
+        "loaded #{loaded} / expected #{expected}; refusing to evaluate with the wrong release"
 end
 
 # `Bundler::Dsl#eval_gemfile` reports a repeated `gem` declaration through
@@ -196,6 +237,7 @@ end
 def bridge_evaluate_gemfile(gemfile)
   bridge_activate_bundler
   require "bundler"
+  bridge_ensure_bundler_version!
   require "bundler/dsl"
 
   builder = Bundler::Dsl.new
@@ -751,6 +793,11 @@ class PluginHookSpec
 end
 
 def op_exec_plugin_hook(payload)
+  # Activate before the first `require "bundler"`: this op can be the first one
+  # in a shared bridge process, and loading the host's default Bundler here
+  # would pin every later evaluation in the same process to that release
+  # (task-230).
+  bridge_activate_bundler
   require "bundler"
   require "bundler/plugin"
   require "yaml"
@@ -969,6 +1016,10 @@ end
 # carries the class/message/status the reference would exit with
 # (PluginGemfileError 29, InvalidOption 15, GemfileError 4).
 def op_plugin_gemfile_eval(payload)
+  # Usually the first op of `install`: activating here is what keeps the
+  # process from loading the host's default Bundler, which then became the
+  # version the same process evaluated the Gemfile with (task-230).
+  bridge_activate_bundler
   require "bundler"
   require "bundler/plugin"
   dsl = Bundler::Plugin::DSL.new
@@ -1008,6 +1059,11 @@ def bridge_dispatch(id, op, payload, proto)
 rescue Exception => e # rubocop:disable Lint/RescueException — bridge boundary: everything is reported, nothing escapes
   bridge_error(id, e.class.name.to_s, e.message.to_s, (e.status_code if e.respond_to?(:status_code)), proto: proto)
 end
+
+# Third line of defence (task-230): activation happens before the loop accepts
+# any request, so no op — including one added later — can load the host's
+# default Bundler first and pin the process to it for the rest of the command.
+bridge_activate_bundler
 
 loop do
   line = $stdin.gets
