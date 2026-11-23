@@ -148,3 +148,39 @@
 - 未执行 `script/differential`（端口 8765 被本机另一全量差分占用）与 `crystal spec`，所有差分/套件 PASS 均按其采集日引用，**不绑定本次工作树的 HEAD `3fd7a8d`**。
 - 判定以 claims 状态为准；claims 的「判据失效即降级为未验证」规则（`docs/compat-claims/README.md`）意味着凡判据文件在 HEAD 被改名或删除，上述「已实现」需重新取证 —— 本轮只核了判据文件存在性于我引用到的几个 spec（`parser_spec.cr`、`m7_filesystem_errors_spec.cr`、`m7_filesystem_error_mapping_spec.cr`、`m7_install_failure_spec.cr`、`m7_build_args_spec.cr`、`m7_installed_discovery_spec.cr`、`m7_resolver_ruby_constraints_spec.cr`），未全量核 259 条断言。
 - 未读 `src/` 实现代码，故「无判据」不等同「未实现」；两者在逐行文字中已分开表述。
+
+## 2026-11-24：M1–M5 遗留行的首辅裁定（task-220）
+
+裁定范围：`docs/roadmap.md` 的 17 行（L53、L65、L66、L67、L68、L81、L82、L92、L93、L94、L95、L96、L106、L107、L108、L109、L111）。本笔只改陈述文字，复选框一律未动（改前/改后均为 `- [x]` 31、`- [ ]` 33），勾选由首辅另起一笔。陈述一律采用上文各条「建议陈述」；L108 的建议陈述为「不改」，该行原样保留。
+
+### 勾选（陈述已按裁定收窄）
+
+- **L53（M1）**：为何可勾——五类负向场景均有判据：未知格式与无效版本走 `spec/lockfile/parser_spec.cr`，缺失 gem 走 `C-M7-2-003`（exit 7），Ruby 不匹配走 `C-M7-1-001`（exit 18），权限错误走 `C-M7-5-024`/`C-M7-5-025`（spec 级）。被接受的已声明差异：无；只余 `C-M7-5-035` 的「只读锁文件形态无差分级夹具」边界，已写进陈述括号。
+- **L67（M2）**：为何可勾——`lock-file-pin/unlock/update`、`update-conservative`、`update-prefer-patch`、`multi-platform-lock`、`platform`、`platform-variant-fail` 夹具齐备，`C-M7-1-011`、`C-M7-1-017`、`C-M7-9-002` 已实现。被接受的已声明差异：`C-M7-1-015`、`C-M7-1-016`、`C-M7-5-030`、`C-M7-5-031`、`C-M7-5-036`（多 ABI 本机不可验证）。
+- **L68（M2）**：为何可勾——`C-M7-9-005` 已实现（rails 规模 install 不再把锁收缩成 1 条 spec）、`C-M7-9-009` 已声明差异（安装树集合级一致、27 处内容差异全部归因、未解释差异 0），锁逐字节比对为 10663 字节 / 64 specs 且 SHA-256 已记录。被接受的已声明差异：`C-M7-9-009`；归一化口径记于 `C-M7-7-001`（N1–N10），已按建议陈述的可选项补入括号。
+- **L95（M4）**：为何可勾——`C-M7-4-027`（build args 经桥传递）、`C-M7-5-027`/`C-M7-5-028`（失败清理）已实现，racc 与 target-rbconfig 有取证。被接受的已声明差异：`C-M7-5-031`（跨 Ruby ABI 隔离，本机无第二 ABI）。
+- **L108（M5）**：为何可勾——命令索引与分发 `C-M7-6-001`/`C-M7-6-002`/`C-M7-6-029`（含 PATH 上 `bundler-<name>` 兜底）、生命周期 hook `C-M7-6-009`…`C-M7-6-013`、自定义 source `C-M7-6-019`…`C-M7-6-027`（含 `C-M7-6-026` 真实打包第三方插件 gem 的端到端）、安装与 index `C-M7-6-028`/`C-M7-6-034`/`C-M7-6-036`/`C-M7-6-038` 均已实现。被接受的已声明差异：`C-M7-6-014`、`C-M7-6-039`、`C-M7-6-040`、`C-M7-6-041`、`C-M7-6-042`（五行有意差异；`C-M7-6-039` 边界明写第三方插件生态只做抽样）。陈述无需改写。
+- **L111（M5）**：为何可勾——`C-M7-8-004`（覆盖边界固定 `v4.0.24` revision）已声明差异、`C-M7-8-021`（task-193 复采后 product 候选 0）已实现，64 examples / 45 failures 的基线有 `docs/compat-report.md` 的 `## Current metrics` 与 `## Upstream spec suite coverage boundary` 及 `docs/roadmap-evidence/M7-8-upstream-specs.md` 逐条定性支撑。被接受的已声明差异：`C-M7-8-004`（仅 lockfile 家族）。括注已改为「64 examples / 45 failures（19 passed，env 桶 44+1，product 候选 0）」，删去「全部失败」这一已失真的表述。
+
+### 暂不勾选
+
+- **L65（M2）**：缺项 4——yank（claims / compat-report / roadmap-evidence 全目录零命中）、预发布的解析与锁场景（只有版本排序 unit）、source 优先级的独立判据、engine/ABI/Gemfile 目标 Ruby 的完整矩阵。承接：engine/ABI 由 `C-M7-1-015`/`C-M7-1-016`（已声明差异）承接；yank、预发布解析与 source 优先级三项**无里程碑承接**（缺判据），陈述已收窄为「预发布与 yank 仅有版本排序层判据，无解析与锁场景」。
+- **L66（M2）**：缺项——稳定求值指纹（claims 检索「指纹」零命中）。承接——M8 的求值指纹行（该行仍未勾选），陈述已写「稳定指纹归 M8」。
+- **L81（M3）**：缺项 2——信号覆盖、独立 runtime setup。承接——信号随 `C-cross-001`（Windows 共享控制台，INT/TERM 不随父进程）与 `C-M7-5-035` 记已声明差异；独立轻量 runtime 归 M9；陈述已按此收窄。
+- **L82（M3）**：缺项——中断与安装失败原子清理的中断侧 oracle。承接——中断清理记已声明差异（Windows 无 INT 捕获）；磁盘错误已由 task-214 补为差分级（`C-M7-5-035`，`install-lockfile-path-is-directory` exit 32 / `install-bundle-path-is-file` exit 13 双 profile PASS），ENOSPC / EROFS / 只读锁文件形态仍在 `C-M7-5-035` 边界内造不出。
+- **L92（M4）**：缺项——submodule 端到端证据（本机双侧不可验证）。承接——`C-M7-5-004` 已声明差异（参考侧 git ≥2.38 拒 `fatal: transport 'file' not allowed`），需真实网络 URL 或装具级 `protocol.file.allow=always`。
+- **L93（M4）**：缺项——完整本地变更失效指纹。承接——M8 的指纹行，陈述已写「完整失效指纹归 M8」。
+- **L106（M5）**：缺项——`doctor` 完整诊断面。承接——`C-M7-3-031` **未实现**（home 权限、路径组件与 Gem path 规则），另有 `C-M7-3-021`（未验证，IRB 可用时的交互式 console）与 `C-M7-3-033` 等已声明差异；本行不勾。
+- **L107（M5）**：缺项 2——legacy 全量索引回退、`--full-index` 语义。承接——`C-M7-4-020` **未实现**（`specs.4.8.gz` 回退缺失）、`C-M7-4-021` **未验证**（白名单接受但无语义），两项**无里程碑承接**，陈述已写「记为未实现/未验证」；同族缺口 `C-M7-4-011`（紧凑索引重定向不计数、无上限）亦未实现。
+- **L109（M5）**：缺项 3——公开 `Bundler` Ruby API 面、`bundler/inline` 适配、插件可见对象。承接——公开 Ruby API 与 `bundler/inline` 归 M9；插件可见对象在参考 runtime 上做（`C-cross-008` 已声明差异，边界明写「不声称 Crystal 自带 Ruby API」）；陈述已按此收窄。
+
+### 本机不可验证
+
+- **L94（M4）**：收口需 Linux gnu/musl 宿主（真实 ABI 行为）与多 Ruby ABI 宿主（`C-M7-5-030`/`C-M7-5-031`/`C-M7-5-036` 均为已声明差异；本机仅 `ruby 4.0.6 [x64-mingw-ucrt]` 一套，`BUNDLER_REF_VERSION=2.7.2` 不改变 ABI）。离线 cache 与锁平台规范化已达成（`C-M7-5-019`/`C-M7-5-020`/`C-M7-5-021`、`C-M7-9-002`），故陈述改为「完成…；Linux gnu/musl 与多 Ruby ABI 记为已声明差异（本机不可验证）」，仍不勾选。
+- **L96（M4）**：收口需 CI 各组合的**运行记录入库**：`.github/workflows/ci.yml` 已配四宿主 job（`ubuntu-latest`、`macos-latest`、`macos-15-intel`、`windows-latest`）但 `ruby-version` 只有 `"4.0"` 一档，`docs/compat-matrix/generated/` 只有本机生成的差分与上游报告；受支持 Ruby 多版本矩阵与 Windows 单列实现计划亦无记录可查。
+
+### 共同边界
+
+- 上述判定只以 `docs/compat-claims/` 的断言状态与各证据节为口径，**不绑定当前 HEAD `ff7c76c`**；差分与套件 PASS 一律按其采集日引用，不在本笔重跑。
+- 勾选只表示「陈述收窄后已被证据满足」，不表示原括号里的全部愿望都实现了；被收窄掉的项在上文「暂不勾选」与「本机不可验证」两节逐条留痕。
+- 本笔不改 `docs/compat-claims/`、`docs/compat-report.md`、`docs/compat-evidence/`；未跑 `script/differential`（端口 8765 被本机另一全量差分占用）与 `crystal spec`（本单纯文档）。行内一律 LF、无 BOM。
