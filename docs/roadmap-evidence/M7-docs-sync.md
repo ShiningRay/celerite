@@ -113,3 +113,21 @@ $ git diff e05a50d --check
 - `README.md` 的 `src/celerite/resolution.cr:1362`、`:1371`、`:1494` 三个锚点未核（不在本次实测范围）。
 - `src/celerite/cli/commands_surface.cr` 的 `installed_gem_dir` 结束行未定，故只写起点 `:1671`。
 - `docs/compat-report.md:53`「报告依据的最后已知 HEAD `2ad9b66`」与 `## Current metrics` 的 `4bdc20a`/`954f2d5`/`114c8ba` 不一致；不在「只改 `## Current metrics`」授权内，未改，待首辅裁定。
+## 2026-11-23：M7-docs 行勾选裁定（首辅，task-212 之后）
+
+**判定：可勾 `[x]`，缺项 0。**
+
+逐分句对账（该行原文三件事）：
+
+1. **「更新 README、兼容报告、roadmap 和实际代码状态」** —— 满足。task-212 把 `README.md` 的上游基线条目、per-profile deferred 计数（30 / 5）与五个 marker 探针行号、三个 `src/` 锚点（`src/celerite/installer.cr:99-120`、`src/celerite/definition.cr:566-590`、`src/celerite/cli/commands_surface.cr:1671`）按实测改正；`docs/compat-report.md` 的 `## Current metrics` 把夹具总数改为 484（分母 2.7.2 = 454、4.0.24 = 479）、全量 `crystal spec` 改为最近一次 `1078 examples, 0 failures, 0 errors, 0 pending`（`302cbae`，2026-11-23 21:21）。首辅在同轮补正了该文件的「报告依据的最后已知 HEAD」行与 `## Scope and limits` 的治理补充：原行只绑 `2ad9b66` 且称「全量门禁只有 crystal spec 一行重跑过」，与 task-212 之后一行一采集点（`4bdc20a` / `954f2d5` / `302cbae` / `114c8ba`）的事实不符，现改为逐行点名采集点（提交 `416041b`）。
+2. **「历史报告标明对应 commit/工作树」** —— 满足。`## Current metrics` 五行各带采集点：4.0.24 全量 `4bdc20a`（task-188）、2.7.2 全量 `954f2d5`（task-191）、夹具计数 `114c8ba`（task-212）、全量 spec `302cbae`（task-212 记录）、上游 `954f2d5`（task-193，worktree `C:\temp\celerite-t193`）。两条全量差分行另加「自采集日后未在 HEAD 重跑、本行分母已过期」括注。
+3. **「不随新 fixture 静默改写旧结论」** —— 满足。旧值一律以「已取代（superseded）」留在原位（`218/14/3`、`126/6/1`、`1058/10/17`、`1058/0/0/17`、461/475/473 四档夹具总数），未删行、未回改；claims `C-M7-docs-005`（旧结论保留原文）与 `C-M7-docs-007`（历史行标采集点、只标取代）分别钉住这两条可判定性。
+
+新增的可重跑判据（本轮写入 claims）：`C-M7-docs-006`（README / 报告 / roadmap 三处同口径：上游 45 failures + 分桶 44/1/0/0、per-profile deferred 30 / 5）、`C-M7-docs-007`（每行至少一个采集点;旧值可检索且未被替换）、`C-M7-docs-008`（夹具总数/用例例数这类现状计数只在 `## Current metrics`，不外溢到 README/roadmap）。`script/compat-claims-index --check` = 258 条 up to date。
+
+**未验证（不构成缺项，但须留档）**：
+
+- 未在 `114c8ba` 重跑全量 `crystal spec`；`1078/0/0/0` 取自首辅 2026-11-23 21:21 在 `302cbae` 的采集，原始日志未复核。
+- 未在 `114c8ba` 重跑 `script/differential`（4.0.24 / 2.7.2 全量）与 `script/upstream-specs`：三条全量行仍是各自采集日的记录，只加过期括注。
+- `README.md` 引用的 `src/celerite/resolution.cr:1362`/`:1371`/`:1494` 三个锚点未核；`src/celerite/cli/commands_surface.cr` 的 `installed_gem_dir` 只写起点。
+- 判据里的 PowerShell `Select-String` 片段依赖本机路径，换宿主需按节标题重新定位。

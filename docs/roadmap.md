@@ -147,7 +147,7 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 - [x] 修复 `script/differential`：列出所有归一化规则；对有语义的输出禁止排序/删除；安装文件树同时比较相对路径、文件内容、可执行权限和关键 symlink；lockfile 和 Gemfile 直接比较内容。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-7-differential-harness.md`）
 - [x] 修复 `script/upstream-specs`：使锁文件族真实驱动 Celerite，退出码反映失败；保留当前 45 failures 作为失败基线（`env:out-of-process-artifice` 44 / `fixture:fetch-failed` 1，`product:candidates` 0），其余产品对象逐项关闭。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-8-upstream-specs.md`）
 - [x] 建立 Rails 规模真实项目回归，记录所有有意兼容差异及理由；未解释差异为零后才恢复“该 profile 兼容”的声明。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-9-rails-regression.md`）
-- [ ] 更新 README、兼容报告、roadmap 和实际代码状态；历史报告标明对应 commit/工作树，不随新 fixture 静默改写旧结论。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-docs-sync.md`）
+- [x] 更新 README、兼容报告、roadmap 和实际代码状态；历史报告标明对应 commit/工作树，不随新 fixture 静默改写旧结论。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-docs-sync.md`）
 - [x] 修复在本机无法跑完全量 `crystal spec` 的问题（实证流水逐字迁出至 `docs/roadmap-evidence/M7-suite.md`）
 
 验收：双 profile 单元/格式/差分门禁通过；锁文件上游族真实执行且结果如实；Ruby/平台约束和安装后只读命令有正反例；没有未声明的占位命令、恒真约束或无效配置。M8 的性能改动不得先于本阶段正确性修复合入。
