@@ -67,7 +67,10 @@ private def batch_reference_lib : String
   end
 
   candidates.each do |candidate|
-    return candidate if File.directory?(File.join(candidate, "bundler", "dsl.rb"))
+    # `dsl.rb` is a file: probing it with `File.directory?` rejected every
+    # candidate, so the spec only passed when `CELERITE_REFERENCE_BUNDLER_LIB`
+    # was already exported. Probe the path for what it is.
+    return candidate if File.file?(File.join(candidate, "bundler", "dsl.rb"))
   end
 
   raise "reference Bundler 4.0.24 not materialised; run script/upstream-specs"
