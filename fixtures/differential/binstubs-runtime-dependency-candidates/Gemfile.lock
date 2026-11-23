@@ -1,0 +1,22 @@
+PATH
+  remote: a
+  specs:
+    a (1.0.0)
+      bundler (>= 1.15.0)
+
+GEM
+  remote: file:///@INDEX_DIR@/
+  specs:
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  a!
+
+CHECKSUMS
+  a (1.0.0)
+  bundler (4.0.24) sha256=16ca64e20816a0cf151a948fb141d788602996d2b4d73577b74388fe84fa98bc
+
+BUNDLED WITH
+  4.0.24
