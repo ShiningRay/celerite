@@ -54,13 +54,13 @@
 
 ## C-M7-9-006 rails 规模安装树的集合级内容与 `check`/`exec` 语义两侧一致，但逐文件字节仍存未解释差异，该 profile 兼容声明未恢复
 
-- 状态：已声明差异
+- 状态：已取代
 - 参考行为（4.0.24）：`bundle install` 在同一把锁下装出 64 个 gem（`Bundle complete! 1 Gemfile dependency, 64 gems now installed.`），`bundle check` 打印 `The Gemfile's dependencies are satisfied` 并 exit 0，`bundle exec` 能 `require "rails"` 得到 `8.0.2`，`bundle binstubs railties` 写出 `bin/rails` + `bin/rails.cmd`
 - 我方行为：`celerite install` 在同一把锁下装出同样的 64 个 gem 目录、64 个 gemspec、64 个 `.gem`、28 条 `extensions/` 路径、22 个 `.so`、24 个 `bin/` 文件，集合级与参考侧完全相等；`celerite check` exit 0 且输出逐字相同；`celerite exec ruby` 同样得到 `8.0.2`；`celerite binstubs railties` 产物逐字节相同。但逐文件比对仍有 5 类未解释差异：`plugins/rdoc_plugin.rb` 仅参考侧存在（我方未实现 RubyGems 写 plugin）、12 个 `bin/*.bat` 为 LF 而参考为 CRLF、14 个 `.so` 因扩展构建时 `gcc` 解析到不同发行版（内嵌 `GCC: (Rev6…) 16.2.0` vs `GCC: (Rev5…) 16.1.0`）而字节不同、13 个构建日志因 `assets/bridge/server.rb:551` 未传 `build_jobs`（`make` vs `make -j3`）而不同、`binstubs rails` 候选清单少 `bundler has: bundle, bundler`
 - 判据：`bash script/differential install-check`（入库门禁，同形态 install；本轮未执行）；端到端判据为两侧各一次 `celerite install` / `bundle install`（隔离 `BUNDLE_PATH`/`BUNDLE_USER_HOME`/`SSL_CERT_FILE`，`PATH` 前置 `C:\msys64\usr\bin;C:\msys64\ucrt64\bin;C:\Ruby40-x64\bin;C:\Ruby40-x64\msys64\usr\bin`），再跑 `celerite check` / `bundle check`、`celerite exec ruby -e "require 'rails'; puts Rails::VERSION::STRING"`、`celerite binstubs railties`，安装树用 `Get-ChildItem -Recurse -File` + SHA256 `Compare-Object`；原始命令、输出与计数见 `../roadmap-evidence/M7-9-rails-regression.md` 的 task-194 节
 - 边界：rails 规模探针不入库（本机 `C:\temp\celerite-t194\.tmp-scratch\probe-cel` / `probe-ref`），端到端结论不可从仓库复现；本轮无入库判据，未跑 `script/differential` 与全量 `crystal spec`。扩展构建前 PATH 的改写者未定位，故 `.so`/日志的差异只证明「工具链不同」不证明「不可归零」。两侧 install 耗时 705 s / 148 s 不可互为基线。未覆盖 Linux 与其它 Ruby ABI。因未解释差异 ≠ 0，本断言不判「已实现」，`docs/roadmap.md:149` 的复选框不勾选
 - 生效：task-194（基线 `954f2d5`）
-- 取代：无，补充 C-M7-9-005 的锁外维度
+- 取代：C-M7-9-009（原记「无，补充 C-M7-9-005 的锁外维度」；task-204 终验后由 C-M7-9-009 接续，旧正文保留为 task-194/202 记录）
 - 更新（task-202，2026-11-24，旧正文保留为 task-194 记录）：上述 5 类中 ①`plugins/rdoc_plugin.rb` 与 ②`bin/*.bat` 的 CRLF 已在 task-196 对齐，⑤`binstubs rails` 候选清单已在本轮对齐（上下文见 C-M7-9-008，判据已跑：新夹具两 profile 各 1 passed，rails 规模 `binstubs rails` 文本三行相同）。本轮 rails 规模复跑（两侧各一次 `install` 加一次 `binstubs rails`，同一 oracle 锁）安装树 cel 4480 / ref 4480 文件、`only_in_cel=0`、`only_in_ref=0`、`content_diff=27`（14 个 `.so` + 13 个构建日志）；三把锁 sha256 均 `c76c7df6…199b1` 未被改写。剩余两类差异改为**已声明**：`.so` 的 GCC 版本差源于参考侧 `Gem.pre_install` 钩子前置 RubyInstaller MSYS2（`Rev5 16.1.0`）而我方 bridge 直调 `Gem::Ext::Builder` 保持探针 MSYS2（`Rev6 16.2.0`）；构建日志差源于 `make` 的 `-j`（我方 `-j8`、参考 jobserver `-j3`/`-j2`）与 PATH 文本。两者均不改变安装集合与可执行语义。因此本断言记「已声明差异」，不再记「未解释」。
 
 ## C-M7-9-007 安装副作用三项与参考一致：`plugins/<gem>_plugin.rb`、`bin/*.bat` 的 CRLF、扩展构建的 `-j`
@@ -82,3 +82,13 @@
 - 边界：夹具只有一个可执行依赖，候选**顺序**未由夹具固定，顺序结论仅由 rails 规模实测支撑；无种子锁时 celerite 对「path gem 依赖 bundler」的解析仍失败（`version solving has failed`，exit 6），属解析器合成 bundler spec 的独立问题，本断言未修。rails 规模夹具不入库，端到端证据见 `../roadmap-evidence/M7-9-rails-regression.md` 的 task-202 节；改动前二进制 `C:\temp\celerite-pre202\bin\celerite.exe` 在同一夹具上两 profile 均 FAIL（stderr 只有 `There are no executables for the gem a.`）
 - 生效：task-202（f85a668）
 - 取代：无，关闭 C-M7-9-006 更新条目中的第 ⑤ 类差异
+
+## C-M7-9-009 rails 规模终验：安装树集合级一致、27 个内容差异全部归因，未解释差异为 0（输出换行/顺序差异已声明）
+
+- 状态：已声明差异
+- 参考行为（4.0.24）：`bundle install` 在同一 oracle 锁（sha256 `c76c7df6…199b1`）上 exit 0，安装树 4480 文件、锁不被改写、stdout 131 行（按依赖顺序 fetch/install 交错，元数据进度点 9 个）；`bundle binstubs rails` exit 0，stderr 三行 `rails has no executables, but you may want one from a gem it depends on.` / `  bundler has: bundle, bundler` / `  railties has: rails`，CRLF、129 B；`plugins/rdoc_plugin.rb` 61 B；`bin/*.bat` 12 个且为 CRLF
+- 我方行为：`celerite install` 同一锁 exit 0（470 s），安装树 4480 文件、锁不改写、stdout 131 行（先 fetch 全部再 install，进度点 1 个）；`celerite binstubs rails` exit 0，同样三行、LF 126 B；安装树 `only_in_cel=0`、`only_in_ref=0`、`content_diff=27`：14 个 `.so`（内嵌 `GCC: (Rev6…) 16.2.0` vs `Rev5 16.1.0`，PATH 差见 `mkmf.log`）、8 个 `gem_make.out` + 5 个 `mkmf.log`（`make -j8` vs 参考 plain `make`/`-j2`、jobserver 警告、PATH 与本地化文本）；`plugins/rdoc_plugin.rb` 与 12 个 `bin/*.bat` 两侧逐字节相同
+- 判据：`bash script/differential install-check`（入库门禁；本任务未改码、未执行，端到端本轮为两侧各一次 `install` 与一次 `binstubs rails`，`Get-ChildItem -Recurse -File` + SHA256 全树比对；原始命令、逐字输出与计数见 `../roadmap-evidence/M7-9-rails-regression.md` 的 task-204 节）
+- 边界：rails 规模探针不入库（`C:\temp\celerite-t204\.tmp-scratch\probe-cel` / `probe-ref`），端到端不可从仓库复现；单次运行，未验重复 `install` 幂等；未覆盖 Linux 与其它 Ruby ABI；`-j` 对 `.so` 零影响由 gcc 版本串归因，未做同 gcc 不同 `-j` 的隔离对照；stdout 顺序、换行与进度点差异不改变安装集合、锁与退出码
+- 生效：task-204（2026-11-24，工作树 `302cbae`）
+- 取代：无，接续 C-M7-9-006（其 task-194 记的 5 类中 ①②⑤ 已由 task-196/202 关闭，③④ 在本断言记为已声明差异）

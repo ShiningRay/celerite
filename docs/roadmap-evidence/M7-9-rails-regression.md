@@ -408,3 +408,54 @@ specs_with_different_dep_lines=16  order_only=16  content_different=0
 ### 判定
 
 `binstubs` 候选清单的产品侧差异已对齐（含候选顺序），安装树剩余 27 个内容差异全部归因为宿主工具链，集合级差异为 0；M7-9 的最后一处产品侧可见差异关闭。是否勾选 `docs/roadmap.md:149` 由首辅按本文件与 claims 结论裁定（本任务禁改该文件）。
+
+## 2026-11-23：task-196/202 之后的安装树终验与 M7-9 判据（task-204）
+
+工作树 `C:\temp\celerite-t204`@`302cbae`（`git status` 干净；本轮只写文档，`src/`、`spec/`、`fixtures/`、`script/` 未改）。反假绿源 `C:\temp\celerite-pre204` 与工作树同 commit，本轮无实现改动，未使用其二进制（见「未验证」）。二进制由 `crystal build src/cli.cr -o bin/celerite.exe` 现编：EXIT 0、28 s、12786522 B；`crystal` 在 `C:\msys64\ucrt64\bin`，构建前须把 `C:\msys64\usr\bin` 前置，否则 Crystal stdlib `openssl/lib_crypto.cr:24` 的 `sh -c` 会失败。
+
+### oracle
+
+- 锁：`C:\Users\ShiningRay\projects\ShiningRay\celerite\.tmp-scratch\lead-rails-oracle\Gemfile.lock.full`（10663 B、64 spec、sha256 `c76c7df696da12c829933aa0a22904aa2742bc73f7f19a971fb3e92d86a199b1`）。
+- 两个隔离探针 `C:\temp\celerite-t204\.tmp-scratch\probe-cel`、`probe-ref`（绝对路径 44 字符 ≤67）：`Gemfile` 只有 `source "https://rubygems.org"` 与 `gem "rails", "8.0.2"`；锁为 oracle 拷贝；`BUNDLE_PATH=<probe>\bundle`；`SSL_CERT_FILE=C:/msys64/usr/ssl/cert.pem`；`PATH` 前置 `C:\Ruby40-x64\msys64\usr\bin;C:\Ruby40-x64\bin`；`TMPDIR`/`TMP`/`TEMP`/`HOME`/`USERPROFILE` 都指到探针内的 `tmp`/`home`。
+- 两侧各跑一次 `install`，均 exit 0：cel `bin\celerite.exe install` 470 s；ref `ruby.exe ...\bundler-4.0.24\exe\bundle install` 141 s。两侧 stdout 各 131 行、末两行相同：`Bundle complete! 1 Gemfile dependency, 64 gems now installed.` 与 `Bundled gems are installed into `./bundle``；两侧锁 sha256 仍 `c76c7df6…199b1`，未被改写。
+- `binstubs rails` 两侧各一次、均 exit 0：cel stdout 0 B / stderr 126 B（LF，sha256 `4DB03856…`）；ref stdout 0 B / stderr 129 B（CRLF，sha256 `9B898911…`）。三行内容逐字相同：`rails has no executables, but you may want one from a gem it depends on.` / `  bundler has: bundle, bundler` / `  railties has: rails`；LF 归一后完全相等；两侧均未生成 `probe\bin`（rails 本身无 executables，与参考一致）。两把锁在 `binstubs` 后仍是 `c76c7df6…199b1`。
+
+### 参考锚点
+
+- `C:\Ruby40-x64\lib\ruby\gems\4.0.0\gems\bundler-4.0.24\lib\bundler\installer.rb:92-118`：`binstubs` 的候选打印（运行中 bundler 恒注入，`executables == ["bundle", "bundler"]`）；rails 规模实测参考 stderr 即上文三行。
+- `C:\Ruby40-x64\lib\ruby\4.0.0\rubygems\ext\builder.rb:24-47,89-101,208-225`：`n_jobs > 1` 且 `MAKEFLAGS` 无 `-j` 才追加 `-jN`；`gem_make.out` 记 `current directory` 与逐条命令行。参考侧 rails 规模实测：`date` 等走 plain `make`（MAKEFLAGS 带 jobserver，子 make 报 `jobserver 不可用: 正使用 -j1`），`nio4r` 走 `make -j2`——即本轮**不是固定 `-j3`**。
+- 参考侧扩展构建的 `gcc`：`mkmf.log` 的 `PATH` 头部为 `.;C:/Ruby40-x64/lib;C:\Ruby40-x64\bin;C:\Ruby40-x64\msys64\ucrt64\bin;C:\Ruby40-x64\msys64\usr\bin;…`（RubyInstaller MSYS2 的 `ucrt64` 在前，`gcc` 解析到 16.1.0）；该前置由 `Gem.pre_install` 钩子完成（task-199 已定位，本轮未重验钩子代码行）。
+- `plugins/rdoc_plugin.rb` 参考侧存在（61 B）、`bin/*.bat` 文本模式写 CRLF：task-196 已按 `rubygems/installer.rb` 的 `generate_plugins` 与 `generate_windows_script` 对齐，本轮只做端到端复核。
+
+### 实现位置
+
+- 本轮无实现改动（只写文档）。复核对象是 task-196/202 已落地的路径：`assets/bridge/server.rb:520`（bat 文本模式）、`:535-553`（`op_generate_plugins`）、`:556-590`（`op_build_extension` 传 jobs）；`src/celerite/bridge/client.cr:452,471`；`src/celerite/installer.cr:83,263,284-288`；`src/celerite/cli/commands_install.cr:2157-2172,2264-2269,2285-2304`（binstubs 运行时依赖候选）。
+- 二进制即上述工作树状态（`302cbae` + 未改 `src`）的编译产物。
+
+### 证据
+
+- 安装树（路径归一 `/`、去探针前缀、SHA256）：cel 4480 / ref 4480 文件；`only_in_cel=0`、`only_in_ref=0`、`content_diff=27`。27 个差异逐类：
+  - 14 个 `.so`：`bigdecimal-4.1.3`（`bigdecimal.so`）、`date-3.6.0`（`date_core.so`）、`erb-6.0.7`（`erb/escape.so`）、`io-console-0.9.5`（`io/console.so`）、`racc-1.8.1`（`racc/cparse.so`）、`rbs-4.2.0`（`rbs_extension.so`）、`websocket-driver-0.9.0`（`websocket_mask.so`）各两份（`extensions/x64-mingw-ucrt/4.0.0/<gem>/` 与 `gems/<gem>/lib/`）。
+  - 8 个 `gem_make.out`：上述 7 个加 `nio4r-2.7.5`（该 gem 两侧均无 `.so`，集合一致）。
+  - 5 个 `mkmf.log`：`bigdecimal`、`date`、`erb`、`io-console`、`rbs`。
+- `.so` 字节差归因：取 `bigdecimal.so` 内嵌版本串，cel 为 `GCC: (Rev6, Built by MSYS2 project) 16.2.0`，ref 为 `GCC: (Rev5, Built by MSYS2 project) 16.1.0`。`mkmf.log` 的 `PATH` 证实机制：cel 的 PATH 头是 `.;C:/Ruby40-x64/lib;C:\Ruby40-x64\msys64\usr\bin;C:\Ruby40-x64\bin;…;C:\msys64\ucrt64\bin;…`（无 `Ruby40-x64\msys64\ucrt64\bin`，`gcc` 落到全局 `C:\msys64\ucrt64\bin` 的 16.2.0）；ref 的 PATH 头是 `.;C:/Ruby40-x64/lib;C:\Ruby40-x64\bin;C:\Ruby40-x64\msys64\ucrt64\bin;C:\Ruby40-x64\msys64\usr\bin;C:\Ruby40-x64\msys64\usr\bin;…`（RubyInstaller MSYS2 16.1.0 在前）。与 task-199 的 `Gem.pre_install` 归因一致。
+- 13 个构建日志：逐行比对并归一（`probe-cel`/`probe-ref`→`PROBE`、`.gem.<date>-<pid>-xxxxxx`→`.gem.X`、`make -jN`→`make`）后仍有纯文本残差：① ref 侧每个 make 调用多一行 `make: 警告: jobserver 不可用: 正使用 -j1。…`（`date` 的 `gem_make.out` cel 27 行 vs ref 31 行，差额即 4 行警告）；② `nio4r` 的 make 错误文本本地化不同（cel `make: *** No rule to make target 'clean'.  Stop.`，ref `make: *** 没有规则可制作目标“clean”。 停止。`）；③ `mkmf.log` 的 PATH 串不同。四段 make 调用两侧一一对应（clean / build / install / clean），无缺失构建步骤。
+- `plugins/rdoc_plugin.rb`：两侧均存在、61 B、sha256 前缀 `5512116D…`，内容相同。`bin/*.bat`：两侧各 12 个，12/12 SHA256 相同且均含 CRLF（`bat_mismatch=0`）。`.so` 两侧各 22 个，14 个不同、8 个相同。
+- install stdout：两侧各 131 行；行内容集合仅一处不同——`Fetching gem metadata from https://rubygems.org/` 后的进度点 cel 1 个、ref 9 个；其余 130 行文本相同。**但顺序不同**：cel 先按锁序（字典序）打印 64 条 `Fetching`，再按同一序打印 `Installing`（8 个原生扩展排最后）；ref 按依赖顺序 fetch/install 交错。两侧退出码、安装集合、锁均一致。
+- `binstubs rails` 逐字：见 oracle 段；LF 归一后两侧相等，字节差仅 LF（126 B）vs CRLF（129 B）。
+
+### 已声明差异与未验证
+
+- 差异清单（合计 6 类，全部有机制，**未解释差异 = 0**）：
+  1. 14 个 `.so` 字节不同——宿主工具链：gcc 16.1.0（ref，RubyInstaller MSYS2 经 `Gem.pre_install` 前置）vs 16.2.0（cel，bridge 直调 `Gem::Ext::Builder`，PATH 无 RubyInstaller `ucrt64`）。产品语义无差（同一 gem、同一版本、同一 `.so` 名，安装树集合一致）。
+  2. 13 个构建日志文本不同——仅日志：`-j` 文本、jobserver 警告、PATH 串、`make` 本地化错误文本；产物不变。
+  3. `binstubs` 的 stderr 换行——cel LF、ref CRLF；内容三行相同。
+  4. install stdout **顺序**——cel 两阶段（先 fetch 全部再 install），ref 交错；行内容与最终状态一致。
+  5. install stdout 元数据进度点——cel 1 个、ref 9 个；进度显示，不入判据。
+  6. 两侧 install 耗时 470 s / 141 s——实现差异（并发与阶段），不作为兼容判据。
+- ④ 的裁定（`make -j8` vs 参考）：**仅日志文本差异，不是产品可见差异**。cel 的 `gem_make.out` 恒 `make -j8`（最后一次 `clean` 无 `-j`）；ref 侧 `date` 等为 plain `make`（实际回落 `-j1`）、`nio4r` 为 `make -j2`——task-194 记的 `make -j3` 不是本机本轮实测形态。make 调用序列与参数（除 `-jN`）两侧一致，产物集合一致；`.so` 字节差已由 gcc 版本串解释。严格隔离「同 gcc、不同 `-j`」的对照未做（见未验证）。
+- 未验证：① 未用反假绿二进制 `celerite-pre204` 跑同一端到端（该二进制只用于差分夹具，本轮未跑；改动前行为由 task-194 记录，且本轮无实现改动）；② 未复跑 `celerite check` / `exec ruby`（task-194 已验，本轮未重验）；③ 未跑 `script/differential` 与全量 `crystal spec`（本任务只写文档，未改码）；④ 单次运行，未验证重复 `install` 的幂等与耗时稳定性；⑤ 未覆盖 Linux/其它 Ruby ABI；⑥ 未做「同 gcc、不同 `-j`」的隔离对照，`-j` 对 `.so` 零影响由版本串归因而非隔离实验；⑦ `Gem.pre_install` 钩子的代码行本轮未重验（沿用 task-199）。
+
+### 判定
+
+M7-9 的闭合判据是「未解释差异为零」而非「逐字节相等」。本轮复核：安装树集合级 4480/4480、`only_in_* = 0`；27 个内容差异全部归因为宿主工具链（14 个 `.so`）与日志文本（13 个构建日志）；`plugins`、`bin/*.bat` 已对齐；`binstubs rails` 三行文本两侧相同；锁未被改写。剩 3 类输出层差异（换行、顺序、进度点）均已归因。**建议 `docs/roadmap.md:149` 勾 `[x]`**，并在 claims 记一条终验断言（C-M7-9-009）承载上述差异；理由：判据要求「解释为零」且有意差异有记录，本轮两者都满足。仍需（非阻塞）的判据：把 rails 规模 install 的 stdout 顺序/换行纳入差分规则、补「同 gcc 不同 `-j`」对照、重复 install 幂等、Linux/其它 ABI。若首辅把「stdout 逐行同序」也视为产品契约，则应保持 `[ ]`，唯一拦路项是第 4 类顺序差异（需先定契约再改实现或加归一化规则）。
