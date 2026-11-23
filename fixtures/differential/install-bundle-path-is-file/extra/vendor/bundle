@@ -1,0 +1,2 @@
+A regular file occupying the configured bundle path (`BUNDLE_PATH=vendor/bundle`),
+so creating the scoped install directory (`vendor/bundle/ruby/<abi>`) must fail.

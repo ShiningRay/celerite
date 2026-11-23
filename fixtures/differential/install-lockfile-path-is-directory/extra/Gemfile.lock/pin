@@ -1,0 +1,4 @@
+A regular file that keeps the enclosing directory named `Gemfile.lock`
+committable: git tracks files, not empty directories. The differential
+harness copies `extra/` into the sandbox project before the command runs,
+so the lockfile *path* is a directory when `install` starts.
