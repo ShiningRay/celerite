@@ -139,8 +139,8 @@
 - 状态：已实现
 - 参考行为（4.0.24 = 2.7.2）：`lib/bundler/fetcher/downloader.rb:66-76` 对 `HTTPUnauthorized` 按 `uri.userinfo` 分派，两者都传 `uri.host`；文案在 `lib/bundler/fetcher.rb:45-48`（四行，末行是 `BUNDLE_<key>` 环境变量）与 `:54-59`（两行）；`lib/bundler/errors.rb:38 HTTPError` 的 status 是 17
 - 我方行为：`src/celerite/compact_index/cache.cr:160 perform`，`:198-205` 的 401 分支（有 `user` / `password` 或 URI userinfo 走 Bad，否则 Required）；`src/celerite/downloader.cr:248-254` 同规则；错误类 `src/celerite/errors.cr:274` 与 `:295`
-- 判据：`crystal spec spec/m7_authentication_errors_spec.cr`
-- 边界：无差分夹具，端到端只做过三场景手工 A/B（stdout + stderr + exit 一致）；`install` / `update` / `cache` 的逐命令差分未做；不重试由 `src/celerite/downloader.cr:235` 的三类 rescue 保证，未另取 oracle
+- 判据：`crystal spec spec/m7_authentication_errors_spec.cr`；`bash script/differential auth-401-no-credentials`；`bash script/differential auth-401-bad-credentials`（4.0.24 与 2.7.2 双 profile 均 PASS，exit 17，stdout/stderr 逐字一致）
+- 边界：差分只覆盖 `install` 单命令与 `http://127.0.0.1:8765/` 的静态桩；`update` / `cache` 未做；`WWW-Authenticate: Basic` 质询与 `~/.gemrc` 凭据仍属 C-M7-5-018 的未实现缺口；不重试以差分 `(exit=17)` 固定，`src/celerite/downloader.cr:235` 的三类 rescue 是代码层保证
 - 生效：task-5（e3c8c07）
 - 取代：无
 
@@ -149,8 +149,8 @@
 - 状态：已实现
 - 参考行为（4.0.24）：`lib/bundler/fetcher/compact_index.rb:9-23` 只重抛 401，其余 HTTP 错误记日志后返回 nil，故 403 回退到 legacy `specs` 索引；`lib/bundler/fetcher/index.rb:10-22` 以**完整源 URI**（`remote_uri`，含尾斜杠）抛 `AuthenticationForbiddenError`；文案在 `lib/bundler/fetcher.rb:63-70`
 - 我方行为：`src/celerite/compact_index/cache.cr:198-205` 的 403 分支用补齐尾斜杠的完整 URI；`src/celerite/resolution.cr:781-783` 起在抛出前补印 `Fetching source index from <remote>` 与空行；错误类 `src/celerite/errors.cr:317`
-- 判据：`crystal spec spec/m7_forbidden_spec.cr`
-- 边界：legacy `specs.4.8.gz` 索引本身未实现，回退路径只验证了错误归属串，没有验证回退后成功取到索引的形态；403 与凭据组合未测
+- 判据：`crystal spec spec/m7_forbidden_spec.cr`；`bash script/differential auth-403-index`（4.0.24 与 2.7.2 双 profile 均 PASS，exit 17，`Fetching source index from <远程>` 加空行，stderr 两行逐字一致）
+- 边界：legacy `specs.4.8.gz` 索引本身未实现；夹具把 `/versions`、`/info/` 与 legacy `/specs.4.8.gz`、`/latest_specs.4.8.gz`、`/prerelease_specs.4.8.gz` 一并置 403，只验证「回退 legacy 后仍 403」的归因与退出码。只让紧凑索引 403 时参考用 legacy 索引成功安装（4.0.24 实测 exit 0），我方 exit 17——回退后成功取到索引的形态属已声明缺口，未实现；403 与凭据组合未测
 - 生效：task-5（7f84050）
 - 取代：无
 
@@ -159,8 +159,8 @@
 - 状态：已实现
 - 参考行为（4.0.24）：`lib/bundler/rubygems_integration.rb:379 download_gem` 用 `:384 Bundler::Retry.new("download gem from …")`；`lib/bundler/retry.rb:53-64 fail_attempt` 在最后一轮或不可重试异常时抛原异常，否则打空行与 `Retrying … due to error (n/4): …`；`lib/bundler/installer/gem_installer.rb:44-48` 拼 `"<类>: <消息>" + 回溯 + failure_message`，`:55-57` 的 failure_message 是 `An error occurred while installing <name> (<version>), and Bundler cannot continue.`；status 5 见 `lib/bundler/errors.rb:21`
 - 我方行为：`src/celerite/downloader.cr:30 ForbiddenDownloadError`、`:48 "<bad response Forbidden 403 (#{@url})>"`、`:255-276` 的 403 重试循环；`src/celerite/installer.cr:321 Installer.download_failure_message`、`:313` 追加 `In Gemfile:` 依赖树
-- 判据：`crystal spec spec/m7_forbidden_download_spec.cr`
-- 边界：参考在 `Bundler::HTTPError` 之后打印的约 20 行 Ruby 回溯不复刻（我方回溯是真实栈）；`Bundler::Retry` 的 jitter 与退避时长未建模；`/quick/` 与 `/gems/` 的 403 未分别验证
+- 判据：`crystal spec spec/m7_forbidden_download_spec.cr`；`bash script/differential auth-403-download`（4.0.24 与 2.7.2 双 profile 均 PASS，exit 5；stderr 走 N10 contains-only，逐字钉住三条 `Retrying download gem … (2/4|3/4|4/4)`、`Bundler::HTTPError: Could not download gem from …` 与 failure message）
+- 边界：参考在 `Bundler::HTTPError` 之后打印的约 20 行 Ruby 回溯不复刻（我方回溯是真实栈），故该夹具只用 contains-only、不用 `file-equals`；`Bundler::Retry` 的 jitter 与退避时长未建模；`/quick/` 的 403 未验证，夹具只覆盖 `/gems/` 与 `json_pure 2.8.1`
 - 生效：task-5（b6db076）
 - 取代：无
 
