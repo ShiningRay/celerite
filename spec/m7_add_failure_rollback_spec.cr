@@ -12,6 +12,30 @@ private def add_failure_gemfile : String
   "source \"#{add_failure_index}\"\n"
 end
 
+# `PathError` messages are single-line in the message layer, but `add` renders
+# them through the unified word wrap (`ui/shell.rb:167-171`, `commands.cr`), and
+# the temp project path comes from `File.tempname`, so its length decides where
+# the line breaks. Derive the width from the message under test (the lesson from
+# task-137 `4ce6d51` and task-165) instead of hard-coding one.
+private def with_columns(columns : String, &) : Nil
+  previous = ENV["THOR_COLUMNS"]?
+  begin
+    ENV["THOR_COLUMNS"] = columns
+    yield
+  ensure
+    if previous
+      ENV["THOR_COLUMNS"] = previous
+    else
+      ENV.delete("THOR_COLUMNS")
+    end
+  end
+end
+
+# A width wide enough to keep `message` on one line, derived from the message.
+private def wide_columns(message : String) : String
+  (message.size + 20).to_s
+end
+
 private def with_add_failure_env(dir : String, &)
   keys = %w[HOME USERPROFILE BUNDLE_PATH BUNDLE_APP_CONFIG CELERITE_BRIDGE_SERVER]
   previous = {} of String => String?
@@ -65,9 +89,14 @@ describe "M7 bundle add failure rollback" do
   it "keeps the Gemfile untouched when --path points at a missing directory" do
     with_project({"Gemfile" => add_failure_gemfile}) do |dir|
       with_add_failure_env(dir) do
-        code, _out, err = run_cli(["add", "json_pure", "--path", "vendor/nope", "--skip-install"])
-        code.should eq(13)
-        err.should contain("does not exist.")
+        missing = File.expand_path("vendor/nope", dir).gsub('\\', "/")
+        expected = "The path `#{missing}` does not exist."
+        with_columns(wide_columns(expected)) do
+          code, _out, err = run_cli(["add", "json_pure", "--path", "vendor/nope", "--skip-install"])
+          code.should eq(13)
+          err.should eq("#{expected}\n")
+          err.lines.size.should eq(1)
+        end
         File.read(File.join(dir, "Gemfile")).should eq(add_failure_gemfile)
       end
     end

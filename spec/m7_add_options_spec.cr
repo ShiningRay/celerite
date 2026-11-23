@@ -33,6 +33,30 @@ private def with_bundle_path(path : String, &)
   end
 end
 
+# `PathError` messages are single-line in the message layer, but `add` renders
+# them through the unified word wrap (`ui/shell.rb:167-171`, `commands.cr`), and
+# the temp project path comes from `File.tempname`, so its length decides where
+# the line breaks. Derive the width from the message under test (the lesson from
+# task-137 `4ce6d51` and task-165) instead of hard-coding one.
+private def with_columns(columns : String, &) : Nil
+  previous = ENV["THOR_COLUMNS"]?
+  begin
+    ENV["THOR_COLUMNS"] = columns
+    yield
+  ensure
+    if previous
+      ENV["THOR_COLUMNS"] = previous
+    else
+      ENV.delete("THOR_COLUMNS")
+    end
+  end
+end
+
+# A width wide enough to keep `message` on one line, derived from the message.
+private def wide_columns(message : String) : String
+  (message.size + 20).to_s
+end
+
 describe "M7(2) add option surface" do
   it "renders --glob into the Gemfile" do
     with_add_home do
@@ -64,10 +88,15 @@ describe "M7(2) add option surface" do
     with_add_home do
       gemfile = %(source "https://rubygems.org/"\n)
       with_project({"Gemfile" => gemfile}) do |dir|
-        code, stdout, stderr = run_cli(["add", "json_pure", "--path", "vendor/x", "--skip-install"])
-        code.should eq(13)
-        stdout.should eq("")
-        stderr.should contain("does not exist.")
+        missing = File.expand_path("vendor/x", dir).gsub('\\', "/")
+        expected = "The path `#{missing}` does not exist."
+        with_columns(wide_columns(expected)) do
+          code, stdout, stderr = run_cli(["add", "json_pure", "--path", "vendor/x", "--skip-install"])
+          code.should eq(13)
+          stdout.should eq("")
+          stderr.should eq("#{expected}\n")
+          stderr.lines.size.should eq(1)
+        end
         File.read(File.join(dir, "Gemfile")).should eq(gemfile)
         Dir.exists?(File.join(dir, "vendor")).should be_false
       end
