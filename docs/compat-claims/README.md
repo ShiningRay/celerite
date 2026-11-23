@@ -160,7 +160,7 @@
 | C-M7-3-012 | `gem` 的 test/CI/linter/mit/coc/changelog/exe/ext 模板分支按选项渲染 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential gem-options gem-ext'` |
 | C-M7-3-013 | `gem` 的枚举值与未知开关按 Thor 文案拒绝并 exit 15 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential gem-invalid'` |
 | C-M7-3-014 | `gem --edit` 与 `--bundle` 显式报不支持并 exit 1 | 已声明差异 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'crystal spec spec/m7_gem_options_spec.cr'` |
-| C-M7-3-015 | `gem` 的交互式问卷（test/CI/linter/license/COC/changelog）未实现 | 未实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential gem-default'` |
+| C-M7-3-015 | `gem` 的交互式问卷（test/CI/linter/license/COC/changelog）已实现，提示语与持久化逐字对齐 4.0.24 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential gem-questionnaire'（stdout 逐字 2905 字符、退出码、'$H…` |
 | C-M7-3-016 | 2.7.2 的 `gem` 模板与成功链接不同，两个 gem 夹具在该 profile 下 deferred | 已声明差异 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential gem-default'` |
 | C-M7-3-017 | `console [GROUP]` 在 bundle 语境里 require 依赖后再启动控制台 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential console-group'` |
 | C-M7-3-018 | 配置的控制台不在 bundle 内时回退 irb，irb 亦不可用时 exit 1 且末行 `irb is not available` | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'crystal spec spec/m7_console_spec.cr'` |
@@ -180,7 +180,7 @@
 | C-M7-3-032 | `help` 与 `<cmd> --help` 渲染参考自带的 `.ronn` 手册页 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential help-install'` |
 | C-M7-3-033 | 无手册页的命令回退 Thor `command_help`，本命令 option 表未复刻 | 已声明差异 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential help-tree-fallback'` |
 | C-M7-3-034 | `env` 的 OpenSSL 块按解释器加载情况打印 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'crystal spec spec/m7_env_output_spec.cr'` |
-| C-M7-3-035 | `env` 的多 `gemspec` 指令顺序与去重未验证 | 未验证 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential env-gemspec'` |
+| C-M7-3-035 | `env` 的多 `gemspec` 指令按 Gemfile 求值序输出且不去重，已钉住 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential env-gemspec-multi'（stdout 逐字含 '### aaa.gemsp…` |
 | C-M7-4-001 | 配置 `mirror.<url>` 后抓取先走镜像，镜像失败再回退原 remote | 已实现 | [M7-4-network-options.md](M7-4-network-options.md) | `'crystal spec spec/m7_download_settings_spec.cr'；'crystal spec spec/co…` |
 | C-M7-4-002 | `mirror.<url>.fallback_timeout` 按 Bundler 语义解析：true→0.1 秒、false→0、其余按 `to_i` 整数截断 | 已实现 | [M7-4-network-options.md](M7-4-network-options.md) | `'crystal spec spec/m7_download_settings_spec.cr'` |
 | C-M7-4-003 | HTTP 代理按 `http_proxy`/`HTTP_PROXY` 或 config `proxy` 生效：http 用绝对 URI 请求行，https 先 CONNECT 建隧道 | 已实现 | [M7-4-network-options.md](M7-4-network-options.md) | `'crystal spec spec/m7_proxy_spec.cr'` |
@@ -357,5 +357,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 245 条断言（已实现 200 · 已声明差异 27 · 未实现 6 · 未验证 9 · 已取代 3）。
+合计 245 条断言（已实现 202 · 已声明差异 27 · 未实现 5 · 未验证 8 · 已取代 3）。
 <!-- END GENERATED INDEX -->

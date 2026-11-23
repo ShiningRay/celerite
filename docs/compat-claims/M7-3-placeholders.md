@@ -142,14 +142,14 @@
 - 生效：task-27（哈希未记录（evidence 未记））
 - 取代：无
 
-## C-M7-3-015 `gem` 的交互式问卷（test/CI/linter/license/COC/changelog）未实现
+## C-M7-3-015 `gem` 的交互式问卷（test/CI/linter/license/COC/changelog）已实现，提示语与持久化逐字对齐 4.0.24
 
-- 状态：未实现
-- 参考行为（4.0.24）：`bundler/cli/gem.rb:299-310` 与 `:322-426` 的 `ask_and_set` 系列先读 `options[key] || settings["gem.<key>"]`，为 nil 时打印提示并提问
-- 我方行为：未改代码；`src/` 内 grep `ask_and_set` / `print_prompt` 无命中，`src/celerite/cli/commands_surface.cr:2246` 的 `STDIN.gets` 属 `open` 命令的选 gem 菜单
-- 判据：`bash script/differential gem-default`
-- 边界：夹具用 `extra/.bundle/config` 预置 `BUNDLE_GEM__*: "false"` 让参考跳过提问，因此两侧只比对模板与信息输出
-- 生效：task-27（哈希未记录（evidence 未记））
+- 状态：已实现
+- 参考行为（4.0.24）：`bundler/cli/gem.rb:118`（test）→`:157`（ci）→`:173`（mit）→`:182`（coc）→`:191`（changelog）→`:203`（linter）；`gem.rb:299-310` 的 `ask_and_set` 以 `choice.nil?` 判定未配置，`gem.rb:322-347`/`:362-391`/`:393-426` 以 `settings[...].to_s.empty?` 判定；`bundler/cli.rb:590-601` 的 `--test/--ci/--linter` 用 `lazy_default: Bundler.settings["gem.<key>"] || ""`；提示行的尾随空格与换行由 `bundler/vendor/thor/lib/thor/shell/basic.rb:330-345`（ask_simply）与 `:98-106`（say）裁定
+- 我方行为：`src/celerite/cli/commands_surface.cr:3750` 起 `Commands.gem` 按同一顺序提问（test → ci → mit → coc → changelog → linter），同文件 `gem` 之后的 `gem_ask_and_set` / `gem_ask_and_set_choice` / `gem_hint_text` / `gem_setting` / `gem_say` / `gem_ask` / `gem_yes?` 复刻 nil 判定、正则采纳、`BUNDLE_GEM__*` 六键持久化与 "already configured, ignoring --<flag> flag." 行；`--no-test/--no-ci/--no-linter` 跳过对应问题
+- 判据：`bash script/differential gem-questionnaire`（stdout 逐字 2905 字符、退出码、`$HOME/.bundle/config` 逐字）；`crystal spec spec/m7_gem_questionnaire_spec.cr`（4 examples, 0 failures）
+- 边界：夹具 `extra/norl.rb` 删掉 `Readline` 常量，并以 `env` 的 `RUBYOPT=-I. -rnorl` 预载，使 Thor 回落到 `Thor::LineEditor::Basic`；Ruby 4 的 reline 在管道 stdin 下会重绘提示行并混入 ANSI 转义，不这样做 stdout 无法逐字比对。此归一化只换行编辑后端，不涉及产品输出。2.7.2 模板集与成功链接不同（见 `C-M7-3-016`），该夹具 2.7.2 deferred
+- 生效：task-189（提交见 `docs/compat-evidence/2026-11-23.md`）
 - 取代：无
 
 ## C-M7-3-016 2.7.2 的 `gem` 模板与成功链接不同，两个 gem 夹具在该 profile 下 deferred
@@ -342,12 +342,12 @@
 - 生效：M7(3) 迭代内（哈希未记录（evidence 未记））
 - 取代：无
 
-## C-M7-3-035 `env` 的多 `gemspec` 指令顺序与去重未验证
+## C-M7-3-035 `env` 的多 `gemspec` 指令按 Gemfile 求值序输出且不去重，已钉住
 
-- 状态：未验证
-- 参考行为（4.0.24）：`bundler/env.rb:51-53` 在 `print_gemspecs` 为真且 `dsl.gemspecs` 非空时输出 `\n## Gemspecs\n`，条目来自 DSL 求值期的 `loaded_from`
-- 我方行为：`src/celerite/cli/commands_surface.cr:1209` 的 `print_gemfile_sections` 输出 Gemspecs 段，内容在打印期读文件
-- 判据：`bash script/differential env-gemspec`
-- 边界：单 gemspec 形态已覆盖；多 `gemspec` 指令的顺序与去重无夹具，且读文件时差在极端情形下未验证
-- 生效：M7(3) 迭代内（哈希未记录（evidence 未记））
+- 状态：已实现
+- 参考行为（4.0.24）：`bundler/env.rb:51-58` 的 `print_gemspecs` 先 `Dsl.new.tap { |d| d.eval_gemfile(Bundler.default_gemfile) }`，再逐条输出 `\n### <basename>` 与 ```ruby 围栏内的文件正文；`bundler/dsl.rb:63-99` 的 `gemspec` 把 `installable_on_platform?` 命中项（`dsl.rb:78`）追加进 `@gemspecs`（`dsl.rb:80`），不去重，重复的 `gemspec` 指令就在段里出现两次
+- 我方行为：`src/celerite/cli/commands_surface.cr:1248-1285` 的 `print_gemfile_sections` 经 `bridge.gemspec_paths(definition.gemfile_path)`（`:1270`）取路径；`assets/bridge/server.rb:227-238` 的 `op_gemspec_paths` 直接用参考 `Bundler::Dsl#gemspecs.map(&:loaded_from)`，故顺序与重复即参考自身；客户端入口 `src/celerite/bridge/client.cr:321`
+- 判据：`bash script/differential env-gemspec-multi`（stdout 逐字含 `### aaa.gemspec` / `### zzz.gemspec` / `### aaa.gemspec`，stderr 逐字含重复依赖警告）；`crystal spec spec/m7_env_multi_gemspec_spec.cr`（2 examples, 0 failures）
+- 边界：同一目录放多个 `.gemspec` 且 `gemspec` 指令未给 `:name` 时，参考在 `bundler/dsl.rb:96-97` 抛 `There are multiple gemspecs at <path>. Please use the :name option to specify which one should be used`；该错误路径与 2.7.2 profile 均未验证。本项无 `src/` 改动，反假绿由 `gem-questionnaire` 承担
+- 生效：task-189（提交见 `docs/compat-evidence/2026-11-23.md`）
 - 取代：无
