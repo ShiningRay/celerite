@@ -1,0 +1,5 @@
+Gemfile.lock	remote: ../mono
+Gemfile.lock	    a_gem (0.1.0)
+Gemfile.lock	    b_gem (0.1.0)
+vendor/cache/mono/a_gem/a_gem.gemspec	a_gem
+vendor/cache/mono/b_gem/b_gem.gemspec	b_gem

@@ -1,0 +1,3 @@
+vendor/cache/mono/.bundlecache
+vendor/cache/mono/a_gem/a_gem.gemspec
+vendor/cache/mono/b_gem/b_gem.gemspec

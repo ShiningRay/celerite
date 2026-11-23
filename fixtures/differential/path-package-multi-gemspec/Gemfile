@@ -1,0 +1,6 @@
+source "file:///@INDEX_DIR@"
+
+path "../mono" do
+  gem "a_gem"
+  gem "b_gem"
+end
