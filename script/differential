@@ -34,6 +34,11 @@
 #      BOTH sides on top of the isolated defaults; spaces/empty values allowed,
 #      values are placeholder-substituted like fixture files, and fixtures
 #      without it are unchanged.
+#   N11 an optional `stdin` fixture file is reopened as standard input for EACH
+#      command on BOTH sides, so interactive prompts (e.g. `info`'s numbered
+#      gem selection) get the same answer sequence; fixtures without it keep
+#      the inherited stdin.  Redirection cannot be written inside `command`:
+#      the shell does not re-parse `<`/`>` produced by `$cmd` expansion.
 # Note (build PATH): build the CLI with the ORIGINAL PATH (Git/msys64/Ruby
 #   order), NOT the N8-normalized PATH: prepending the Ruby-bundled toolchain
 #   makes `cc` fail with "liblto_plugin.dll not found" (toolchain resolution,
@@ -157,6 +162,12 @@ run_fixture() {
   name="$(basename "$fixture_dir")"
   # Multiple lines = multiple sequential runs (e.g. install reruns)
   command_line="$(cat "$fixture_dir/command")"
+  # Optional `stdin` fixture file: reopened before each command on both sides
+  # so interactive prompts consume the same answers independently.
+  local fixture_stdin=""
+  if [ -f "$fixture_dir/stdin" ]; then
+    fixture_stdin="$(cd "$fixture_dir" && pwd)/stdin"
+  fi
 
   local work
   # Sandboxes default to the repository checkout because on Windows hosts with a
@@ -469,6 +480,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
     ref_n=$((ref_n + 1))
     (
       cd "$ref_sandbox/project" || exit 99
+      [ -n "$fixture_stdin" ] && exec < "$fixture_stdin"
       env "${fixture_unset[@]+"${fixture_unset[@]}"}" "${isolated_env[@]}" "${fixture_env[@]+"${fixture_env[@]}"}" ruby "$bundler_exe" $cmd
     ) > "$work/ref.part.$ref_n.out" 2> "$work/ref.part.$ref_n.err"
     ref_code=$?
@@ -499,6 +511,7 @@ ruby_constraints_index_dir="$(cygpath -m "$repo_root/fixtures/gem-index-ruby-con
     cel_n=$((cel_n + 1))
     (
       cd "$cel_sandbox/project" || exit 99
+      [ -n "$fixture_stdin" ] && exec < "$fixture_stdin"
       env "${fixture_unset[@]+"${fixture_unset[@]}"}" \
         HOME="$cel_sandbox/home" USERPROFILE="$cel_sandbox/home" \
         GEM_HOME="$cel_sandbox/gems" GEM_PATH="$cel_sandbox/gems" \
