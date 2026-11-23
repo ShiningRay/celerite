@@ -54,6 +54,66 @@ module Celerite
         io.puts "bridge: procs=#{@@procs} rpc=#{@@rpc} req_bytes=#{@@req_bytes} resp_bytes=#{@@resp_bytes}"
         io.flush
       end
+
+      def self.procs : Int32
+        @@procs
+      end
+
+      def self.rpc : Int32
+        @@rpc
+      end
+    end
+
+    # Per-command memo for `evaluate_gemfile`. One Celerite command evaluates
+    # the same Gemfile from several sites (`check` deliberately twice: once for
+    # the dependency diff, once inside the frozen branch), and every evaluation
+    # is a full RPC round trip. The reference evaluates a Gemfile once per
+    # process (`bundler.rb` `@definition ||=`) and reuses that definition, so a
+    # command never re-evaluates an unchanged file; the cache reproduces that
+    # without changing what any caller sees. Entries are keyed by absolute path
+    # plus size/mtime so a Gemfile rewritten mid-command still re-evaluates, and
+    # the cache only lives inside one `CLI.run` (see `begin_run`/`finish`).
+    module EvaluationCache
+      @@active = false
+      @@entries = {} of String => GemfileEvaluation
+
+      def self.begin_run : Nil
+        @@active = true
+        @@entries.clear
+      end
+
+      def self.finish : Nil
+        @@active = false
+        @@entries.clear
+      end
+
+      def self.key(path : String) : String
+        absolute = File.expand_path(path)
+        info = File.info?(absolute)
+        file = if info
+                 "#{absolute}|#{info.size}|#{info.modification_time.to_unix_ms}"
+               else
+                 absolute
+               end
+        # Bundler's evaluation reads the process environment (BUNDLE_GEMFILE,
+        # BUNDLE_WITHOUT, BUNDLE_FROZEN, ...), and commands temporarily rewrite
+        # those. An entry evaluated under another environment must not answer.
+        "#{file}|#{environment_signature}"
+      end
+
+      private def self.environment_signature : String
+        ENV.to_h.to_a.sort_by { |pair| pair[0] }.map { |(key, value)| "#{key}=#{value}" }.join('\u0001')
+      end
+
+      def self.fetch(path : String) : GemfileEvaluation?
+        return nil unless @@active
+        @@entries[key(path)]?
+      end
+
+      def self.store(path : String, evaluation : GemfileEvaluation) : Nil
+        return unless @@active
+        @@entries[key(path)] = evaluation
+      end
     end
 
     class BridgeError < Error
@@ -270,6 +330,15 @@ module Celerite
 
     # Client for the JSON Lines bridge server. One process per client; the
     # server stays alive across requests and exits on stdin EOF.
+    #
+    # Commands do not need one process per call site: `Client.shared` hands out
+    # a process-wide connection that every caller borrows and returns, and
+    # `close` on such a handle is a no-op so the existing `ensure bridge.close`
+    # blocks keep working unchanged. `Client.shutdown` disposes it at the end of
+    # the command. `CELERITE_BRIDGE_IDLE_MS` (unset or `0` = never) closes a
+    # shared connection that sat idle that long; the next `shared` call spawns a
+    # fresh one. A client built with explicit arguments (spec harnesses) is
+    # never shared.
     class Client
       @process : Process
       @stdin : IO
@@ -277,6 +346,14 @@ module Celerite
       @request_id = 0
       @mutex = Mutex.new
       getter ruby_version : String
+      @shared = false
+      @closed = false
+      @last_used = Time.instant
+      @ruby_environment : RubyEnvironment? = nil
+
+      @@shared : Client? = nil
+      @@shared_key : String? = nil
+      @@shared_mutex = Mutex.new
 
       def initialize(ruby_exe : String? = nil, server_path : String? = nil, timeout : Time::Span = 30.seconds)
         ruby = ruby_exe || ENV["CELERITE_RUBY"]? || "ruby"
@@ -330,18 +407,99 @@ module Celerite
         raise Error.new("bridge server script not found; set CELERITE_BRIDGE_SERVER")
       end
 
+      # The process-wide connection every command borrows. Rebuilt when the
+      # environment changes (the server captures `ENV` at spawn, and commands
+      # temporarily override `BUNDLE_GEMFILE`/`BUNDLE_PATH`) or when
+      # `CELERITE_BRIDGE_IDLE_MS` says the previous one went idle.
+      def self.shared : Client
+        @@shared_mutex.synchronize do
+          key = shared_key
+          if client = @@shared
+            if key != @@shared_key || idle_expired?(client.idle_for)
+              client.dispose
+              @@shared = nil
+              @@shared_key = nil
+            end
+          end
+          unless client = @@shared
+            client = new
+            client.mark_shared
+            @@shared = client
+            @@shared_key = key
+          end
+          client
+        end
+      end
+
+      # Ends the shared connection; the CLI calls this on its way out so an
+      # in-process spec never reuses a connection spawned for another command.
+      def self.shutdown : Nil
+        @@shared_mutex.synchronize do
+          if client = @@shared
+            client.dispose
+            @@shared = nil
+            @@shared_key = nil
+          end
+        end
+      end
+
+      private def self.idle_timeout_ms : Int32
+        value = ENV["CELERITE_BRIDGE_IDLE_MS"]?
+        return 0 if value.nil? || value.empty?
+        milliseconds = value.to_i?
+        return 0 if milliseconds.nil? || milliseconds <= 0
+        milliseconds
+      end
+
+      private def self.idle_expired?(idle_for : Time::Span) : Bool
+        milliseconds = idle_timeout_ms
+        return false if milliseconds <= 0
+        idle_for >= milliseconds.milliseconds
+      end
+
+      # The server runs with the environment captured at spawn, so a change in
+      # `ENV` between two borrows (commands temporarily rewrite BUNDLE_*) needs
+      # a fresh process to stay faithful to "one client = one spawn env".
+      private def self.shared_key : String
+        ENV.to_h.to_a.sort_by { |pair| pair[0] }.join('\u0001') { |(key, value)| "#{key}=#{value}" }
+      end
+
+      protected def mark_shared : Nil
+        @shared = true
+      end
+
+      protected def idle_for : Time::Span
+        Time.instant - @last_used
+      end
+
+      # Full teardown, including shared connections (whose public `close` is a
+      # no-op so call sites keep their `ensure bridge.close` semantics).
+      protected def dispose : Nil
+        return if @closed
+        @closed = true
+        @stdin.close unless @stdin.closed?
+        @process.wait unless @process.terminated?
+      end
+
       def ping : String
         result = request("ping")
         result["ruby"].as_s
       end
 
+      # The bridge process's Ruby environment never changes for a given spawn,
+      # so one command needs at most one lookup (install used to pay nine).
       def ruby_environment : RubyEnvironment
-        RubyEnvironment.from_json(request("ruby_environment").to_json)
+        @ruby_environment ||= RubyEnvironment.from_json(request("ruby_environment").to_json)
       end
 
       def evaluate_gemfile(path : String) : GemfileEvaluation
+        if cached = EvaluationCache.fetch(path)
+          GemfileWarnings.record(cached.warnings)
+          return cached
+        end
         evaluation = GemfileEvaluation.from_json(request("evaluate_gemfile", {"gemfile" => path}).to_json)
         GemfileWarnings.record(evaluation.warnings)
+        EvaluationCache.store(path, evaluation)
         evaluation
       end
 
@@ -534,9 +692,12 @@ module Celerite
         result["exists"].as_bool ? path : nil
       end
 
+      # Borrowed handles return rather than close: the shared connection lives
+      # until `Client.shutdown`. A privately constructed client still tears its
+      # process down here, exactly as before.
       def close : Nil
-        @stdin.close unless @stdin.closed?
-        @process.wait unless @process.terminated?
+        return if @shared
+        dispose
       end
 
       # Long-running operations (native extension builds, plugin hooks) mirror
@@ -545,6 +706,7 @@ module Celerite
       # `limit: nil` for those; everything else keeps the safety net.
       private def request(op : String, payload : Hash(String, String) | Hash(String, String?) = {} of String => String, limit : Time::Span? = @timeout) : JSON::Any
         @mutex.synchronize do
+          @last_used = Time.instant
           @request_id += 1
           id = @request_id
           line = JSON.build do |json|

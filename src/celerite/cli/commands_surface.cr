@@ -132,7 +132,7 @@ module Celerite
       # unknown name matches nothing (reference probe: resolve, then
       # "Bundle updated!" with no installs and no stayed-same report).
       source_restricted = !sources.empty?
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       lock : ProcessLock? = nil
       begin
         # `cli/update.rb` L33-35: `--group` widens the explicit gem list with
@@ -516,7 +516,7 @@ module Celerite
       # append raises.
       gemfile_backup = File.read(gemfile_path)
       gemfile_appended = false
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         evaluation = bridge.evaluate_gemfile(gemfile_path)
         desired = explicit_parts || [">= 0"]
@@ -608,7 +608,7 @@ module Celerite
         add_definition = Definition.build
         if Dir.exists?(app_cache_path(add_definition))
           add_root = begin
-            add_bridge = Bridge::Client.new
+            add_bridge = Bridge::Client.shared
             begin
               InstallPaths.gem_root(add_definition.config, add_bridge.ruby_environment.default_gem_dir, InstallPaths.ruby_abi(add_bridge))
             ensure
@@ -1164,7 +1164,7 @@ module Celerite
         return code
       end
       definition = Definition.build
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         re = bridge.ruby_environment
         config = definition.config
@@ -1521,7 +1521,7 @@ module Celerite
       verify_mode = option_value(rest, "--verify-mode")
       timeout = 10
 
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         versions = bridge.ssl_openssl_versions
         unless quiet
@@ -1747,7 +1747,7 @@ module Celerite
       # still valid for `check/list/show/info` (`cli/common.rb:68-101` falls
       # back to `default_gem_spec`). A custom `path` does not hide them.
       if (source.nil? || source.type == "GEM") && bridge_available?
-        bridge = Bridge::Client.new
+        bridge = Bridge::Client.shared
         begin
           if info = bridge.default_gem_spec(spec.name)
             if info[:version] == spec.version.to_s && (spec.platform.nil? || info[:platform] == spec.platform)
@@ -1796,7 +1796,7 @@ module Celerite
         # (CELERITE_BRIDGE_SERVER / CELERITE_REFERENCE_BUNDLER_LIB): gating it
         # made `show`/`info`/`check` miss gems installed in the default gem dir
         # outside the harness. A failed bridge call just yields no extra dirs.
-        bridge = Bridge::Client.new
+        bridge = Bridge::Client.shared
         begin
           env = bridge.ruby_environment
           unless env.default_gem_dir.empty?
@@ -1868,7 +1868,7 @@ module Celerite
       end
       definition = Definition.build
       Commands.validate_ruby_runtime!(definition)
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         abi = InstallPaths.ruby_abi(bridge)
         install_root = InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi)
@@ -1977,7 +1977,7 @@ module Celerite
       end
       definition = Definition.build
       Commands.validate_runtime!(definition)
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
         # `--group` is a scalar Thor option (fund.rb:14-20): the last occurrence
@@ -2226,7 +2226,7 @@ module Celerite
 
       name = names.first
       definition = Definition.build
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         lockfile = materialize_lockfile(definition, nil, local_only: true)
         abi = InstallPaths.ruby_abi(bridge)
@@ -2414,7 +2414,7 @@ module Celerite
 
         stdout.puts "Resolving dependencies..."
 
-        bridge = Bridge::Client.new
+        bridge = Bridge::Client.shared
         begin
           info = Bridge::GemSpecInfo.from_json(bridge.load_gemspec_dir(path).to_json)
         ensure
@@ -2636,7 +2636,7 @@ module Celerite
         return 1
       end
 
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       tmp_dir = ""
       tmp_root = ""
       app_root = ""
@@ -3072,7 +3072,7 @@ module Celerite
         end
       end
 
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         resolution = Resolution.new(definition, false, bridge)
         abi = InstallPaths.ruby_abi(bridge)
@@ -3173,7 +3173,7 @@ module Celerite
         return code
       end
       definition = Definition.build
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
         if requested = Commands.requested_ruby_version(evaluation)
@@ -3476,7 +3476,7 @@ module Celerite
     end
 
     private def self.bridge_read_spec_json(path : String) : JSON::Any
-      client = Bridge::Client.new
+      client = Bridge::Client.shared
       begin
         client.read_gem_spec(path)
       ensure
@@ -3581,7 +3581,7 @@ module Celerite
 
       # env report is printed BEFORE the Gemfile lookup fails (reference
       # issue prints the full report, then the doctor error on stderr)
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         re = bridge.ruby_environment
         stdout.puts "## Environment"

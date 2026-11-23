@@ -263,7 +263,7 @@ module Celerite
         end
       end
 
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       lock : ProcessLock? = nil
       begin
         # Runtime Ruby requirement validation (Bundler validate_runtime!/validate_ruby!)
@@ -1415,7 +1415,7 @@ module Celerite
         definition.config.set_local("cache_path", cache_arg) if cache_arg
       end
 
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         abi = ruby_abi(bridge)
         install_root = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), "cache")
@@ -1501,7 +1501,7 @@ module Celerite
       dry_run = rest.includes?("--dry-run")
       force = rest.includes?("--force")
       definition = Definition.build
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         # `cli/clean.rb:11-24` refuses to prune a system-wide gem set without
         # `--force`: with no `path` configured the install root IS the RubyGems
@@ -1761,7 +1761,7 @@ module Celerite
       # definition/evaluation in that case.
       missing_explicit_gemfile = explicit_gemfile && !explicit_gemfile.empty? && !File.file?(explicit_gemfile)
       definition = missing_explicit_gemfile ? nil : Definition.build
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         env = bridge.ruby_environment
         # Reference Bundler.setup validates Ruby requirements during exec.
@@ -2075,7 +2075,7 @@ module Celerite
       cached = downloader.fetch("bundler", locked, nil, nil)
       stdout.puts "Fetching gem metadata from https://rubygems.org/."
 
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         abi = InstallPaths.ruby_abi(bridge)
         installer = Installer.new(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi), abi, bridge, downloader, stdout)
@@ -2203,7 +2203,7 @@ module Celerite
         return 1
       end
 
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         abi = ruby_abi(bridge)
         install_root = File.join(InstallPaths.gem_root(definition.config, bridge.ruby_environment.default_gem_dir, abi))

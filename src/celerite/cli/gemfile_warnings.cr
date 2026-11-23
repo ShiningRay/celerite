@@ -29,7 +29,7 @@ module Celerite
     # best-effort so a missing bridge still lets `remove` run.
     def self.evaluate_gemfile_before_rewrite(definition : Definition) : Nil
       client = begin
-        Bridge::Client.new
+        Bridge::Client.shared
       rescue
         return
       end

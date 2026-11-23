@@ -23,6 +23,7 @@ module Celerite
 
     def self.run(args : Array(String), stdout : IO, stderr : IO) : Int32
       Bridge::BridgeStats.begin_run
+      Bridge::EvaluationCache.begin_run
       # Command families opt out of the `BUNDLE_GEMFILE` existence check
       # (`Commands::RAW_GEMFILE_READ_COMMANDS`); every run starts from the
       # reference default so one command cannot leak the setting into the next.
@@ -43,6 +44,8 @@ module Celerite
       stderr.puts "celerite internal error: #{ex.message}"
       1
     ensure
+      Bridge::Client.shutdown
+      Bridge::EvaluationCache.finish
       Bridge::BridgeStats.finish(stderr)
     end
 

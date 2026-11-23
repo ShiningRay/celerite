@@ -1273,7 +1273,7 @@ module Celerite
       # declaration), so a project that was never locked still reports it.
       if ruby_version.nil?
         begin
-          bridge = Bridge::Client.new
+          bridge = Bridge::Client.shared
           begin
             evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
             if requested = requested_ruby_version(evaluation)
@@ -1336,7 +1336,7 @@ module Celerite
       client = bridge
       unless client
         begin
-          client = Bridge::Client.new
+          client = Bridge::Client.shared
         rescue
           return
         end
@@ -1366,7 +1366,7 @@ module Celerite
       client = bridge
       unless client
         begin
-          client = Bridge::Client.new
+          client = Bridge::Client.shared
         rescue
           return
         end
@@ -1394,7 +1394,7 @@ module Celerite
     # Returns :diff, :missing_from_lock, or :none.
     private def self.lock_ruby_unlock_kind(definition : Definition, lockfile : Lockfile::Data) : Symbol
       return :none unless bridge_available?
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
         requested = requested_ruby_version(evaluation)
@@ -1530,7 +1530,7 @@ module Celerite
       gemfile_evaluation : Bridge::GemfileEvaluation? = nil
       if definition.lockfile_exists?
         begin
-          gemfile_evaluation = Bridge::Client.new.evaluate_gemfile(definition.gemfile_path)
+          gemfile_evaluation = Bridge::Client.shared.evaluate_gemfile(definition.gemfile_path)
         rescue ex : Bridge::BridgeError
           raise ex if {4, 15}.includes?(ex.status_code)
         rescue
@@ -1551,7 +1551,7 @@ module Celerite
       path_specs_changed = false
       if config.frozen? && definition.lockfile_exists?
         begin
-          check_bridge = Bridge::Client.new
+          check_bridge = Bridge::Client.shared
           check_evaluation = check_bridge.not_nil!.evaluate_gemfile(definition.gemfile_path)
           gemfile_dependencies = check_evaluation.not_nil!.dependencies
           gemfile_sources = check_evaluation.not_nil!.sources
@@ -1964,7 +1964,7 @@ module Celerite
 
     private def self.lookup_default_gem(name : String) : DefaultGemInfo?
       return nil unless bridge_available?
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         spec = bridge.default_gem_spec(name)
         return nil unless spec
@@ -1989,7 +1989,7 @@ module Celerite
       # directory; in development the loaded lib is the checkout's copy, so the
       # installed gem of the same version gives the faithful path.
       return nil unless bridge_available?
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         bridge.installed_specs.as_a.each do |entry|
           next unless entry["name"]?.try(&.as_s?) == "bundler"
@@ -2490,7 +2490,7 @@ module Celerite
       # `Gem.dir`, `GEM_PATH`, user dir) and prefers the profile version, which
       # is how the reference finds its own install directory even when GEM_HOME
       # is isolated (`shared_helpers.rb:362-378` expands its own `lib`).
-      env = (Bridge::Client.new.ruby_environment rescue nil)
+      env = (Bridge::Client.shared.ruby_environment rescue nil)
       return nil unless env
       bundler_lib = find_bundler_lib(env, profile_bundler_version)
       return nil if bundler_lib.empty?
@@ -2663,7 +2663,7 @@ module Celerite
     # unavailable or cannot evaluate the file (caller then parses text).
     private def self.read_gemspec_info_via_bridge(path : String) : {String?, String?, Hash(String, String)}?
       return nil unless bridge_available?
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         json = bridge.load_installed_spec(path)
         return nil unless json
@@ -2688,7 +2688,7 @@ module Celerite
     private def self.default_gem?(gem_dir : String, name : String, version : String) : Bool
       return false unless bridge_available?
 
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         spec = bridge.default_gem_spec(name)
         return false unless spec
@@ -2726,7 +2726,7 @@ module Celerite
     end
 
     def self.lockfile_groups(definition : Definition, lockfile : Lockfile::Data) : Array(String)
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
         groups = [] of String
@@ -2743,7 +2743,7 @@ module Celerite
     end
 
     def self.gem_groups_for(definition : Definition, name : String) : Array(String)
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
         dep = evaluation.dependencies.find(&.name.==(name))
@@ -2788,7 +2788,7 @@ module Celerite
       configured = ["with", "without", "only"].any? { |key| !definition.config[key].to_s.empty? }
       return [] of Lockfile::Spec if requested_groups.empty? && configured
       return specs if requested_groups.empty? || requested_groups == lockfile_groups(definition, lockfile)
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
         group_map = {} of String => Array(String)

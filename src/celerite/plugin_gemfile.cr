@@ -22,7 +22,7 @@ module Celerite
     # reference `status_code` (29 plugin gemfile errors, 15 invalid options,
     # 4 other Gemfile errors), so callers simply propagate it.
     def self.plugin_names(gemfile_path : String) : Array(String)
-      bridge = Bridge::Client.new
+      bridge = Bridge::Client.shared
       begin
         result = bridge.plugin_gemfile_eval(gemfile_path)
         result["plugin_names"].as_a.map(&.as_s)

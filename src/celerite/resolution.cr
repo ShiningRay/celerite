@@ -326,7 +326,7 @@ module Celerite
     def initialize(@definition : Definition, @unlock : Bool | Array(String) = false,
                    @bridge : Bridge::Client? = nil)
       @owned_bridge = @bridge.nil?
-      @bridge = @bridge || Bridge::Client.new
+      @bridge = @bridge || Bridge::Client.shared
       @evaluation = eval_gemfile
       @sources = @evaluation.sources
       @bridge_bundler_version = @evaluation.bundler_version
@@ -782,6 +782,8 @@ module Celerite
     # (rubygems.rb:122-136). Install sets this while probing inferred plugins.
     property remote_only : Bool = false
     @installed_local_specs : Array(Resolver::IndexSpec)? = nil
+    @project_spec_dir : String? = nil
+    @project_spec_dir_computed = false
     # full_name of the installed gems that supplied `--local` candidates; the
     # installer skips these (they are already present in this GEM_HOME).
     getter local_installed_full_names = Set(String).new
@@ -804,10 +806,14 @@ module Celerite
     # while Bundler's local-only sources see them because `bundle` rewires
     # Gem.path to the bundle path.
     private def project_spec_dir : String?
+      # One lookup per resolution: every Ruby environment field is constant for
+      # the bridge process, and `install` asks for this directory repeatedly.
+      return @project_spec_dir if @project_spec_dir_computed
+      @project_spec_dir_computed = true
       env = @bridge.not_nil!.ruby_environment
       root = InstallPaths.gem_root(@definition.config, env.default_gem_dir, ruby_abi_for_git)
       dir = File.join(root, "specifications")
-      Dir.exists?(dir) ? dir : nil
+      @project_spec_dir = Dir.exists?(dir) ? dir : nil
     end
 
     private def local_index_specs(name : String) : Array(Resolver::IndexSpec)
