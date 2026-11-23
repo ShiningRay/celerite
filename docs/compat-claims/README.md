@@ -137,7 +137,7 @@
 | C-M7-2-007 | list 的分组发现在无桥环境下同样生效，--only-group 不再误报组不存在 | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'crystal spec spec/m7_list_groups_plain_env_spec.cr'；'bash script/diff…` |
 | C-M7-2-008 | show 与 info 对被忽略组的依赖抛 GemNotFound 7，且未安装的锁定 gem 优先于组消息 | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential show-group-ignored show-missing-installed'；'…` |
 | C-M7-2-009 | 无 lockfile 时 show 与 info 先解析 Gemfile 再发现，缺失文案取依赖显示名 | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential show-no-lockfile-missing show-no-lockfile-in…` |
-| C-M7-2-010 | info 与 show 在精确名未命中时回退解释器默认 gem，多候选时打印编号菜单 | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential info-default-gem-fallback info-regex-menu'；'…` |
+| C-M7-2-010 | info 与 show 在精确名未命中时回退解释器默认 gem，多候选时打印编号菜单 | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential info-default-gem-fallback info-regex-menu in…` |
 | C-M7-2-011 | info 按固定顺序输出 gemspec 字段，PATH 与 GIT 源的元数据在已装 specifications 缺位时回退读 gem 目录 | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential info-metadata-escapes show-info-installed in…` |
 | C-M7-2-012 | check 在依赖已满足时按定义落盘 lockfile，--dry-run 与 frozen 下不写 | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential check-rewrites-lock check-dry-run-keeps-lock…` |
 | C-M7-2-013 | check 在 Gemfile 依赖集不在锁内时先重新解析，缺失打印三行后 exit 1 且不写锁 | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential check-gemfile-new-dependency'；'crystal spec …` |
@@ -146,6 +146,7 @@
 | C-M7-2-016 | info 与 show 拒绝第二个位置参数，list 的 usage 行不带 [OPTIONS] | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential info-extra-argument show-extra-argument list…` |
 | C-M7-2-017 | check、list、show、info 在读 Gemfile 之前拒绝未知开关 | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential unknown-switch-check unknown-switch-list unk…` |
 | C-M7-2-018 | install、check、list 的组集合按 BUNDLE_WITH / BUNDLE_WITHOUT / BUNDLE_ONLY 收敛，list 另有 --only-group / --without-group | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential install-without-group install-without-two-gr…` |
+| C-M7-2-019 | Git 源的已安装发现与 install/check/list/show/info 的端到端差分 | 已实现 | [M7-2-installed-discovery.md](M7-2-installed-discovery.md) | `'bash script/differential git-installed-discovery git-path-install git…` |
 | C-M7-3-001 | `fund` 从已安装 specifications 的 `funding_uri` metadata 打印资助信息 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'crystal spec spec/m7_fund_spec.cr'` |
 | C-M7-3-002 | `fund` 优先从 PATH/GIT 源的 gemspec 读 `funding_uri` | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential fund-path'` |
 | C-M7-3-003 | `fund --group` 按标量语义取组、重复后者覆盖且不切分逗号 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential fund-groups fund-group-development'` |
@@ -361,5 +362,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 249 条断言（已实现 204 · 已声明差异 29 · 未实现 4 · 未验证 9 · 已取代 3）。
+合计 250 条断言（已实现 205 · 已声明差异 29 · 未实现 4 · 未验证 9 · 已取代 3）。
 <!-- END GENERATED INDEX -->

@@ -377,3 +377,51 @@ Found no changes, using resolution from the lockfile
 - 菜单 oracle 只取 4.0.24；2.7.2 的菜单提示符与 `default_gem_spec` 行为未单独复采，C-M7-2-010 的「4.0.24 = 2.7.2」在本轮仍是继承结论，不是新 oracle。
 - 场景 E（`show --outdated` 的 2.7.2 废弃路径）与「锁需重解 + `--verbose`」组合未取 oracle；场景 C/D 只比对 stdout/stderr/exit，未比对参考是否静默改写 `Gemfile.lock`。
 - 缺项 4 只证明本机本轮可跑通 `git-installed-discovery`，不证明其他宿主不再触发 msys Low-IL `0xC0000022`。
+
+## 2026-11-23：M7-2 行闭合判据的复审（task-197）
+
+基线 `fde5c75`，worktree `C:\temp\celerite-t197`；celerite 由本 worktree 的 `crystal build src/cli.cr -o bin/celerite.exe` 产出（EXIT=0，12,775,863 B）。本轮只复审 task-182 剩余缺项 ③「Git 安装状态无差分」，并抽跑 14 条既有断言（另重跑 C-M7-2-011 的 spec）；不改 `docs/roadmap.md` 复选框。
+
+### oracle
+
+- `fixtures/differential/git-installed-discovery` 的 `command` 为 `install`、`check`、`list`、`show --paths gitgem`、`info --version gitgem`；Gemfile 为 `source "file:///@INDEX_DIR@"` + `gem "gitgem", git: "./gitgem", branch: "master"`，`git-init` 脚本建本地仓。两侧按 harness 既定规则比对 exit、stdout、stderr 与安装树（归一化 N1–N10）。
+- 同族夹具覆盖 GIT 源的其余命令面：`git-path-install`（install + path）、`git-pristine`、`git-tag`、`git-glob`；`git-submodules` 仍为已声明 deferral，未计作通过。
+
+### 参考锚点
+
+- `lib/bundler/source/git.rb` 的 `install_path` 为 `<install path>/bundler/gems/<name>-<short revision>`；`lib/bundler/rubygems_integration.rb` 的 `stubs_for` 与 `spec_set.rb:154-162` 决定只读命令的「已安装」判定；`cli/show.rb:19-30` 用 `full_gem_path` 判解包目录。
+- 4.0.24 与 2.7.2 在本组夹具上同判据。`git-submodules` 的参考侧被 git ≥2.38 的 `protocol.file.allow` 默认值拦下，属夹具/环境限制，不是产品缺陷。
+
+### 实现位置
+
+- `Commands.installed_gem_dir`（`src/celerite/cli/commands_surface.cr:1671`）的 `when "GIT"` 分支在 `:1681-1684` 调 `installed_git_checkout`（`:1822-1852`）：`path.system` 时取 `<Gem.dir>`，否则遍历 `<install path>/ruby/<abi>`，先拼 `bundler/gems/<base>-<revision[0,12]>`，未精确命中再按 `<base>-` 前缀回落；`installed_spec_file?` 在 `:1760`。
+- 单元层由 `spec/m7_installed_discovery_spec.cr:225-267` 三例覆盖：GIT checkout 解析、短 revision 与正斜杠路径列举、无 checkout 返回 nil。
+
+### 证据
+
+- 六个 git 夹具 × 双 profile 逐条结果：
+  - 4.0.24：`PASS git-installed-discovery (exit=0)`、`PASS git-path-install (exit=0)`、`PASS git-pristine (exit=0)`、`PASS git-tag (exit=0)`、`PASS git-glob (exit=0)`、`SKIP git-submodules (deferred for 4.0.24)`；汇总 `5 passed, 0 failed, 1 skipped`，EXIT=0。
+  - 2.7.2：同五条 PASS、`git-submodules` 同因 SKIP；汇总 `5 passed, 0 failed, 1 skipped`，EXIT=0。
+- 判据抽跑（4.0.24，claim → 夹具 → 结果）：
+  - C-M7-2-001：`check-installed-spec-without-gemdir` PASS (exit=0)、`check-gemdir-without-spec` PASS (exit=7)
+  - C-M7-2-002：`list-installed-spec-without-gemdir` PASS (0)、`info-installed-spec-without-gemdir` PASS (0)
+  - C-M7-2-003：`list-gem-entirely-missing` PASS (1)、`check-gemdir-without-spec` PASS (7)
+  - C-M7-2-006：`list-json`、`list-json-name`、`list-format-invalid`、`list-option-conflict` 全 PASS（exit 0/0/15/15）
+  - C-M7-2-007：`list-only-group`、`list-multi-group` PASS (0/0)
+  - C-M7-2-008：`show-group-ignored`、`show-missing-installed` PASS (7/7)
+  - C-M7-2-009：`show-no-lockfile-missing`、`show-no-lockfile-installed` PASS (7/7)
+  - C-M7-2-010：`info-default-gem-fallback`、`info-regex-menu`、`info-menu-select`、`info-menu-select-default`、`info-menu-select-exit`、`info-menu-select-out-of-range` 六条全 PASS (0)
+  - C-M7-2-012：`check-rewrites-lock`、`check-dry-run-keeps-lock` PASS (0/0)
+  - C-M7-2-013：`check-gemfile-new-dependency` PASS (1)
+  - C-M7-2-014：`check-frozen-ruby-nolock` PASS (16)、`show-frozen-ruby-nolock` PASS (0)
+  - C-M7-2-016：`info-extra-argument`、`show-extra-argument`、`list-extra-argument` PASS (15/15/15)
+  - C-M7-2-017：`unknown-switch-check`、`unknown-switch-list`、`unknown-switch-show` PASS (15/15/15)
+  - C-M7-2-018：`install-without-group`、`install-without-two-groups`、`install-only-group`、`check-only-group`、`list-only-group`、`list-multi-group` 六条 PASS (0)
+- 2.7.2 复跑 11 条：`check-rewrites-lock`、`check-dry-run-keeps-lock`、`check-gemfile-new-dependency`（exit=1）、`check-frozen-ruby-nolock`（**exit=0**，与 C-M7-2-014 记的 2.7.2 分支一致）、`show-frozen-ruby-nolock`、`install-without-group`、`install-without-two-groups`、`list-only-group`、`info-default-gem-fallback`、`info-menu-select`、`info-menu-select-default` 全 PASS；汇总 `11 passed, 0 failed, 0 skipped`，EXIT=0。
+- spec：`spec/m7_installed_discovery_spec.cr`、`m7_check_rewrite_spec.cr`、`m7_check_missing_dependency_spec.cr`、`m7_frozen_ruby_unlock_spec.cr`、`m7_info_select_spec.cr`、`m7_info_menu_select_spec.cr` 合计 `49 examples, 0 failures, 0 errors, 0 pending`；`m7_list_format_spec.cr`、`m7_list_groups_plain_env_spec.cr`、`m7_show_group_filter_spec.cr`、`m7_show_no_lockfile_spec.cr`、`m7_extra_arguments_spec.cr`、`m7_unknown_switches_spec.cr`、`m7_reverse_dependencies_spec.cr` 合计 `36 examples, 0 failures, 0 errors, 0 pending`；两批 EXIT=0。
+- 反假绿：本轮未改 `src/`，故未另建 pre197 旧二进制；`git-installed-discovery` 的反假绿已由 task-184 用 `C:\temp\celerite-pre184\bin\celerite.exe` 做过（四例 0 passed / 4 failed，差异为提示符 3 vs 4 空格与 EOF 尾空格），本轮不重复。
+
+### 已声明差异
+
+- `git-submodules` 本机双侧均不可通过：参考侧 `fatal: transport 'file' not allowed`，我方侧同路径无 repo。夹具/环境限制，不据此判 M7-2 不可勾。
+- 既有已声明差异本轮未动：`show --verbose` 三行 debug 通知、菜单 oracle 只取 4.0.24、`show`/`info` 组过滤未逐开关取 oracle、`Did you mean` 未实现、`git-installed-discovery` 只证本机短路径可跑通（不证明其他宿主不再触发 msys Low-IL `0xC0000022`）。

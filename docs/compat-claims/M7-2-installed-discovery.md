@@ -99,8 +99,8 @@
 - 状态：已实现
 - 参考行为（4.0.24 = 2.7.2）：`cli/common.rb:68-96 select_spec` 精确名未命中时按 `Regexp.new(name)` 收窄并追加 `default_gem_spec`，候选 0 走 not-found、1 直接取、多于 1 走 `cli/common.rb:103-111 ask_for_spec_from` 的 `<n> : <name>` 加 `0 : - exit -` 与 `> ` 菜单（EOF 取 0 不选）；`cli/common.rb:98-101 default_gem_spec` 要求 `default_gem?`
 - 我方行为：新增 `DefaultGemInfo`、`parse_spec_name_regex`、`lookup_default_gem`、`append_gemspec_metadata`（`src/celerite/cli/commands.cr:1923-1984`），菜单从 `STDIN.gets` 取序号，EOF 时补一个空格对齐 `>  ` 的字节
-- 判据：`bash script/differential info-default-gem-fallback info-regex-menu`；`crystal spec spec/m7_info_select_spec.cr`
-- 边界：菜单「输入序号选中」分支无端到端用例，只覆盖 EOF 退出 0；`gem_not_found_message` 的 `Did you mean …?` 未实现；`info bundler` 的 `Path` 不入断言（差分里参考经检出树加载、无对应 gemspec）
+- 判据：`bash script/differential info-default-gem-fallback info-regex-menu info-menu-select info-menu-select-default info-menu-select-exit info-menu-select-out-of-range`；`crystal spec spec/m7_info_select_spec.cr spec/m7_info_menu_select_spec.cr`
+- 边界：菜单「输入序号选中」分支由 task-184 的四个夹具（`stdin` 分别喂 `1`/`2`/`0`/`99`）与 `spec/m7_info_menu_select_spec.cr` 覆盖；`gem_not_found_message` 的 `Did you mean …?` 未实现；`info bundler` 的 `Path` 不入断言（差分里参考经检出树加载、无对应 gemspec）
 - 生效：task-71（`e932fe6`）
 - 取代：无
 
@@ -182,4 +182,14 @@
 - 判据：`bash script/differential install-without-group install-without-two-groups install-only-group check-only-group list-only-group list-multi-group`（task-184 本轮 6 passed / 0 failed）；`crystal spec spec/m7_installed_discovery_spec.cr`（`:378-407` 的 `check honors BUNDLE_WITH=test` 两例、`:409-460` 的 list `--only-group` / `--without-group` 例）
 - 边界：组语义只在 `install` / `check` / `list` 上取 oracle；`show` / `info` 的组过滤由 C-M7-2-008 覆盖，本条不重复断言。`install-without-*` 只用 `BUNDLE_WITHOUT` 环境变量验证，未逐一取 `bundle install --without` 开关的 oracle；`check` 不接受 `--only-group`（参考 Thor 报 `Unknown switches`，见 `spec/m7_installed_discovery_spec.cr:425-436`），故 `check-only-group` 走 `BUNDLE_ONLY`
 - 生效：task-184（本轮，基线 `77c231c`）
+- 取代：无
+
+## C-M7-2-019 Git 源的已安装发现与 install/check/list/show/info 的端到端差分
+
+- 状态：已实现
+- 参考行为（4.0.24 = 2.7.2）：`source/git.rb` 的 `install_path` 为 `<install path>/bundler/gems/<name>-<short revision>`；只读命令经 `rubygems_integration.rb` 的 `stubs_for` 与 `spec_set.rb:154-162` 判定已安装；`cli/show.rb:19-30` 以 `full_gem_path` 判解包目录；锁定 revision 的前 12 位用于目录名
+- 我方行为：`Commands.installed_gem_dir` 的 `when "GIT"` 分支（`src/celerite/cli/commands_surface.cr:1681-1684`）调 `installed_git_checkout`（`:1822-1852`），`path.system` 时取 `<Gem.dir>`、否则遍历 `<install path>/ruby/<abi>`，先精确匹配 `<base>-<revision[0,12]>`、再按 `<base>-` 前缀回落；specification 判定在 `installed_spec_file?`（`:1760`）
+- 判据：`bash script/differential git-installed-discovery git-path-install git-pristine git-tag git-glob`；`crystal spec spec/m7_installed_discovery_spec.cr`（`:225-267` 三例）
+- 边界：`git-submodules` 双侧不可通过（参考侧 `fatal: transport 'file' not allowed`，我方侧同路径无 repo），属夹具/环境限制，不作本条判据；只证明本机短路径 worktree 可跑通，不证明其他宿主不再触发 msys Low-IL `0xC0000022`；GIT 源与组过滤的组合未取 oracle
+- 生效：task-197（基线 `fde5c75`；该组夹具由 task-184 的宿主环境变化后才可复跑）
 - 取代：无
