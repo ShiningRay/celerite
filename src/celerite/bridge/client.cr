@@ -1,3 +1,4 @@
+require "digest/sha256"
 require "json"
 require "process"
 require "../errors"
@@ -70,9 +71,13 @@ module Celerite
     # is a full RPC round trip. The reference evaluates a Gemfile once per
     # process (`bundler.rb` `@definition ||=`) and reuses that definition, so a
     # command never re-evaluates an unchanged file; the cache reproduces that
-    # without changing what any caller sees. Entries are keyed by absolute path
-    # plus size/mtime so a Gemfile rewritten mid-command still re-evaluates, and
-    # the cache only lives inside one `CLI.run` (see `begin_run`/`finish`).
+    # without changing what any caller sees.
+    #
+    # A hit is only trusted when the bytes on disk still hash to the digest the
+    # bridge reported (`gemfile_sha256`): commands rewrite the Gemfile in the
+    # middle of a run (`add` appends a gem and then installs), and a size/mtime
+    # key cannot tell an equal-length rewrite inside the same millisecond. The
+    # cache only lives inside one `CLI.run` (see `begin_run`/`finish`).
     module EvaluationCache
       @@active = false
       @@entries = {} of String => GemfileEvaluation
@@ -87,27 +92,31 @@ module Celerite
         @@entries.clear
       end
 
-      def self.key(path : String) : String
-        absolute = File.expand_path(path)
-        info = File.info?(absolute)
-        file = if info
-                 "#{absolute}|#{info.size}|#{info.modification_time.to_unix_ms}"
-               else
-                 absolute
-               end
+      private def self.key(path : String) : String
         # Bundler's evaluation reads the process environment (BUNDLE_GEMFILE,
         # BUNDLE_WITHOUT, BUNDLE_FROZEN, ...), and commands temporarily rewrite
         # those. An entry evaluated under another environment must not answer.
-        "#{file}|#{environment_signature}"
+        "#{File.expand_path(path)}|#{environment_signature}"
       end
 
       private def self.environment_signature : String
         ENV.to_h.to_a.sort_by { |pair| pair[0] }.map { |(key, value)| "#{key}=#{value}" }.join('\u0001')
       end
 
+      private def self.contents(path : String) : String?
+        File.read(path)
+      rescue
+        nil
+      end
+
       def self.fetch(path : String) : GemfileEvaluation?
         return nil unless @@active
-        @@entries[key(path)]?
+        entry = @@entries[key(path)]?
+        return nil if entry.nil?
+        bytes = contents(File.expand_path(path))
+        return nil if bytes.nil?
+        return nil unless Digest::SHA256.hexdigest(bytes) == entry.gemfile_sha256
+        entry
       end
 
       def self.store(path : String, evaluation : GemfileEvaluation) : Nil
@@ -493,8 +502,11 @@ module Celerite
       end
 
       def evaluate_gemfile(path : String) : GemfileEvaluation
+        # A hit repeats an evaluation the caller would otherwise receive; the
+        # warnings ledger already printed that evaluation's warnings once, so a
+        # hit must not record them again (that would duplicate them when the
+        # per-command dedupe is bypassed).
         if cached = EvaluationCache.fetch(path)
-          GemfileWarnings.record(cached.warnings)
           return cached
         end
         evaluation = GemfileEvaluation.from_json(request("evaluate_gemfile", {"gemfile" => path}).to_json)
