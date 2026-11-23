@@ -215,8 +215,8 @@
 | C-M7-4-031 | gem 下载遇 403 时重试三次后抛 `Bundler::HTTPError: Could not download gem` 并以 5 退出，但不再打印参考的 Ruby 回溯 | 已声明差异 | [M7-4-network-options.md](M7-4-network-options.md) | `'crystal spec spec/m7_forbidden_download_spec.cr'；'crystal spec spec/m…` |
 | C-M7-5-001 | 判据装具把 git 源夹具的暂存仓库建在工作目录内并以 Windows 路径交给 `git -C` | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential add-git add-ref'` |
 | C-M7-5-002 | GIT 锁段按 `ref, branch, tag, submodules, glob` 的固定顺序写选项，非默认 glob 才写 `glob:` | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'crystal spec spec/m7_source_lock_options_spec.cr'；'bash script/differ…` |
-| C-M7-5-003 | git 源 `tag:` 与 `glob:` 的锁段语义在本机无法取证 | 未验证 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential git-tag git-glob'` |
-| C-M7-5-004 | git 源 `submodules:` 选项两侧都没有可执行证据 | 未验证 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential git-submodules'` |
+| C-M7-5-003 | git 源 `tag:` 与 `glob:` 的锁段语义已由双 profile 差分判据覆盖 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential git-tag git-glob'` |
+| C-M7-5-004 | git 源 `submodules:` 选项两侧都没有可执行证据 | 已声明差异 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential git-submodules'` |
 | C-M7-5-005 | git / path 源的身份包含 uri、ref、branch、glob、submodules，源变化必须重解而非复用锁定路径 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'crystal spec spec/m7_git_source_reuse_spec.cr'` |
 | C-M7-5-006 | PATH 锁段只在 glob 非默认值时写 `glob:`，默认值是 `{,*,*/*}.gemspec` | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential path-glob-monorepo'；'crystal spec spec/m7_so…` |
 | C-M7-5-007 | path 源按默认 glob 的三档深度取 gemspec，未命中时归属串为 `source at \`<path>\`` | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential path-glob-default-root path-glob-default-nes…` |
@@ -242,11 +242,13 @@
 | C-M7-5-027 | 原生扩展编译失败映射为 `InstallError`（5）：消息含真实回溯与 `In Gemfile:` 依赖树，半装目录保留、只删 `specifications/<full>.gemspec` | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'crystal spec spec/m7_install_failure_spec.cr'` |
 | C-M7-5-028 | 扩展编译失败后不在 `<bundle>/cache/` 留下该 gem 的 `.gem` | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'crystal spec spec/m7_install_failure_spec.cr'` |
 | C-M7-5-029 | 安装结束后不留 `bundler.lock`，并按参考补齐 `ruby/<abi>` 下的记账目录 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential install-bundle-layout'；'crystal spec spec/m7…` |
-| C-M7-5-030 | Linux gnu / musl 平台匹配只做到平台字符串归一，真实 Linux ABI 运行矩阵未验证 | 未验证 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'crystal spec spec/gem/platform_spec.cr'` |
-| C-M7-5-031 | 多 Ruby ABI 的平台变体选择只在宿主 `x64-mingw-ucrt` 上取证，跨 ABI 矩阵未验证 | 未验证 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential multi-platform-lock multi-platform-install m…` |
+| C-M7-5-030 | Linux gnu / musl 平台匹配只做到平台字符串归一，真实 Linux ABI 运行矩阵未验证 | 已声明差异 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'crystal spec spec/gem/platform_spec.cr'` |
+| C-M7-5-031 | 多 Ruby ABI 的平台变体选择只在宿主 `x64-mingw-ucrt` 上取证，跨 ABI 矩阵未验证 | 已声明差异 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential multi-platform-lock multi-platform-install m…` |
 | C-M7-5-032 | `add --strict` 在 install 阶段失败时保留已追加的 Gemfile 与已改写的锁，注入阶段失败时不写盘 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential add-strict'；'crystal spec spec/m7_add_strict…` |
 | C-M7-5-033 | 显式深层 `glob:` 让 path 源越过默认两层深度解析，未命中以 exit 7 报参考 not-found 文案 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential path-glob-explicit-deep path-glob-explicit-d…` |
 | C-M7-5-034 | 参考不把 `~/.gemrc` 当凭据源、也不响应 `WWW-Authenticate` 质询：我方按参考保持不实现（原 C-M7-5-018 断言作废） | 已声明差异 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential auth-gemrc-not-a-source'（4.0.24 与 2.7.2 双 pr…` |
+| C-M7-5-035 | 磁盘错误只有 spec 级判据、无差分级 oracle；Windows 上的中断清理两侧都不清扫残留，但 INT 处理不一致 | 已声明差异 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'crystal spec spec/m7_filesystem_errors_spec.cr spec/m7_filesystem_err…` |
+| C-M7-5-036 | Linux gnu/musl 与多 Ruby ABI 只有宿主单 ABI 的字符串级判据，记为本机不可验证的已声明差异 | 已声明差异 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'crystal spec spec/gem/platform_spec.cr'；'bash script/differential mul…` |
 | C-M7-6-001 | `plugin install --path` 把 plugins.rb 声明的命令写入项目索引 `commands:` | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_commands_spec.cr' 与 'bash script/differen…` |
 | C-M7-6-002 | 索引中登记的插件命令先于 `bundler-<name>` PATH 回退分发 | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_commands_spec.cr'` |
 | C-M7-6-003 | `help <插件命令>` 以 `--help` 执行插件命令 | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_commands_spec.cr'` |
@@ -365,5 +367,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 253 条断言（已实现 207 · 已声明差异 30 · 未实现 4 · 未验证 7 · 已取代 5）。
+合计 255 条断言（已实现 208 · 已声明差异 35 · 未实现 4 · 未验证 3 · 已取代 5）。
 <!-- END GENERATED INDEX -->

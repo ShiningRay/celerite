@@ -24,25 +24,28 @@
 - 生效：task-5（b051585）
 - 取代：无
 
-## C-M7-5-003 git 源 `tag:` 与 `glob:` 的锁段语义在本机无法取证
+## C-M7-5-003 git 源 `tag:` 与 `glob:` 的锁段语义已由双 profile 差分判据覆盖
 
-- 状态：未验证
+- 状态：已实现
 - 参考行为（4.0.24）：`lib/bundler/source/git.rb:53-61` 在 `revision:` 之后写 `  tag: <tag>` 或非默认 `  glob: <glob>`；`git-tag` 夹具的参考锁段为 `remote: ./gitgem` / `revision: <staged sha>` / `tag: v0.1.0` 与 `specs: gitgem (0.2.0)`，`git-glob` 夹具写 `glob: gems/*/*.gemspec` 且只锁 `alpha (0.1.0)`
 - 我方行为：`src/celerite/resolution.cr:2271 git_lock_options` 已按同一顺序渲染，但两条端到端均未取证
 - 判据：`bash script/differential git-tag git-glob`
 - 边界：本机 Crystal 产物以 Low IL（`S-1-16-4096`）运行，其 msys `sh.exe` 无法创建 `\BaseNamedObjects\msys-2.0S5-<hash>`，两夹具都在 `git clone --mirror` 阶段以 `0xC0000022` 失败（与 C-cross-001 同因）；干净非沙箱环境与 Linux 宿主均未复跑，故不升级为已实现
 - 生效：task-5（4237b06）
 - 取代：无
+- 更新（task-211）：2026-11-23 在短路径 worktree `C:\temp\celerite-t211`（`1f73fbf`）亲跑 `bash script/differential git-tag git-glob` —— 4.0.24 侧 `PASS git-tag (exit=0)`、`PASS git-glob (exit=0)`；`BUNDLER_REF_VERSION=2.7.2` 侧 `PASS git-tag (exit=0)`、`PASS git-glob (exit=0)`；两 profile 均 `0 failed`。短路径 worktree + `PATH` 前置 `C:\msys64\usr\bin`、`C:\msys64\ucrt64\bin` 下不再撞 Low-IL `0xC0000022`，task-160 记的「本机无法取证」已不成立，故状态由「未验证」改「已实现」；原边界文字保留为历史记录；本条标题原为「在本机无法取证」，随状态改判一并改写，正文与参考锚点未动。
 
 ## C-M7-5-004 git 源 `submodules:` 选项两侧都没有可执行证据
 
-- 状态：未验证
+- 状态：已声明差异
 - 参考行为（4.0.24）：`lib/bundler/source/git.rb:53-61` 的 `%w[ref branch tag submodules]` 会把 `  submodules: true` 写进 GIT 段；参考侧本夹具因 git ≥2.38 拒绝 submodule file-transport（`fatal: transport 'file' not allowed`）记为 documented SKIP
 - 我方行为：同 `src/celerite/resolution.cr:2271`，未单独取证
 - 判据：`bash script/differential git-submodules`
-- 边界：参考自 git 2.38 起拒绝 file transport，我方受同一 Low-IL 阻塞；不带 submodule 的 git 源见 C-M7-5-003
+- 边界：参考侧 git ≥2.38 拒绝 `file` transport（`fatal: transport 'file' not allowed`），本机双侧不可过，故判本机不可验证的声明差异；不带 submodule 的 git 源见 C-M7-5-003。deferred 理由逐字：
+  Relative submodule URL "url = ../subdep" resolves into bundle/ruby/*/cache/bundler/git/subdep for both sides. Reference is additionally blocked by git's submodule file-transport policy (fatal: transport 'file' not allowed; bundler does not pass -c protocol.file.allow=always), while celerite passes that flag but no repo exists at the resolved path. Local-file submodule fixtures cannot pass on the reference side under git >= 2.38 defaults; needs a network submodule URL or a harness-level protocol.file.allow=always setting. See docs/compat-matrix/generated/differential-4.0.24-2026-11-11.md.
 - 生效：task-5（4237b06）
 - 取代：无
+- 更新（task-211）：本轮 4.0.24 与 2.7.2 各跑一次 `bash script/differential git-submodules`，两侧均 `SKIP git-submodules`（deferred，理由逐字见上）；参考侧不产出可执行 oracle，我方即无可比基准。状态由「未验证」改「已声明差异」——差异点是「本机不可验证」，不是「我方缺实现」：`src/celerite/resolution.cr:2271` 的 `%w[ref branch tag submodules]` 已按参考渲染 `submodules: true`。
 
 ## C-M7-5-005 git / path 源的身份包含 uri、ref、branch、glob、submodules，源变化必须重解而非复用锁定路径
 
@@ -298,23 +301,25 @@
 
 ## C-M7-5-030 Linux gnu / musl 平台匹配只做到平台字符串归一，真实 Linux ABI 运行矩阵未验证
 
-- 状态：未验证
+- 状态：已声明差异
 - 参考行为（4.0.24）：RubyGems `lib/rubygems/platform.rb:218` 对 linux 用 `normalized_linux_version == other.normalized_linux_version || ["musl#{@version}", "musleabi#{@version}", "musleabihf#{@version}"].include?(other.version)`；`:226-230 normalized_linux_version` 去掉 `gnu` 前缀与 `eabi(hf)` 后缀，`:194` 注释说明「无版本」等价于 gnu
 - 我方行为：`src/celerite/gem/platform.cr:171`（非 linux 走空版本通配）、`:173-174`（同样的归一比较与 musl 候选集）、`:177 normalized_linux_version`、`:185 musl_candidate`
 - 判据：`crystal spec spec/gem/platform_spec.cr`
 - 边界：判据只在 Windows x64-mingw-ucrt 宿主上做字符串比较；`gnu` / `musl` 的真实 ABI 差异（`docs/architecture.md:202` 要求的运行矩阵）没有任何 Linux 宿主、容器或虚拟机证据，故不声明为已实现
 - 生效：—
 - 取代：无
+- 更新（task-211）：本机实测 `RUBY_DESCRIPTION` = `ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x64-mingw-ucrt]`、`RUBY_PLATFORM` = `x64-mingw-ucrt`；无 Linux 宿主或容器可跑 `gnu` / `musl` 两套 ABI。状态由「未验证」改「已声明差异」（本机不可验证的已声明差异，行级定性见 C-M7-5-036）；原判据只证明平台字符串归一，未变。
 
 ## C-M7-5-031 多 Ruby ABI 的平台变体选择只在宿主 `x64-mingw-ucrt` 上取证，跨 ABI 矩阵未验证
 
-- 状态：未验证
+- 状态：已声明差异
 - 参考行为（4.0.24）：平台变体选择 `lib/bundler/resolver.rb:255-303 all_versions_for`（ruby 候选 priority -1、平台候选 priority 1）→ `lib/bundler/match_platform.rb:12-15 select_best_platform_match` → `lib/bundler/rubygems_ext.rb:115-124 sort_and_filter_best_platform_match`（精确平台优先，再按 specificity 与依赖集取同组）
 - 我方行为：`src/celerite/resolver/source.cr:246` / `:257` / `:284`（同口径的 ruby / 平台分组与 specificity 取最小），`ResolvedSpec` 的平台字段驱动 PLATFORMS 段
 - 判据：`bash script/differential multi-platform-lock multi-platform-install multi-platform-install-ruby`；`crystal spec spec/m7_platform_variant_selection_spec.cr`
 - 边界：宿主只有 `x64-mingw-ucrt` 一种 ABI；`BUNDLER_REF_VERSION=2.7.2` 换的是参考 Bundler 版本，不是第二个 Ruby ABI；Linux / macOS ABI 与多 Ruby 版本矩阵没有任何证据
 - 生效：task-3（d130bbb）
 - 取代：无
+- 更新（task-211）：本机只有 `C:\Ruby40-x64` 一套 Ruby（`ruby 4.0.6 [x64-mingw-ucrt]`），`BUNDLER_REF_VERSION=2.7.2` 换的是参考 Bundler 版本而非 ABI；跨 ABI 矩阵无任何证据。状态由「未验证」改「已声明差异」（本机不可验证的已声明差异，行级定性见 C-M7-5-036）。
 
 ## C-M7-5-032 `add --strict` 在 install 阶段失败时保留已追加的 Gemfile 与已改写的锁，注入阶段失败时不写盘
 
@@ -345,3 +350,23 @@
 - 边界：本条是「原断言被证伪」的登记，不是缺口补做：若将来要求对齐某个会读 gemrc 或会应答质询的上游版本，需要新的 oracle，不得据本条自造功能；质询形态无差分夹具，原因是一次性质询在单个夹具服务器上无法对 ref / cel 两侧分别计数（首个请求放行后第二侧直接成功），属装具限制而非未验证
 - 生效：task-195（`docs(M7 task-195)` 提交）
 - 取代：取代 C-M7-5-018 的原「三形态未实现」记述
+
+## C-M7-5-035 磁盘错误只有 spec 级判据、无差分级 oracle；Windows 上的中断清理两侧都不清扫残留，但 INT 处理不一致
+
+- 状态：已声明差异
+- 参考行为（4.0.24 = 2.7.2，读码）：磁盘错误只在 `lib/bundler/shared_helpers.rb:105-127 filesystem_access` 把 `Errno::*` 映射成 Bundler 错误类，落点是锁文件写出（`lib/bundler/definition.rb:428-438`）与缓存/目录创建；中断侧 `lib/bundler/cli/install.rb:10-67` 从 `Installer.install` 到 `Bundler.load.cache` 之间没有任何 rescue/ensure 的残留清扫，也没有 `at_exit`。唯一的 INT 处理在并行安装线程池：`lib/bundler/worker.rb:115-117 add_interrupt_handler` 是 `trap("INT") { abort_threads }`（无平台守卫），`:88-92 abort_threads` 先 `@threads.each(&:exit)` 再 `exit 1`；顶层 `lib/bundler/friendly_errors.rb:39-41` 打印 `Quitting...`，Interrupt 在 `:54-60 exit_status` 落 else 分支（1）。对「已被中断、只剩 `.git` 的半装目录」参考不做清理，改用 `lib/bundler/source/git/git_proxy.rb:179-183 installed_to?` 把「只有 `.git`」判为未安装。
+- 我方行为：磁盘错误映射在 `src/celerite/filesystem_errors.cr:13 FilesystemErrors.map`，只接到锁文件写出（`src/celerite/lockfile/writer.cr:19-24`），与参考的落点一致，但未覆盖下载缓存与 bundle 目录创建。中断侧 `src/celerite/cli/commands_install.cr:1923` 的 `Signal::INT.trap` 位于 `:1922-1924` 的 `{% unless flag?(:windows) %}` 块内，且只服务 `bundle exec` 子进程转发（`:1916-1930`）；安装路径无 INT trap、无固定退出码。`src/celerite/installer.cr:293-309,381` 的 `clean_partial` 只清「失败后可重跑」的残留，不处理进程被中断的残留。
+- 判据：`crystal spec spec/m7_filesystem_errors_spec.cr spec/m7_filesystem_error_mapping_spec.cr spec/m7_install_failure_spec.cr`（`C-M7-5-024` / `C-M7-5-025` / `C-M7-5-027`+`028` 的 spec 级判据；本轮 `19 examples, 0 failures`）；差分级：无。`bash script/differential install-bundle-layout` 只覆盖 `C-M7-5-029` 的布局与「无 `bundler.lock` 残留」，不覆盖磁盘错误与中断清理。
+- 边界：磁盘错误没有差分级 oracle——ENOSPC 需要小配额卷、EROFS 需要只读文件系统，本机都造不出。可构造的注入形态有两个：① 只读锁文件（`chmod 444 Gemfile.lock` / `attrib +R`，夹具 `command` 可在两侧命令前各做一次），预期两侧都 exit 23 且 stderr 为参考 `PermissionError` 三行；② 把目标路径写成目录（`mkdir Gemfile.lock`），Windows 上落 `EACCES`、POSIX 上落 `EISDIR`，参考对 `EISDIR` 走 `GenericSystemCallError` 而非 `PermissionError`，跨平台不可逐字比对。因此 ① 可做差分、② 不可；本轮按要求只写「可构造形态 + 预期做法」，不改夹具、不新增 `chmod`/`attrib` 注入。中断清理在 Windows 上没有可观测契约：需要可控的长安装窗口 + 可注入中断点，且参考本身不做残留清扫；两侧真实差异是 INT 处理——参考在并行安装期 trap INT 后 `exit 1` 并打印 `Quitting...`，我方 Windows 上不 trap，Ctrl-C 由宿主直接终止，无该输出、无固定退出码。
+- 生效：task-211（`docs(M7 task-211)` 提交，见 `../roadmap-evidence/M7-5-sources-platforms.md` 的「M7-5 收口与剩余声明的定性（task-211）」节）
+- 取代：补充 `C-M7-5-024`/`025`/`027`/`028`/`029` 的行级定性，不取代其正文
+
+## C-M7-5-036 Linux gnu/musl 与多 Ruby ABI 只有宿主单 ABI 的字符串级判据，记为本机不可验证的已声明差异
+
+- 状态：已声明差异
+- 参考行为（4.0.24）：平台匹配用 RubyGems `lib/rubygems/platform.rb:218`（linux 的 `normalized_linux_version` 比较与 `musl*` 候选集）、`:226-230 normalized_linux_version`；多 ABI 的平台变体选择走 `lib/bundler/resolver.rb:255-303 all_versions_for` → `lib/bundler/match_platform.rb:12-15` → `lib/bundler/rubygems_ext.rb:115-124 sort_and_filter_best_platform_match`。这些语义都可读，但都需要第二个 ABI 的运行结果才能取证。
+- 我方行为：`src/celerite/gem/platform.cr:171-185` 同口径的平台字符串归一与 musl 候选；`src/celerite/resolver/source.cr:246,257,284` 的平台分组与 specificity 取最小。两侧都只在宿主 `x64-mingw-ucrt` 上取证过。
+- 判据：`crystal spec spec/gem/platform_spec.cr`；`bash script/differential multi-platform-lock`（本机只跑宿主单 ABI，task-192 记 `PASS (exit=0)`，本轮未复跑）
+- 边界：本机实测 `RUBY_DESCRIPTION` = `ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x64-mingw-ucrt]`、`RUBY_PLATFORM` = `x64-mingw-ucrt`，只有 `C:\Ruby40-x64` 一套 Ruby；无 Linux 宿主/容器，`gnu` 与 `musl` 的真实 ABI 差异、以及第二个 Ruby ABI 的变体选择都没有运行证据。`BUNDLER_REF_VERSION=2.7.2` 只换参考 Bundler 版本，不改变 ABI，不能当第二个 ABI 用。
+- 生效：task-211（`docs(M7 task-211)` 提交）
+- 取代：无（`C-M7-5-030` / `C-M7-5-031` 的正文与参考锚点保留，状态同步改判为本类）
