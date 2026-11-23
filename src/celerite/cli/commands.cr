@@ -2219,19 +2219,21 @@ module Celerite
           spec = candidates.first
         elsif total > 1
           # `cli/common.rb:103-111` ask_for_spec_from: numbered menu, then a
-          # single `> ` prompt. EOF or an out-of-range answer selects nothing
-          # and the command exits 0 without printing a gem block.
+          # `> ` prompt. EOF or an out-of-range answer selects nothing and the
+          # command exits 0 without printing a gem block.
           candidates.each_with_index { |candidate, index| stdout.puts "#{index + 1} : #{candidate.name}" }
           if remaining = default_info
             stdout.puts "#{candidates.size + 1} : #{remaining.name}"
           end
           stdout.puts "0 : - exit -"
-          stdout.print "> "
+          # `Bundler.ui.ask` (vendored Thor `ask_simply`) joins the statement
+          # and the absent default with one space, so the prompt is `">  "`,
+          # not `"> "`; `print_gem_info` then starts at column 5 (oracle:
+          # `>    * json_pure`). Print the same two spaces for every answer,
+          # including EOF.
+          stdout.print ">  "
           stdout.flush
           answer = STDIN.gets
-          # `cli/common.rb:104-108`: `Bundler.ui.ask` writes the prompt and, at
-          # EOF, one more space before the command exits without a selection.
-          stdout.print " " if answer.nil?
           index = ((answer || "").to_i? || 0) - 1
           if index >= 0 && index < candidates.size
             spec = candidates[index]
