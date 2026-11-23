@@ -467,3 +467,23 @@ worktree `C:\temp\celerite-t195`（基线 `e45f671`）；`PATH` 前置 `C:\msys6
 - 反假绿只对 `2654f55` 一个旧二进制取证；更早的二进制未跑（无所谓，该 commit 就是本条基线）。
 - 首次手工 oracle 曾用 `env -i` 复刻（`C:\temp\celerite-t214\.tmp-scratch\oracle-214\run-oracle.sh`），cel 侧出现 Ruby rubygems 常量警告与 `bin stub generation failed for racc-1.8.1` 的另一失败，**不当作证据**；本条全部结论取装具路径，手稿与产物仅留档。
 - 未跑全量 `crystal spec`（只跑与改动相关的一个 spec 家族），也未跑全量差分（只跑 7 条回归 + 2 条新夹具）。
+
+## 2026-11-23：M7-5 行勾选裁定（首辅，task-214 之后）
+
+### 裁定
+
+勾选 `[x]`。该行闭合判据逐分句如下：
+
+- **Git tag/glob**：`git-tag`、`git-glob` 两个夹具在 4.0.24 与 2.7.2 下均 PASS（task-192 抽跑、task-193 全量复核）；断言 `C-M7-5-003` 已由 task-211 从「未验证」改判「已实现」。
+- **两种多个 gemspec / monorepo**：`path-cache-multi-gemspec`、`path-package-multi-gemspec`、`path-glob-monorepo`、`path-glob-explicit-deep` 双 profile PASS，对应 `C-M7-5-007`/`008`/`033`。
+- **私有 source 鉴权**：oracle 复核后确认参考不把 `~/.gemrc` 当凭据源、也不响应 `WWW-Authenticate` 质询（`C-M7-5-034`），我方按参考保持不实现；真实缺口（源 URI userinfo 泄漏进进度行）已由 task-195 修掉（`src/celerite/uri_credentials_filter.cr`，`C-M7-5-018`）。
+- **离线安装**：`install-local-vendor-cache`（exit 0）、`install-local-no-cache`（exit 7）、`install-local-new-dep-not-installed`（exit 7）双 profile PASS，对应 `C-M7-5-019`…`021`。
+- **磁盘错误**：task-213 取到差分级 oracle 后，task-214 把两形态对齐 —— `install-lockfile-path-is-directory`（参考 exit 32 且安装前失败）与 `install-bundle-path-is-file`（参考 exit 13）双 profile PASS；反假绿用 `celerite-pre214` 旧二进制（12,787,034 B）得 `0 passed, 2 failed`，逐字差异是 `exit code: reference=32 celerite=23` 与「我方装完后才写锁」的顺序差。回归 6 条安装/锁夹具与 `m7_filesystem_*`/`m7_install*`/`m7_lock*` 三个 spec 家族（19 + 59 + 53 examples）全 0 failures。
+- **中断清理**：转为已声明差异（`C-M7-5-035` 的 task-214 更新段）。Crystal 在 Windows 不提供 `Signal::INT` 捕获（最小探针运行期抛 `NotImplementedError`，栈顶 `crystal/system/win32/signal.cr:6:5`），参考的 `Quitting...` 加退出码 1 在本机无法复现；两侧都不清扫残留目录，靠下次运行自愈。这是平台能力边界，不是本行未实现的实现项。
+- **Linux gnu/musl 与多 Ruby ABI**：已声明差异（`C-M7-5-030`/`031`/`036`），本机只有 `ruby 4.0.6 [x64-mingw-ucrt]` 一套 ABI，`BUNDLER_REF_VERSION` 换的是参考版本而不是 ABI。
+
+### 未验证
+
+- 中断路径的参考行为只有源码锚点（`worker.rb:115-117`、`friendly_errors.rb:39-41`/`:54-60`），没有对真实 `install` 注入 Ctrl-C 的实测。
+- task-208 的 2.7.2 全量与 task-207 被中断的 4.0.24 全量都不是在含 task-214 的 HEAD 上跑的；本行勾选依赖的是夹具级双 profile PASS，不是全量差分的新基线。
+- 安装顺序仍是字典序，与参考的拓扑序不同；这条归 `C-M7-5-029` 记录已声明差异，不在本行闭合判据内。
