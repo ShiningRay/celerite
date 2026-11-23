@@ -364,3 +364,13 @@ C 组刻意用「引擎侧 profile 环境变量 = 2.7.2、参考侧仍 4.0.24」
 - 证据（本任务只读核对，未改产品代码）：① 逐行读 4.0.24 与 2.7.2 的 `cli/console.rb`，确认 `force_activate` 分支为 4.0.24 独有、2.7.2 无；② 逐行读 4.0.24 `cli/doctor/diagnose.rb`，全树无 `check_path_components` / `check_gem_path`；③ `fixtures/differential/issue-no-gemfile` 下确有 `deferred-2.7.2` 与 `deferred-4.0.24`；④ 引用 task-206 实测：`issue` 无 Gemfile A/B 两侧 exit 10、stdout 各 1839 字节且路径归一后逐字相等；`console` A/B 参考打 `Failed to activate irb, please install it with 'gem install irb'` 加 ERROR REPORT（exit 1）、celerite 打 `irb is not available`（exit 1）；bundle 外 IRB 1.19.0 / reline 0.7.0 / fiddle 1.1.8 可 require。
 - 已声明差异：018（末行文案沿用 2.7.2，不镜像 4.0.24 的 ERROR REPORT，task-210 由「已实现」改判「已声明差异」）、020（console 子进程语义）；006/014/016/033 维持。031 维持「未实现」，按首辅裁定迁出本行闭合判据，登记为独立待办。
 - 未实跑：无（本任务纯文档修正），引用的实测数据来自 task-206 与本轮首辅裁定。
+
+## 2026-11-23：M7-3 行勾选裁定（首辅，task-210 之后）
+
+判据回顾（docs/roadmap.md 该行五个分句）：① `fund` 真实 metadata 满足（claims 001-005、007 已实现，006 为已声明差异）；② `gem` 模板满足（015 已实现，`gem-questionnaire` 4.0.24 差分 PASS、spec 4 examples 绿；014/016 为已声明差异，2.7.2 的 deferred 不计缺口）；③ 「完整 `console`/`env` 行为」按实收窄为「`console`（子进程语义，已声明差异）与 `env` 行为」——`env` 侧 035 已实现、`env-gemspec-multi` 双 profile PASS，`console` 侧采用子进程语义（`C-M7-3-020`，首辅明示接受），IRB 失败路径两侧退出码一致、末行文案差异已登记（`C-M7-3-018` 改判已声明差异），真实 IRB 会话在**两侧都可**不可达属本机环境限制（`C-M7-3-021` 保留未验证，边界已按实测改正）；④ 避免硬编码满足；⑤ 实证流水已逐字迁出。
+
+另两项处置：`C-M7-3-030` 由「未验证」改判已实现（harness 等价环境两侧 stdout 归一后逐字相等）；`C-M7-3-031`（`doctor` 完整诊断）**不在本行文字里点名**，首辅裁定迁出本行闭合判据、作为独立待办（状态保持未实现）。
+
+裁定：五个分句均满足，**M7-3 勾 `[x]`**；剩余 console 末行文案与 `doctor` 诊断面为已声明差异/独立待办，不阻塞本行。
+
+未验证：真实 TTY 的 IRB 交互会话（本机不可达）；`issue` 的 2.7.2 同名探针未跑（差分夹具对两侧仍 deferred，判据以 spec 与等价环境 A/B 为准）。
