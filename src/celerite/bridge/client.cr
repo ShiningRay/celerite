@@ -343,15 +343,49 @@ module Celerite
       getter warnings : Array(String) = [] of String
     end
 
+    # One `celerite-eval-v1` fingerprint produced by the same evaluation as the
+    # rest of the batch answer (roadmap L162, slice F1). It is output-only in
+    # this slice: no cache decision reads it, and nothing is persisted.
+    struct EvalFingerprint
+      getter text : String
+      getter digest : String
+      # The cheap inputs a caller can re-hash to check a future hit:
+      # `{"files":[{"role","path","sha256"}]}`, paths relative to the Gemfile's
+      # directory. Kept as JSON so a later slice can widen it without a client
+      # break; F1 republishes what the bridge sent.
+      getter verify : JSON::Any
+
+      def initialize(@text : String, @digest : String, @verify : JSON::Any)
+      end
+
+      # A malformed section degrades to nil: a server that predates the section
+      # or a shape this client does not know must not break the command that
+      # asked for it.
+      def self.parse(node : JSON::Any?) : EvalFingerprint?
+        object = node.try(&.as_h?)
+        return nil unless object
+        text = object["text"]?.try(&.as_s?)
+        digest = object["digest"]?.try(&.as_s?)
+        verify = object["verify"]?
+        return nil unless text && digest && verify
+        return nil unless verify.as_h?
+        new(text, digest, verify)
+      rescue JSON::Error
+        nil
+      end
+    end
+
     # Answer to `evaluate_batch` (roadmap L161, slice S2): the ordinary
     # evaluation plus the sections the request asked for. `gemspecs` stays nil
     # when the caller did not include it, so "not requested" and "requested but
-    # empty" stay distinguishable without a second response type.
+    # empty" stay distinguishable without a second response type; the same
+    # holds for `fingerprint`.
     struct BatchGemfileEvaluation
       getter evaluation : GemfileEvaluation
       getter gemspecs : Array(String)?
+      getter fingerprint : EvalFingerprint?
 
-      def initialize(@evaluation : GemfileEvaluation, @gemspecs : Array(String)? = nil)
+      def initialize(@evaluation : GemfileEvaluation, @gemspecs : Array(String)? = nil, @fingerprint : EvalFingerprint? = nil)
       end
     end
 
@@ -553,12 +587,13 @@ module Celerite
       end
 
       # One request that answers what `evaluate_gemfile` answers plus the
-      # sections named in `include` (roadmap L161, slice S2; `gemspecs` today).
-      # With no section requested this is the old single-op call: the payload
-      # omits `include`, and the cache may answer it exactly as before. A
-      # request that names a section cannot be served from the cache — the
-      # cache stores evaluations, not sections — so it always goes to the
-      # bridge.
+      # sections named in `include` (roadmap L161, slice S2: `gemspecs`;
+      # roadmap L162, slice F1: `fingerprint`). With no section requested this
+      # is the old single-op call: the payload omits `include`, and the cache
+      # may answer it exactly as before. A request that names a section cannot
+      # be served from the cache — the cache stores evaluations, not sections —
+      # so it always goes to the bridge; that also keeps a cached evaluation
+      # from standing in for a fingerprint computed from different inputs.
       def evaluate_batch(path : String, include sections : Array(String) = [] of String) : BatchGemfileEvaluation
         if sections.empty?
           if cached = EvaluationCache.fetch(path)
@@ -576,7 +611,8 @@ module Celerite
         GemfileWarnings.record(evaluation.warnings)
         EvaluationCache.store(path, evaluation)
         gemspecs = result["gemspecs"]?.try(&.as_a?).try(&.map(&.as_s))
-        BatchGemfileEvaluation.new(evaluation, gemspecs)
+        fingerprint = EvalFingerprint.parse(result["fingerprint"]?)
+        BatchGemfileEvaluation.new(evaluation, gemspecs, fingerprint)
       end
 
       # Specs exposed by a plugin source (`Bundler::Plugin::API::Source#specs`).

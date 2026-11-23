@@ -39,7 +39,10 @@ BRIDGE_PROTO_SUPPORTED = (BRIDGE_PROTO_MIN..BRIDGE_PROTO).to_a.freeze
 # (roadmap L161) is listed because this server implements it; the sections its
 # `include` accepts are narrower than the full batch protocol (see
 # `op_evaluate_batch`).
-BRIDGE_FEATURES = %w[evaluate_gemfile gemspec_paths plugin_gemfile_eval evaluate_batch].freeze
+# `fingerprint` is a section `evaluate_batch` can return, not an op: it is
+# listed so a client can tell this server from one that predates the section
+# and degrade instead of guessing. Callers must not call it as an op.
+BRIDGE_FEATURES = %w[evaluate_gemfile gemspec_paths plugin_gemfile_eval evaluate_batch fingerprint].freeze
 
 def bridge_emit(response)
   $stdout.puts JSON.generate(response)
@@ -289,6 +292,113 @@ def bridge_serialize_evaluation(gemfile, builder, contents, warnings)
   }
 end
 
+# --- Evaluation fingerprint (roadmap L162, slice F1) -------------------------
+#
+# One evaluation yields a `celerite-eval-v1` text plus its SHA-256 and a
+# `verify` set. F1 only produces them: nothing here reads a cache, writes to
+# disk, or changes stdout/stderr/exit, and the text is derived from the values
+# the same `bridge_evaluate_gemfile` call already produced — never from a
+# second Gemfile execution (`assets/bridge/server.rb:230-247`).
+FINGERPRINT_MAGIC = "celerite-eval-v1"
+
+# `record := key TAB value LF`, so TAB, LF, CR and backslash inside a value are
+# escaped. gsub with a block keeps the replacement literal: no `\1` rewriting.
+def bridge_fingerprint_escape(value)
+  value.to_s
+       .gsub("\\") { "\\\\" }
+       .gsub("\t") { "\\t" }
+       .gsub("\n") { "\\n" }
+       .gsub("\r") { "\\r" }
+end
+
+# Paths enter the text absolute with `/` separators. No case folding and no
+# realpath: the fingerprint must describe the bytes and the spelling the
+# evaluator actually saw (plan §1.1).
+def bridge_fingerprint_path(path)
+  File.expand_path(path).tr("\\", "/")
+end
+
+# `verify` paths are relative to the Gemfile's directory so a caller can move
+# the project; anything outside that directory keeps its absolute form.
+def bridge_fingerprint_relative(path, base)
+  absolute = bridge_fingerprint_path(path)
+  prefix = bridge_fingerprint_path(base)
+  prefix = "#{prefix}/" unless prefix.end_with?("/")
+  absolute.start_with?(prefix) ? absolute[prefix.length..] : absolute
+end
+
+def bridge_fingerprint_file_sha256(path)
+  Digest::SHA256.file(path).hexdigest
+rescue SystemCallError, IOError
+  "-"
+end
+
+# `Bundler::Dsl#with_gemfile` appends every `eval_gemfile` target to
+# `@gemfiles` (`bundler/dsl.rb:328-336`); the main Gemfile is already the
+# `gemfile.*` record, so the chain is the rest, sorted and unique.
+def bridge_fingerprint_eval_chain(builder, gemfile)
+  main = bridge_fingerprint_path(gemfile)
+  chain = Array(builder.instance_variable_get(:@gemfiles)).map { |path| bridge_fingerprint_path(path) }
+  (chain - [main]).uniq.sort
+end
+
+def bridge_fingerprint_gemspecs(builder)
+  specs = Array(builder.gemspecs).filter_map(&:loaded_from)
+  specs.map { |path| bridge_fingerprint_path(path) }.uniq.sort
+end
+
+# Fixed record order: format, Gemfile, eval chain, gemspecs, interpreter. A
+# field this slice cannot observe is omitted rather than guessed; when a value
+# is absent the record carries `-` so the shape stays fixed.
+def bridge_fingerprint(builder, gemfile, contents)
+  main_path = bridge_fingerprint_path(gemfile)
+  base = File.dirname(main_path)
+  chain = bridge_fingerprint_eval_chain(builder, gemfile)
+  gemspecs = bridge_fingerprint_gemspecs(builder)
+  gemfile_digest = Digest::SHA256.hexdigest(contents)
+
+  records = []
+  records << ["fp.format", "1"]
+  records << ["gemfile.path", main_path]
+  records << ["gemfile.sha256", gemfile_digest]
+  records << ["evalchain.count", chain.length.to_s]
+  chain.each_with_index do |path, index|
+    records << ["evalchain.#{index}.path", path]
+    records << ["evalchain.#{index}.sha256", bridge_fingerprint_file_sha256(path)]
+  end
+  records << ["gemspec.count", gemspecs.length.to_s]
+  gemspecs.each_with_index do |path, index|
+    records << ["gemspec.#{index}.path", path]
+    records << ["gemspec.#{index}.sha256", bridge_fingerprint_file_sha256(path)]
+  end
+  records << ["ruby.version", RUBY_VERSION]
+  records << ["ruby.patchlevel", RUBY_PATCHLEVEL.to_s]
+  records << ["ruby.engine", RUBY_ENGINE]
+  records << ["ruby.engine_version", defined?(RUBY_ENGINE_VERSION) ? RUBY_ENGINE_VERSION : "-"]
+  records << ["rubygems.version", Gem::VERSION]
+  records << ["bundler.version", Bundler::VERSION]
+  records << ["platform", bridge_platform_string]
+
+  text = +"#{FINGERPRINT_MAGIC}\n"
+  records.each { |key, value| text << "#{key}\t#{bridge_fingerprint_escape(value)}\n" }
+
+  verify_files = [
+    { "role" => "gemfile", "path" => bridge_fingerprint_relative(gemfile, base), "sha256" => gemfile_digest },
+  ]
+  chain.each do |path|
+    verify_files << { "role" => "evalchain", "path" => bridge_fingerprint_relative(path, base), "sha256" => bridge_fingerprint_file_sha256(path) }
+  end
+  gemspecs.each do |path|
+    verify_files << { "role" => "gemspec", "path" => bridge_fingerprint_relative(path, base), "sha256" => bridge_fingerprint_file_sha256(path) }
+  end
+
+  {
+    "text" => text,
+    "digest" => Digest::SHA256.hexdigest(text),
+    "verify" => { "files" => verify_files },
+  }
+end
+
 # Evaluates the Gemfile with the real Bundler::Dsl and serializes the results
 # for the native core.
 def op_evaluate_gemfile(payload)
@@ -314,13 +424,15 @@ end
 # the old op's hash untouched, so the serialized bytes match `evaluate_gemfile`
 # exactly. Every requested section comes out of the same single evaluation.
 #
-# Only `gemspecs` is served for now. `plugins` belongs to a later slice: the
-# plugin declaration pass runs `Bundler::Plugin::DSL` over the same Gemfile,
-# i.e. a second DSL execution inside one request, which would repeat the
-# `GemfileWarnings` bookkeeping and any write a plugin hook performs while that
-# pass runs. Unknown `include` values are ignored rather than rejected: a caller
-# probing for a section this server cannot serve must degrade to the old ops,
-# never fail the whole request.
+# Only `gemspecs` and `fingerprint` are served for now. `plugins` belongs to a
+# later slice: the plugin declaration pass runs `Bundler::Plugin::DSL` over the
+# same Gemfile, i.e. a second DSL execution inside one request, which would
+# repeat the `GemfileWarnings` bookkeeping and any write a plugin hook performs
+# while that pass runs. `fingerprint` reuses this request's single evaluation:
+# `bridge_fingerprint` only hashes `contents`, the eval-chain files and the
+# loaded gemspecs, so it never re-runs the Gemfile. Unknown `include` values are
+# ignored rather than rejected: a caller probing for a section this server
+# cannot serve must degrade to the old ops, never fail the whole request.
 def op_evaluate_batch(payload)
   gemfile = payload["gemfile"]
   raise ArgumentError, "missing gemfile path" unless gemfile
@@ -331,6 +443,7 @@ def op_evaluate_batch(payload)
   builder, contents, warnings = bridge_evaluate_gemfile(gemfile)
   result = bridge_serialize_evaluation(gemfile, builder, contents, warnings)
   result["gemspecs"] = builder.gemspecs.map(&:loaded_from) if sections.include?("gemspecs")
+  result["fingerprint"] = bridge_fingerprint(builder, gemfile, contents) if sections.include?("fingerprint")
   result
 end
 
