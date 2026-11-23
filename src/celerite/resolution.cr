@@ -1769,13 +1769,23 @@ module Celerite
         package = packages[spec.full_name]?
         next spec if package.nil?
         dependencies = yield package
-        next spec if dependencies == spec.dependencies
+        # A gemspec's declaration order is not part of the lockfile contract:
+        # `LazySpecification#to_lock` sorts the edge lines. Treat a pure
+        # reorder as "no repair", otherwise a cosmetic difference forces a
+        # rewrite (and a second `Resolving dependencies...`) on every install.
+        next spec if dependency_lock_lines(dependencies) == dependency_lock_lines(spec.dependencies)
         changed = true
         ResolvedSpec.new(spec.name, spec.version, spec.platform, dependencies, spec.checksum,
           spec.source_index, spec.source_type, spec.source_info, spec.source_remote,
           spec.required_ruby_version, spec.required_rubygems_version, spec.default_gem)
       end
       changed
+    end
+
+    # The dependency lines as they will be rendered into the lockfile
+    # (`Lockfile::SourceSection#to_lock`): sorted and de-duplicated.
+    private def dependency_lock_lines(dependencies : Array(Lockfile::SpecDependency)) : Array(String)
+      dependencies.map { |dep| String.build { |io| dep.to_lock_line(io) } }.uniq.sort!
     end
 
     # `definition.rb:699-708` + `spec_set.rb:125-129,241-270`: the reference

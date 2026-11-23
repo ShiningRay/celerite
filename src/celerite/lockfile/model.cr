@@ -110,10 +110,14 @@ module Celerite
         specs.each do |spec|
           spec.to_lock_line(io)
           io << "\n"
-          spec.dependencies.each do |dep|
-            dep.to_lock_line(io)
-            io << "\n"
-          end
+          # Bundler's LazySpecification#to_lock sorts the spec's dependency
+          # lines by `dep.to_s` and drops duplicates, so a gemspec's declaration
+          # order never reaches the lockfile.
+          spec.dependencies
+            .map { |dep| String.build { |line| dep.to_lock_line(line) } }
+            .uniq
+            .sort!
+            .each { |line| io << line << "\n" }
         end
       end
     end
