@@ -16,7 +16,7 @@
 
 - 状态：已实现
 - 参考行为（治理规范，2026-11-22）：`docs/compat-evidence/README.md:20`「主报告 `../compat-report.md` 只放当前状态与索引；不要把流水写回主报告」
-- 我方行为：`docs/compat-report.md:9` 逐字声明「本文件不再追加流水」；`:1-3` 记录治理前后结构（原 7410 行拆为按日文件，本文只留现状与索引）；`:47` 明写「本文件**未重新运行**任何差分 / rspec / 全量门禁，只做搬运与现状汇总」
+- 我方行为：`docs/compat-report.md:9` 逐字声明「本文件不再追加流水」；`:1-3` 记录治理前后结构（原 7410 行拆为按日文件，本文只留现状与索引）；`## Scope and limits of what this report proves` 节（task-212 复核时为 `:50`，行号随改动漂移，引用以该节为准）明写「本文件**未重新运行**任何差分 / rspec / 全量门禁，只做搬运与现状汇总」
 - 判据：`bash script/differential install-check`；`grep -n "不再追加流水" docs/compat-report.md`
 - 边界：本条的可判定部分是 `grep` 一段（约束句在位）；「主报告此后未增长」由治理轮的一次性拆分保证，无逐次自动检查
 - 生效：文档治理轮（2026-11-22）
@@ -25,7 +25,7 @@
 ## C-M7-docs-003 引用历史结论写「compat-evidence 日期文件 + 节标题」，不写 `compat-report.md:<行号>`
 
 - 状态：已实现
-- 参考行为（治理规范，2026-11-22）：`docs/compat-report.md:221`「引用上文某个历史节时，请引「compat-evidence 的日期文件 + 节标题」，不要引本文件的旧行号」
+- 参考行为（治理规范，2026-11-22）：`docs/compat-report.md` 末段治理规则（task-212 复核时为 `:224`，行号随改动漂移，引用以该句为准）「引用上文某个历史节时，请引「compat-evidence 的日期文件 + 节标题」，不要引本文件的旧行号」
 - 我方行为：治理类文档（`README.md`、`docs/compat-report.md`、`docs/compat-evidence/`、`docs/roadmap.md`、`docs/roadmap-evidence/`）内不存在 `compat-report.md:<行号>` 形式的引用；历史结论统一指向按日文件与节标题
 - 判据：`bash script/differential install-check`；`grep -rn "compat-report\.md:[0-9]" README.md docs/compat-report.md docs/compat-evidence/ docs/roadmap.md docs/roadmap-evidence/`（应无输出）
 - 边界：本条的可判定部分是 `grep` 一段（该范围内无输出）；`docs/compat-claims/` 不在检查范围内——断言需要钉住它据以立论的 evidence 行，属正常用法

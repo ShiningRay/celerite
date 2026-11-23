@@ -27,8 +27,11 @@
 
 This file remains a **recorded snapshot** of prior evidence. Differential
 (`script/differential`, both profiles) and upstream `script/upstream-specs` rspec
-were **not rerun at `2ad9b66`**; the only gate rerun behind this revision is the
-full `crystal spec` row (task-185, `2ad9b66`, isolated short-root rerun; the task-181 `1058/10` record is superseded).
+were **not rerun at `114c8ba`**; the per-row runs behind this revision are only the
+ones named in `## Current metrics` (4.0.24 full at `4bdc20a` / task-188, 2.7.2 full at
+`954f2d5` / task-191, upstream at `954f2d5` / task-193, full `crystal spec` last run at
+`302cbae` with `1078/0/0/0`, fixture counts at `114c8ba` / task-212; the task-181
+`1058/10` and task-185 `1058/0/0/17` records are both superseded).
 All other counts/results below must be read as unverified against the current HEAD
 unless explicitly stated otherwise.
 
@@ -44,13 +47,13 @@ path-based; selected markers check content, but it is not a general byte-for-byt
 comparison of the whole installed tree. M7 tightens these comparisons and records
 every normalization rule (not yet complete).
 
-> 治理后的补充：上表每行都标注了采集日期与出处；本文件**未重新运行**差分与上游 rspec，全量门禁只有 `crystal spec` 一行由 task-185 在 `2ad9b66` 的 checkout 以隔离短根复采（`1058/0/0/17`；task-181 的 `1058/10/17` 已被取代），其余为搬运与现状汇总。
+> 治理后的补充：上表每行都标注了采集日期与出处；本文件**未重新运行**差分与上游 rspec，全量门禁里只有 `crystal spec` 一行有实测采集点（最近一次 `302cbae`、`1078/0/0/0`，task-212 复核时记录；task-185 的 `1058/0/0/17` 与 task-181 的 `1058/10/17` 均已被取代），其余各行按其采集点读取。
 
 ## Environment
 
 | 项 | 值 |
 | --- | --- |
-| 报告依据的最后已知 HEAD | `2ad9b66`（`2ad9b66ca3d5263466a7c9e96bbdecaaf1dd3719`，`docs(M7 task-178): record whether the upstream artifice bucket can be made runnable`；**task-181 实测的 worktree HEAD**；上表 `crystal spec` 一行由 task-185 绑定在 `2ad9b66`（task-181 的旧记录采集于 `38021fc`，已被取代），其余行不是在 `2ad9b66` 上的重跑）；历史快照 HEAD 原文保留：`75bafcc`（主仓 `main` = `75bafcc13c83befa49fc8e2bc7402cace5b52871`，`docs(M7): record the GEM_HOME prefix-comparison gap as a known implementation gap`；task-169 实测的当时 HEAD）、`c3b9a6f`（`docs(M7 task-117): 补记锁定 spec 行缺失时的重解析差异与证据`）、`8e91a2f` |
+| 报告依据的最后已知 HEAD | `114c8ba`（`114c8ba6c47ba7f526088c6b9de2908a731280db`，`docs(M7 task-211): restate the M7-5 roadmap row`；**task-212 复核本文件时的 HEAD**）。各行采集点：4.0.24 全量 `4bdc20a`（task-188）、2.7.2 全量 `954f2d5`（task-191）、上游 `954f2d5`（task-193，worktree `C:\temp\celerite-t193`）、全量 `crystal spec` 最近一次 `302cbae`（2026-11-23 21:21，`1078/0/0/0`）、夹具计数 `114c8ba`（task-212）；历史快照 HEAD 原文保留：`2ad9b66`（`2ad9b66ca3d5263466a7c9e96bbdecaaf1dd3719`，task-181 实测的 worktree HEAD；task-185 的 `1058/0/0/17` 与 task-181 的 `1058/10/17` 均已被 `302cbae` 的 `1078/0/0/0` 取代）、`75bafcc`（`75bafcc13c83befa49fc8e2bc7402cace5b52871`，`docs(M7): record the GEM_HOME prefix-comparison gap as a known implementation gap`；task-169 实测的当时 HEAD）、`c3b9a6f`（`docs(M7 task-117): 补记锁定 spec 行缺失时的重解析差异与证据`）、`8e91a2f` |
 | Ruby 参考 | 4.0.6 x64-mingw-ucrt（另测 2.7.2 profile） |
 | Crystal | 1.22.1 |
 | git | 2.55.0.windows.3 (Windows x64, win32) |
