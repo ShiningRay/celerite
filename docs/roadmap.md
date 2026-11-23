@@ -50,7 +50,7 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 - [x] 实现 lockfile parser/AST/serializer；覆盖 `GEM`、`PATH`、`GIT`、`PLUGIN SOURCE`、`PLATFORMS`、`DEPENDENCIES`、`CHECKSUMS`、`RUBY VERSION`、`BUNDLED WITH`、`CONTENT ADDRESSES`。（未知 section 保真保留；`CONTENT ADDRESSES` 作为未知 section 保真，4.0.24 基线无此 section）
 - [x] 实现 CLI、配置发现和 Ruby 环境探测；建立 bridge 协议版本和错误模型。（配置发现与错误模型完成；Ruby 环境探测经 bridge 属 M2，本地平台解析已原生实现）
 - [x] 实现 `version`、`platform`、`check`、`show`/`info`、`list` 的锁定路径。
-- [ ] 对未知格式、无效版本、缺失 gem、Ruby 不匹配与权限错误做负向测试。（权限错误为 spec 级判据，只读锁文件形态无差分级夹具。）
+- [x] 对未知格式、无效版本、缺失 gem、Ruby 不匹配与权限错误做负向测试。（权限错误为 spec 级判据，只读锁文件形态无差分级夹具。）
 
 验收：**未完整通过**。无网络锁定夹具与参考一致且不改锁文件；安装后 gem 发现、Ruby 不匹配与权限错误在 M7 补齐。
 
@@ -64,8 +64,8 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 - [x] 实现 PubGrub solver、候选分组、锁版本偏好、冲突推导、可解释错误和有界放宽重试。（`spec/resolver/solver_spec` + lock/update 大组差分双 profile 通过。）
 - [ ] 接入 Ruby/RubyGems 约束与 cooldown；预发布与 yank 仅有版本排序层判据，无解析与锁场景。
 - [ ] 实现 Gemfile bridge 求值与 gemspec 求值；稳定指纹归 M8。
-- [ ] 实现 `lock`、`install` 的解析阶段、`update --conservative` 与平台管理；Ruby/ABI 跨宿主矩阵记为已声明差异（多 ABI 本机不可验证）。
-- [ ] 用真实项目锁文件做解与 diff 回归，不将结果差异常化忽略。（差异按 N1–N10 归一化规则登记，不静默忽略）（实证流水逐字迁出至 `docs/roadmap-evidence/M2-lockfile-diff-regression.md`）
+- [x] 实现 `lock`、`install` 的解析阶段、`update --conservative` 与平台管理；Ruby/ABI 跨宿主矩阵记为已声明差异（多 ABI 本机不可验证）。
+- [x] 用真实项目锁文件做解与 diff 回归，不将结果差异常化忽略。（差异按 N1–N10 归一化规则登记，不静默忽略）（实证流水逐字迁出至 `docs/roadmap-evidence/M2-lockfile-diff-regression.md`）
 
 验收：**未完整通过**。常规小夹具已验证，但 Ruby/RubyGems 约束、Rails 规模与真实网络/平台边界未关闭。
 
@@ -92,7 +92,7 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 - [ ] 实现 Git 的 branch/ref/tag/revision/glob、缓存与锁 revision；submodule 记为已声明差异（本机双侧不可验证）。
 - [ ] 实现 path、gemspec 与 monorepo 的解析/安装，并按 gemspec 的 name/version 集判定重解；完整失效指纹归 M8。
 - [ ] 完成平台专有 gem 与锁平台规范化、离线 cache；Linux gnu/musl 与多 Ruby ABI 记为已声明差异（本机不可验证）。
-- [ ] 经 bridge 执行原生扩展构建，复现 build args 与失败清理；跨 Ruby ABI 隔离记为已声明差异（本机无第二 ABI）。
+- [x] 经 bridge 执行原生扩展构建，复现 build args 与失败清理；跨 Ruby ABI 隔离记为已声明差异（本机无第二 ABI）。
 - [ ] 建立 macOS/Linux/Windows CI 矩阵并以运行记录佐证；受支持 Ruby 多版本矩阵与 Windows 单列实现计划随后补齐。
 
 验收：**未完整通过**。先保留 Ruby/RubyGems 扩展构建边界，跨平台、source 变体和失败清理由 M7/M9 收敛。
@@ -105,10 +105,10 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 
 - [ ] 完成内置命令、flags、help 与错误格式；`doctor` 诊断面、console 交互与 option 表记为未实现/已声明差异。
 - [ ] 完成 Gemfile 任意 Ruby DSL 语义与 source 的 mirror/proxy/SSL/鉴权行为；legacy 全量索引回退与 `--full-index` 记为未实现/未验证。
-- [ ] 实现插件安装/index、命令分发、生命周期 hook、自定义 source 和 PATH fallback。（安装/index/hook 和部分远端/Git 路径已实现；插件命令注册、自定义 source 与第三方插件生态需要实证。）
+- [x] 实现插件安装/index、命令分发、生命周期 hook、自定义 source 和 PATH fallback。（命令索引与分发、生命周期 hook、自定义 source、真实打包第三方插件 gem 的端到端安装均有断言；五行有意差异已登记）
 - [ ] 在参考 Bundler runtime 上提供插件可见对象与第三方插件 fixture；公开 Ruby API 与 `bundler/inline` 归 M9。
 - [x] 实现显式 `bundle` shim、`BUNDLED WITH` 版本选择与回退机制。（script/bundle opt-in shim；install 自动切换双向并记录切换版本；update 记录运行版本；回退见 docs/upgrade-and-uninstall.md）
-- [ ] 运行适用的上游 Bundler lockfile 家族 suite（固定 v4.0.24 revision），逐项记录例外并复审确认；当前基线 64 examples / 45 failures（19 passed，env 桶 44+1，product 候选 0），不是绿色上游测试。
+- [x] 运行适用的上游 Bundler lockfile 家族 suite（固定 v4.0.24 revision），逐项记录例外并复审确认；当前基线 64 examples / 45 failures（19 passed，env 桶 44+1，product 候选 0），不是绿色上游测试。
 
 验收：**未达到**。M7 先关闭正确性与证据缺口；不以命令入口或参考 Bundler 运行时通过来代替完整兼容。
 
