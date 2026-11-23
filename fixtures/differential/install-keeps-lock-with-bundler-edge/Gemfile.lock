@@ -1,0 +1,21 @@
+GEM
+  remote: file:///@LOCKED_DEPS_INDEX_DIR@/
+  specs:
+    net-protocol (0.2.2)
+    net-smtp (0.5.1)
+      bundler (>= 1.15.0)
+      net-protocol
+
+PLATFORMS
+  x64-mingw-ucrt
+
+DEPENDENCIES
+  net-smtp (= 0.5.1)
+
+CHECKSUMS
+  bundler (4.0.24) sha256=16ca64e20816a0cf151a948fb141d788602996d2b4d73577b74388fe84fa98bc
+  net-protocol (0.2.2) sha256=7b8a581482291525e23fd723b9ee84cbb060395d5e40fd51002ebb6f8945abd0
+  net-smtp (0.5.1) sha256=74e4cd630e7a83e320ba7114bb6a49c9b0d525cfcea1d4af375737701b09bd68
+
+BUNDLED WITH
+  4.0.24
