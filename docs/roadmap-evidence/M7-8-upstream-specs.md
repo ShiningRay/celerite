@@ -708,3 +708,7 @@ RuntimeError:
 2. ②「退出码反映失败」：**满足**。`script/upstream-specs:52` pipefail、`:369` 捕 rspec status、`:445-446` 传出，task-193 harness exit 1（`ok (rspec exit 1)`）。
 3. ③「保留当前 47 failures 作为失败基线，再逐项关闭」：**不满足（字面）**。47 已非当前口径（report 45 / README 50 / boundary 53）；45 条仍红，「关闭」实际是改判环境桶，`product:candidates 0` 只说明无产品对象可关，不等于「逐项关闭」达成；且 claims 017 仍列两条未处置的 product 候选，与 0 的结论冲突。
 4. 结论：**按现文不勾 `[x]`**。可收口项（纯文档）：把 roadmap 行、README bullet、report 的 `Upstream spec suite coverage boundary`、claims 017 统一到 45/44/1/0 与新桶名；③ 的判据措辞需首辅裁决改写为「`product:candidates` 归零 + 环境桶逐条定性并声明不可判定」后方可勾选，本轮不改 roadmap。已声明差异（44 artifice + 1 fetch + low-il 0 + 只覆盖 lockfile 家族 + 2.7.2 未复采）不计入缺口。
+### 首辅复核（2026-11-24）
+
+- 上节「未验证」里那条 checksums-refresh-cache-deleted 三处工作根全红，经首辅在本仓官方配方下复核**不复现**：worktree ` `C:\temp\celerite-acc202` ` @ `302cbae`、TMPDIR=/c/temp、CELERITE_BIN=<该 worktree>\bin\celerite.exe、PATH 前置 msys/ucrt64/Ruby40 后跑 ash script/differential checksums-refresh-cache-deleted → `PASS checksums-refresh-cache-deleted (exit=0)` / `1 passed, 0 failed` / EXIT 0。审计者那次把 `TMP`/`TMPDIR`/`TEMP`/`HOME` 都指向 `C:\temp`（而非工作区内目录），与本仓既定配方不符，其 undler.lock 被拒属该配置下的宿主权限现象，**不是产品回归**，也不构成对 4.0.24 全量 468/0 的否定。
+- 因此该条从「未验证（疑回归）」下调为「已排除（审计环境配置问题）」；其余未验证项（45 与 50 的稳态、artifice 逐条 oracle、product:candidates 独立复核）保持不变。
