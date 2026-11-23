@@ -343,6 +343,18 @@ module Celerite
       getter warnings : Array(String) = [] of String
     end
 
+    # Answer to `evaluate_batch` (roadmap L161, slice S2): the ordinary
+    # evaluation plus the sections the request asked for. `gemspecs` stays nil
+    # when the caller did not include it, so "not requested" and "requested but
+    # empty" stay distinguishable without a second response type.
+    struct BatchGemfileEvaluation
+      getter evaluation : GemfileEvaluation
+      getter gemspecs : Array(String)?
+
+      def initialize(@evaluation : GemfileEvaluation, @gemspecs : Array(String)? = nil)
+      end
+    end
+
     # Answer to `ping`. `features` is the server's capability list, which is how
     # a client decides whether an op it knows about exists on the other side.
     # A server that predates the declaration omits the field; that says what it
@@ -538,6 +550,33 @@ module Celerite
         GemfileWarnings.record(evaluation.warnings)
         EvaluationCache.store(path, evaluation)
         evaluation
+      end
+
+      # One request that answers what `evaluate_gemfile` answers plus the
+      # sections named in `include` (roadmap L161, slice S2; `gemspecs` today).
+      # With no section requested this is the old single-op call: the payload
+      # omits `include`, and the cache may answer it exactly as before. A
+      # request that names a section cannot be served from the cache — the
+      # cache stores evaluations, not sections — so it always goes to the
+      # bridge.
+      def evaluate_batch(path : String, include sections : Array(String) = [] of String) : BatchGemfileEvaluation
+        if sections.empty?
+          if cached = EvaluationCache.fetch(path)
+            return BatchGemfileEvaluation.new(cached)
+          end
+        end
+
+        payload = {"gemfile" => JSON::Any.new(path)} of String => JSON::Any
+        unless sections.empty?
+          payload["include"] = JSON::Any.new(sections.map { |section| JSON::Any.new(section) })
+        end
+
+        result = request("evaluate_batch", payload)
+        evaluation = GemfileEvaluation.from_json(result.to_json)
+        GemfileWarnings.record(evaluation.warnings)
+        EvaluationCache.store(path, evaluation)
+        gemspecs = result["gemspecs"]?.try(&.as_a?).try(&.map(&.as_s))
+        BatchGemfileEvaluation.new(evaluation, gemspecs)
       end
 
       # Specs exposed by a plugin source (`Bundler::Plugin::API::Source#specs`).
@@ -741,7 +780,9 @@ module Celerite
       # the reference, which has no RPC deadline at all: a gem that takes
       # minutes to compile must not be cut off by the 30s default. Pass
       # `limit: nil` for those; everything else keeps the safety net.
-      private def request(op : String, payload : Hash(String, String) | Hash(String, String?) = {} of String => String, limit : Time::Span? = @timeout) : JSON::Any
+      # `evaluate_batch` carries an array (`include`), which the string-only
+      # payload hashes cannot express; the envelope itself is unchanged.
+      private def request(op : String, payload : Hash(String, String) | Hash(String, String?) | Hash(String, JSON::Any) = {} of String => String, limit : Time::Span? = @timeout) : JSON::Any
         @mutex.synchronize do
           @last_used = Time.instant
           @request_id += 1

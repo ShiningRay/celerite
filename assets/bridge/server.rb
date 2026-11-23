@@ -36,9 +36,10 @@ BRIDGE_PROTO_SUPPORTED = (BRIDGE_PROTO_MIN..BRIDGE_PROTO).to_a.freeze
 # Capabilities advertised through `ping.features`. Only list what this process
 # can actually serve: a client that probes `features` and then calls the op
 # would turn a premature advertisement into `UnknownOp`. `evaluate_batch`
-# (roadmap L161, slices S2-S4) joins this list in the slice that implements the
-# op, not before.
-BRIDGE_FEATURES = %w[evaluate_gemfile gemspec_paths plugin_gemfile_eval].freeze
+# (roadmap L161) is listed because this server implements it; the sections its
+# `include` accepts are narrower than the full batch protocol (see
+# `op_evaluate_batch`).
+BRIDGE_FEATURES = %w[evaluate_gemfile gemspec_paths plugin_gemfile_eval evaluate_batch].freeze
 
 def bridge_emit(response)
   $stdout.puts JSON.generate(response)
@@ -185,13 +186,14 @@ def op_ruby_environment(_payload)
   env
 end
 
-# Loads Bundler from the requested load path (or whatever `ruby` resolves),
-# evaluates the Gemfile with the real Bundler::Dsl, and serializes the
-# evaluation results for the native core.
-def op_evaluate_gemfile(payload)
-  gemfile = payload["gemfile"]
-  raise ArgumentError, "missing gemfile path" unless gemfile
-
+# Loads Bundler from the requested load path (or whatever `ruby` resolves) and
+# runs the Gemfile through the real Bundler::Dsl exactly once. `evaluate_gemfile`,
+# `gemspec_paths` and `evaluate_batch` all read the same evaluation: a batch
+# request must not execute the Gemfile a second time, because a repeated run
+# repeats the warning bookkeeping and any side effect the DSL has while it
+# executes. Returns the builder (whose `dependencies` and `gemspecs` are both
+# populated here), the bytes the digest covers, and the warnings in DSL order.
+def bridge_evaluate_gemfile(gemfile)
   bridge_activate_bundler
   require "bundler"
   require "bundler/dsl"
@@ -199,7 +201,13 @@ def op_evaluate_gemfile(payload)
   builder = Bundler::Dsl.new
   contents = File.read(gemfile)
   warnings = bridge_collect_warnings { builder.eval_gemfile(gemfile, contents) }
+  [builder, contents, warnings]
+end
 
+# Serializes one evaluation for the native core. The key order is the wire
+# shape `evaluate_batch` reuses verbatim when `include` is absent, so the
+# default batch answer is byte-identical to `evaluate_gemfile`'s.
+def bridge_serialize_evaluation(gemfile, builder, contents, warnings)
   deps = builder.dependencies.map do |dep|
     source = dep.source
     {
@@ -239,19 +247,49 @@ def op_evaluate_gemfile(payload)
   }
 end
 
+# Evaluates the Gemfile with the real Bundler::Dsl and serializes the results
+# for the native core.
+def op_evaluate_gemfile(payload)
+  gemfile = payload["gemfile"]
+  raise ArgumentError, "missing gemfile path" unless gemfile
+
+  builder, contents, warnings = bridge_evaluate_gemfile(gemfile)
+  bridge_serialize_evaluation(gemfile, builder, contents, warnings)
+end
+
 # Absolute paths of the `.gemspec` files loaded by `gemspec` directives in the
 # Gemfile, in DSL order (reference: `Bundler::Dsl#gemspecs.map(&:loaded_from)`).
 def op_gemspec_paths(payload)
   gemfile = payload["gemfile"]
   raise ArgumentError, "missing gemfile path" unless gemfile
 
-  bridge_activate_bundler
-  require "bundler"
-  require "bundler/dsl"
+  builder, _contents, warnings = bridge_evaluate_gemfile(gemfile)
+  { "gemspecs" => builder.gemspecs.map(&:loaded_from), "warnings" => warnings }
+end
 
-  dsl = Bundler::Dsl.new
-  warning_list = bridge_collect_warnings { dsl.eval_gemfile(gemfile, File.read(gemfile)) }
-  { "gemspecs" => dsl.gemspecs.map(&:loaded_from), "warnings" => warning_list }
+# `evaluate_batch` (roadmap L161, slice S2): the `evaluate_gemfile` result plus
+# the sections the request names in `include`. Without `include` the result is
+# the old op's hash untouched, so the serialized bytes match `evaluate_gemfile`
+# exactly. Every requested section comes out of the same single evaluation.
+#
+# Only `gemspecs` is served for now. `plugins` belongs to a later slice: the
+# plugin declaration pass runs `Bundler::Plugin::DSL` over the same Gemfile,
+# i.e. a second DSL execution inside one request, which would repeat the
+# `GemfileWarnings` bookkeeping and any write a plugin hook performs while that
+# pass runs. Unknown `include` values are ignored rather than rejected: a caller
+# probing for a section this server cannot serve must degrade to the old ops,
+# never fail the whole request.
+def op_evaluate_batch(payload)
+  gemfile = payload["gemfile"]
+  raise ArgumentError, "missing gemfile path" unless gemfile
+
+  sections = payload["include"]
+  sections = [] unless sections.is_a?(Array)
+
+  builder, contents, warnings = bridge_evaluate_gemfile(gemfile)
+  result = bridge_serialize_evaluation(gemfile, builder, contents, warnings)
+  result["gemspecs"] = builder.gemspecs.map(&:loaded_from) if sections.include?("gemspecs")
+  result
 end
 
 def op_bundler_cache_file(payload)
@@ -944,6 +982,7 @@ def bridge_dispatch(id, op, payload, proto)
            when "ping"          then { "proto" => proto, "ruby" => RUBY_VERSION, "features" => BRIDGE_FEATURES }
            when "ruby_environment" then op_ruby_environment(payload)
            when "evaluate_gemfile" then op_evaluate_gemfile(payload)
+           when "evaluate_batch"  then op_evaluate_batch(payload)
            when "gemspec_paths"   then op_gemspec_paths(payload)
            when "bundler_cache_file" then op_bundler_cache_file(payload)
            when "read_gem_spec" then op_read_gem_spec(payload)
