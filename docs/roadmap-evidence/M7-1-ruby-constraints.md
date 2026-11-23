@@ -141,3 +141,66 @@
 
 1. **C-M7-1-017（`--ruby` 更新锁内 `RUBY VERSION`）**：已按上文取 oracle、双版本比对两侧一致，并把现有 `update-ruby` 夹具改造成真正断言该语义的形态（Gemfile 声明 `ruby`、锁预置过期段、`file-equals-<profile>` 逐字断言）；双 profile PASS，反假绿与负对照均已做。状态由 `未验证` 改为 `已实现`。
 2. **C-M7-1-015（ABI「约束过滤」）**：已用参考源码与我方调用点双侧取证，结论为「双方都只在安装路径消费 ABI」，未发现我方 ABI 参与候选过滤，故无需改 `src/`；状态由 `未验证` 改为 `已声明差异`，边界写明 M7-1 行文表述在参考侧不存在、多 ABI 矩阵不可验证；并补了可重跑的端到端判据（差分 `installed-tree` + 字面量 ABI 控制）。
+## 2026-11-23：M7-1 行闭合判据复审（task-201）
+
+只读复审：工作树 `C:\temp\celerite-t201` 检出 `3234039`，二进制由该树 `src/cli.cr` 现编（`crystal build src/cli.cr -o bin/celerite.exe`，exit 0）；差分用 `bash script/differential`（`BUNDLER_REF_VERSION=4.0.24` 与 `2.7.2` 双 profile，`TMPDIR=/c/temp`、`CELERITE_BIN=<wt>\bin\celerite.exe`），spec 直接 `crystal spec <文件>`。本节只回答「M7-1 行能否勾 `[x]`」，不重复 task-183 的取数。
+
+### oracle
+
+结论先行：**可勾 `[x]`，缺口 0**；两项已声明差异（C-M7-1-015 ABI、C-M7-1-016 bridge 降级）按约定不计缺口。支撑面：
+
+1. 账本 `docs/compat-claims/M7-1-ruby-constraints.md` 共 17 条：15 条「已实现」、2 条「已声明差异」、0 条「未验证」/「未实现」。task-183 触及 C-M7-1-015（未验证→已声明差异）与 C-M7-1-017（未验证→已实现）。
+2. 差分 21 条夹具 × 双 profile 全 PASS（逐条见「证据」）。
+3. spec 12 个文件：11 个合并跑 `61 examples, 0 failures, 0 errors, 0 pending`，另 `spec/m7_ruby_runtime_spec.cr` 单跑 `9 examples, 0 failures, 0 errors, 0 pending`；关键三文件单独复跑计数 13 / 4 / 10 examples，均 0 failures。
+
+### 参考锚点
+
+- `lib/bundler/definition.rb:494-523 validate_runtime!` → `:499 validate_ruby!`，`:512-517` 为 patchlevel 分支，engine / engine_version 分支同段；`lib/bundler/errors.rb:44 RubyVersionMismatch`（status 18）、`:24 SolveFailure`（6）、`:35 ProductionError`（16）。
+- 候选过滤：`lib/bundler/match_metadata.rb:9-14`、`lib/bundler/match_remote_metadata.rb:8` 与 `:18`——`required_ruby_version` 比 `Gem.ruby_version`（不含 patchlevel），`required_rubygems_version` 比 `Gem.rubygems_version`。
+- 锁内 RUBY VERSION：`lib/bundler/ruby_version.rb:44-49 to_s`（2.7.2 `:46` 追加 `p<patchlevel>`）、`lib/bundler/definition.rb:445-452 locked_ruby_version`（`--ruby` 更新分支）。
+- 通知与平台后缀：`lib/bundler/resolver.rb:34 "Resolving dependencies..."`、`lib/bundler/lockfile_generator.rb:48 full_name`。
+- ABI：`rubygems.rb:906-907 ruby_api_version`、`bundler/shared_helpers.rb ruby_scope`、`bundler/settings.rb:256`、`bundler/source.rb:87`、`bundler/installer/standalone.rb:35/43/80/86/88`——只作用于安装路径，解析器无 ABI 候选过滤。
+
+### 实现位置
+
+以下行号为本轮在 `3234039` 上实测（账本旧行号已漂移，见「判定」附注）：
+
+- 运行时校验：`src/celerite/cli/commands.cr:1335 def self.validate_ruby_runtime!`、`src/celerite/ruby_runtime.cr:17 raise RubyVersionMismatch`、`src/celerite/errors.cr:522 class RubyVersionMismatch`（status 18 at `:524`）。
+- diff 分支与消息：`src/celerite/ruby_version.cr:100 def diff`、`:101-102` engine 分支、`:105-106` engine_version 分支、`:117-122` 消息模板。
+- 重解通知 / frozen：`src/celerite/cli/commands.cr:1395 lock_ruby_unlock_kind`、`:1648` / `:1680 stdout.puts "Resolving dependencies..."`、`:1420 frozen_from_environment?`、`src/celerite/errors.cr:270 class ProductionError`（status 16 at `:272`）。
+- 候选过滤与 `ruby_requirement_satisfied?`：`src/celerite/resolver/source.cr:312`，`:313` 比 `required_ruby_version`、`:314` 比 `required_rubygems_version`、调用点 `:228` 与 `:455`、原因文案 `:490`、`:321 running_ruby_version`、`:448 raise_metadata_or_not_found!`。
+- 锁内 RUBY VERSION：`src/celerite/resolution.cr:2736 ruby_section_value`、`:2755 system_ruby_string`。
+- ABI 安装路径：`src/celerite/resolution.cr:132 def self.gem_root`、`:2275 ruby_abi_for_git`、`src/celerite/installer.cr:51 extension_dir_for`。
+- 平台后缀：`src/celerite/cli/commands_install.cr:82 platform_suffix`。
+
+### 证据
+
+差分（逐字 `PASS/FAIL` 与 exit）：
+
+- 4.0.24：`PASS update-ruby (exit=0)`、`PASS ruby-requirement-mismatch (exit=18)`、`PASS ruby-metadata-match (exit=0)`、`PASS ruby-metadata-fail (exit=6)`、`PASS rubygems-metadata-boundary-fail (exit=6)`、`PASS check-satisfied-nolock-ruby (exit=0)`、`PASS check-frozen-ruby-nolock (exit=16)`、`PASS install-patchlevel-mismatch (exit=18)`、`PASS platform-gemfile-ruby (exit=0)`、`PASS platform-ruby-mismatch (exit=0)`、`PASS ruby-target-match (exit=0)`、`PASS ruby-patchlevel-match (exit=0)`、`PASS ruby-patchlevel-mismatch (exit=18)`、`PASS ruby-version-mismatch (exit=18)`、`PASS install-rubygems-constraint-solve-failure (exit=6)`、`PASS lock-platform-variant (exit=0)`、`PASS install-force-ruby-platform (exit=0)`；三批汇总分别为 `14 passed, 0 failed, 0 skipped`、`3 passed, 0 failed, 0 skipped`、`4 passed, 0 failed, 0 skipped`。
+- 2.7.2：同批全 PASS；唯一形态差异 `PASS check-frozen-ruby-nolock (exit=0)`（C-M7-1-010 的版本差异，预期），其余 exit 码与 4.0.24 相同（18 / 6 / 16 / 0 各归其位）。
+- engine 四条（双 profile）：`PASS ruby-engine-match (exit=0)`、`PASS ruby-engine-mismatch (exit=18)`、`PASS ruby-engine-version-mismatch (exit=18)`、`PASS ruby-engine-patchlevel-match (exit=0)`，各 `4 passed, 0 failed, 0 skipped`。
+
+spec：
+
+- 合并跑 11 个文件（`m7_ruby_runtime_enforcement`、`m7_resolver_ruby_constraints`、`m7_ruby_patchlevel`、`m7_install_ruby_compat`、`m7_check_no_lockfile`、`m7_check_ruby_notice`、`m7_frozen_ruby_unlock`、`m7_platform`、`m7_platform_variant_selection`、`m7_force_ruby_platform`、`m7_ruby_constraints`）→ `61 examples, 0 failures, 0 errors, 0 pending`。
+- 单跑：`spec/m7_ruby_constraints_spec.cr` 13 examples、`spec/m7_ruby_runtime_enforcement_spec.cr` 4 examples、`spec/m7_resolver_ruby_constraints_spec.cr` 10 examples、`spec/m7_ruby_runtime_spec.cr` 9 examples，全 0 failures。
+
+### 已声明差异
+
+- **C-M7-1-015（ABI）**：不计缺口。参考侧 ABI（`ruby_api_version` / `ruby_scope`）只参与安装根与 `extensions/<platform>/<abi>/`，从不参与候选筛选（`vendor/reference/v4.0.24/` 与已装 bundler-4.0.24 全树 grep 无解析器命中）；我方与之同形，`src/celerite/resolver/` 对 `abi` 零命中。M7-1 行文「ABI 的约束过滤」在参考侧无对应行为，故记「已声明差异」而非「已实现」。可重跑判据：`update-ruby` 的 `installed-tree`（`ruby/*/gems`、`ruby/*/specifications`），双 profile PASS。多 ABI 矩阵本机无第二 Ruby 宿主，不可验证。
+- **C-M7-1-016（bridge 降级）**：不计缺口。bridge 不可用时 `validate_ruby_runtime!` 直接 `return`（不校验、不算通过），`lock_ruby_unlock_kind` 返回 `:none` 故不打印 `Resolving dependencies...`；参考自身是 Ruby 进程，无此分支。本轮全部判据均在 bridge 可用下取得（18 / 6 / 16 均可复现），降级路径只有纯逻辑 spec，未做 CLI 集成取证。
+
+### 判定
+
+**可勾 `[x]`**（缺 0 项）。按 M7-1 行文拆七件：
+
+1. **Ruby 版本**：有。C-M7-1-001（`ruby-requirement-mismatch` 双 profile PASS，exit 18）、C-M7-1-012（`ruby-target-match` PASS）、`spec/m7_ruby_runtime_enforcement_spec.cr` 4 examples。
+2. **RubyGems 版本**：有。C-M7-1-003（`rubygems-metadata-boundary-fail` PASS，exit 6）、`spec/m7_resolver_ruby_constraints_spec.cr` 10 examples。
+3. **Gemfile 目标 Ruby**：有。C-M7-1-001 / 011 / 012 / 017——`platform-gemfile-ruby`(0)、`platform-ruby-mismatch`(0)、`ruby-target-match`(0)、`update-ruby`(0) 双 profile PASS。
+4. **engine**：有。夹具 `ruby-engine-match` / `ruby-engine-mismatch` / `ruby-engine-version-mismatch` / `ruby-engine-patchlevel-match` 双 profile PASS（0 / 18 / 18 / 0），`spec/m7_ruby_runtime_spec.cr` 9 examples 覆盖 engine 与 engine_version 两分支。账本未单列 engine 断言（C-M7-1-001 仅在参考分支里提到），属账本颗粒度问题，判据可重跑，非缺口。
+5. **patchlevel**：有。C-M7-1-006（`install-patchlevel-mismatch` 双 profile exit 18；`ruby-patchlevel-match` 0；`ruby-patchlevel-mismatch` 18）、`spec/m7_ruby_patchlevel_spec.cr`。
+6. **ABI 约束过滤**：已声明差异（C-M7-1-015），不计缺口，理由见上；可重跑判据 `update-ruby` 的 `installed-tree` 双 profile PASS。
+7. **`ruby_requirement_satisfied?` 完整实现并验证**：有。`src/celerite/resolver/source.cr:312` 同时比 `required_ruby_version`（`:313`）与 `required_rubygems_version`（`:314`），C-M7-1-002 / 003 / 005 覆盖，`ruby-metadata-match`(0)、`ruby-metadata-fail`(6)、`rubygems-metadata-boundary-fail`(6) 双 profile PASS，spec 10 examples；`ruby-metadata-remote-fail`（C-M7-1-004 的解释文案）本轮未重跑，不影响过滤本体。
+
+附注（不影响判定，供后续订正）：账本内多处源码行号相对 `3234039` 已漂移——`src/celerite/cli/commands.cr:1310`→`:1335`、`src/celerite/errors.cr:512`→`:522`（`ProductionError` `:260`→`:270`）、`src/celerite/resolution.cr:2501/2515`→`:2736/2755`、`src/celerite/cli/commands_install.cr:2086`→`:2101`。判据是可执行命令与夹具，不依赖行号，故不影响本轮判定；建议后续以 grep 实测行号统一订正账本。
