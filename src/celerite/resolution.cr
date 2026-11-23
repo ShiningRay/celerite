@@ -2248,12 +2248,43 @@ module Celerite
       lockfile = @definition.lockfile_exists? ? @definition.lockfile! : nil
       locked_specs.each do |locked|
         next if @excluded_locked_names.includes?(locked.name)
+        locked_row = lockfile.try do |lf|
+          lf.sources.compact_map do |section|
+            section.specs.find do |spec|
+              spec.name == locked.name && spec.version == locked.version.to_s &&
+                (spec.platform.nil? ? "ruby" : spec.platform) == (locked.platform.nil? ? "ruby" : locked.platform)
+            end
+          end.first?
+        end
         case locked.source_type
         when "GEM"
+          # The locked row already records this gem's dependency edges; carry
+          # them into the candidate so a re-resolve (`checksums_need_refresh?`
+          # === `Empty`, `commands_install.cr:369-370`) keeps the transitive
+          # specs the lockfile had resolved. The reference solves with the
+          # lockfile's own `LazySpecification`s (`resolver/base.rb:13`,
+          # `resolver/package.rb:21`) and merges their variants back after
+          # solving (`spec_set.rb:184-186,301-310`). Emitting a zero-edge stub
+          # let the stub shadow the indexed spec for the same version+platform
+          # and dropped the transitive row from the resolved set and the
+          # rewritten lockfile.
+          deps = (locked_row.try(&.dependencies) || [] of Lockfile::SpecDependency).map do |dep|
+            requirements = dep.requirements || [] of String
+            Resolver::DepSpec.new(dep.name, requirements.empty? ? Gem::Requirement.new : Gem::Requirement.new(requirements))
+          end
+          # A locked edge may only steer the graph when the lockfile itself can
+          # satisfy it. The reference validates exactly that
+          # (`SpecSet#validate_deps` -> `:missing`/`:invalid`) and deletes the
+          # offending row from `@locked_specs` (`definition.rb:973-1015`), so a
+          # stale edge never reaches the resolver; without this guard a stale
+          # locked edge would resurrect a dependency the reference drops.
+          if lock = lockfile
+            deps = [] of Resolver::DepSpec unless lockfile_covers_dependencies?(lock, deps)
+          end
           (index[locked.name] ||= [] of Resolver::IndexSpec) << Resolver::IndexSpec.new(
             locked.name, locked.version,
             locked.platform && locked.platform != "ruby" ? Gem::Platform.new(locked.platform.not_nil!) : Gem::Platform::RUBY,
-            [] of Resolver::DepSpec, Gem::Requirement.new, Gem::Requirement.new, nil
+            deps, Gem::Requirement.new, Gem::Requirement.new, nil
           )
         when "PLUGIN SOURCE"
           source = lockfile.try(&.sources.find do |section|
