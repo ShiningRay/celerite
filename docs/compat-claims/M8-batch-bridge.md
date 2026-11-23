@@ -21,3 +21,13 @@
 - 边界：只复用无显式参数的连接，`Client.new(ruby_exe:/server_path:/timeout:)`（`spec/m7_bridge_long_operations_spec.cr`、`spec/spec_helper.cr`）仍是独立进程；ENV 签名变化（`BUNDLE_GEMFILE`/`BUNDLE_PATH` 等临时改写）即弃旧建新，语义与逐次新建一致；求值命中以文件内容摘要为判据，命令中途改写 Gemfile（`add` 追加 gem 后 install）必然重新求值，`spec/m8_bridge_reuse_spec.cr` 的改写用例固定该行为；`rescue` 静默降级分支原样保留（`lockfile_groups` → `[] of String`、`filter_locked_specs_by_groups` → 原 specs）；`check` 冻结分支仍有第二次求值，文件未变时命中缓存、诊断数据不变；输出、退出码、锁文件内容不变；共享取用加锁但 `request` 仍按连接串行，不声明多 fiber 并发复用安全
 - 生效：M8 期间
 - 取代：无
+
+## C-M8-1-003 桥协议版本区间与 `ping.features` 能力声明
+
+- 状态：已实现
+- 参考行为（4.0.24）：参考 Bundler 没有 JSON Lines 桥，也没有协议版本或能力声明面；版本区间与 `features` 是我方自有内部协议，不对参考行为作兼容声明，参考侧只约束「命令输出、退出码、锁文件内容不变」
+- 我方行为：`src/celerite/bridge/client.cr:14-15` 发 `PROTOCOL = 2`、接受 `PROTOCOL_MIN..PROTOCOL`（=1..2）的响应，越界仍抛 `ProtocolError("unsupported bridge proto …")`（`client.cr:812-815`，文案与升级前逐字相同）；`assets/bridge/server.rb:32-34` 的 `BRIDGE_PROTO = 2`、`BRIDGE_PROTO_SUPPORTED = [1, 2]`，`:41` 的 `BRIDGE_FEATURES = [evaluate_gemfile, gemspec_paths, plugin_gemfile_eval]`；请求校验改为整数 + 区间判定（`server.rb:982-990`），成功与失败信封都回显请求自带的 `proto`（`server.rb:48-51`、`:968`），`ping` 结果带 `proto`（回显）与 `features`（`server.rb:944`）；客户端 `ping` 返回 `Bridge::Ping{ruby, features}`（`client.cr:350-362`、`:519-521`），`features` 缺失即空集合、非字符串元素逐个跳过（`client.cr:357-361`）
+- 判据：`crystal spec spec/m8_bridge_proto_spec.cr`——直驱 `server.rb` 的 JSON 行断言 proto 1 回 1、proto 2 回 2、proto 3 与 0 报 `ProtocolError`（文案 `unsupported proto 3` / `unsupported proto 0`）、`UnknownOp` 错误信封同样回显请求版本、`features` 为数组且只含已实现的 op；旧副本缺 `features` 时 `ping.features` 为空、`lock` 的退出码与 `Gemfile.lock` 字节不变。回归：`crystal spec spec/bridge/client_spec.cr`
+- 边界：只接受整数 `proto`（非整数同样 `ProtocolError`）；越界请求的错误信封发 `2`——对端读不懂的信封无法携带错误，只能发本服务端最高版本；`features` 只列**本进程真能服务**的 op，`evaluate_batch` 属 L161 S2/S3，实现前不声明（提前声明会让「探测 feature 再调用」直接变成 `UnknownOp`），留待该切片同时加 op 与 `BRIDGE_FEATURES` 条目；「旧服务端兼容」特指副本缺 `features` 键但仍接受 `proto 1..2`，真正的 v1 副本（`BRIDGE_PROTO = 1` 严格相等）仍会拒绝 `proto 2` 并以 `ProtocolError` 失败——那是升级前就存在的边界，本切片不加握手、不猜版本；`features` 不参与任何命令分支，不改输出、退出码与锁文件内容；不声明多 fiber 并发协商
+- 生效：M8 期间
+- 取代：无
