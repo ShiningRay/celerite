@@ -355,3 +355,12 @@ C 组刻意用「引擎侧 profile 环境变量 = 2.7.2、参考侧仍 4.0.24」
 ### 结论补充
 
 账本口径还有两处需先修正才谈勾选：031 的参考锚点（含不存在的方法）与 018 的末行断言（按 4.0.24 不成立，见「附带发现」）。二者属文档修正，不改产品代码即可完成，但修正前 M7-3 账本不能视为可信的勾选依据。
+
+## 2026-11-23：M7-3 账本修正与 ③ 分句收窄（task-210）
+
+- oracle：Bundler 4.0.24 与 2.7.2（`C:\Ruby40-x64` 安装版）；账本 `docs/compat-claims/M7-3-placeholders.md`，行陈述 `docs/roadmap.md` 的 M7-3 行（只改文字，复选框保持 `- [ ]`）。
+- 参考锚点：`bundler-4.0.24/lib/bundler/cli/console.rb:11-36`（`run` `:11-17`；`get_console` `:19-36`；`irb` 分支 `:23-30`，其中 `force_activate` `:24-28`、`irb is not available` `:29-30`；fallback `:31-35`）；`bundler-2.7.2/lib/bundler/cli/console.rb:19-31`（`irb is not available` `:23-25`）；`bundler-4.0.24/lib/bundler/cli/doctor.rb:16-19`；`bundler-4.0.24/lib/bundler/cli/doctor/diagnose.rb:77-110`（`run`）、`:67-70`（`check!`）、`:72-75`（`diagnose_ssl`）、`:41-53`（dylibs，Windows 于 `:50` 只 warn）、`:98` 与 `:115-165`（`check_home_permissions`）、`:107`（`raise ProductionError`）、`:109`（`No issues found with the installed bundle`）。
+- 实现位置：`assets/bridge/console_boot.rb:52-70`（LoadError 两支）、`src/celerite/cli/commands_surface.cr:3706`（子进程跑 `console_boot.rb`）、`:3721`（`console_boot_path`）、`:3565`（`self.issue`）、`:1351` 与 `:1455-1507`（`doctor_report`，`:1502-1504` 自认 home 权限未实现）。
+- 证据（本任务只读核对，未改产品代码）：① 逐行读 4.0.24 与 2.7.2 的 `cli/console.rb`，确认 `force_activate` 分支为 4.0.24 独有、2.7.2 无；② 逐行读 4.0.24 `cli/doctor/diagnose.rb`，全树无 `check_path_components` / `check_gem_path`；③ `fixtures/differential/issue-no-gemfile` 下确有 `deferred-2.7.2` 与 `deferred-4.0.24`；④ 引用 task-206 实测：`issue` 无 Gemfile A/B 两侧 exit 10、stdout 各 1839 字节且路径归一后逐字相等；`console` A/B 参考打 `Failed to activate irb, please install it with 'gem install irb'` 加 ERROR REPORT（exit 1）、celerite 打 `irb is not available`（exit 1）；bundle 外 IRB 1.19.0 / reline 0.7.0 / fiddle 1.1.8 可 require。
+- 已声明差异：018（末行文案沿用 2.7.2，不镜像 4.0.24 的 ERROR REPORT，task-210 由「已实现」改判「已声明差异」）、020（console 子进程语义）；006/014/016/033 维持。031 维持「未实现」，按首辅裁定迁出本行闭合判据，登记为独立待办。
+- 未实跑：无（本任务纯文档修正），引用的实测数据来自 task-206 与本轮首辅裁定。

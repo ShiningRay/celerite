@@ -174,13 +174,13 @@
 
 ## C-M7-3-018 配置的控制台不在 bundle 内时回退 irb，irb 亦不可用时 exit 1 且末行 `irb is not available`
 
-- 状态：已实现
-- 参考行为（4.0.24）：`bundler/cli/console.rb:19-36` 的 `get_console` 在 `rescue LoadError` 时对非 irb 名字先 `Bundler.ui.error "Couldn't load console #{name}, falling back to irb"` 再 retry，irb 自身缺失时 `Bundler.ui.error "#{name} is not available"; exit 1`
-- 我方行为：`assets/bridge/console_boot.rb:58` 打印 fallback 文案、`:63` 与 `:67` 打印 `irb is not available`
+- 状态：已声明差异
+- 参考行为（4.0.24）：`bundler/cli/console.rb:19-36` 的 `get_console` 在 `rescue LoadError` 后分两支。`name == "irb"`（`:23`）且 `defined?(Gem::BUNDLED_GEMS) && Gem::BUNDLED_GEMS.respond_to?(:force_activate)` 为真时，先 `Gem::BUNDLED_GEMS.force_activate "irb"`（`:24-25`）再 `require name` 并取常量（`:26-27`）；该次 `require` 仍抛 `LoadError` 时不再兜底，异常冒泡为 `Failed to activate irb, please install it with 'gem install irb'` 加 ERROR REPORT，exit 1（`:24-28`）。只有该能力不存在时才走 `Bundler.ui.error "#{name} is not available"; exit 1`（`:29-30`）。2.7.2 无 `force_activate` 分支：`bundler-2.7.2/lib/bundler/cli/console.rb:19-31` 直接在 `LoadError` 时打 `irb is not available` 并 exit 1（`:23-25`）。非 irb 名字先打 `Couldn't load console #{name}, falling back to irb` 再以 irb retry（4.0.24 `:31-35`）。
+- 我方行为：`assets/bridge/console_boot.rb:57-58` 打印 fallback 首行；`:63` 与 `:67` 在 irb 缺失时打印 `irb is not available` 并 exit 1；`:52-56` 注释明记不镜像 4.0.24 的 `force_activate` retry（声明差异）。子进程入口 `src/celerite/cli/commands_surface.cr:3706`。
 - 判据：`crystal spec spec/m7_console_spec.cr`
-- 边界：该 spec 经子进程取证，前提是先构建 `bin/celerite.exe`；缺二进制时整组 pending 跳过并 exit 0，故仅凭退出码 0 不足以证明通过
+- 边界：本机 4.0.24 在 bundle 内 `force_activate` 后仍 `LoadError`，输出 `Failed to activate irb, please install it with 'gem install irb'` 加 ERROR REPORT（exit 1）；celerite 输出 `irb is not available`（exit 1）。二者退出码一致，末行文案不同，`irb is not available` 是 2.7.2 文案。fallback 首行文案与退出码对齐，file:line 提示由实现文件位置决定故不设夹具。该 spec 经子进程取证，前提是先构建 `bin/celerite.exe`；缺二进制时整组 pending 跳过并 exit 0，故仅凭退出码 0 不足以证明通过。
 - 生效：M7(3) 迭代内（哈希未记录（evidence 未记））
-- 取代：无
+- 取代：task-210 按 4.0.24 实测改写参考锚点（补 `cli/console.rb:24-28` 的 `force_activate` 分支），状态由「已实现」改判「已声明差异」：我方末行沿用 2.7.2 文案，不镜像 4.0.24 的 ERROR REPORT 形态。
 
 ## C-M7-3-019 `console` 的多余位置参数按 Thor 报错并 exit 15
 
@@ -205,12 +205,12 @@
 ## C-M7-3-021 IRB 可用时的交互式 console 会话行为未验证
 
 - 状态：未验证
-- 参考行为（4.0.24）：`bundler/cli/console.rb:16` 的 `console.start` 进入真实 IRB 或 pry 提示符
-- 我方行为：`src/celerite/cli/commands_surface.cr:3602`
+- 参考行为（4.0.24）：`bundler/cli/console.rb:16` 的 `console.start` 在当前进程内进入真实 IRB 或 pry 提示符；bundle 内 `require "irb"` 有两条路径（见 018）：`force_activate` 成功则 `console.start`，失败则 `Failed to activate irb...` 加 ERROR REPORT 并 exit 1。
+- 我方行为：`src/celerite/cli/commands_surface.cr:3706` 起 `ruby assets/bridge/console_boot.rb` 子进程，`:3721` 的 `console_boot_path` 定位脚本；脚本 `assets/bridge/console_boot.rb:72` 调 `console.start`。
 - 判据：`crystal spec spec/m7_console_spec.cr`
-- 边界：真实 TTY 交互未做 A/B，只用「打印后 exit 0」的探针控制台取证；本机 irb/reline/fiddle 链不可用
+- 边界：真实 TTY 交互未做 A/B，只用「打印后 exit 0」的探针控制台取证。两侧在 bundle 内都进不了 IRB：bundler 4.0.24 在 `cli/console.rb:24-28` 的 `force_activate "irb"` 后仍 `LoadError`（打 `Failed to activate irb, please install it with 'gem install irb'` 加 ERROR REPORT，exit 1），celerite 打 `irb is not available`（exit 1）。真实 IRB 会话需 Gemfile 声明 `irb` 且可离线安装，本机 gem-index 无 irb，故不可达；这是本机环境限制，不是产品缺口。bundle 外 `require` irb/reline/fiddle 均可（IRB 1.19.0 / reline 0.7.0 / fiddle 1.1.8）。
 - 生效：M7(3) 迭代内（哈希未记录（evidence 未记））
-- 取代：无
+- 取代：task-210 改写边界：删除「本机 irb/reline/fiddle 链不可用」这一已被证伪的表述（bundle 外三者均可 require），改记「两侧 bundle 内都不可达真实 IRB 会话」的实测事实；状态仍为未验证（本机环境限制）。
 
 ## C-M7-3-022 `env` 的 Gem Path 用平台分隔符并按 `Gem.path` 追加默认目录
 
@@ -294,23 +294,24 @@
 
 ## C-M7-3-030 无 Gemfile 时参考 `issue` 回溯宿主机 user config，双方输出不可逐字比对
 
-- 状态：未验证
+- 状态：已实现
 - 参考行为（4.0.24）：`bundler/cli/issue.rb:33-38` 经 `Env.report` 读取 `~/.bundle/config` 等宿主机配置
-- 我方行为：`src/celerite/cli/commands_surface.cr:3501`
-- 判据：`bash script/differential issue-no-gemfile`
-- 边界：夹具由 `fixtures/differential/issue-no-gemfile/deferred-2.7.2` 与 `deferred-4.0.24` 标记延迟，属夹具环境泄漏而非产品差异
+- 我方行为：`src/celerite/cli/commands_surface.cr:3565` 的 `self.issue`
+- 判据：`bash script/differential issue-no-gemfile`；等价环境 A/B：按差分 `isolated_env` 复刻后运行 `issue`，比对 stdout、stderr 与退出码
+- 边界：夹具 `fixtures/differential/issue-no-gemfile` 仍带 `deferred-2.7.2` 与 `deferred-4.0.24` 标记，差分命令当前两侧仍 deferred；判据以 `spec/m7_issue_report_spec.cr` 与等价环境 A/B 为准（task-206 实测：两侧 exit 10、stdout 各 1839 字节、路径归一后逐字相等、stderr 逐字同）。
 - 生效：task-49（哈希未记录（evidence 未记））
-- 取代：无
+- 取代：task-210 按 task-206 实测改判「已实现」：原 deferred 理由「无 Gemfile 时回溯宿主机 user config、不可逐字比对」在 harness 等价环境下不复现（两侧 stdout 归一后逐字相等）。
 
 ## C-M7-3-031 `doctor` 的完整诊断面（home 权限、路径组件、Gem path 规则）未实现
 
 - 状态：未实现
-- 参考行为（4.0.24）：`bundler/cli/doctor/diagnose.rb` 的 `check_home_permissions` / `check_path_components` / `check_gem_path` 系列
-- 我方行为：`src/celerite/cli/commands_surface.cr:1416` 的 `doctor_report` 只覆盖依赖满足与缺失、锁写入、`--ssl` 报告与 `*.bundle` 警告；`:1461` 的注释明记 `check_home_permissions` 警告在本环境无法触发
+- 参考行为（4.0.24）：`bundler/cli/doctor.rb:16-19` 的 `diagnose` 在 `require_relative "doctor/diagnose"` 后调 `Diagnose.new(options).run`。`cli/doctor/diagnose.rb:77-110` 的 `run` 依次执行：`settings.validate!`（`:79`）→ `check!`（`:80`，定义 `:67-70`，转调 `Bundler::CLI::Check`）→ `--ssl` 时 `diagnose_ssl`（`:81`，定义 `:72-75`）→ 遍历 `definition.specs` 对每个 `**/*.bundle` 取 dylibs 并 `lookup_with_fiddle`（`:83-96`；dylibs `:41-53`，Windows 等平台只 warn "Dynamic library check not supported on this platform." 并返回空）→ `check_home_permissions`（`:98` 调用、`:115-165` 定义：坏链、他人所有但可读、他人所有且不可读、不可读四类 warn 并置 `ok=false`）→ 有坏链时 `raise ProductionError`（`:107`），否则 `permissions_valid` 时打 `No issues found with the installed bundle`（`:109`）。
+- 我方行为：`src/celerite/cli/commands_surface.cr:1351`（`doctor` 命令）与 `:1455` 的 `doctor_report` 只覆盖依赖满足与缺失、锁写入、`--ssl` 报告与 `*.bundle` 平台警告；`:1502-1504` 注释自认 `check_home_permissions` 警告在本环境未实现。
 - 判据：`bash script/differential doctor-no-lockfile`
-- 边界：`--verbose` 分层未对齐；`doctor <域>` 的值域校验未覆盖
+- 边界：`--verbose` 分层未对齐；`doctor <域>` 的值域校验未覆盖；`check_home_permissions` 在本环境无法触发。
+- 归属：本行（M7-3）文字未点名 doctor，首辅裁定迁出本行闭合判据，作为独立待办。
 - 生效：task-49（哈希未记录（evidence 未记））
-- 取代：无
+- 取代：task-210 按 4.0.24 实测重写参考锚点：删除 4.0.24 全树不存在的 `check_path_components` / `check_gem_path`（4.0.24 只有 `cli/doctor/diagnose.rb:98`、`:115` 的 `check_home_permissions`），并补「归属」行。
 
 ## C-M7-3-032 `help` 与 `<cmd> --help` 渲染参考自带的 `.ronn` 手册页
 

@@ -164,7 +164,7 @@
 | C-M7-3-015 | `gem` 的交互式问卷（test/CI/linter/license/COC/changelog）已实现，提示语与持久化逐字对齐 4.0.24 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential gem-questionnaire'（stdout 逐字 2905 字符、退出码、'$H…` |
 | C-M7-3-016 | 2.7.2 的 `gem` 模板与成功链接不同，两个 gem 夹具在该 profile 下 deferred | 已声明差异 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential gem-default'` |
 | C-M7-3-017 | `console [GROUP]` 在 bundle 语境里 require 依赖后再启动控制台 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential console-group'` |
-| C-M7-3-018 | 配置的控制台不在 bundle 内时回退 irb，irb 亦不可用时 exit 1 且末行 `irb is not available` | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'crystal spec spec/m7_console_spec.cr'` |
+| C-M7-3-018 | 配置的控制台不在 bundle 内时回退 irb，irb 亦不可用时 exit 1 且末行 `irb is not available` | 已声明差异 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'crystal spec spec/m7_console_spec.cr'` |
 | C-M7-3-019 | `console` 的多余位置参数按 Thor 报错并 exit 15 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'crystal spec spec/m7_console_spec.cr'` |
 | C-M7-3-020 | 控制台在独立 ruby 子进程中运行，不是参考的进程内 `console.start` | 已声明差异 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'crystal spec spec/m7_console_spec.cr'` |
 | C-M7-3-021 | IRB 可用时的交互式 console 会话行为未验证 | 未验证 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'crystal spec spec/m7_console_spec.cr'` |
@@ -176,7 +176,7 @@
 | C-M7-3-027 | `bundle version` 的多余位置参数按 Thor 报错并 exit 15 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential version-extra'` |
 | C-M7-3-028 | `bundle issue` 在只有 Gemfile、无锁文件时正常解析、写锁并给 `No issues found...` | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential issue-no-lockfile'` |
 | C-M7-3-029 | `env` 与 `issue` 共用 Gemfile 段与 `<No <abs> found>` 占位 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'crystal spec spec/m7_issue_report_spec.cr'` |
-| C-M7-3-030 | 无 Gemfile 时参考 `issue` 回溯宿主机 user config，双方输出不可逐字比对 | 未验证 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential issue-no-gemfile'` |
+| C-M7-3-030 | 无 Gemfile 时参考 `issue` 回溯宿主机 user config，双方输出不可逐字比对 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential issue-no-gemfile'；等价环境 A/B：按差分 'isolated_env…` |
 | C-M7-3-031 | `doctor` 的完整诊断面（home 权限、路径组件、Gem path 规则）未实现 | 未实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential doctor-no-lockfile'` |
 | C-M7-3-032 | `help` 与 `<cmd> --help` 渲染参考自带的 `.ronn` 手册页 | 已实现 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential help-install'` |
 | C-M7-3-033 | 无手册页的命令回退 Thor `command_help`，本命令 option 表未复刻 | 已声明差异 | [M7-3-placeholders.md](M7-3-placeholders.md) | `'bash script/differential help-tree-fallback'` |
@@ -365,5 +365,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 253 条断言（已实现 207 · 已声明差异 29 · 未实现 4 · 未验证 8 · 已取代 5）。
+合计 253 条断言（已实现 207 · 已声明差异 30 · 未实现 4 · 未验证 7 · 已取代 5）。
 <!-- END GENERATED INDEX -->
