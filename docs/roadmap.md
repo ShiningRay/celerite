@@ -143,7 +143,7 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 - [ ] 移除或实现占位路径：`fund` 的真实 metadata、`gem` 模板、完整 `console`/`env` 行为；避免硬编码 Bundler 版本、时间戳和运行环境（实证流水逐字迁出至 `docs/roadmap-evidence/M7-3-placeholders.md`）
 - [x] 让 mirror、proxy、redirect、retry、SSL CA/client cert、`path.system`、`build.<gem>`、legacy/full index 回退具有真实生效路径；为不支持项快速失败，禁止只解析 flag/config 后静默忽略。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-4-network-options.md`）
 - [ ] 补齐 Git tag/submodules/glob、多个 gemspec、monorepo、私有 source 鉴权、离线安装、磁盘错误与中断清理；验证 Linux gnu/musl 和多 Ruby ABI。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-5-sources-platforms.md`）
-- [ ] 插件命令注册、自定义 source、hook 异常和第三方插件 fixture 分别验证；不把 Ruby hook 能运行当作完整插件兼容。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-6-plugins.md`）
+- [x] 插件命令注册、自定义 source、hook 异常和第三方插件 fixture 分别验证；不把 Ruby hook 能运行当作完整插件兼容。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-6-plugins.md`）
 - [x] 修复 `script/differential`：列出所有归一化规则；对有语义的输出禁止排序/删除；安装文件树同时比较相对路径、文件内容、可执行权限和关键 symlink；lockfile 和 Gemfile 直接比较内容。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-7-differential-harness.md`）
 - [ ] 修复 `script/upstream-specs`：使锁文件族真实驱动 Celerite，退出码反映失败；保留当前 47 failures 作为失败基线，再逐项关闭。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-8-upstream-specs.md`）
 - [ ] 建立 Rails 规模真实项目回归，记录所有有意兼容差异及理由；未解释差异为零后才恢复“该 profile 兼容”的声明。（实证流水逐字迁出至 `docs/roadmap-evidence/M7-9-rails-regression.md`）

@@ -45,12 +45,19 @@ compatibility boundary. Performance is a measured goal, not an unconditional cla
 - Keep a controlled Ruby compatibility bridge for arbitrary Ruby DSL, native
   extension builds, and third-party Bundler plugins.
 - Verify behavior with differential tests and the upstream Bundler test suite
-  (current v4.0.24 lockfile baseline: 64 examples, 47 failed / 17 passed;
-  buckets artifice-unreachable 41 / fixture:fetch-failed 3 /
-  product:candidates 3; real-drive 69 celerite invocations, harness verdict
-  `ok`; collected 2026-11-22, kept current in
+  (current v4.0.24 lockfile baseline: 64 examples, 50 failed / 14 passed;
+  buckets artifice-unreachable 38 / low-IL 9 / fixture:fetch-failed 3, with
+  product:candidates at zero; real-drive 69 celerite invocations, harness verdict
+  `ok`; collected 2026-11-23 by task-178, kept current in
   [the compatibility report](docs/compat-report.md) under `Current metrics`.
-  The earlier snapshot — 64 examples, 54 failed / 10 passed; buckets artifice
+  The 47-failure line — 64 examples, 47 failed / 17 passed; buckets artifice 41 /
+  fetch 3 / product 3, collected 2026-11-22 — is superseded and preserved as
+  history. The artifice bucket is not merely unrun: it is structurally
+  undecidable under real-drive, because celerite runs as a native executable and
+  cannot receive the RSpec `RUBYOPT=-r` stub injected into child processes;
+  installing `sinatra` only cleared the reference-side `LoadError` (sinatra load
+  failures: 0), which moved nothing. The earlier snapshot — 64 examples,
+  54 failed / 10 passed; buckets artifice
   38 / low-IL 8 / fetch 6 / product 2, collected 2026-11-19 16:32 by task-32 —
   is superseded and preserved as history: it was not recollected after tasks
   33–59 and is recorded in ``docs/compat-evidence/2026-11-19.md`` task-32).

@@ -41,3 +41,24 @@
 - **④ 矛盾裁定**：`plugin-git-local`/`plugin-git-local2` 的历史 FAIL = 夹具缺陷（gitlink 空桩，task-154 已修）+ 环境族（msys Low-IL `0xC0000022`）；`plugin-source-install` 的 11-22 FAIL = **产品回归**，引入点 `5399a7e`（task-95，11-21 把 `gems_count = specs.size` 改成 `installable.size`，而 `installable` 早于 `hidden_plugins` 摘除），修复点 `37dfbd0`（task-152，11-23）。现行 4.0.24 与 2.7.2 均 PASS。
 - **⑤ 措辞下调**：`docs/compat-report.md` 的 `plugin install --source/--version/--git/--branch/--ref` 行由 **Supported** 降为 **Partial**——`plugin-source-ok` 不再写作无条件 `dual-passed`，`--version` 与 `plugin install --git/--branch/--ref` 明写「无各自夹具」（`plugin-git-local*` 是 gem 的 git 源，不是该 flag 路径）。
 - 详细五要素证据见 `docs/compat-evidence/2026-11-23.md` 同名节。复选框未动（M7-6 是否可勾由首辅裁断）。
+## 2026-11-23：M7-6 行的闭合判据复核（task-181）
+
+- **oracle**：M7-6 要求四项「分别验证」——插件命令注册与分发、自定义 source、hook 异常、第三方插件 fixture 与 git 安装——并且不得把「Ruby hook 能跑起来」当作完整插件兼容。判据只取本仓可执行的 spec 与差分夹具两处，不看钩子是否触发。
+- **参考锚点**：Bundler v4.0.24 的 `lib/bundler/plugin/**`（索引写入、命令分发、hook 上报）及其 `spec/bundler/plugin*_spec.rb` 的断言形态；对照方式与 `docs/compat-evidence/2026-11-23.md` 的 M7-6 同名节一致。
+- **实现位置**：`src/` 内插件索引与命令分发路径（`plugin install/list/uninstall`、`hooks:` 落盘、注册失败回滚），差分夹具 `fixtures/differential/plugin-*`。
+- **证据**（2026-11-23 本席在 `2ad9b66` 复跑或复核；夹具名与 spec 名均以 `Get-ChildItem`/目录列举核实过）：
+  - ① 插件命令注册与分发 → `spec/m7_plugin_commands_spec.cr`（配合 `m7_plugin_conflicts_spec.cr`、`m7_plugin_uninstall_hooks_spec.cr`）与夹具 `plugin-command-list`、`plugin-command-reinstall`、`plugin-conflict-command`、`plugin-conflict-source`、`plugin-new-unknown`、`plugin-uninstall`、`plugin-uninstall-args`、`plugin-uninstall-index`。
+  - ② 自定义 source → 夹具 `plugin-source-ok`、`plugin-source-install`、`plugin-source-disabled`、`plugin-source`、`plugin-source-locked`、`plugin-source-locked-check`、`plugin-source-locked-missing`、`plugin-source-missing-gem`、`plugin-source-typed`、`plugin-source-lock-options`、`plugin-source-gem-end-to-end`、`plugin-install-source`、`plugin-install-source-noncanonical`、`install-typed-source-missing-plugin`、`plugin-gemfile-missing`，spec `m7_plugin_source_typed_spec.cr`、`m7_plugin_install_source_spec.cr`。
+  - ③ hook 异常 → spec `m7_plugin_hook_failure_spec.cr`、`m7_plugin_bad_event_spec.cr`、`m7_plugin_hooks_registration_spec.cr`、`m7_plugin_hook_all_events_spec.cr`、`m7_plugin_hook_per_gem_spec.cr`、`m7_plugin_uninstall_hooks_spec.cr`；夹具 `plugin-install-bad-event`、`plugin-install-bad-event-long`、`plugin-hook-raise`、`plugin-hook-uninstall`、`plugin-install-hooks`、`plugin-hook-before-after-all`、`plugin-hook-per-gem`。**注意：不存在名为 `plugin-bad-event` 的夹具**，实名为 `plugin-install-bad-event` 与 `plugin-install-bad-event-long`。
+  - ④ 第三方插件 fixture 与 git 安装 → 夹具 `plugin-git-install`（task-162）、`plugin-git-local`、`plugin-git-local2`、`plugin-global-hook-root`（task-159），spec `m7_plugin_git_install_spec.cr`、`m7_plugin_global_hook_spec.cr`。
+  - spec 侧家族合跑：`spec/m7_plugin*_spec.cr` 共 **12 个文件**，`57 examples, 0 failures, 0 errors, 13 pending`（`Finished in 1:03 minutes`，EXIT 0）。任务书原先写的「11 个文件 / 53 examples」不成立，实测为 12 文件 / 57 examples / 13 pending。
+  - 夹具侧家族：`fixtures/differential` 下 `*plugin*` 目录 **35 个**，每个都含 `command`。**本节未复跑差分**，故 34 PASS / 0 FAIL / 1 SKIP 仍是 4.0.24 profile、自 `885126a` 构建的二进制下的既有结果（**未验证**）。唯一 SKIP 的 `plugin-source-disabled` 自带 `deferred-4.0.24`，原文：`Requires BUNDLE_PLUGINS=false, which the harness cannot set per-fixture; covered by spec/m7_gemfile_plugins_spec.cr (exit 15).`（理由已文档化，不是未知红）
+  - claims 侧：`docs/compat-claims/M7-6-plugins.md` 共 **42 条**，`未验证` 已归零（task-180 把 `C-M7-6-036`/`C-M7-6-037` 定稿为 `已实现`），`已声明差异` 5 条：`C-M7-6-014`、`C-M7-6-039`、`C-M7-6-040`、`C-M7-6-041`、`C-M7-6-042`。索引自检 `script/compat-claims-index --check` = `compat-claims: 243 claims, index up to date`，EXIT 0。
+- **已声明差异**（逐条如实列出，均为本行仍成立的限制）：
+  1. 只在本机 Windows + 短路径 worktree 上验证，未在 Linux/macOS 复跑。
+  2. `plugin install --tag` 无同 flag 夹具，该路径无差分覆盖。
+  3. `File.chmod(... & ~File.umask)` 未复刻（Windows 权限模型不同）。
+  4. `plugin-source-disabled` 无法按夹具置 `BUNDLE_PLUGINS=false`，只能由 `spec/m7_gemfile_plugins_spec.cr`（exit 15）覆盖。
+  5. `C-M7-6-039`：load path 告警只打一次（重复注册不重复告警）。
+  6. `C-M7-6-040`：失败回滚删 `--path` 源目录只覆盖三类注册失败。
+- 复选框：本行由 `[ ]` 改为 `[x]`（task-181，闭合判据即上列四项分别验证 + 已声明差异逐条落档）。
