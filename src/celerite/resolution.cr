@@ -1491,6 +1491,16 @@ module Celerite
       locked.each_value do |specs|
         specs.each do |spec|
           spec.dependencies.each do |edge|
+            # `bundler` has no spec row of its own (the reference only
+            # synthesizes a `LazySpecification` for it out of CHECKSUMS,
+            # `lockfile_parser.rb:274-276`) and never reaches the resolver, so
+            # an edge on it can never make the lockfile incomplete. The
+            # reference skips it at this same level (`SpecSet#validate_deps`,
+            # `spec_set.rb:87-96`), as does `incomplete_locked_spec_names`
+            # above. Without this, `rails`' `bundler (>= 1.15.0)` edge made a
+            # complete 64-spec lockfile look uncovered, so `install` fell
+            # through to `run_resolution` and rewrote the lock with 1 spec.
+            next if edge.name == "bundler"
             targets = locked[edge.name]?
             return false unless targets
             return false unless targets.any? { |target| edge.requirement.satisfied_by?(Gem::Version.new(target.version)) }
