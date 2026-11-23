@@ -76,13 +76,27 @@ def bridge_activate_bundler
   # path — it must never be silently accepted here.
   return if defined?(Bundler)
 
-  if lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"]
-    $LOAD_PATH.unshift(lib) unless lib.empty? || $LOAD_PATH.include?(lib)
+  # task-234: "set but unusable" must mean "unset", not "activated". The
+  # differential fixture `info-bundler-path` writes `CELERITE_REFERENCE_BUNDLER_LIB=`
+  # on purpose (it wants RubyGems to resolve the pinned release), and "" is
+  # truthy in Ruby: the old `if lib = ENV[...]` took this branch, skipped the
+  # unshift and returned, so activation was a no-op, the first `require
+  # "bundler"` loaded the host default gem (4.0.16) and
+  # `bridge_ensure_bundler_version!` then refused the evaluation. Blank /
+  # whitespace-only values, and paths that are not an existing directory (a
+  # mistyped or stale lib is just as unusable as an empty one), fall through to
+  # the version-pinned activation below instead.
+  lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"].to_s.strip
+  if !lib.empty? && File.directory?(lib)
+    $LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
     return
   end
 
-  version = ENV["CELERITE_REFERENCE_BUNDLER_VERSION"]
-  return if version.nil? || version.empty?
+  # The pinned release, in the same order the guard uses (`bridge_expected_bundler_version`):
+  # CELERITE_PROFILE_BUNDLER_VERSION, then the older CELERITE_REFERENCE_BUNDLER_VERSION.
+  # Without either, leave the choice to `require "bundler"` (the default gem).
+  version = bridge_expected_bundler_version
+  return if version.nil?
 
   begin
     gem "bundler", version
