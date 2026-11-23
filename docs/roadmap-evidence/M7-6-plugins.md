@@ -33,3 +33,11 @@
 **2026-11-21（task-73 补记）：命令注册冲突与自定义 source 冲突已有双 profile 端到端夹具 `plugin-conflict-command` / `plugin-conflict-source`（exit 29、文案逐字、index 不落地、`--path` 源目录按参考被删除），spec `m7_plugin_conflicts_spec.cr` 4 例；复选框维持原判据不动。** 
 
 **2026-11-21（task-96 补记）：`doctor` 已按参考先打 `path`/`path.system` 互斥通知两行再 exit 15（`install`/`update` 未动）；stub 插件的 `options_to_lock` 非空锁段已由夹具 `plugin-source-lock-options` 固定，无产品改动。**
+
+
+## 2026-11-23：M7-6 插件行的收尾补齐（task-159）
+
+- **③ 断言 `C-M7-6-037` 补齐**：新增 `spec/m7_plugin_global_hook_spec.cr`（2 例）与差分夹具 `fixtures/differential/plugin-global-hook-root/`。无 Gemfile、`HOME` 为 project 兄弟目录时，`plugin install <dir> --path <rel>` exit 0 且 `hooks: after-install: - "hook_plugin"` 落到 `<HOME>/.bundle/plugin/index`，项目树无 `.bundle`；换 HOME 后 `plugin list` 为 `No plugins installed`、命令 exit 15。原始结果：spec `2 examples, 0 failures, 0 errors, 0 pending`；差分 4.0.24 与 2.7.2 均 `PASS plugin-global-hook-root (exit=0)` / `1 passed, 0 failed, 0 skipped`。
+- **④ 矛盾裁定**：`plugin-git-local`/`plugin-git-local2` 的历史 FAIL = 夹具缺陷（gitlink 空桩，task-154 已修）+ 环境族（msys Low-IL `0xC0000022`）；`plugin-source-install` 的 11-22 FAIL = **产品回归**，引入点 `5399a7e`（task-95，11-21 把 `gems_count = specs.size` 改成 `installable.size`，而 `installable` 早于 `hidden_plugins` 摘除），修复点 `37dfbd0`（task-152，11-23）。现行 4.0.24 与 2.7.2 均 PASS。
+- **⑤ 措辞下调**：`docs/compat-report.md` 的 `plugin install --source/--version/--git/--branch/--ref` 行由 **Supported** 降为 **Partial**——`plugin-source-ok` 不再写作无条件 `dual-passed`，`--version` 与 `plugin install --git/--branch/--ref` 明写「无各自夹具」（`plugin-git-local*` 是 gem 的 git 源，不是该 flag 路径）。
+- 详细五要素证据见 `docs/compat-evidence/2026-11-23.md` 同名节。复选框未动（M7-6 是否可勾由首辅裁断）。
