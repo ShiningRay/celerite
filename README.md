@@ -10,10 +10,10 @@ compatibility boundary. Performance is a measured goal, not an unconditional cla
 > plugin hooks and parts of the runtime through the compatibility bridge.
 >
 > Recent native coverage includes install-time `required_ruby_version` /
-> `required_rubygems_version` rechecks (`src/celerite/installer.cr:65-90`),
-> empty-CHECKSUMS backfill (`src/celerite/definition.cr:362`),
+> `required_rubygems_version` rechecks (`src/celerite/installer.cr:99-120`),
+> empty-CHECKSUMS backfill (`src/celerite/definition.cr:566-590`),
 > installed-specification detection for `check`/`list`/`show`/`info`
-> (`src/celerite/cli/commands_surface.cr:860-931`), and typed custom sources at
+> (`src/celerite/cli/commands_surface.cr:1671`), and typed custom sources at
 > S1+S2+S3 (`PLUGIN SOURCE` write, locked reuse and install;
 > `src/celerite/resolution.cr:1362`, `:1371`, `:1494`). The S3 install path is
 > covered by `plugin-source-install` on both reference profiles.
@@ -147,23 +147,26 @@ gem install bundler -v 2.7.2
 The harness runs each fixture in its own sandbox. Most fixtures are offline, but
 `http-index` fixtures start a loopback HTTP server on `127.0.0.1`. Known limits:
 Low-IL Windows hosts block some git-source fixtures (`0xC0000022`). Deferrals are
-per profile: 26 fixtures carry the `deferred-2.7.2` marker (`add-group`,
+per profile: 30 fixtures carry the `deferred-2.7.2` marker (`add-group`,
 `add-option-conflicts`, `cache-all-path`, `cache-all-platforms`,
 `cache-path-removed`, `cache-rerun-existing-cache`,
 `check-frozen-extra-locked-spec`, `check-frozen-locked-version-mismatch`,
 `check-frozen-missing-locked-spec`, `check-path-removed`,
 `config-deprecated-get`, `config-get-user-cache`,
 `doctor-default-cli-command`, `gem-default`, `gem-did-you-mean`, `gem-no-git`,
+`gem-questionnaire`,
 `git-submodules`, `install-force-ruby-platform-locked`,
 `install-path-source-app-cache-first`, `issue-no-gemfile`,
+`path-cache-multi-gemspec`, `path-cache-out-of-project`,
+`path-package-multi-gemspec`,
 `plugin-source-disabled`, `pristine-name-suggestion`, `removed-viz`,
 `update-group-missing`, `update-group-present`, `update-name-suggestion`)
 and 5 for 4.0.24 (`cache-all-platforms`, `git-submodules`, `issue-no-gemfile`,
 `plugin-source-disabled`, `show-outdated-verbose-272`); marker
-`deferred-<version>`, `script/differential:742-743`. It compares exit codes,
+`deferred-<version>`, `script/differential:794-795`. It compares exit codes,
 stdout/stderr, the project tree, and optional content probes —
-`installed-tree` (`:593`), `first-line` (`:604`), `file-equals` (`:612-629`),
-`file-contains` (`:634-645`) and `file-absent` (`:648-664`).
+`installed-tree` (`:622`), `first-line` (`:633`), `file-equals` (`:646-661`),
+`file-contains` (`:666-679`) and `file-absent` (`:686-697`).
 
 Glob patterns such as `*.gemspec` are expanded by the Windows `ruby.exe` argv
 layer before Bundler sees them; Bundler itself stores the `glob` option verbatim
