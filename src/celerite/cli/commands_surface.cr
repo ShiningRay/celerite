@@ -3747,7 +3747,7 @@ module Celerite
     # ------------------------------------------------------------------
     # gem: project skeleton (bundle gem NAME)
     # ------------------------------------------------------------------
-    def self.gem(stdout : IO, stderr : IO, rest : Array(String)) : Int32
+    def self.gem(stdout : IO, stderr : IO, rest : Array(String), input : IO = STDIN) : Int32
       profile = bundle_profile_version
       # cli.rb:589-602 lists --help as a class option; Thor prints the manpage
       # before running the command (measured on 4.0.24 and 2.7.2).
@@ -3878,33 +3878,95 @@ module Celerite
       email = "TODO: Write your email address" if email.empty?
       github_username = values["--github-username"]? || (use_git ? git_config("github.user") : "")
 
-      test_given = values.has_key?("--test") || values.has_key?("-t")
-      ci_given = values.has_key?("--ci")
-      linter_given = values.has_key?("--linter")
-      test = values["--test"]? || values["-t"]?
-      test = nil if flags.includes?("--no-test")
-      ci = values["--ci"]?
-      ci = nil if flags.includes?("--no-ci")
-      linter = values["--linter"]?
-      linter = nil if flags.includes?("--no-linter")
       ext = values["--ext"]?
       ext = nil if flags.includes?("--no-ext")
       exe = !flags.includes?("--no-exe") && (flags.includes?("--exe") || flags.includes?("--bin") || flags.includes?("-b"))
-      mit = flags.includes?("--no-mit") ? false : (flags.includes?("--mit") ? true : nil)
-      coc = flags.includes?("--no-coc") ? false : (flags.includes?("--coc") ? true : nil)
-      changelog = flags.includes?("--no-changelog") ? false : (flags.includes?("--changelog") ? true : nil)
 
       stdout.puts "Creating gem '#{name}'..."
-      # gem.rb:342-344/386-388/421-423: when the explicit option matches the
-      # persisted gem.* setting (the default settings in the reference test
-      # environment do), the reference logs this note before scaffolding.
-      stdout.puts "#{test} is already configured, ignoring --test flag." if test_given && test
-      stdout.puts "#{ci} is already configured, ignoring --ci flag." if ci_given && ci
+
+      # gem.rb:118-215: the interactive questionnaire, in this exact order:
+      # test framework, CI, MIT licence, code of conduct, changelog, linter.
+      # A value persisted in the user-level `.bundle/config`
+      # (`BUNDLE_GEM__*`) or given as an option suppresses its question;
+      # otherwise the question is asked on stdin and the answer stored
+      # (`ask_and_set` gem.rb:299-310, `ask_and_set_test_framework` :322-347,
+      # `ask_and_set_ci` :362-391, `ask_and_set_linter` :393-426).
+      settings = Config.new
+
+      test = nil
+      unless flags.includes?("--no-test")
+        explicit_test = values["--test"]? || values["-t"]?
+        chosen = gem_ask_and_set_choice(stdout, input, settings, "test", explicit_test,
+          "\nDo you want to generate tests with your gem?",
+          "Enter a test framework. rspec/minitest/test-unit/(none):",
+          /rspec|minitest|test-unit/)
+        test = chosen.as?(String)
+        # gem.rb:342-344: the note appears when the explicit option equals the
+        # persisted setting, including the value this run just stored.
+        if !explicit_test.nil? && gem_setting(settings, "test") == explicit_test
+          stdout.puts "#{explicit_test} is already configured, ignoring --test flag."
+        end
+      end
+
+      ci = nil
+      unless flags.includes?("--no-ci")
+        explicit_ci = values["--ci"]?
+        chosen = gem_ask_and_set_choice(stdout, input, settings, "ci", explicit_ci,
+          "\nDo you want to set up continuous integration for your gem? Supported services:\n" \
+          "* CircleCI:       https://circleci.com/\n" \
+          "* GitHub Actions: https://github.com/features/actions\n" \
+          "* GitLab CI:      https://docs.gitlab.com/ee/ci/\n",
+          "Enter a CI service. github/gitlab/circle/(none):",
+          /github|gitlab|circle/)
+        ci = chosen.as?(String)
+        if !explicit_ci.nil? && gem_setting(settings, "ci") == explicit_ci
+          stdout.puts "#{explicit_ci} is already configured, ignoring --ci flag."
+        end
+      end
+
+      mit = gem_ask_and_set(stdout, input, settings, "mit",
+        flags.includes?("--no-mit") ? false : (flags.includes?("--mit") ? true : nil),
+        "Do you want to license your code permissively under the MIT license?",
+        "Using a MIT license means that any other developer or company will be legally allowed " \
+        "to use your code for free as long as they admit you created it. You can read more about " \
+        "the MIT license at https://choosealicense.com/licenses/mit.")
       stdout.puts "MIT License enabled in config" if mit
+
+      coc = gem_ask_and_set(stdout, input, settings, "coc",
+        flags.includes?("--no-coc") ? false : (flags.includes?("--coc") ? true : nil),
+        "Do you want to include a code of conduct in gems you generate?",
+        "Codes of conduct can increase contributions to your project by contributors who " \
+        "prefer safe, respectful, productive, and collaborative spaces. \n" \
+        "See https://github.com/ruby/rubygems/blob/master/CODE_OF_CONDUCT.md")
       stdout.puts "Code of conduct enabled in config" if coc
+
+      changelog = gem_ask_and_set(stdout, input, settings, "changelog",
+        flags.includes?("--no-changelog") ? false : (flags.includes?("--changelog") ? true : nil),
+        "Do you want to include a changelog?",
+        "A changelog is a file which contains a curated, chronologically ordered list of notable " \
+        "changes for each version of a project. To make it easier for users and contributors to" \
+        " see precisely what notable changes have been made between each release (or version) of" \
+        " the project. Whether consumers or developers, the end users of software are" \
+        " human beings who care about what's in the software. When the software changes, people " \
+        "want to know why and how. see https://keepachangelog.com")
       stdout.puts "Changelog enabled in config" if changelog
-      stdout.puts "#{linter} is already configured, ignoring --linter flag." if linter_given && linter
-      if linter
+
+      linter = nil
+      unless flags.includes?("--no-linter")
+        explicit_linter = values["--linter"]?
+        chosen = gem_ask_and_set_choice(stdout, input, settings, "linter", explicit_linter,
+          "\nDo you want to add a code linter and formatter to your gem? Supported Linters:\n" \
+          "* RuboCop:       https://rubocop.org\n" \
+          "* Standard:      https://github.com/standardrb/standard\n",
+          "Enter a linter. rubocop/standard/(none):",
+          /rubocop|standard/)
+        linter = chosen.as?(String)
+        # gem.rb:416-419: the deprecated `gem.rubocop` setting is cleared once
+        # `gem.linter` is established.
+        settings.unset_value("gem.rubocop", true) unless gem_setting(settings, "rubocop").nil?
+        if !explicit_linter.nil? && gem_setting(settings, "linter") == explicit_linter
+          stdout.puts "#{explicit_linter} is already configured, ignoring --linter flag."
+        end
         stdout.puts "RuboCop enabled in config" if linter == "rubocop"
         stdout.puts "Standard enabled in config" if linter == "standard"
       end
@@ -3946,6 +4008,116 @@ module Celerite
       stdout.puts "Gem '#{name}' was successfully created. " \
                   "For more information on making a RubyGem visit #{guide}"
       0
+    end
+
+    # ---- `bundle gem` questionnaire (task-189) -------------------------
+    #
+    # Anchors, all in bundler/cli/gem.rb of the 4.0.24 reference:
+    # `ask_and_set` :299-310, `ask_and_set_test_framework` :322-347,
+    # `hint_text` :353-360, `ask_and_set_ci` :362-391,
+    # `ask_and_set_linter` :393-426. Answers are persisted through
+    # `Bundler.settings.set_global("gem.<key>", ...)`, i.e. the
+    # `BUNDLE_GEM__*` entries of the user-level `.bundle/config` written by
+    # `Config#set_global` (src/celerite/config.cr:401-433).
+
+    # The reference reads these keys through `Bundler.settings[...]`, whose
+    # `convert_value` turns literal "true"/"false" back into booleans; every
+    # other string stays a string (settings.rb `convert_value`).
+    private def self.gem_setting(config : Config, key : String) : String | Bool | Nil
+      case value = config["gem.#{key}"]
+      when String
+        value == "true" ? true : (value == "false" ? false : value)
+      when Bool
+        value
+      else
+        nil
+      end
+    end
+
+    private def self.gem_setting_text(value : String | Bool | Nil) : String
+      case value
+      when true   then "true"
+      when false  then "false"
+      when String then value
+      else             ""
+      end
+    end
+
+    # gem.rb:353-360 `hint_text`.
+    private def self.gem_hint_text(config : Config, key : String) : String
+      if gem_setting(config, key) == false
+        "Your choice will only be applied to this gem."
+      else
+        "Future `bundle gem` calls will use your choice. " \
+        "This setting can be changed anytime with `bundle config gem.#{key}`."
+      end
+    end
+
+    # `Bundler.ui.info` -> `Bundler::Thor::Shell::Basic#say`
+    # (vendor/thor/lib/thor/shell/basic.rb:98-106): the message is printed
+    # as-is and a newline is added unless it already ends with "\n" or with a
+    # space/tab (`force_new_line = message !~ /( |\t)\Z/`).
+    private def self.gem_say(stdout : IO, message : String) : Nil
+      stdout.print message
+      unless message.ends_with?("\n") || message.ends_with?(" ") || message.ends_with?("\t")
+        stdout.puts
+      end
+      stdout.flush
+    end
+
+    # `Bundler.ui.ask` -> `Thor::Shell::Basic#ask_simply` (:330-345): the
+    # statement and the (absent) default are joined with one space, so the
+    # prompt keeps a trailing space; the answer is stripped. EOF reads as "".
+    private def self.gem_ask(stdout : IO, input : IO, prompt : String) : String
+      stdout.print "#{prompt} "
+      stdout.flush
+      answer = input.gets
+      (answer || "").strip
+    end
+
+    # `Thor::Shell::Basic#yes?` (:149-151): `/\A(y|yes)\z/i`.
+    private def self.gem_yes?(stdout : IO, input : IO, prompt : String) : Bool
+      gem_ask(stdout, input, prompt).matches?(/\A(y|yes)\z/i)
+    end
+
+    # gem.rb:299-310 `ask_and_set`: the boolean questions (mit/coc/changelog).
+    private def self.gem_ask_and_set(stdout : IO, input : IO, config : Config, key : String,
+                                     explicit : Bool?, prompt : String,
+                                     explanation : String) : Bool
+      choice = explicit
+      if choice.nil?
+        # gem.rb:301-302 tests `nil?`, not truthiness: a persisted `false` is
+        # an answer (the question is skipped) and stays false.
+        setting = gem_setting(config, key)
+        unless setting.nil?
+          choice = setting.is_a?(String) ? true : setting.as(Bool)
+        end
+      end
+      if choice.nil?
+        gem_say(stdout, "\n#{explanation}")
+        choice = gem_yes?(stdout, input, "#{prompt} y/(n):")
+        config.set_global("gem.#{key}", choice ? "true" : "false")
+      end
+      choice == true
+    end
+
+    # gem.rb:322-347 / :362-391 / :393-426: the three enumerated questions.
+    private def self.gem_ask_and_set_choice(stdout : IO, input : IO, config : Config, key : String,
+                                            explicit : String?, header : String,
+                                            prompt : String,
+                                            pattern : Regex) : String | Bool | Nil
+      value : String | Bool | Nil = explicit
+      value = gem_setting(config, key) if value.nil?
+      # The reference asks whenever `settings["gem.<key>"].to_s.empty?`; a
+      # persisted `false` therefore suppresses the question too.
+      if value.nil? || (value.is_a?(String) && value.as(String).empty?)
+        gem_say(stdout, header)
+        gem_say(stdout, gem_hint_text(config, key))
+        answer = gem_ask(stdout, input, prompt)
+        value = answer.matches?(pattern) ? answer : false
+      end
+      config.set_global("gem.#{key}", gem_setting_text(value)) if gem_setting(config, key).nil?
+      value
     end
 
     private def self.git_head_branch(target : String) : String
