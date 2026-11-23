@@ -2,8 +2,10 @@ require "./spec_helper"
 
 # The reference validates `--gemfile` after Thor but before the definition is
 # built, so every command that declares the switch reports the same
-# `GemfileNotFound` (exit 10) with the expanded path and `not found` on its own
-# line, instead of leaking a Ruby `Errno::ENOENT` out of the bridge.
+# `GemfileNotFound` (exit 10) with `"<expanded path> not found"` on a single
+# line (`definition.rb:38`), instead of leaking a Ruby `Errno::ENOENT` out of
+# the bridge. A second line only appears when the reference's own word wrap
+# re-breaks a line longer than the terminal width.
 # Command list from `bundler/cli.rb` (`method_option "gemfile"`): init, check,
 # install, update, cache, lock.
 private def gemfile_switch_project : Hash(String, String)
@@ -19,13 +21,13 @@ describe "--gemfile switch" do
       code, out, err = run_cli(["check", "--gemfile", "missing/Gemfile"])
       code.should eq(10)
       out.should eq("")
-      err.should eq("#{dir.gsub('\\', "/")}/missing/Gemfile\nnot found\n")
+      err.should eq("#{dir.gsub('\\', "/")}/missing/Gemfile not found\n")
     end
   end
 
   it "reports a missing Gemfile for lock, update and cache" do
     with_project(gemfile_switch_project) do |dir|
-      expected = "#{dir.gsub('\\', "/")}/missing/Gemfile\nnot found\n"
+      expected = "#{dir.gsub('\\', "/")}/missing/Gemfile not found\n"
       {"lock", "update", "cache"}.each do |command|
         code, out, err = run_cli([command, "--gemfile", "missing/Gemfile"])
         code.should eq(10)
