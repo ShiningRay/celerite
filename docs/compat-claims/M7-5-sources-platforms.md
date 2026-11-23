@@ -174,15 +174,16 @@
 - 生效：task-85（de62795）
 - 取代：无
 
-## C-M7-5-018 `~/.gemrc` 凭据源、`WWW-Authenticate: Basic` 与代理 CONNECT 后的 401 尚未实现
+## C-M7-5-018 私有 source 的凭据只来自源 URI userinfo 与 `bundle config`，userinfo 优先且进度行不泄漏；CONNECT 后的 401 与直连同分派
 
-- 状态：未实现
-- 参考行为（4.0.24）：`lib/bundler/fetcher/downloader.rb:66-76` 的 401 分派依赖 `uri.userinfo`，凭据可由 `BUNDLE_<host>` 键与 `Gem.configuration`（含 `~/.gemrc`）提供；`WWW-Authenticate: Basic` 变体与代理 `CONNECT` 之后的 401 走同一分派
-- 我方行为：未改代码——凭据只来自源 URI 的 userinfo 与 `BUNDLE_*` 环境变量 / `.bundle/config`，不读 `~/.gemrc`，也不解析 `WWW-Authenticate`
-- 判据：`crystal spec spec/m7_authentication_errors_spec.cr`
-- 边界：三种形态都没有 oracle，故本条无独立判据——上述 spec 只覆盖已实现的三档，不能证明缺口本身；状态取自 `../roadmap-evidence/M7-5-sources-platforms.md` 的「仍缺（真未实现）」清单
-- 生效：task-5（e3c8c07）
-- 取代：无
+- 状态：已实现
+- 参考行为（4.0.24 = 2.7.2，本机实测）：`lib/bundler/source/rubygems/remote.rb:9-18,62-73` 的 `apply_auth` 仅在 `uri.userinfo.nil?` 时写入 `Bundler.settings.credentials_for(uri)`，故 Gemfile 源 URI 的 userinfo 优先于 `bundle config` 凭据；`lib/bundler/settings.rb:185-187 self[uri.to_s] || self[uri.host]` 配 `:109-120` 的 temporary > local > env > global 顺序与 `:528-536 key_for` 的键名归一（`.`→`__`、`-`→`___`、upcase、`BUNDLE_` 前缀）；`lib/bundler/fetcher/downloader.rb:88-92` 用 `CGI.unescape(uri.user)` 预置式 `basic_auth`，`:36-79` 的 401 只按 `uri.userinfo` 分派。`~/.gemrc` 只经 `Gem.configuration[:http_proxy]`（`lib/bundler/fetcher.rb:262`）参与代理解析，全树无凭据读取；`lib/bundler/fetcher.rb:99-108` 把三种鉴权错误都列进 FAIL_ERRORS，不重试
+- oracle（逐字，`docs/compat-evidence/2026-11-23.md` 私有 source 鉴权节）：`~/.gemrc` 写 `http://127.0.0.1:8931/: user:pass` → exit=17，stderr `Authentication is required for 127.0.0.1.` 起四行、末行 `` `BUNDLE_127__0__0__1` ``；`bundle config set --global http://127.0.0.1:8931/ user:pass`（`~/.bundle/config` 逐字 `BUNDLE_HTTP://127__0__0__1:8931/: "user:pass"`）→ exit=0 正常安装；Gemfile `source "http://user:pass@127.0.0.1:8931/"` → exit=0 且首行 `Fetching gem metadata from http://127.0.0.1:8931/.`（userinfo 被过滤）；userinfo 对 + config 错 → exit=0，三次请求均带 `Basic dXNlcjpwYXNz`；userinfo 错 + config 对 → exit=17 `Bad username or password for 127.0.0.1.`，只有一次 `/versions` 且带 `Basic YmFkOndyb25n`；无凭据 → exit=17 且只有一次 `/versions`、无 `Authorization`（收到 `401` + `WWW-Authenticate: Basic realm="private"` 后不重试）。CONNECT：自签 CA + `https://127.0.0.1:9443/` 经 `CONNECT` 代理 8932，无凭据 1 次 CONNECT 后与直连逐字相同的 exit 17 文案；`bundle config` 凭据 3 次 CONNECT、三次请求均带 `Basic`、exit=0
+- 我方行为：新增 `src/celerite/uri_credentials_filter.cr`（`credential_filtered_uri` 丢弃整段 userinfo，含 `String` 与 `URI` 两个重载），`src/celerite.cr:6-7` require；`src/celerite/resolution.cr:683,689,1048,1306,1308` 与 `src/celerite/cli/commands_install.cr:529,800` 的 `Fetching … from` 行改走该过滤器。凭据优先级与 401 分派未改：`src/celerite/config.cr:519-539 credentials_for`、`src/celerite/compact_index/cache.cr:88-89,182-201`、`src/celerite/downloader.cr:222-254`；CONNECT 后 401 走 `src/celerite/http_transport.cr:159` 起的同一响应分派，无需改动
+- 判据：`bash script/differential auth-config-credentials auth-gemrc-not-a-source auth-userinfo-source auth-userinfo-precedence`（4.0.24 与 2.7.2 双 profile 均 PASS，exit 0/17/0/0）；`crystal spec spec/uri_credentials_filter_spec.cr`；`crystal spec spec/m7_authentication_errors_spec.cr`。反假绿：改动前二进制对 `auth-userinfo-source` 与 `auth-userinfo-precedence` FAIL，逐字 `1c1` / `< Fetching gem metadata from http://127.0.0.1:8765/.` / `---` / `> Fetching gem metadata from http://user:pass@127.0.0.1:8765/.`；`auth-config-credentials` 与 `auth-gemrc-not-a-source` 旧二进制亦 PASS（取证型，不钉修复）
+- 边界：差分只覆盖 `install` 单命令；`update` / `cache` 未做；`BUNDLE_<key>` 环境变量键、系统级 gemrc 未做；`WWW-Authenticate` 质询与 CONNECT 两形态只有手工探针、无差分夹具（装具无代理/TLS 服务器；「质询后重试」在单个夹具服务器上无法对两侧分别计数，理由与逐字日志见 C-M7-5-034 与 `../compat-evidence/2026-11-23.md`）；403（`AuthenticationForbiddenError`）文案里的 userinfo 未过滤、未取 oracle；只有 user 无密码的 userinfo（`user@`）未逐字比对
+- 生效：task-195（`fix(M7 task-195)` 提交，见 `../roadmap-evidence/M7-5-sources-platforms.md` 的 2026-11-23 节）
+- 取代：取代 C-M7-5-018 的旧文本（原断言称 gemrc 可提供凭据、质询会重试，经 oracle 证伪，见 C-M7-5-034）
 
 ## C-M7-5-019 `--local` 只从已安装 gems 与 `vendor/cache` 取材，不查任何索引（含 `file://`），缺失即以 exit 7 报参考文案
 
@@ -333,3 +334,13 @@
 - 边界：本机只取 4.0.24 与 2.7.2 两 profile，未覆盖非 Windows 宿主；含分隔符的 glob 依赖 Ruby bridge 的 `Dir.glob`，Crystal 侧 `Glob.paths` 不适用（见 C-M7-5-023）；深层命中与「glob 收窄但 name/version 集不变是否重解」的交互未在本条展开（锁侧集合判据见 C-M7-5-009）
 - 生效：task-187
 - 取代：无
+
+## C-M7-5-034 参考不把 `~/.gemrc` 当凭据源、也不响应 `WWW-Authenticate` 质询：我方按参考保持不实现（原 C-M7-5-018 断言作废）
+
+- 状态：已声明差异
+- 参考行为（4.0.24 = 2.7.2，本机实测 + 原文）：`lib/bundler/fetcher.rb:262` 只从 `Gem.configuration[:http_proxy]` 取代理，bundler 全树无 gemrc 凭据读取；`lib/bundler/fetcher/downloader.rb:66-76` 的 401 只看 `uri.userinfo`；`rubygems/**` 全树无 `WWW-Authenticate` 解析，`lib/bundler/fetcher.rb:99-108` 又不重试鉴权错误，故质询不会被应答
+- 我方行为：`src/celerite/config.cr` 的凭据只来自 `.bundle/config` / `BUNDLE_*` 与源 URI userinfo，不读 `~/.gemrc` 的凭据键；`src/**/*.cr` 检索 `WWW-Authenticate` 零命中，不解析质询、不重试。即两侧在两种形态上行为一致地「不实现」
+- 判据：`bash script/differential auth-gemrc-not-a-source`（4.0.24 与 2.7.2 双 profile 均 PASS，exit 17，stderr 逐字 `Authentication is required for 127.0.0.1.` 起四行）；质询形态由 `../compat-evidence/2026-11-23.md` 节内的探针请求日志逐字固定（无凭据时服务器只收到一次 `/versions` 且 `Authorization` 为空）
+- 边界：本条是「原断言被证伪」的登记，不是缺口补做：若将来要求对齐某个会读 gemrc 或会应答质询的上游版本，需要新的 oracle，不得据本条自造功能；质询形态无差分夹具，原因是一次性质询在单个夹具服务器上无法对 ref / cel 两侧分别计数（首个请求放行后第二侧直接成功），属装具限制而非未验证
+- 生效：task-195（`docs(M7 task-195)` 提交）
+- 取代：取代 C-M7-5-018 的原「三形态未实现」记述

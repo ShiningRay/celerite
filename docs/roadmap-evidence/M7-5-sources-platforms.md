@@ -268,3 +268,45 @@ path 源默认 glob 相对**路径源根目录**展开，四种目录层数各�
 一句话理由：九个分句里 ①③④⑤⑦ 已可勾，但 ② 缺 oracle、⑥ 有一条断言真未实现、⑧ 的中断清理没有任何判据与实现证据、⑨ 必须靠 Linux 宿主与第二套 Ruby ABI 才能验证——四项都不能靠文档或现有判据收口，故整行不得勾选。
 
 未验证项（本轮明确未做）：其余 20 条已实现断言的判据未逐条复跑（只抽跑 12 个夹具 + 2 次 spec）；2.7.2 全量差分未跑；中断清理未做任何注入实验；ENOSPC/EROFS/EPERM 未真机复现。
+
+## 2026-11-23：私有 source 鉴权的三形态与 C-M7-5-018 收口（task-195）
+
+### oracle
+
+worktree `C:\temp\celerite-t195`（基线 `e45f671`）；`PATH` 前置 `C:\msys64\usr\bin;C:\msys64\ucrt64\bin;C:\Ruby40-x64\bin;`，`TMPDIR=/c/temp`，`CELERITE_BIN=C:\temp\celerite-t195\bin\celerite.exe`；spec 的另一套 `TMPDIR`/`TMP`/`TEMP`/`HOME`/`USERPROFILE`/`CRYSTAL_CACHE_DIR` 指向 `C:\temp\celerite-t195\.tmp-scratch\*`。参考 CLI = `C:\Ruby40-x64\lib\ruby\gems\4.0.0\gems\bundler-4.0.24\exe\bundle`。
+
+手工探针（`script/http_index_server.js` 起在 8931/9443 私桩，请求日志逐行落盘）：
+
+- `~/.gemrc` 写 `http://127.0.0.1:8931/: user:pass` → 参考 `exit=17`，stderr 四行 `Authentication is required for 127.0.0.1.` / `Please supply credentials for this source. You can do this by running:` / `` `bundle config set --global 127.0.0.1 username:password` `` / ``or by storing the credentials in the `BUNDLE_127__0__0__1` environment variable``。
+- `bundle config set --global http://127.0.0.1:8931/ user:pass` → `exit=0`，`~/.bundle/config` 逐字 `---` 与 `BUNDLE_HTTP://127__0__0__1:8931/: "user:pass"`。
+- `source "http://user:pass@127.0.0.1:8931/"` → `exit=0`，首行 `Fetching gem metadata from http://127.0.0.1:8931/.`（userinfo 被过滤）。
+- userinfo 对 + config 错 → `exit=0`，三次请求均带 `Basic dXNlcjpwYXNz`；userinfo 错 + config 对 → `exit=17` + `Bad username or password for 127.0.0.1.`，只有一次 `/versions`、带 `Basic YmFkOndyb25n`。
+- 无凭据 + `401 WWW-Authenticate: Basic realm="private"` → `exit=17`，服务器只记录一次 `/versions`、`Authorization` 为空（不重试）。
+- CONNECT：自签 CA（SAN `IP:127.0.0.1`）+ `https://127.0.0.1:9443/` 经 8932 的 `CONNECT` 代理；无凭据 1 次 CONNECT 后与直连逐字相同的 `exit=17` 文案，`bundle config` 凭据 3 次 CONNECT、三次请求均带 `Basic`、`exit=0`。
+
+差分与 spec：`bash script/differential auth-config-credentials auth-gemrc-not-a-source auth-userinfo-source auth-userinfo-precedence` → 4.0.24 `4 passed`（exit 0/17/0/0），`BUNDLER_REF_VERSION=2.7.2` 同 4 条 `4 passed`；`crystal spec spec/uri_credentials_filter_spec.cr` → `5 examples, 0 failures`；`crystal spec spec/m7_authentication_errors_spec.cr` → `4 examples, 0 failures`。反假绿：`C:\temp\celerite-pre195\bin\celerite.exe`（同 commit 改动前构建）对 `auth-userinfo-source`、`auth-userinfo-precedence` FAIL，逐字 `1c1` / `< Fetching gem metadata from http://127.0.0.1:8765/.` / `---` / `> Fetching gem metadata from http://user:pass@127.0.0.1:8765/.`；另两条旧二进制亦 PASS（取证型）。回归：`bash script/differential auth-401-no-credentials auth-401-bad-credentials auth-403-index auth-403-download outdated-cooldown-http` → `5 passed`（exit 17/17/17/5/1）。
+
+### 参考锚点
+
+- `lib/bundler/source/rubygems/remote.rb:9-18,62-73`：`fallback_auth = Bundler.settings.credentials_for(uri)`，`apply_auth` 只在 `uri.userinfo.nil?` 时写入 ⇒ 源 URI userinfo 优先。
+- `lib/bundler/settings.rb:109-120,185-187,528-536`：`credentials_for(uri) = self[uri.to_s] || self[uri.host]`；层级 temporary > local > env > global；`key_for` 做 `normalize_uri` + `.`→`__`、`-`→`___`、upcase、`BUNDLE_` 前缀。
+- `lib/bundler/fetcher/downloader.rb:88-92`：预置式 `basic_auth(CGI.unescape(uri.user), …)`；`:36-79` 的 401 只按 `uri.userinfo` 分派，`:72-73` 的 403 → `AuthenticationForbiddenError`。
+- `lib/bundler/fetcher.rb:262`：gemrc 只贡献 `:http_proxy`；全树无 gemrc 凭据读取；`rubygems/**` 无 `WWW-Authenticate` 解析；`fetcher.rb:99-108` 三种鉴权错误不重试。
+- `lib/bundler/uri_credentials_filter.rb` 是进度行的过滤器，但 4.0.24 实测输出连 `user@` 也不留，故过滤器整体丢弃 userinfo。
+
+### 实现位置
+
+- 新增 `src/celerite/uri_credentials_filter.cr`（`Celerite::URICredentialsFilter.credential_filtered_uri`，`String` / `URI` 两个重载，解析失败原样返回）；`src/celerite.cr:6-7` require。
+- `src/celerite/resolution.cr:683,689,1048,1306,1308`、`src/celerite/cli/commands_install.cr:529,800`：`Fetching … from <source>` 全部改走过滤器。
+- 未改的凭据与分派链路（已与参考一致）：`src/celerite/config.cr:519-539`、`src/celerite/compact_index/cache.cr:88-89,182-201`、`src/celerite/downloader.cr:222-254`、`src/celerite/http_transport.cr:159`（CONNECT 隧道后同一响应分派）。
+- 装具：`script/http_index_server.js` 新增第 5 参 auth map（`<prefix><TAB><user>:<pass>`，最长前缀胜，缺 `Authorization: Basic` 回 `401` + `WWW-Authenticate`）；`script/differential:441-450,460` 把夹具的 `http-auth` 传入。
+
+### 证据
+
+`../compat-evidence/2026-11-23.md` 的「私有 source 鉴权三形态…」节（逐字 stdout/stderr、请求日志与失败 diff）；夹具 `fixtures/differential/auth-config-credentials/`、`auth-gemrc-not-a-source/`、`auth-userinfo-source/`、`auth-userinfo-precedence/`；spec `spec/uri_credentials_filter_spec.cr`。
+
+### 已声明差异
+
+- 原断言「`~/.gemrc` 是凭据源、`WWW-Authenticate` 质询会重试」被 oracle 证伪：参考两条都不实现，我方按参考保持不实现，登记为 `C-M7-5-034`（已声明差异），不得据旧断言自造功能。
+- 质询与 CONNECT 两形态不做差分夹具：装具没有代理/TLS 桩服务器；「质询一次后重试」在单个夹具服务器上无法对 ref/cel 两侧分别计数，首侧触发质询后次侧会被直接放行。两形态只用上面的手工探针与请求日志取证。
+- 403（`AuthenticationForbiddenError`）文案里的 userinfo 未过滤、未取 oracle；`user@` 无密码的 userinfo 未逐字比对。

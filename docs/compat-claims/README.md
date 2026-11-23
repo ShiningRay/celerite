@@ -229,7 +229,7 @@
 | C-M7-5-015 | 索引期 403 归因到完整源 URI（含尾斜杠），紧凑索引 403 回退 legacy 索引后再报错 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'crystal spec spec/m7_forbidden_spec.cr'；'bash script/differential aut…` |
 | C-M7-5-016 | gem 下载 403 按 4 轮重试并逐轮打印 `Retrying download gem …`，最终以 `InstallError`（5）失败 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'crystal spec spec/m7_forbidden_download_spec.cr'；'bash script/differe…` |
 | C-M7-5-017 | `~/.gemrc` 的 `:http_proxy` 参与代理解析，取值为 `:no_proxy` 时关闭代理 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential lock-gemrc-proxy lock-gemrc-no-proxy'；'cryst…` |
-| C-M7-5-018 | `~/.gemrc` 凭据源、`WWW-Authenticate: Basic` 与代理 CONNECT 后的 401 尚未实现 | 未实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'crystal spec spec/m7_authentication_errors_spec.cr'` |
+| C-M7-5-018 | 私有 source 的凭据只来自源 URI userinfo 与 `bundle config`，userinfo 优先且进度行不泄漏；CONNECT 后的 401 与直连同分派 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential auth-config-credentials auth-gemrc-not-a-sou…` |
 | C-M7-5-019 | `--local` 只从已安装 gems 与 `vendor/cache` 取材，不查任何索引（含 `file://`），缺失即以 exit 7 报参考文案 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential install-local install-local-no-cache install…` |
 | C-M7-5-020 | `install --local` 直接从 `vendor/cache` 取包，不打印 `Fetching`，并打印 `Updating files in vendor/cache` | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential install-local-vendor-cache'；'crystal spec sp…` |
 | C-M7-5-021 | `--local` 下新增非本地依赖以 exit 7 失败，且不写出被改坏的锁 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential install-local-new-dep-not-installed'；'crysta…` |
@@ -245,6 +245,7 @@
 | C-M7-5-031 | 多 Ruby ABI 的平台变体选择只在宿主 `x64-mingw-ucrt` 上取证，跨 ABI 矩阵未验证 | 未验证 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential multi-platform-lock multi-platform-install m…` |
 | C-M7-5-032 | `add --strict` 在 install 阶段失败时保留已追加的 Gemfile 与已改写的锁，注入阶段失败时不写盘 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential add-strict'；'crystal spec spec/m7_add_strict…` |
 | C-M7-5-033 | 显式深层 `glob:` 让 path 源越过默认两层深度解析，未命中以 exit 7 报参考 not-found 文案 | 已实现 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential path-glob-explicit-deep path-glob-explicit-d…` |
+| C-M7-5-034 | 参考不把 `~/.gemrc` 当凭据源、也不响应 `WWW-Authenticate` 质询：我方按参考保持不实现（原 C-M7-5-018 断言作废） | 已声明差异 | [M7-5-sources-platforms.md](M7-5-sources-platforms.md) | `'bash script/differential auth-gemrc-not-a-source'（4.0.24 与 2.7.2 双 pr…` |
 | C-M7-6-001 | `plugin install --path` 把 plugins.rb 声明的命令写入项目索引 `commands:` | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_commands_spec.cr' 与 'bash script/differen…` |
 | C-M7-6-002 | 索引中登记的插件命令先于 `bundler-<name>` PATH 回退分发 | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_commands_spec.cr'` |
 | C-M7-6-003 | `help <插件命令>` 以 `--help` 执行插件命令 | 已实现 | [M7-6-plugins.md](M7-6-plugins.md) | `'crystal spec spec/m7_plugin_commands_spec.cr'` |
@@ -359,5 +360,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 247 条断言（已实现 202 · 已声明差异 28 · 未实现 5 · 未验证 9 · 已取代 3）。
+合计 248 条断言（已实现 203 · 已声明差异 29 · 未实现 4 · 未验证 9 · 已取代 3）。
 <!-- END GENERATED INDEX -->
