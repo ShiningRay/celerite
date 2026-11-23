@@ -2157,9 +2157,7 @@ module Celerite
           if !all && executables.empty?
             suggestions = [] of Tuple(String, Array(String))
             dependency_names.each do |dep_name|
-              dep_spec = targets.find(&.name.==(dep_name))
-              next if dep_spec.nil?
-              dep_available, dep_executables, _, _ = binstub_spec_info(bridge, dep_spec, install_root, definition)
+              dep_available, dep_executables, _, _ = runtime_dependency_spec_info(bridge, dep_name, targets, install_root, definition)
               next unless dep_available && !dep_executables.empty?
               suggestions << {dep_name, dep_executables}
             end
@@ -2265,13 +2263,47 @@ module Celerite
         info = Bridge::GemSpecInfo.from_json(bridge.read_gem_spec(gem_file).to_json)
         deps = [] of String
         info.dependencies.try(&.each { |dep| deps << (dep["name"]?.try(&.as_s?) || "") })
-        return {true, info.executables, info.bindir, deps.reject(&.empty?)}
+        # A GEM spec materialized from the lockfile carries its dependency rows
+        # in the lockfile's (sorted) order, not the gemspec's declaration
+        # order, and `installer.rb:104-118` walks them in that order.
+        return {true, info.executables, info.bindir, deps.reject(&.empty?).sort}
       end
       gem_dir = installed_gem_dir(spec, install_root, definition)
       path = File.join(gem_dir.gsub('\\', "/"), "#{spec.name}.gemspec")
       path = Dir.glob(File.join(gem_dir.gsub('\\', "/"), "*.gemspec")).first? || path unless File.file?(path)
       payload = File.file?(path) ? bridge.load_installed_spec(path) : nil
       return {false, [] of String, "bin", [] of String} if payload.nil?
+      binstub_payload_info(payload)
+    end
+
+    # `installer.rb:104-118` reads each dependency's executables out of
+    # `@definition.specs[dependency]`. That set is the lockfile's materialized
+    # specs PLUS the running bundler (`definition.rb:756-757`), and bundler
+    # never has a lockfile row of its own, so `binstub_targets` cannot see it.
+    # Resolve such a dependency from the Ruby installation's own
+    # `specifications/` directory instead of the lock.
+    private def self.runtime_dependency_spec_info(bridge : Bridge::Client, dep_name : String,
+                                                  targets : Array(BinstubTarget), install_root : String,
+                                                  definition : Definition) : Tuple(Bool, Array(String), String, Array(String))
+      if dep_spec = targets.find(&.name.==(dep_name))
+        return binstub_spec_info(bridge, dep_spec, install_root, definition)
+      end
+      return {false, [] of String, "bin", [] of String} unless dep_name == "bundler"
+      env = bridge.ruby_environment
+      specs_dir = File.join((env.ruby_default_dir || env.default_gem_dir).gsub('\\', "/"), "specifications")
+      version = Celerite::Profile.bundler_version
+      path = File.join(specs_dir, "bundler-#{version}.gemspec")
+      unless File.file?(path)
+        candidates = Dir.glob(File.join(specs_dir, "bundler-*.gemspec"))
+        path = candidates.find { |candidate| File.basename(candidate) == "bundler-#{version}.gemspec" } ||
+               candidates.first? || path
+      end
+      payload = File.file?(path) ? bridge.load_installed_spec(path) : nil
+      return {false, [] of String, "bin", [] of String} if payload.nil?
+      binstub_payload_info(payload)
+    end
+
+    private def self.binstub_payload_info(payload : JSON::Any) : Tuple(Bool, Array(String), String, Array(String))
       executables = (payload["executables"]?.try(&.as_a?) || [] of JSON::Any).compact_map(&.as_s?)
       bindir = payload["bindir"]?.try(&.as_s?) || "bin"
       deps = (payload["dependencies"]?.try(&.as_a?) || [] of JSON::Any).compact_map(&.as_s?)
