@@ -1836,7 +1836,13 @@ module Celerite
                    end
                  end
 
-      all_groups = available_groups(definition, lockfile)
+      # When neither the flags nor `with`/`without`/`only` ask for a group
+      # subset, group evaluation is an identity transform
+      # (`requested_groups_for` returns every group and
+      # `filter_locked_specs_by_groups` returns the specs unchanged), so the
+      # bridge round-trip it needs can be skipped entirely.
+      groups_requested = !only_groups.empty? || !without_groups.empty? || group_settings_configured?(config)
+      all_groups = groups_requested ? available_groups(definition, lockfile) : ["default"]
       (only_groups + without_groups).uniq.each do |group|
         unless all_groups.includes?(group)
           stderr.puts "`#{group}` group could not be found."
@@ -1844,7 +1850,7 @@ module Celerite
         end
       end
 
-      requested_groups = requested_groups_for(config, all_groups, only_groups, without_groups)
+      requested_groups = groups_requested ? requested_groups_for(config, all_groups, only_groups, without_groups) : all_groups
 
       locked_specs = lockfile.specs.sort_by(&.full_name)
 
@@ -1870,12 +1876,17 @@ module Celerite
         return 1
       end
 
-      # Filter locked specs by requested groups.
-      filtered_specs = begin
-        filter_locked_specs_by_groups(definition, lockfile, locked_specs, requested_groups)
-      rescue
-        locked_specs
-      end
+      # Filter locked specs by requested groups. The no-filter case is an
+      # identity transform, so it must not touch the bridge at all.
+      filtered_specs = if groups_requested
+                         begin
+                           filter_locked_specs_by_groups(definition, lockfile, locked_specs, requested_groups)
+                         rescue
+                           locked_specs
+                         end
+                       else
+                         locked_specs
+                       end
 
       installed_missing = filtered_specs.reject { |spec| installed_spec_dir?(definition, spec, lockfile) }
 
@@ -2781,11 +2792,21 @@ module Celerite
       requested
     end
 
+    # `Config#[]` converts `with`/`without`/`only` to `Array(String)`, so an
+    # unset key is `[]` and its `to_s` is `"[]"` — an emptiness check on the
+    # converted value is what distinguishes "configured" from "unset".
+    private def self.group_settings_configured?(config : Config) : Bool
+      ["with", "without", "only"].any? do |key|
+        value = config[key]
+        value.is_a?(Array(String)) ? !value.empty? : !value.to_s.empty?
+      end
+    end
+
     def self.filter_locked_specs_by_groups(definition : Definition, lockfile : Lockfile::Data, specs : Array(Lockfile::Spec), requested_groups : Array(String)) : Array(Lockfile::Spec)
       # An empty requested set means "nothing selected" once `with`/`without`/
       # `only` are configured; with no configuration at all the caller passes
       # every group (`definition.rb:1251-1254` intersects unconditionally).
-      configured = ["with", "without", "only"].any? { |key| !definition.config[key].to_s.empty? }
+      configured = group_settings_configured?(definition.config)
       return [] of Lockfile::Spec if requested_groups.empty? && configured
       return specs if requested_groups.empty? || requested_groups == lockfile_groups(definition, lockfile)
       bridge = Bridge::Client.shared
