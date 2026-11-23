@@ -2399,6 +2399,19 @@ module Celerite
       end
     end
 
+    # A dependency that only exists in the definition the reference built from
+    # its synthetic `injected gems` file (`injector.rb:40`). celerite derives
+    # its top-level set from the Gemfile on disk (`top_level_deps`), so the
+    # injected entry is modelled as an evaluated dependency instead.
+    def self.evaluated_dependency(name : String, requirements : Array(String)) : Bridge::EvaluatedDependency
+      Bridge::EvaluatedDependency.from_json({
+        "name" => name, "requirements" => requirements, "groups" => ["default"],
+        "platforms" => [] of String, "autorequire" => nil,
+        "force_ruby_platform" => false, "gemspec_dev_dep" => false,
+        "source" => nil,
+      }.to_json)
+    end
+
     # `Bundler::Plugin::DSL#source` (4.0.24
     # bundler/lib/bundler/plugin/dsl.rb:39-49) turns every typed source into a
     # top-level `bundler-source-<type>` dependency for install-time resolution.
@@ -2408,14 +2421,21 @@ module Celerite
     def add_inferred_plugin_dependencies!(names : Enumerable(String)) : Nil
       names.each do |name|
         next if @evaluation.dependencies.any? { |dep| dep.name == name }
-        dep = Bridge::EvaluatedDependency.from_json({
-          "name" => name, "requirements" => [">= 0"], "groups" => ["default"],
-          "platforms" => [] of String, "autorequire" => nil,
-          "force_ruby_platform" => false, "gemspec_dev_dep" => false,
-          "source" => nil,
-        }.to_json)
-        @evaluation.dependencies << dep
+        @evaluation.dependencies << Resolution.evaluated_dependency(name, [">= 0"])
       end
+    end
+
+    # `Injector#inject` (injector.rb:40) folds the requested gem into the
+    # definition through a synthetic `injected gems` file written with
+    # `build_gem_lines(false)`, i.e. the requested requirement itself and never
+    # the conservative `= x.y` form that lands in the Gemfile at :47. The
+    # definition that relocks at :50 therefore carries that requirement, which
+    # is why a plain `add` records the bare gem name in DEPENDENCIES. Replaces
+    # the dependency the Gemfile already contributes, mirroring the reference's
+    # `@deps -= builder.dependencies`.
+    def inject_dependency!(name : String, requirements : Array(String)) : Nil
+      @evaluation.dependencies.reject! { |dep| dep.name == name }
+      @evaluation.dependencies << Resolution.evaluated_dependency(name, requirements)
     end
 
     # Lockfile form of a PATH source remote (reference

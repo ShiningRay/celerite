@@ -520,6 +520,17 @@ module Celerite
           raise injected_gem_conflict(name, current.requirements, desired, gemfile_path)
         end
         already_declared = !current.nil?
+        # `injector.rb:35-40`: `@deps -= builder.dependencies` leaves only the
+        # gems the Gemfile does not declare yet, and those are the ones the
+        # synthetic `injected gems` file contributes to the relocked definition.
+        # The requirement there is `build_gem_lines(false)`'s, i.e. the requested
+        # one (`>= 0` without `--version`), never the conservative `= x.y` form
+        # appended to the Gemfile at :47.
+        # A sourced add (`--path`/`--git`/`--github`/`--source`) is the one shape
+        # this model cannot carry: the reference's injected `Dependency` keeps the
+        # source it was built with, while the synthetic entry here has none, so
+        # those adds keep resolving the Gemfile declaration, which does.
+        injected = already_declared || sourced_add?(rest) ? nil : {name, desired}
 
         probe_printed = false
         unless already_declared
@@ -552,8 +563,16 @@ module Celerite
         # while a project without a lockfile gets the resolver's fetch/resolve
         # announcement and the new lockfile (`add-skip-install`,
         # `add-existing-same` fixtures).
-        if rest.includes?("--skip-install")
-          persist_add_lockfile(definition, bridge, stdout, probe_printed)
+        # `injector.rb:44-50` runs `@definition.remotely!`, the append and this
+        # relock BEFORE `cli/add.rb:22` calls the installer, so an install-stage
+        # failure still leaves both files rewritten (oracle: `add racc --strict`
+        # keeps `gem "racc", "= 1.8"` and a lockfile whose DEPENDENCIES list
+        # `racc`). The relock resolves the injected requirement, not the
+        # conservative Gemfile one, hence the `injected` pair. An `add` that
+        # declares nothing new leaves the pre-install relock to the installer
+        # below, which does not re-print the probe lines.
+        if injected || rest.includes?("--skip-install")
+          persist_add_lockfile(definition, bridge, stdout, probe_printed, injected)
         end
       rescue ex
         File.write(gemfile_path, gemfile_backup) if gemfile_appended
@@ -572,13 +591,12 @@ module Celerite
       # resolution); install() repeats the second fetch when the lockfile
       # is (re)written. An unchanged Gemfile still runs the installer, which
       # reuses the lockfile resolution and therefore prints nothing.
-      code = begin
-        install(stdout, stderr, install_args_from_add(rest, name),
-          summary: false, no_reuse: !already_declared)
-      rescue ex
-        File.write(gemfile_path, gemfile_backup) if gemfile_appended
-        raise ex
-      end
+      # `injector.rb:44-50` already relocked and rewrote the Gemfile before
+      # `cli/add.rb:22` reached the installer, so a failure here leaves both files
+      # as the reference does: `add racc --strict` exits 7 with the appended
+      # `gem "racc", "= 1.8"` line and the `racc` dependency still on disk.
+      code = install(stdout, stderr, install_args_from_add(rest, name),
+        summary: false, no_reuse: !already_declared)
       # `cli/add.rb:26-30`: `perform_bundle_install` = install, then
       # `Bundler.load.cache if Bundler.app_cache.exist?`.
       if code == 0
@@ -603,6 +621,17 @@ module Celerite
     # `"2.6.0"` and `--version 2.6.0` both normalize to `= 2.6.0`.
     private def self.same_requirement?(current : Array(String), desired : Array(String)) : Bool
       current.sort == desired.sort
+    end
+
+    # `bundle add` options that point the new dependency at a source of its own
+    # (`injector.rb:113-121`: source, path, git, github, branch, ref). The
+    # synthetic dependency built at `Resolution.evaluated_dependency` carries no
+    # source, so an add using any of these must keep resolving the Gemfile
+    # declaration, which does carry it (the `add-git`/`add-ref`/`add-path`
+    # fixtures).
+    private def self.sourced_add?(rest : Array(String)) : Bool
+      flags = ["--path", "--git", "--github", "--source", "-s"]
+      rest.any? { |arg| flags.any? { |flag| arg == flag || arg.starts_with?(flag + "=") } }
     end
 
     # `Bundler::Dsl#add_dependency` raises `GemfileError` when the requested
@@ -885,9 +914,17 @@ module Celerite
     # `Fetching source index from <remote>/` + `Resolving dependencies...` and
     # the new lockfile lands (`add-skip-install`, `add-existing-same` fixtures).
     private def self.persist_add_lockfile(definition : Definition, bridge : Bridge::Client, stdout : IO,
-                                          probe_printed : Bool) : Nil
+                                          probe_printed : Bool,
+                                          injected : Tuple(String, Array(String))? = nil) : Nil
       resolution = Resolution.new(definition, false, bridge)
       begin
+        # `injector.rb:40-50`: the definition that relocks carries the requested
+        # requirement (`build_gem_lines(false)`, `>= 0` without `--version`), not
+        # the conservative `= x.y` line appended to the Gemfile at :47. That is
+        # why a failed `add racc --strict` records a bare `racc` in DEPENDENCIES.
+        if injected
+          resolution.inject_dependency!(injected[0], injected[1])
+        end
         # A newly appended gem already made the requirement probe fetch and
         # resolve; repeating those lines would duplicate them.
         resolution.progress = probe_printed ? IO::Memory.new : stdout
