@@ -106,3 +106,122 @@ Bundle complete! 1 Gemfile dependency, 1 gem now installed.          NIO3_EXIT=0
 - 未定位 `celerite install` 收缩锁的实现位置（本任务为只读审计，未读 install 侧写锁代码路径）；也未判定它是「设计如此」还是缺陷。
 - 未跑 rails 规模 `install` 的双侧性能比较（我方 153524 ms 含网络下载，参考 149323 ms 为复用本机缓存，两者不可直接比）。
 - 未重跑全量 `crystal spec` 与全量差分（越出本任务范围）。
+
+## 2026-11-23：task-166 修复后在 rails 8.0.2 规模上复跑 install（task-174）
+
+### oracle
+
+- Gemfile（2 行，53 B）：`source "https://rubygems.org"` + `gem "rails", "8.0.2"`。
+- 起始锁 = 本文件「2026-11-23：Rails 规模回归的本机可行性判定（task-160）」探针 1 取得的 rails 规模 oracle 的**逐字节副本**：`10663 B / 64 条 spec`（`^    [a-z]` 计数），SHA256 `C76C7DF696DA12C829933AA0A22904AA2742BC73F7F19A971FB3E92D86A199B1`（拷贝前后同哈希、同字节数、同 spec 行数）。
+- 修复基线：worktree `C:\temp\celerite-t174`，detached HEAD = `6d1506d`（已含 `fa3eca2`）。
+
+### 参考锚点
+
+- 参考实现 = `bundler 4.0.24`（oracle 锁内 `BUNDLED WITH 4.0.24`，平台 `x64-mingw-ucrt`）。
+- 判据一（决定性，针对 task-166 的缺陷）：`install` 后锁是否仍为 `10663 B / 64 条 spec`；缺陷形态是收缩为 `698 B / 1 条 spec`。
+- 判据二：安装集合是否来自 64 条锁（缺陷形态是只装 `rails` 本体一个 gem）。
+- 判据三（强）：`install` 写出的锁与 oracle 是否逐字节相同。
+- 本轮未联网重跑参考侧 `install`（参考侧锚点沿用 task-160 记录：`RAILS_CEL_ISO_REF_EXIT=0 MS=149323`、`Bundle complete! 1 Gemfile dependency, 64 gems now installed.`），故判据三只比「我方 install 产物 vs 既有 oracle」。
+
+### 实现位置
+
+- `src/celerite/resolution.cr:1477` `lockfile_covers_dependencies?`；`bundler` 边跳过两处：`:1487`（顶层 dep 循环）与 `:1503`（锁内 spec 的依赖边循环，task-166 的修复点）。
+- 复用决策入口 `src/celerite/resolution.cr:1383` `reuse_locked_resolution?`，其中 `:1410` 调用 `lockfile_covers_dependencies?`，`:1425` 调用 `covers_local_platform?`（本锁 `PLATFORMS` 为 `x64-mingw-ucrt`，与宿主机一致）。
+- 该 rails 锁共 122 条依赖边；用 Ruby `Gem::Requirement` 逐边核验结果：`edges_without_spec_row=[["bundler", ">= 1.15.0"]]`、`requirement_failures=[]`（64 条 spec 全部满足各自约束）。即**唯一**能触发「锁不完整」判定的边就是 `bundler (>= 1.15.0)`，与 `:1503` 的跳过点一一对应；其余边（含 `date`、`nio4r (~> 2.0)`、`nokogiri (>= 1.8.5)`、`prism` 平台变体行）均有 spec 行且满足约束。
+
+### 证据
+
+构建（环境：`C:\msys64\{usr,ucrt64}\bin` + `C:\Ruby40-x64\bin` 前置，`TMPDIR/TMP/TEMP/HOME/USERPROFILE/CRYSTAL_CACHE_DIR` 指向 worktree 内目录，`SSL_CERT_FILE=C:/msys64/usr/ssl/cert.pem`）：
+
+```
+$ crystal build src/cli.cr -o bin/celerite.exe
+exit=0  elapsed=34.1s  bin/celerite.exe = 12758720 B
+（stderr 仅 2 条 File.executable? deprecation warning：commands_install.cr:1752、commands_install.cr:1815）
+```
+
+跑 1（首辅指定 PATH，未设 `BUNDLE_PATH`）：
+
+```
+exit=5  elapsedSec=271
+stdout（全文 13 行，逐字）:
+Fetching gem metadata from https://rubygems.org/.
+Fetching connection_pool 3.0.3
+Fetching net-smtp 0.5.2
+Fetching prism 2.1.0 (x64-mingw-ucrt)
+Fetching rack 3.2.9
+Fetching websocket-driver 0.9.0
+Fetching websocket-extensions 0.2.0
+Installing connection_pool 3.0.3
+Installing net-smtp 0.5.2
+Installing prism 2.1.0 (x64-mingw-ucrt)
+Installing rack 3.2.9
+Installing websocket-extensions 0.2.0
+Installing websocket-driver 0.9.0 with native extensions
+stderr（首行与末三行，逐字）:
+Gem::Ext::BuildError: ERROR: Failed to build gem native extension.
+make failedNo such file or directory - make
+Gem files will remain installed in
+C:/Ruby40-x64/lib/ruby/gems/4.0.0/gems/websocket-driver-0.9.0 for inspection.
+An error occurred while installing websocket-driver (0.9.0), and Bundler cannot
+continue.
+```
+
+- 跑 1 后锁：`bytes=10663 specs=64 sha256=C76C7DF6…A199B1`（与 oracle **同哈希**）⇒ 未收缩。
+- 跑 1 失败属**环境**：`C:\msys64\usr\bin\make.exe`、`C:\msys64\ucrt64\bin\make.exe`、`C:\msys64\mingw64\bin\make.exe` 实测均 `exists=False`；`C:\Ruby40-x64\msys64\usr\bin\make.exe` 存在。与本文件 task-160 节「make 可用的准确表述是默认 PATH 未含 Ruby 自带 msys64 的 `usr/bin`」一致。
+- 跑 1 已装 6 个 gem（系统 gem 目录 `C:\Ruby40-x64\lib\ruby\gems\4.0.0\gems`，mtime 2026-11-23 15:43）：`connection_pool-3.0.3`、`net-smtp-0.5.2`、`prism-2.1.0-x64-mingw-ucrt`、`rack-3.2.9`、`websocket-driver-0.9.0`、`websocket-extensions-0.2.0` —— 即按 64 条锁的依赖闭包字母序推进，而非缺陷形态的「只装 rails」。
+
+跑 2（PATH 前置 `C:\Ruby40-x64\msys64\usr\bin`，`BUNDLE_PATH=<probe>\bundle`；较跑 1 唯一的差异是 make 可见与安装落点）：
+
+```
+exit=0  elapsedSec=553.2  stderr 空（0 B）
+stdout 全文 133 行，末 15 行逐字:
+Installing tzinfo 2.0.6
+Installing uri 1.1.2
+Installing useragent 0.16.11
+Installing websocket-extensions 0.2.0
+Installing zeitwerk 2.8.3
+Installing bigdecimal 4.1.3 with native extensions
+Installing date 3.6.0 with native extensions
+Installing erb 6.0.7 with native extensions
+Installing io-console 0.9.5 with native extensions
+Installing nio4r 2.7.5 with native extensions
+Installing racc 1.8.1 with native extensions
+Installing rbs 4.2.0 with native extensions
+Installing websocket-driver 0.9.0 with native extensions
+Bundle complete! 1 Gemfile dependency, 64 gems now installed.
+Bundled gems are installed into `./bundle`
+```
+
+跑 2 后计数与锁：
+
+```
+bundle/ruby/4.0.0/gems 目录数 = 64
+bundle/ruby/4.0.0/specifications 下 *.gemspec 数 = 64
+（随附 .so 文件数 = 15）
+Gemfile.lock bytes=10663  specs=64
+Gemfile.lock sha256=7C21E7936DA22F1E0A959B69AF562D3357922F164BE977175CDB01DE67DC13A2
+oracle       sha256=C76C7DF696DA12C829933AA0A22904AA2742BC73F7F19A971FB3E92D86A199B1
+逐字节相同 = false；spec 集合与版本 = 64/64 相同；依赖边内容逐条相同，差异为顺序
+specs_with_different_dep_lines=16  order_only=16  content_different=0
+例（A=install 产物，B=oracle）:
+-- actioncable
+   A: ["activesupport (= 8.0.2)", "actionpack (= 8.0.2)", "nio4r (~> 2.0)", "websocket-driver (>= 0.6.1)", "zeitwerk (~> 2.6)"]
+   B: ["actionpack (= 8.0.2)", "activesupport (= 8.0.2)", "nio4r (~> 2.0)", "websocket-driver (>= 0.6.1)", "zeitwerk (~> 2.6)"]
+-- actionpack
+   A: ["activesupport (= 8.0.2)", "nokogiri (>= 1.8.5)", "rack (>= 2.2.4)", "rack-session (>= 1.0.1)", "rack-test (>= 0.6.3)", "rails-html-sanitizer (~> 1.6)", "rails-dom-testing (~> 2.2)", "useragent (~> 0.16)", "actionview (= 8.0.2)"]
+   B: ["actionview (= 8.0.2)", "activesupport (= 8.0.2)", "nokogiri (>= 1.8.5)", "rack (>= 2.2.4)", "rack-session (>= 1.0.1)", "rack-test (>= 0.6.3)", "rails-dom-testing (~> 2.2)", "rails-html-sanitizer (~> 1.6)", "useragent (~> 0.16)"]
+```
+
+### 结论
+
+- **task-166 的修复在 rails 规模成立**：两次 `install` 后锁都保持 `10663 B / 64 条 spec`，未再出现 `698 B / 1 条 spec` 收缩；完成态跑 2 装了 64 个 gem、写入 64 个 gemspec，输出 `Bundle complete! 1 Gemfile dependency, 64 gems now installed.`。
+- **新发现（不得当作收缩，但属未解释差异）**：跑 2 结束后锁被重写，`64` 条 spec 的集合、版本、每条依赖约束都相同，但 **16 条 spec 的依赖行次序**与 oracle 不同（我方按 gemspec 声明序，oracle 按字母序）；字节数巧合仍为 10663 B，SHA256 不同。跑 2 stdout 出现两次 `Resolving dependencies...`（跑 1 为 0 次），提示 install 末段仍走了一次解析/重写；该重写路径的依赖序排序与 `lock` 命令的写锁路径不一致——`lock` 与参考逐字节一致是 task-160 已实测结论（本轮未重跑交叉验证，标「未验证」）。
+- 该顺序差异是否计入 M7「已解释差异为零」，需按治理口径裁定；本轮**只记录、不改 `src/`**。若认定需修，落点应在 install 末段写锁时对单条 spec 的依赖边排序（`src/celerite/resolution.cr` 内的锁渲染路径，具体行号本轮未定位，标「未验证」）。
+
+### 已声明差异
+
+- 未联网重跑参考侧 `install`（参考侧数字全部引自 task-160 记录），故 `10663 B` 之外无同轮双侧对照；未跑 `bundle check`、`bundle exec`、`rails new` 等后续命令。
+- 未做冷/热性能对照：跑 1 `271 s`（网络冷缓存、停在原生扩展）、跑 2 `553.2 s`（含 8 个原生扩展编译、`BUNDLE_PATH` 全新目录），两次环境不同，**不可互为性能基线**，也不与参考侧 `149323 ms` 直接比较。
+- 跑 1 未设 `BUNDLE_PATH`，gem 落入**系统** gem 目录（`C:\Ruby40-x64\lib\ruby\gems\4.0.0`，计数 847 目录 / 808 gemspec，含本轮新增 6 个），与 task-160 探针「显式 `BUNDLE_PATH`」的落点不同；跑 2 用 `BUNDLE_PATH=<probe>\bundle` 才得到 64/64 的项目内计数。
+- 跑 2 比首辅规定的环境配方多前置了 `C:\Ruby40-x64\msys64\usr\bin`（跑 1 因该目录不在 PATH 而 `make` 不可见、exit 5），并显式设 `BUNDLE_PATH`；这是**两次** install 调用，不是循环重试：跑 1 的失败为环境缺 `make`，未改动任何源码或锁内容。
+- 未跑全量 `crystal spec` / 全量差分；未验证 `install` 后 `celerite check`/`list`/`exec` 在本锁上的行为；未定位跑 2 两次 `Resolving dependencies...` 的确切来源。
