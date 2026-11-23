@@ -46,7 +46,7 @@
 
 - 状态：已实现
 - 参考行为（4.0.24）：上游失败原因分环境（artifice 不可达、网络策略、Low-IL 共享内存、跳过 dev 依赖）与产品两类，混在一起无法判断兼容性缺口。
-- 我方行为：`script/upstream-specs-buckets.rb:7-19` 的规则表自上而下首命中，`:42` 的 `classify(klass, message, backtrace)` 产出 `env:artifice-unreachable`/`env:network-policy`/`env:low-il-shm`/`env:test-deps-skipped`/`fixture:missing-gem-files`/`fixture:fetch-failed`/`product:candidates` 七个桶；`script/upstream-specs:199-234` 用 `-r script/upstream-specs-buckets.rb` 调同一函数写 `failure-buckets.md`，`:210-212` 的注释明写「规则表放在该模块里，离线重算也走同一分类」。
+- 我方行为：`script/upstream-specs-buckets.rb:7-19` 的规则表自上而下首命中，`:42` 的 `classify(klass, message, backtrace)` 产出 `env:out-of-process-artifice`（task-193 由 `env:artifice-unreachable` 更名，判定条件与桶序不变）/`env:network-policy`/`env:low-il-shm`/`env:test-deps-skipped`/`fixture:missing-gem-files`/`fixture:fetch-failed`/`product:candidates` 七个桶；`script/upstream-specs:199-234` 用 `-r script/upstream-specs-buckets.rb` 调同一函数写 `failure-buckets.md`，`:210-212` 的注释明写「规则表放在该模块里，离线重算也走同一分类」。
 - 判据：`bash script/upstream-specs`
 - 边界：桶名与顺序由 `:30-37` 的 `ORDER` 固定；分桶只用于归因，不改变 rspec 退出码。
 - 生效：task-91
@@ -191,3 +191,13 @@
 - 边界：夹具用本地合成桩（`extra/vendor/cache`）而非真实 gem；`lock` 之后 `install --local` 不多出 `Resolving dependencies...` 由该夹具的 stdout 对照间接钉住，未单独断写盘次数；渲染时的排序与去重由 spec 钉住
 - 生效：task-175（4b757bc）
 - 取代：无
+
+## C-M7-8-020 artifice 桶在 real-drive 下结构性不可判定，已改判为 `env:out-of-process-artifice`
+
+- 状态：已声明差异
+- 参考行为（4.0.24）：上游 `bundler/spec/support/helpers.rb:154-177` 把 `spec/support/artifice/*.rb` 桩以 `RUBYOPT=-r<stub>.rb` 注入同一个 Ruby 进程，`https://gem.repo{1..4}` 因此解析到桩，锁体行为在「无真网」前提下可判定。
+- 我方行为：`script/upstream-specs-celerite-override.rb:39-41` 删除 `:requires`/`:load_path`/`:artifice` 选项，`:57-59` 以 `sys_exec` 起原生 `bin/celerite`——桩在子进程里拿不到，celerite 只能按真网访问 `gem.repoN`，失败消息固定为 `Could not reach host`。`script/upstream-specs-buckets.rb:44` 因而把这些失败归入 `env:out-of-process-artifice`（task-193 之前名为 `env:artifice-unreachable`）。
+- 判据：`bash script/upstream-specs`；报告 `.upstream-specs/upstream-lockfile-v4.0.24-20261123T132826Z.md` 的 `## Failure buckets` 节（44 条 `env:out-of-process-artifice`，同报告 `real-drive: 69 celerite invocations`）。
+- 边界：跨进程桩注入不可能，非产品缺口；该桶在 real-drive 下结构性不可判定，只有改跑参考侧 Ruby 驱动或另建「桩代理」通道（把 Rack app 跑成真 HTTP server 并允许改源 host）才能取得期望输出。故该桶条数不得读作兼容性缺口，其转绿/转红也不得记作修复或回归。
+- 生效：task-193（`script/upstream-specs-buckets.rb` 的桶名与注释）
+- 取代：无（仅更名；C-M7-8-005 正文里的桶名列表已同步为 `env:out-of-process-artifice`）

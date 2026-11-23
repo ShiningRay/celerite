@@ -531,3 +531,114 @@ RuntimeError:
 - 「fail→pass 2 条与 sinatra 无关」是据机制（两例不走 artifice）与「`src/` 未改」推出的判断；旧 run 的原始 `rspec-output.txt` 已被本次覆写，无法逐字复核其 stderr，故标为**推断**而非实测。
 - `env:low-il-shm` 9 条与新增 5 条同属宿主 msys 抖动，未重跑消抖；故 47→50 的净增 3 不得读作 sinatra 造成的回归，也不得读作产品劣化。
 - 本节新基线与分桶不替代 `docs/compat-report.md` 的 `## Current metrics`（唯一对外口径）；如需改口径须另开任务并复采。
+
+## 2026-11-23：50 条失败的逐条定性与分桶改名（task-193）
+
+采集环境：worktree `C:\temp\celerite-t193`（HEAD `954f2d5`）；`bin/celerite.exe` 自工作区复制（SHA256 与主工作区一致 `C85A43CC…`）；`.upstream-specs` 为指向主工作区同名目录的 junction，复用同一 4.0.24 checkout 与夹具。命令 `/c/msys64/usr/bin/bash script/upstream-specs`，环境 `CELERITE_SKIP_TEST_DEPS=1 RSPEC_FORMATTER_OUTPUT_ID=celerite-harness`、`TMPDIR/TMP/TEMP/HOME=/c/temp`。harness exit 1（＝rspec status），报告 `.upstream-specs/upstream-lockfile-v4.0.24-20261123T132826Z.md`，`real-drive: 69 celerite invocations`。
+
+结果：`64 examples, 45 failures`（19 passed），分桶 `env:out-of-process-artifice (44)` / `fixture:fetch-failed (1)` / `env:low-il-shm (0)` / `product:candidate (0)`。
+
+与 task-178 末次基线（`64/50`，报告 `…T130235Z.md`）逐例比对：两轮失败用例的 full_description 集合只有 5 例差异，且这 5 例在 task-178 全属 `env:low-il-shm`，本轮转绿；反向差集为空（`only in new = 0`）。本轮 `rspec-output.txt` 中 `0xC0000022`、`NtCreateDirectoryObject`、`LoadError`、`sinatra` 各 0 次（task-178 的 `0xC0000022` 为 9 次），`Could not reach host` 49 次。据此：
+
+- 5 例「转绿」是宿主 msys Low-IL 抖动，不是产品修复，不得记作关闭；
+- 4 例原 low-il-shm 本轮错误面变为 `Could not reach host`，按规则表落入 artifice 桶（`script/upstream-specs-buckets.rb:44`）；
+- 2 例原 `fixture:fetch-failed`（`:36`、`:87`）本轮同样以 `Could not reach host` 失败，改落 artifice 桶；
+- 净失败数 50 → 45 全部可由上三条解释，无一例属于产品侧变化。
+
+### 分桶前后对照
+
+| task-178（`…T130235Z.md`） | 条数 | 本轮（`…T132826Z.md`） | 条数 | 说明 |
+| --- | --- | --- | --- | --- |
+| `env:artifice-unreachable` | 38 | `env:out-of-process-artifice` | 44 | 38 + 4（原 low-il 改判）+ 2（原 fetch 改判） |
+| `env:low-il-shm` | 9 | `env:low-il-shm` | 0 | 5 例转绿、4 例改判 artifice |
+| `fixture:fetch-failed` | 3 | `fixture:fetch-failed` | 1 | 2 例改判 artifice，余 1 例 `:175` |
+| `product:candidate` | 0 | `product:candidate` | 0 | 两轮皆 0 |
+| 合计 | 50 | | 45 | |
+
+### 逐条定性表（50 条，按最终归因排序）
+
+口径：本表覆盖 task-178 的 50 条失败；「本轮表现」列区分「失败（本轮，45 条）」与「本轮通过（5 条，task-178 为 `env:low-il-shm`）」。归因只取四类之一：`env:out-of-process-artifice`（桩无法跨进程注入，结构性）、`env:low-il-shm`（msys `0xC0000022` 族）、`fixture:fetch-failed`（夹具/宿主 fetch 缺件）、`product:candidate`（真产品分歧）。
+
+| # | `spec/lock/lockfile_spec.rb` | 用例（full_description） | 归因 | 本轮表现 |
+| --- | --- | --- | --- | --- |
+| 1 | `:8` | the lockfile format generates a simple lockfile for a single source, gem | `env:out-of-process-artifice` | 失败（本轮） |
+| 2 | `:36` | the lockfile format updates the lockfile's bundler version if current ver. is newer, and version was forced through BUNDLER_VERSION | `env:out-of-process-artifice` | 失败（本轮） |
+| 3 | `:87` | the lockfile format does not update the lockfile's bundler version if nothing changed during bundle install, but uses the locked version | `env:out-of-process-artifice` | 失败（本轮） |
+| 4 | `:138` | the lockfile format adds the BUNDLED WITH section if not present | `env:out-of-process-artifice` | 失败（本轮） |
+| 5 | `:222` | the lockfile format generates a simple lockfile for a single source, gem with dependencies | `env:out-of-process-artifice` | 失败（本轮） |
+| 6 | `:253` | the lockfile format generates a simple lockfile for a single source, gem with a version requirement | `env:out-of-process-artifice` | 失败（本轮） |
+| 7 | `:284` | the lockfile format generates a lockfile without credentials | `env:out-of-process-artifice` | 失败（本轮） |
+| 8 | `:331` | the lockfile format does not add credentials to lockfile when it does not have them already | `env:out-of-process-artifice` | 失败（本轮） |
+| 9 | `:392` | the lockfile format keeps credentials in lockfile if already there | `env:out-of-process-artifice` | 失败（本轮） |
+| 10 | `:445` | the lockfile format generates lockfiles with multiple requirements | `env:out-of-process-artifice` | 失败（本轮） |
+| 11 | `:511` | the lockfile format does not asplode when a platform specific dependency is present and the Gemfile has not been resolved on that platform | `env:out-of-process-artifice` | 失败（本轮） |
+| 12 | `:658` | the lockfile format is conservative with dependencies of git gems | `env:out-of-process-artifice` | 失败（本轮） |
+| 13 | `:813` | the lockfile format sorts serialized sources by type | `env:out-of-process-artifice` | 失败（本轮） |
+| 14 | `:861` | the lockfile format removes redundant sources | `env:out-of-process-artifice` | 失败（本轮） |
+| 15 | `:889` | the lockfile format lists gems alphabetically | `env:out-of-process-artifice` | 失败（本轮） |
+| 16 | `:932` | the lockfile format orders dependencies' dependencies in alphabetical order | `env:out-of-process-artifice` | 失败（本轮） |
+| 17 | `:981` | the lockfile format orders dependencies by version | `env:out-of-process-artifice` | 失败（本轮） |
+| 18 | `:1022` | the lockfile format does not add the :require option to the lockfile | `env:out-of-process-artifice` | 失败（本轮） |
+| 19 | `:1053` | the lockfile format does not add the :group option to the lockfile | `env:out-of-process-artifice` | 失败（本轮） |
+| 20 | `:1222` | the lockfile format keeps existing platforms in the lockfile | `env:out-of-process-artifice` | 失败（本轮） |
+| 21 | `:1268` | the lockfile format adds compatible platform specific variants to the lockfile, even if resolution fallback to ruby due to some other incompatible platform specific variant | `env:out-of-process-artifice` | 失败（本轮） |
+| 22 | `:1313` | the lockfile format persists the spec's specific platform to the lockfile | `env:out-of-process-artifice` | 失败（本轮） |
+| 23 | `:1348` | the lockfile format does not add duplicate gems | `env:out-of-process-artifice` | 失败（本轮） |
+| 24 | `:1384` | the lockfile format does not add duplicate dependencies | `env:out-of-process-artifice` | 失败（本轮） |
+| 25 | `:1412` | the lockfile format does not add duplicate dependencies with versions | `env:out-of-process-artifice` | 失败（本轮） |
+| 26 | `:1440` | the lockfile format does not add duplicate dependencies in different groups | `env:out-of-process-artifice` | 失败（本轮） |
+| 27 | `:1490` | the lockfile format works correctly with multiple version dependencies | `env:out-of-process-artifice` | 失败（本轮） |
+| 28 | `:1517` | the lockfile format captures the Ruby version in the lockfile | `env:out-of-process-artifice` | 失败（本轮） |
+| 29 | `:1548` | the lockfile format automatically fixes the lockfile when it's missing deps | `env:out-of-process-artifice` | 失败（本轮） |
+| 30 | `:1589` | the lockfile format raises a clear error when frozen mode is set and lockfile is missing deps, and does not install any gems | `env:out-of-process-artifice` | 失败（本轮） |
+| 31 | `:1615` | the lockfile format raises a clear error when frozen mode is set and lockfile is missing entries in CHECKSUMS section, and does not install any gems | `env:out-of-process-artifice` | 失败（本轮） |
+| 32 | `:1682` | the lockfile format fills empty CHECKSUMS entries when not frozen, even if every gem is already installed | `env:out-of-process-artifice` | 失败（本轮） |
+| 33 | `:1712` | the lockfile format automatically fixes the lockfile when it's missing deps, they conflict with other locked deps, but conflicts are fixable | `env:out-of-process-artifice` | 失败（本轮） |
+| 34 | `:1771` | the lockfile format automatically fixes the lockfile when it's missing multiple deps, they conflict with other locked deps, but conflicts are fixable | `env:out-of-process-artifice` | 失败（本轮） |
+| 35 | `:1834` | the lockfile format raises a resolution error when lockfile is missing deps, they conflict with other locked deps, and conflicts are not fixable | `env:out-of-process-artifice` | 失败（本轮） |
+| 36 | `:1882` | the lockfile format regenerates a lockfile with no specs | `env:out-of-process-artifice` | 失败（本轮） |
+| 37 | `:1974` | the lockfile format automatically fixes the lockfile when it includes a gem under the correct GIT section, but also under an incorrect GEM section, with a higher version, and with no explicit Gemfile requirement | `env:out-of-process-artifice` | 失败（本轮） |
+| 38 | `:2031` | the lockfile format automatically fixes the lockfile when it includes a gem under the correct GIT section, but also under an incorrect GEM section, with a higher version | `env:out-of-process-artifice` | 失败（本轮） |
+| 39 | `:2281` | the lockfile format auto-heals when the lockfile is missing specs | `env:out-of-process-artifice` | 失败（本轮） |
+| 40 | `:2349` | the lockfile format a line ending generates Gemfile.lock with \n line endings | `env:out-of-process-artifice` | 失败（本轮） |
+| 41 | `:2355` | the lockfile format a line ending during updates preserves Gemfile.lock \n line endings | `env:out-of-process-artifice` | 失败（本轮） |
+| 42 | `:2367` | the lockfile format a line ending during updates preserves Gemfile.lock \r\n line endings | `env:out-of-process-artifice` | 失败（本轮） |
+| 43 | `:2386` | the lockfile format a line ending when nothing changes preserves Gemfile.lock \n line endings | `env:out-of-process-artifice` | 失败（本轮） |
+| 44 | `:2395` | the lockfile format a line ending when nothing changes preserves Gemfile.lock \r\n line endings | `env:out-of-process-artifice` | 失败（本轮） |
+| 45 | `:477` | the lockfile format generates a simple lockfile for a single pinned source, gem with a version requirement | `env:low-il-shm` | 本轮通过 |
+| 46 | `:550` | the lockfile format serializes global git sources | `env:low-il-shm` | 本轮通过 |
+| 47 | `:586` | the lockfile format generates a lockfile with a ref for a single pinned source, git gem with a branch requirement | `env:low-il-shm` | 本轮通过 |
+| 48 | `:622` | the lockfile format generates a lockfile with a ref for a single pinned source, git gem with a tag requirement | `env:low-il-shm` | 本轮通过 |
+| 49 | `:2144` | the lockfile format successfully updates the lockfile when a new gem is added in the Gemfile includes a gem that shouldn't be included | `env:low-il-shm` | 本轮通过 |
+| 50 | `:175` | the lockfile format update the bundler major version just fine | `fixture:fetch-failed` | 失败（本轮） |
+
+### 四个归因类别的判据出处
+
+- `env:out-of-process-artifice`（44 条）：上游 `bundler/spec/support/helpers.rb:154-177` 用 `env["RUBYOPT"] = opt_add("-r#{r}", env["RUBYOPT"])` 把 artifice 桩注入 **Ruby 子进程**；装具 `script/upstream-specs-celerite-override.rb:39-41` 删掉 `:requires`/`:load_path`/`:artifice`，`:57-59` 用 `sys_exec` 起原生 `bin/celerite` ⇒ 桩永不加载，celerite 按真网访问 `https://gem.repo{1..4}` 得到 `Could not reach host`。本轮 `LoadError` 与 `sinatra` 各 0 次，排除「缺 gem」解释。该桶在 real-drive 下结构性不可判定，非产品缺口。
+- `env:low-il-shm`（5 条，本轮通过）：task-178 报 `NtCreateDirectoryObject … 0xC0000022`，属宿主 msys Low-IL 限制；本轮未复现，故按「环境族、未消除」保留。
+- `fixture:fetch-failed`（1 条，`:175`）：`rspec-output.txt` 原文为 `Bundler 4.0.24 is running, but your lockfile was generated with 1.8.2 … Installing Bundler 1.8.2 and restarting using that version.` 与 `Fetching bundler 1.8.2`，即 celerite 自装 bundler 时访问真 `https://rubygems.org/`；严格说不是夹具缺件，而是宿主真网 fetch 失败。桶名按规则表保持 `fixture:fetch-failed`，判定逻辑未改。
+- `product:candidate`（0 条）：3 条 `RSpec::Expectations::ExpectationNotMetError`（`:43`、`:44`、`:49`）经查其记录里子命令以 `# $? => 17` 结束、输出为 `Could not reach host …`，断言失败源于命令报错而非锁体字节差异；全表无一例能给出「参考行为 vs 我方输出」的逐字差异，故不判 product。
+
+### 改桶的代码位置
+
+- `script/upstream-specs-buckets.rb:11`（规则表第 1 行）、`:31`（`ORDER` 首元素）、`:44`（`classify` 首条 `return`）：字符串 `env:artifice-unreachable` → `env:out-of-process-artifice`，并把规则表列宽 24 放宽到 28 以容纳新名。
+- 文件末尾追加 12 行 `# task-193 renamed bucket 1 …` 注释，写明跨进程不可判定的机制与「非产品缺口」边界。
+- `classify` 的判定条件（`text.include?("Could not reach host")`）与桶序**未改**；`script/upstream-specs` 未改；新增的 12 行注释落在 `end` 之后（第 57 行起），`:7-19`、`:11`、`:30-37`、`:31`、`:42`、`:44` 等既有行号引用不变。`ruby -c script/upstream-specs-buckets.rb` 输出 `Syntax OK`。
+- 历史节里的旧桶名（本文件 `:31`、`:124`、`:144`、`:153`、`:233`、`:258`、`:366`、`:387`、`:391-396`、`:487`、`:501` 以及 `docs/compat-evidence/2026-11-19.md`、`2026-11-20.md`、`2026-11-21.md`、`2026-11-22.md` 的相关行）一律保留原样，不回改。
+
+### product:candidate 结论
+
+`product:candidate = 0`：50 条失败全部落在 `env:out-of-process-artifice`（44）、`env:low-il-shm`（5）、`fixture:fetch-failed`（1）三类环境/结构桶，没有一例具备「参考行为 vs 我方行为」的逐字差异证据。本轮**没有**新的产品候选需要逐项关闭。
+
+### 三个分句的判定与 M7-8 勾选建议
+
+1. ①「真实驱动」：成立——`real-drive: 69 celerite invocations`，harness 同时自证 `upstream checkout integrity: ok`；60 秒内起 69 次原生 exe 不可能是空转。
+2. ②「退出码反映失败」：成立——harness exit 1 ＝ rspec status；69（环境不可用）/70（未驱动）分支未触发，也不是 0。
+3. ③「保留当前失败基线，再逐项关闭」：形式上成立——两轮基线（`64/50` 与 `64/45`）并列保留、50 条逐条定性完成、`product:candidate` 归零；但「逐项关闭」的剩余对象只剩环境/结构桶：artifice 桶在 real-drive 下结构性不可判定，low-il 与 fetch 两桶依赖宿主环境，均无产品侧可关闭项。
+4. 勾选建议：M7-8 可以勾 `[x]`——三个分句都有可复核证据，剩余失败无产品候选，且 bucket 语义已如实改判。但 `docs/roadmap.md:148` 的复选框改动由首辅决定，本节不改该文件。
+
+### 未验证 / 已知缺口
+
+- 本轮失败数比 task-178 少 5（50→45），其中 5 例转绿属宿主抖动、4+2 例改判；两次采集未在**相同启动路径**下重复（本轮经 junction 路径、task-178 经主工作区路径），故「45 与 50 谁更接近稳态」未验证，基线按各自环境如实并列记录，不改写历史节。
+- artifice 桶的 44 条没有一条取得过参考侧（Ruby 驱动、桩可用）下的期望输出，因此「改判为环境族」依据的是机制（桩进不了子进程）而非逐条 oracle 对照；若要逐条 oracle，需另做「桩代理」通道。
+- `product:candidate = 0` 是对**本轮 45 条实测失败**与 50 条全集定性后的结论；若将来宿主环境变得干净（无 low-il、无 fetch 失败）而失败数不降，则必须重开 product 定性。

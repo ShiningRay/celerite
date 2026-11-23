@@ -326,6 +326,7 @@
 | C-M7-8-017 | 补充 CHECKSUMS digest 与 `path_expander` 锁体行的两处未对齐 | 已声明差异 | [M7-8-upstream-specs.md](M7-8-upstream-specs.md) | `'bash script/upstream-specs'` |
 | C-M7-8-018 | 完整锁里指向 `bundler` 的依赖边不再让锁被误判为不完整而重写 | 已实现 | [M7-8-upstream-specs.md](M7-8-upstream-specs.md) | `'bash script/differential install-keeps-lock-with-bundler-edge'；'cryst…` |
 | C-M7-8-019 | `install` 重写锁时依赖行按字母序输出，锁内容与 `lock` 的产物一致 | 已实现 | [M7-8-upstream-specs.md](M7-8-upstream-specs.md) | `'bash script/differential install-rewrites-lock-in-lock-order'；'crysta…` |
+| C-M7-8-020 | artifice 桶在 real-drive 下结构性不可判定，已改判为 `env:out-of-process-artifice` | 已声明差异 | [M7-8-upstream-specs.md](M7-8-upstream-specs.md) | `'bash script/upstream-specs'；报告 '.upstream-specs/upstream-lockfile-v4.…` |
 | C-M7-9-001 | `VersionUnion` 的区间扫描不再提前耗尽无上界一侧，多 `!=` 排除的 union 保持完整 | 已实现 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'crystal spec spec/m7_resolver_version_union_intersect_spec.cr'` |
 | C-M7-9-002 | 锁文件按本地平台变体物化，不退回 ruby 变体 | 已实现 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'crystal spec spec/m7_platform_variant_selection_spec.cr'；'bash script…` |
 | C-M7-9-003 | Rails 8.0.2 真实应用的端到端安装未通过，该 profile 的兼容声明未恢复 | 已取代 | [M7-9-rails-regression.md](M7-9-rails-regression.md) | `'bash script/differential install-check'（同形态的入库回归门禁；rails 规模夹具不入库，端到端无…` |
@@ -358,5 +359,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 246 条断言（已实现 202 · 已声明差异 27 · 未实现 5 · 未验证 9 · 已取代 3）。
+合计 247 条断言（已实现 202 · 已声明差异 28 · 未实现 5 · 未验证 9 · 已取代 3）。
 <!-- END GENERATED INDEX -->

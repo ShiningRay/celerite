@@ -6,17 +6,17 @@
 #
 # The rule table is evaluated top-down, first match wins:
 #
-# | # | condition                                                       | bucket                     |
-# |--:|-----------------------------------------------------------------|----------------------------|
-# | 1 | text contains "Could not reach host"                            | env:artifice-unreachable   |
-# | 2 | text contains "HTTP 403" or "403 Forbidden"                     | env:network-policy         |
-# | 3 | text contains "0xC0000022" or "NtCreateDirectoryObject"         | env:low-il-shm             |
-# | 4 | text contains "sinatra/base"                                    | env:test-deps-skipped      |
-# | 5 | exception class is RSpec::Expectations::ExpectationNotMetError   | product:candidates         |
-# | 5b| message has "expected:" and "got:" sections                     | product:candidates         |
-# | 6 | text contains ENOENT / "does not exist!" / "rb_sysopen"         | fixture:missing-gem-files  |
-# | 7 | text contains "Fetching "                                       | fixture:fetch-failed       |
-# | 8 | otherwise                                                       | product:candidates         |
+# | # | condition                                                       | bucket                       |
+# |--:|-----------------------------------------------------------------|------------------------------|
+# | 1 | text contains "Could not reach host"                            | env:out-of-process-artifice  |
+# | 2 | text contains "HTTP 403" or "403 Forbidden"                     | env:network-policy           |
+# | 3 | text contains "0xC0000022" or "NtCreateDirectoryObject"         | env:low-il-shm               |
+# | 4 | text contains "sinatra/base"                                    | env:test-deps-skipped        |
+# | 5 | exception class is RSpec::Expectations::ExpectationNotMetError   | product:candidates           |
+# | 5b| message has "expected:" and "got:" sections                     | product:candidates           |
+# | 6 | text contains ENOENT / "does not exist!" / "rb_sysopen"         | fixture:missing-gem-files    |
+# | 7 | text contains "Fetching "                                       | fixture:fetch-failed         |
+# | 8 | otherwise                                                       | product:candidates           |
 #
 # Rules 1-4 are environment signatures and run first so a lock assertion that
 # happens to quote an environment string still lands in its environment bucket.
@@ -28,7 +28,7 @@ module UpstreamSpecsBuckets
   ASSERTION_CLASS = "RSpec::Expectations::ExpectationNotMetError"
 
   ORDER = [
-    "env:artifice-unreachable",
+    "env:out-of-process-artifice",
     "env:network-policy",
     "env:low-il-shm",
     "env:test-deps-skipped",
@@ -41,7 +41,7 @@ module UpstreamSpecsBuckets
 
   def classify(klass, message, backtrace)
     text = klass + "\n" + message + "\n" + backtrace
-    return "env:artifice-unreachable" if text.include?("Could not reach host")
+    return "env:out-of-process-artifice" if text.include?("Could not reach host")
     return "env:network-policy" if text.include?("HTTP 403") || text.include?("403 Forbidden")
     return "env:low-il-shm" if text.include?("0xC0000022") || text.include?("NtCreateDirectoryObject")
     return "env:test-deps-skipped" if text.include?("sinatra/base")
@@ -54,3 +54,13 @@ module UpstreamSpecsBuckets
     "product:candidates"
   end
 end
+# ---------------------------------------------------------------------------
+# task-193 renamed bucket 1: `env:artifice-unreachable` ->
+# `env:out-of-process-artifice`. The signature is unchanged ("Could not reach
+# host"), only its meaning is named correctly: the RSpec stub for the fixture
+# source is injected with `RUBYOPT=-r<stub>.rb` into the Ruby that runs the
+# spec, while `script/upstream-specs-celerite-override.rb` drives celerite
+# through `Spec::Helpers#sys_exec` on a native executable, so neither the stub
+# nor `BUNDLER_SPEC_GEM_REPO` can cross the process boundary. That is a harness
+# (process model) limit, not a product gap, and it is structurally undecidable
+# under real-drive on any host.
