@@ -1,0 +1,5 @@
+source "https://rubygems.org"
+
+gemspec path: "aaa", name: "aaa"
+gemspec path: "zzz", name: "zzz"
+gemspec path: "aaa", name: "aaa"

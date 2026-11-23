@@ -1,0 +1,8 @@
+basicgem/basicgem.gemspec	spec.name = "basicgem"
+basicgem/.rspec	--require spec_helper
+basicgem/spec/spec_helper.rb	RSpec.configure
+basicgem/.rubocop.yml	TargetRubyVersion: 3.2
+basicgem/.github/workflows/main.yml	ruby-version: ${{ matrix.ruby }}
+basicgem/CHANGELOG.md	## [Unreleased]
+basicgem/LICENSE.txt	MIT License
+basicgem/Gemfile	rspec", "~> 3.0

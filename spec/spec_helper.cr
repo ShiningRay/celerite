@@ -64,6 +64,42 @@ def run_cli(args : Array(String)) : {Int32, String, String}
   {code, stdout.to_s, stderr.to_s}
 end
 
+# The `bundle gem` questionnaire (reference cli/gem.rb:299-426) only prompts
+# when `gem.<key>` has no setting. Specs that assert the scaffold itself run
+# as a user who already answered, by pointing HOME at an isolated global
+# config with the six answers set to false; the interactive path is covered by
+# spec/m7_gem_questionnaire_spec.cr.
+def with_gem_scaffold_defaults(&) : Nil
+  home = File.tempname("celerite-gem-settings", "home")
+  Dir.mkdir_p(File.join(home, ".bundle"))
+  File.write(File.join(home, ".bundle", "config"),
+    "---\n" + %w(TEST CI MIT COC CHANGELOG LINTER).map { |key|
+      %(BUNDLE_GEM__#{key}: "false")
+    }.join("\n") + "\n")
+
+  names = %w(HOME USERPROFILE BUNDLE_USER_CONFIG BUNDLE_USER_HOME BUNDLE_CONFIG)
+  saved = {} of String => String
+  names.each { |name| saved[name] = ENV[name] if ENV[name]? }
+  ENV["HOME"] = home
+  ENV["USERPROFILE"] = home
+  names[2..].each { |name| ENV.delete(name) }
+  begin
+    yield
+  ensure
+    names.each { |name| ENV.delete(name) }
+    saved.each { |name, value| ENV[name] = value }
+    FileUtils.rm_rf(home)
+  end
+end
+
+# `with_project` under `with_gem_scaffold_defaults`, for specs that exercise
+# the non-interactive scaffold path.
+def with_gem_project(files : Hash(String, String), & : String ->) : Nil
+  with_gem_scaffold_defaults do
+    with_project(files) { |dir| yield dir }
+  end
+end
+
 def ruby_available? : Bool
   result = Process.run("ruby -v", shell: true)
   result.success?

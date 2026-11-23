@@ -6,7 +6,7 @@ require "./spec_helper"
 # Celerite-specific.
 describe "M7 gem scaffold" do
   it "generates the reference scaffold for a hyphenated name" do
-    with_project({} of String => String) do
+    with_gem_project({} of String => String) do
       output = IO::Memory.new
       errors = IO::Memory.new
       Celerite::Commands.gem(output, errors, ["foo-bar"]).should eq(0)
@@ -46,7 +46,7 @@ describe "M7 gem scaffold" do
   end
 
   it "rejects an enum value with Thor's exact validation error" do
-    with_project({} of String => String) do
+    with_gem_project({} of String => String) do
       output = IO::Memory.new
       errors = IO::Memory.new
       Celerite::Commands.gem(output, errors, ["widget", "--test=minitestx"]).should eq(15)
@@ -56,7 +56,7 @@ describe "M7 gem scaffold" do
   end
 
   it "rejects a missing gem name with Thor's usage error" do
-    with_project({} of String => String) do
+    with_gem_project({} of String => String) do
       output = IO::Memory.new
       errors = IO::Memory.new
       Celerite::Commands.gem(output, errors, [] of String).should eq(15)

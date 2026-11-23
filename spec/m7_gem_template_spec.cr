@@ -41,7 +41,7 @@ end
 
 describe "M7(3) bundle gem default scaffold" do
   it "writes the ten 4.0.24 files and prints the reference output" do
-    with_project({} of String => String) do |dir|
+    with_gem_project({} of String => String) do |dir|
       code, out, err = run_cli(["gem", "foogem"])
       code.should eq(0)
 
@@ -74,7 +74,7 @@ describe "M7(3) bundle gem default scaffold" do
   end
 
   it "rejects multiple positionals like Thor (exit 15)" do
-    with_project({} of String => String) do
+    with_gem_project({} of String => String) do
       code, out, err = run_cli(["gem", "a", "b"])
       code.should eq(15)
       out.should be_empty
@@ -84,7 +84,7 @@ describe "M7(3) bundle gem default scaffold" do
   end
 
   it "refuses to overwrite an existing file with the same name (exit 32)" do
-    with_project({} of String => String) do
+    with_gem_project({} of String => String) do
       File.write("blocked", "x")
       code, _out, err = run_cli(["gem", "blocked"])
       code.should eq(32)
@@ -98,7 +98,7 @@ describe "M7(3) bundle gem default scaffold" do
   # only merges gitignore.tt when the scaffold includes a repository. Thor also
   # generates a `--no-<name>` for every boolean option, so `--no-git` is valid.
   it "skips git, .gitignore and the identity lookups under --no-git" do
-    with_project({} of String => String) do
+    with_gem_project({} of String => String) do
       code, out, err = run_cli(["gem", "nogitgem", "--no-git"])
       code.should eq(0)
       err.should_not contain("fatal")
@@ -119,7 +119,7 @@ describe "M7(3) bundle gem default scaffold" do
   end
 
   it "accepts the Thor negations that match the default scaffold" do
-    with_project({} of String => String) do
+    with_gem_project({} of String => String) do
       code, _out, err = run_cli([
         "gem", "negatedgem",
         "--no-mit", "--no-coc", "--no-changelog", "--no-exe", "--no-bundle",
@@ -133,7 +133,7 @@ describe "M7(3) bundle gem default scaffold" do
   # cli.rb:607-608 turns both spellings into a removed-option error before the
   # scaffold runs.
   it "reports the removed --rubocop switch instead of scaffolding" do
-    with_project({} of String => String) do
+    with_gem_project({} of String => String) do
       code, out, err = run_cli(["gem", "rubogem", "--rubocop"])
       code.should eq(15)
       out.should be_empty
@@ -143,7 +143,7 @@ describe "M7(3) bundle gem default scaffold" do
   end
 
   it "reports the removed --no-rubocop switch instead of scaffolding" do
-    with_project({} of String => String) do
+    with_gem_project({} of String => String) do
       code, out, err = run_cli(["gem", "rubogem", "--no-rubocop"])
       code.should eq(15)
       out.should be_empty
