@@ -253,3 +253,105 @@ C 组刻意用「引擎侧 profile 环境变量 = 2.7.2、参考侧仍 4.0.24」
 4. C-M7-3-035（未验证）：`env` 的多 `gemspec` 指令顺序与去重未验证。本机可做：`env-gemspec` 夹具加两个 gemspec。
 
 另：C-M7-3-031（`doctor` 完整诊断）未实现，但本行文字未点名 doctor，是否阻塞由首辅按 M7-3 账本口径裁定。已声明差异 5 条需首辅明确接受（尤其 020 的子进程语义）后，才可按「已声明差异不算缺项」计。
+
+## 2026-11-23：M7-3 行闭合判据复审（task-206）
+
+### 范围与纪律
+
+- 只读复审。worktree `C:\temp\celerite-t206`（@ `302cbae`，干净），仓库主目录 `C:\Users\ShiningRay\projects\ShiningRay\celerite`。
+- 未改 `src/`、`spec/`、`fixtures/`、`script/`、`docs/roadmap.md`、`docs/compat-report.md`、`docs/compat-claims/`；只追加本节与 `docs/compat-evidence/2026-11-23.md` 同名节。
+- 抽跑预算 ≤8 条命令；实际 4 条（build、spec、双 profile differential、issue/console 手动 A/B 脚本）。
+
+### oracle：本行逐分句
+
+`docs/roadmap.md:143` 原文（逐字）：
+
+> `- [ ] 移除或实现占位路径：`fund` 的真实 metadata、`gem` 模板、完整 `console`/`env` 行为；避免硬编码 Bundler 版本、时间戳和运行环境（实证流水逐字迁出至 `docs/roadmap-evidence/M7-3-placeholders.md`）`
+
+分句：
+
+1. 移除或实现占位路径：`fund` 的真实 metadata
+2. `gem` 模板
+3. 完整 `console`/`env` 行为
+4. 避免硬编码 Bundler 版本、时间戳和运行环境
+5. 实证流水逐字迁出至 `docs/roadmap-evidence/M7-3-placeholders.md`
+
+### 参考锚点（4.0.24，`C:\Ruby40-x64\lib\ruby\gems\4.0.0\gems\bundler-4.0.24\lib\bundler\`）
+
+- `cli/console.rb:11-17`：`Bundler.require`（带 group）→ `ARGV.clear` → `get_console(Bundler.settings[:console] || "irb")` → `console.start`（进程内）。
+- `cli/console.rb:19-36`：`require name`；`rescue LoadError`；`:23-28` 当 `name == "irb"` 且 `Gem::BUNDLED_GEMS.respond_to?(:force_activate)` 时先 `force_activate "irb"` 再 `require`；`:29-30` 仅在该能力不存在时打 `"#{name} is not available"` 并 `exit 1`；`:31-34` 其他名字打 `Couldn't load console ... falling back to irb` 后 `retry`。
+- `cli/console.rb:38-45`：`pry`/`ripl`/`irb` → `Pry`/`Ripl`/`IRB` 常量。
+- 2.7.2 对照：`bundler-2.7.2/lib/bundler/cli/console.rb:19-31` 无 `force_activate` 分支，`LoadError` 且 `name == "irb"` 直接 `"#{name} is not available"` + `exit 1`。
+- `cli/issue.rb:8-30`：资源清单后 `Bundler.ui.info Bundler::Env.report`；`:32-33` 打 `"\n## Bundle Doctor"` 并调 `doctor`（`doctor/diagnose.rb` 的 `Diagnose#run`，options 为空）。
+- `env.rb:12-31`：`Env.report` 先拼 `## Environment`、`## Bundler Build Metadata`、`## Bundler settings`；`:31` `return out unless SharedHelpers.in_bundle?` —— 无 Gemfile 时不拼 `## Gemfile`/`## Gemspecs`。
+- `env.rb:33-49`：有 Gemfile 时拼 `## Gemfile`、`### Gemfile`、`### Gemfile.lock`，内容经 `read_file`（`:63-69`）。
+- `env.rb:51-58`：`## Gemspecs`，按 `dsl.gemspecs` 原序逐条（`dsl.rb:63-99`，`:78`/`:80` 的 `gemspec` 记录顺序，`:96-97` 同名冲突报错）。
+- `cli/doctor.rb:16-19`：`doctor diagnose` → `Diagnose.new(options).run`；`:21-31` `doctor ssl` → `doctor/ssl.rb`。
+- `cli/doctor/diagnose.rb:77-110`：`run` = `settings.validate!` → `check!`（`Bundler::CLI::Check#run`，`:67-70`）→ 可选 `diagnose_ssl`（`:72-75`）→ 逐 spec 扫 `**/*.bundle` 的 dylib（`:86-96`）→ `check_home_permissions`（`:98`）→ 有坏链 `raise ProductionError`，否则 `"No issues found with the installed bundle"`（`:108-110`）。
+- `cli/doctor/diagnose.rb:41-53`：`dylibs` 平台分派；Windows 走 `:49-52`，只 `warn "Dynamic library check not supported on this platform."` 并返回空表。
+- `cli/doctor/diagnose.rb:115-165`：`check_home_permissions` 用 `Find.find(bundle_path)` 分四类（坏符号链接、他人所有但可读、他人所有且不可读、本人不可读），各打一条 warn 并把 `ok = false`。
+
+### 实现位置
+
+- `gem` 问卷：`spec/m7_gem_questionnaire_spec.cr`（4 examples）+ 夹具 `fixtures/gem-questionnaire`；判据 `bash script/differential gem-questionnaire`。
+- `env` 多 gemspec：`spec/m7_env_multi_gemspec_spec.cr`（2 examples）+ 夹具 `fixtures/env-gemspec-multi`；判据 `bash script/differential env-gemspec-multi`。
+- `console`：`src/celerite/cli/commands_surface.cr:3666`（`self.console`），启动序列交给 `assets/bridge/console_boot.rb`（`:50` warning、`:53-56` 声明不镜像 `force_activate`）。
+- `issue`/`env` 报告：`src/celerite/cli/commands_surface.cr:3565-3661`（`:3574` 资源清单、`:3582-3640` Environment/Build Metadata/settings、`:3645-3650` 按 definition 决定是否拼 Gemfile 节、`:3652-3653` `## Bundle Doctor`、`:3660` `doctor_report`）；共享 Gemfile/Gemspecs 段落 `:1244`。
+- `doctor`：`src/celerite/cli/commands_surface.cr:1328`（`self.doctor`）、`:1455-1507`（`doctor_report`：`:1463` settings 校验提示、`:1466-1485` check/锁物化、`:1489` `--ssl`、`:1494-1501` 每个 `**/*.bundle` 打平台警告、`:1502-1505` 自认 home 权限类警告本环境未触发）。
+- `fund`：claims 001-005、007 已实现，006 已声明差异（本轮未复跑，沿用 task-182 结论）。
+
+### 抽跑证据（本机实测）
+
+环境：`PATH` 前置 `C:\msys64\usr\bin`、`C:\Ruby40-x64\bin`；`TMPDIR`/`TMP`/`TEMP`/`HOME`/`USERPROFILE`/`CRYSTAL_CACHE_DIR` 全部指向 t206 内绝对目录。
+
+1. `crystal build src/cli.cr -o bin/celerite.exe`：成功（t206 无 `bin/`，先建目录）。
+2. `crystal spec spec/m7_gem_questionnaire_spec.cr spec/m7_env_multi_gemspec_spec.cr` → `6 examples, 0 failures, 0 errors, 0 pending`，exit 0；仅 `commands_install.cr:1827`、`:1890` 的 `File.executable?` deprecated 警告 2 条。
+3. 差分（`CELERITE_BIN=/c/temp/celerite-t206/bin/celerite.exe`、`TMPDIR=/c/temp`）：
+   - 4.0.24：`PASS gem-questionnaire (exit=0)`、`PASS env-gemspec-multi (exit=0)`；`differential (4.0.24): 2 passed, 0 failed, 0 skipped`。
+   - 2.7.2（`BUNDLER_REF_VERSION=2.7.2`）：`PASS env-gemspec-multi (exit=0)`；`SKIP gem-questionnaire (deferred for 2.7.2: ... 不能逐字比对；celerite 实现 4.0.24 问卷与脚手架，4.0.24 通过)`；`2.7.2: 1 passed, 0 failed, 1 skipped`。
+   - 2.7.2 的 skip 与 015 的 deferred 声明一致，不计缺陷。
+4. `issue` 无 Gemfile 手动 A/B（030）：第 1 轮两侧 exit 10、stderr 均 `Could not locate Gemfile`，stdout 1740 vs 1741 字节，唯一差异是 `## Bundle Doctor` 前多一空行；第 2 轮按 `script/differential` 的 `isolated_env` 复刻（`HOME`/`USERPROFILE`/`GEM_HOME`/`GEM_PATH`/`BUNDLE_PATH`/`RUBYOPT=""`/`TMP`/`TEMP`/`TMPDIR`，两侧各自沙箱，先 `install` 再 `issue`），两侧 exit 10、stderr 逐字相同、stdout 各 1839 字节，把 `.../ref|cel` 归一为 `{SB}` 后逐字相等（含 `## Bundler settings` 的 `path / Set via BUNDLE_PATH: "{SB}"` 块与 `## Bundle Doctor` 结尾）。
+   → 030 的 deferred 理由（无 Gemfile 时回溯宿主 user config 导致不可逐字比对）在本机 harness 等价环境下不复现。
+5. `console` 手动 A/B（021）：Gemfile 仅 `source "file:///c/temp/celerite-t206/fixtures/gem-index/"`；两侧 `install` rc=0；再 `console` 并把 `puts "IRB_READY"` / `puts Bundler::VERSION` / `exit` 写入 stdin。
+   - 参考 4.0.24：`console.rb:24-27` 的 `force_activate "irb"` 后仍 `LoadError: cannot load such file -- irb`，打 `Failed to activate irb, please install it with 'gem install irb'` 与完整 ERROR REPORT，exit 1。
+   - celerite：`console_boot.rb:50` 的 `irb used to be loaded from the standard library...` warning + `irb is not available`，exit 1。
+   - 单独 `ruby -e 'require ...'`：`IRB_OK 1.19.0`、`RELINE_OK 0.7.0`、`FIDDLE_OK 1.1.8`（bundle 外可 require）。
+   → 021 原边界「本机 irb/reline/fiddle 链不可用」不成立；真实障碍是 bundle 内 `require "irb"` 失败（irb 非 default gem，Gemfile 未声明），参考 4.0.24 在同一环境同样进不了 IRB。
+
+### ②③031 逐项判定与处置建议
+
+- **② C-M7-3-021（IRB 可用时的交互式 console）**：判定「参考也如此 + 本机不可验证」。本机无 irb 依赖的 bundle 内，参考 4.0.24 的 `force_activate` 分支亦失败（`cli/console.rb:24-27`），celerite 走声明差异（`console_boot.rb:53-56`，020 子进程语义）后报 `irb is not available`（对应 2.7.2 `cli/console.rb:23-25`）。真实 IRB 会话需 Gemfile 含 `irb` 且该 gem 可离线安装，本机 gem-index 夹具无 irb → 不可验证。
+  处置建议：保留 021「未验证」，把边界改写为上述实测结论（去掉「irb/reline/fiddle 不可用」的错误前提）；本行 ③ 的「完整 console」以 020 已声明差异收窄为「自定义 console 与 IRB 失败路径」。若首辅不接受「未验证挂账」，则先补 2.7.2 同名探针（本轮未做）再议。
+- **③ C-M7-3-030（无 Gemfile 时 `issue` 回溯宿主 user config）**：判定「本机可验证，且已实测可逐字比对」。参考锚点 `env.rb:31`（无 bundle 直接返回）与 `cli/issue.rb:30-33`；实现位置 `commands_surface.cr:3574-3660`。第 4 条实测两轮，第 2 轮与差分夹具的 `isolated_env` 等价，stdout 归一后逐字相等。
+  处置建议：把 030 由「未验证」改判「已实现」，`fixtures/issue-no-gemfile` 的 `deferred-4.0.24` 可启用为正式差分用例；2.7.2 是否同样可逐字比对未测（本轮未做），可保留 deferred。本轮不动 `docs/compat-claims/`，留待首辅批准后单独落账。
+- **031 C-M7-3-031（`doctor` 完整诊断）**：判定「产品部分未实现」。参考 `cli/doctor.rb:16-19` → `doctor/diagnose.rb:77-110`，其中 `:115-165` 的 `check_home_permissions` 我方无对应实现（`commands_surface.cr:1502-1505` 自认未触发）；Windows 上参考的动态库检查仅为 `:49-52` 的 warn，我方 `:1494-1501` 已按每个 `*.bundle` 打同文案，语义对齐。
+  处置建议：本行文字（`fund`/`gem`/`console`/`env`）未点名 `doctor`，**不建议让它阻塞 M7-3**；把 031 从 M7-3 账本迁出单列任务，或改判「已声明差异」并写明「Windows 上参考动态库检查仅 warn、home 权限检查在 uid 恒 0 的 Windows 上退化，故 M7-3 只对齐可见警告」。若首辅坚持「账本零未实现才可勾」，则 031 必须先降级并写入行文。
+
+### 逐分句判定
+
+1. `fund` 的真实 metadata：**满足**（claims 001-005、007 已实现；006 已声明差异；本轮未复跑，依据 task-182）。
+2. `gem` 模板：**满足**（015 已实现，本轮 4.0.24 差分 PASS、spec 4 examples 绿；014/016 已声明差异；2.7.2 deferred 不计缺口）。
+3. 完整 `console`/`env` 行为：**不满足（字面）**。`env` 侧满足（035 已实现、本轮差分 PASS）；`console` 侧 020 为已声明差异、021 未验证，且 021 的真实会话在本机不可达，「完整」二字无实测支撑。
+4. 避免硬编码 Bundler 版本、时间戳和运行环境：**满足**（依据 task-182 判定的 claims 已实现组；本轮未逐条复跑）。
+5. 实证流水逐字迁出：**满足**（本文件即迁出载体，节内保留任务号与命令输出摘要）。
+
+### 结论
+
+**本轮建议不勾 `[x]`。** 直接缺口只剩 1 项：021（`console` 的 IRB 真实会话未验证，且「完整 console」字面未被实测覆盖）。若首辅采「已声明差异不算缺口、未验证项可挂账」口径，则需先完成三件事再勾：① 明示接受 020 的子进程语义；② 把 ③ 从「完整 console/env」改写为「console（子进程语义，已声明差异 020；IRB 失败路径已对齐）与 env 行为」，并接受 021 为未验证挂账；③ 裁定 031 去向（迁出 M7-3 或降级为已声明差异）。三项落定后，其余分句均满足，可勾。
+
+### 附带发现（账本口径，需首辅裁定）
+
+1. **031 的参考描述含不存在的方法**：claims 031 写参考有 `check_home_permissions` / `check_path_components` / `check_gem_path` 系列；4.0.24 的 `lib/bundler` 全树只有 `check_home_permissions`（`cli/doctor/diagnose.rb:98` 调用、`:115` 定义），后两个方法不存在（grep `check_path_components|check_gem_path` 零命中）。031 的参考锚点应按 4.0.24 重写：`diagnose.rb:77-110` 的 `run` 只含 `check!`（`:67-70`）、可选 `ssl`（`:72-75`）、dylibs（`:41-53`）、`check_home_permissions`（`:115-165`）。
+2. **018 的「末行」断言按 4.0.24 不成立**：018 的参考行为写「irb 自身缺失时 `Bundler.ui.error "#{name} is not available"; exit 1`」，漏了 `cli/console.rb:24-28` 的 `force_activate "irb"` 分支。本机实测（第 5 条证据）：该能力存在时参考不打印 `irb is not available`，而是 `require` 抛出的 `LoadError` 冒泡，最终打印 `Failed to activate irb, please install it with 'gem install irb'` 与完整 ERROR REPORT（exit 1）。`irb is not available` 是 2.7.2 行为（`bundler-2.7.2/lib/bundler/cli/console.rb:23-25`）。同时 020 的边界只承诺「fallback 场景对齐首行文案与退出码」，与 018 的「末行」断言互相矛盾。
+   → 建议：018 按 4.0.24 重写参考锚点，或降级为已声明差异（末行文案 + ERROR REPORT 形态不镜像）；否则账本内保留一条按 4.0.24 不成立的断言，不宜作为勾选依据。
+
+### 已声明差异与未验证（本节口径）
+
+- 已声明差异（不算缺口，需首辅明示接受）：006、014、016、020、033。
+- 未实现：031（建议迁出本行或降级，见上）。
+- 未验证：021（真实 IRB 会话；本轮已把边界实测收窄）、030（本轮实测可逐字比对，建议改判已实现，但 claims 未改）。
+- 本节未做：2.7.2 的 `issue` 无 Gemfile 探针、真实 TTY 下的 IRB 会话、`docs/roadmap.md` 与 claims 的任何改写（越权）。
+
+### 结论补充
+
+账本口径还有两处需先修正才谈勾选：031 的参考锚点（含不存在的方法）与 018 的末行断言（按 4.0.24 不成立，见「附带发现」）。二者属文档修正，不改产品代码即可完成，但修正前 M7-3 账本不能视为可信的勾选依据。
