@@ -425,3 +425,7 @@ Found no changes, using resolution from the lockfile
 
 - `git-submodules` 本机双侧均不可通过：参考侧 `fatal: transport 'file' not allowed`，我方侧同路径无 repo。夹具/环境限制，不据此判 M7-2 不可勾。
 - 既有已声明差异本轮未动：`show --verbose` 三行 debug 通知、菜单 oracle 只取 4.0.24、`show`/`info` 组过滤未逐开关取 oracle、`Did you mean` 未实现、`git-installed-discovery` 只证本机短路径可跑通（不证明其他宿主不再触发 msys Low-IL `0xC0000022`）。
+
+### 判定
+
+**可勾 `[x]`**，缺项 0。理由：该行陈述的三件事均有可重跑且本轮实测通过的判据——① 已安装 gem 的发现（含 GIT 源）由 `git-installed-discovery` 双 profile PASS 与 `spec/m7_installed_discovery_spec.cr:225-267` 覆盖；② `list`/`show`/`info`/`check` 的边界由 C-M7-2-001/002/003/006/008/009/012/013/014/016/017 的夹具与本轮 85 examples 全绿覆盖；③ 组过滤由 C-M7-2-018 的 `install-without-group`、`install-without-two-groups`、`install-only-group`、`check-only-group`、`list-only-group`、`list-multi-group` 全覆盖。以下为**已声明差异，不算缺口**：`git-submodules` 的 SKIP（git ≥2.38 `protocol.file.allow` 与夹具本地路径设计致双侧同不可通过，属夹具/环境限制，且未计作任何断言的判据）、`show --verbose` 三行 debug 通知、菜单 oracle 只取 4.0.24、`show`/`info` 组过滤未逐开关取 oracle、`Did you mean` 未实现、`0xC0000022` 只证本机短路径不复现。
