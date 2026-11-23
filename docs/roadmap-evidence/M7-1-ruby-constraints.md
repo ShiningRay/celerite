@@ -204,3 +204,5 @@ spec：
 7. **`ruby_requirement_satisfied?` 完整实现并验证**：有。`src/celerite/resolver/source.cr:312` 同时比 `required_ruby_version`（`:313`）与 `required_rubygems_version`（`:314`），C-M7-1-002 / 003 / 005 覆盖，`ruby-metadata-match`(0)、`ruby-metadata-fail`(6)、`rubygems-metadata-boundary-fail`(6) 双 profile PASS，spec 10 examples；`ruby-metadata-remote-fail`（C-M7-1-004 的解释文案）本轮未重跑，不影响过滤本体。
 
 附注（不影响判定，供后续订正）：账本内多处源码行号相对 `3234039` 已漂移——`src/celerite/cli/commands.cr:1310`→`:1335`、`src/celerite/errors.cr:512`→`:522`（`ProductionError` `:260`→`:270`）、`src/celerite/resolution.cr:2501/2515`→`:2736/2755`、`src/celerite/cli/commands_install.cr:2086`→`:2101`。判据是可执行命令与夹具，不依赖行号，故不影响本轮判定；建议后续以 grep 实测行号统一订正账本。
+
+首辅裁定（2026-11-23，task-201 之后）：M7-1 勾 `[x]`，依据本文件上节 `### 判定`（七件逐件有可重跑判据，ABI 项按 `C-M7-1-015` 记为已声明差异）；复选框已在 `docs/roadmap.md` 的 M7 段同步。
