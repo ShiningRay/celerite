@@ -12,8 +12,9 @@
 #          noop       lockfile + installed gems, unchanged command `install`
 #
 # For every sample the driver records wall clock, CPU (whole process tree when
-# the platform can be polled, root process always), peak working set, exit code
-# and the first/last stdout line.  Celerite additionally exposes bridge counters
+# the platform can be polled, root process always), peak working set, Windows
+# GetProcessIoCounters operations/bytes (root and polled tree), exit code and
+# the first/last stdout line.  Celerite additionally exposes bridge counters
 # through CELERITE_BRIDGE_STATS (`bridge: procs=.. rpc=.. req_bytes=..
 # resp_bytes=..` on stderr); the reference side has no equivalent, so those
 # columns stay empty for it instead of being invented.
@@ -28,8 +29,11 @@
 # --scratch is written.
 #
 # One bootstrap `install` per side provides the lockfile and the installed gems
-# for the hot/noop tiers; it is measured but never recorded.  A warmup sample
-# is dropped for every tier as well (--no-warmup turns that off).
+# for the hot/noop tiers; it is measured but never recorded.  An existing seed is
+# accepted only after a successful `check`; a directory alone is not a complete
+# install.  A warmup sample is dropped for every tier (--no-warmup turns that off).
+# Seeded samples keep label-specific .out/.err files instead of overwriting the
+# previous run's raw output.
 #
 # Usage:
 #   script/bench-m8                            # both sides, three tiers, 3 runs
@@ -83,34 +87,37 @@ log() {
   printf '%s: %s\n' "$PROG" "$*" >&2
 }
 
+need_value() {
+  [ $# -ge 2 ] && [ -n "$2" ] || die "missing value for $1"
+}
+
 while [ $# -gt 0 ]; do
   case $1 in
     --help|-h) usage; exit 0 ;;
-    --side) SIDE_LIST=${2:-}; shift 2 ;;
+    --side) need_value "$@"; SIDE_LIST=$2; shift 2 ;;
     --side=*) SIDE_LIST=${1#*=}; shift ;;
-    --tiers) TIER_LIST=${2:-}; shift 2 ;;
+    --tiers) need_value "$@"; TIER_LIST=$2; shift 2 ;;
     --tiers=*) TIER_LIST=${1#*=}; shift ;;
-    --runs) RUNS=${2:-}; shift 2 ;;
+    --runs) need_value "$@"; RUNS=$2; shift 2 ;;
     --runs=*) RUNS=${1#*=}; shift ;;
-    --scratch) SCRATCH=${2:-}; shift 2 ;;
+    --scratch) need_value "$@"; SCRATCH=$2; shift 2 ;;
     --scratch=*) SCRATCH=${1#*=}; shift ;;
-    --out) OUT=${2:-}; shift 2 ;;
+    --out) need_value "$@"; OUT=$2; shift 2 ;;
     --out=*) OUT=${1#*=}; shift ;;
-    --gemfile) GEMFILE_SRC=${2:-}; shift 2 ;;
+    --gemfile) need_value "$@"; GEMFILE_SRC=$2; shift 2 ;;
     --gemfile=*) GEMFILE_SRC=${1#*=}; shift ;;
-    --celerite) CELERITE_EXE=${2:-}; shift 2 ;;
+    --celerite) need_value "$@"; CELERITE_EXE=$2; shift 2 ;;
     --celerite=*) CELERITE_EXE=${1#*=}; shift ;;
-    --ruby) RUBY_EXE=${2:-}; shift 2 ;;
+    --ruby) need_value "$@"; RUBY_EXE=$2; shift 2 ;;
     --ruby=*) RUBY_EXE=${1#*=}; shift ;;
-    --bundle-exe) BUNDLER_EXE=${2:-}; shift 2 ;;
+    --bundle-exe) need_value "$@"; BUNDLER_EXE=$2; shift 2 ;;
     --bundle-exe=*) BUNDLER_EXE=${1#*=}; shift ;;
-    --jobs) JOBS=${2:-}; shift 2 ;;
+    --jobs) need_value "$@"; JOBS=$2; shift 2 ;;
     --jobs=*) JOBS=${1#*=}; shift ;;
-    --timeout) TIMEOUT_S=${2:-}; shift 2 ;;
+    --timeout) need_value "$@"; TIMEOUT_S=$2; shift 2 ;;
     --timeout=*) TIMEOUT_S=${1#*=}; shift ;;
-    --poll-ms) POLL_MS=${2:-}; shift 2 ;;
+    --poll-ms) need_value "$@"; POLL_MS=$2; shift 2 ;;
     --poll-ms=*) POLL_MS=${1#*=}; shift ;;
-    --phase) PHASE=${2:-}; shift 2 ;;
     --no-warmup) WARMUP=0; shift ;;
     --yjit) WANT_YJIT=1; shift ;;
     *) die "unknown option: $1 (try --help)" ;;
@@ -119,6 +126,14 @@ done
 
 case $RUNS in ''|*[!0-9]*) die "--runs must be a positive integer" ;; esac
 [ "$RUNS" -ge 1 ] || die "--runs must be at least 1"
+for pair in "JOBS:$JOBS" "TIMEOUT_S:$TIMEOUT_S" "POLL_MS:$POLL_MS"; do
+  name=${pair%%:*}
+  value=${pair#*:}
+  case $value in ''|*[!0-9]*) die "--${name,,} must be a positive integer" ;; esac
+  [ "$value" -ge 1 ] || die "--${name,,} must be at least 1"
+done
+[ -n "$SIDE_LIST" ] || die "--side must not be empty"
+[ -n "$TIER_LIST" ] || die "--tiers must not be empty"
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 
@@ -186,6 +201,8 @@ fi
 
 if [ "$PLATFORM" = windows ]; then
   add_child_dir "$(dirname "$RUBY_EXE")"
+  add_child_dir "$(dirname "$RUBY_EXE")/msys64/usr/bin"
+  add_child_dir "$(dirname "$RUBY_EXE")/msys64/ucrt64/bin"
   add_child_dir /ucrt64/bin
   add_child_dir /usr/bin
   add_child_dir /bin
@@ -254,11 +271,19 @@ fi
   printf '# reference=%s via %s\n' "$BUNDLER_EXE" "$ruby_version"
   printf '# yjit=%s\n' "$yjit_state"
   printf '# gemfile=%s runs=%s timeout_s=%s poll_ms=%s warmup=%s\n' "$GEMFILE_SRC" "$RUNS" "$TIMEOUT_S" "$POLL_MS" "$WARMUP"
-  printf '# wall=Stopwatch(100ns tick) cpu=KernelModeTime+UserModeTime(100ns) tree sum, last seen per pid; rss=WorkingSetSize sampled every poll_ms (tree sum), root also PeakWorkingSet64; KiB\n'
-  printf '# columns=side tier cmd run exit status wall_s cpu_tree_s cpu_root_s rss_tree_kib rss_root_kib procs rpc req_bytes resp_bytes out_bytes err_bytes out_head out_tail\n'
+  printf '# wall=Stopwatch(100ns tick) cpu=KernelModeTime+UserModeTime(100ns) tree sum, last seen per process identity (pid+creation time); rss=WorkingSetSize sampled every poll_ms (tree sum), root also PeakWorkingSet64; KiB\n'
+  printf '# io=GetProcessIoCounters cumulative since process start; tree is sum of last-seen polled process identities plus exact root; short-lived or inaccessible processes may be missed; empty means API unavailable\n'
+  printf '# artifacts=lock_sha256 is Gemfile.lock SHA-256; gemspec_count and gemspec_manifest_sha256 cover sorted gemspec filenames and contents under bundle/ruby/*/specifications\n'
+  printf '# columns=side tier cmd run exit status wall_s cpu_tree_s cpu_root_s rss_tree_kib rss_root_kib io_tree_read_ops io_root_read_ops io_tree_write_ops io_root_write_ops io_tree_other_ops io_root_other_ops io_tree_read_bytes io_root_read_bytes io_tree_write_bytes io_root_write_bytes io_tree_other_bytes io_root_other_bytes procs rpc req_bytes resp_bytes out_bytes err_bytes lock_sha256 gemspec_count gemspec_manifest_sha256 out_head out_tail\n'
 } >>"$OUT"
 
 log "scratch=$SCRATCH out=$OUT runs=$RUNS sides=$SIDE_LIST tiers=$TIER_LIST yjit=$yjit_state"
+
+if [ "$WANT_YJIT" = 1 ] && [ "$yjit_state" != "available" ]; then
+  FAILED=1
+  log "yjit requested but $yjit_state; no YJIT samples recorded"
+  exit 3
+fi
 
 # ------------------------------------------------------- windows measurement ---
 PS_EXE=""
@@ -286,6 +311,32 @@ $pollMs   = [int]$env:BENCH_POLL_MS
 $timeoutS = [int]$env:BENCH_TIMEOUT_S
 $inv      = [Globalization.CultureInfo]::InvariantCulture
 
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class NativeMethods {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct IO_COUNTERS {
+    public ulong ReadOperationCount;
+    public ulong WriteOperationCount;
+    public ulong OtherOperationCount;
+    public ulong ReadTransferCount;
+    public ulong WriteTransferCount;
+    public ulong OtherTransferCount;
+  }
+  [DllImport("kernel32.dll", SetLastError = true)]
+  public static extern bool GetProcessIoCounters(IntPtr process, out IO_COUNTERS counters);
+}
+'@
+
+function Read-Io($process) {
+  $counters = [NativeMethods+IO_COUNTERS]::new()
+  if ([NativeMethods]::GetProcessIoCounters($process.Handle, [ref]$counters)) {
+    return $counters
+  }
+  return $null
+}
+
 function Fmt([double]$v) { $v.ToString('0.000', $inv) }
 
 $status   = 'ok'
@@ -312,6 +363,12 @@ $maxTreeWs   = [int64]0
 $maxRootWs   = [int64]0
 $rootCpuTick = [int64]0
 $last        = @{}
+$lastIo      = @{}
+$rootIo      = $null
+$rootIdentity = ''
+$ioAvailable = $false
+$ioKeys      = @('ReadOperationCount', 'WriteOperationCount', 'OtherOperationCount',
+                 'ReadTransferCount', 'WriteTransferCount', 'OtherTransferCount')
 $timedOut    = $false
 
 while ($true) {
@@ -340,12 +397,42 @@ while ($true) {
     foreach ($id in $ids) {
       $q = $map[$id]
       if ($null -eq $q) { continue }
+      # A recycled PID must never be summed as the process that previously had
+      # that PID.  Creation time distinguishes process identities across polls.
+      $created = $null
+      try { $created = [datetime]$q.CreationDate } catch { }
+      if ($null -eq $created) { continue }
+      $identity = [string]$id + '|' + [string]([int64]$created.ToUniversalTime().Ticks)
       $t = [int64]$q.KernelModeTime + [int64]$q.UserModeTime
-      if (-not $last.ContainsKey($id) -or $t -gt $last[$id]) { $last[$id] = $t }
+      if (-not $last.ContainsKey($identity) -or $t -gt $last[$identity]) { $last[$identity] = $t }
       $ws += [int64]$q.WorkingSetSize
       if ($id -eq [int64]$rootPid) {
+        $rootIdentity = $identity
         $rootCpuTick = $t
         if ([int64]$q.WorkingSetSize -gt $maxRootWs) { $maxRootWs = [int64]$q.WorkingSetSize }
+      }
+      $ioProcess = $null
+      try {
+        $ioProcess = [Diagnostics.Process]::GetProcessById([int]$id)
+        $started = [datetime]$ioProcess.StartTime.ToUniversalTime()
+        $delta = [math]::Abs(($started - $created.ToUniversalTime()).TotalSeconds)
+        if ($delta -gt 1.0) { continue }
+        $io = Read-Io $ioProcess
+        if ($null -ne $io) {
+          $ioAvailable = $true
+          foreach ($key in $ioKeys) {
+            $value = [int64]$io.$key
+            if (-not $lastIo.ContainsKey($identity)) { $lastIo[$identity] = @{} }
+            if (-not $lastIo[$identity].ContainsKey($key) -or $value -gt $lastIo[$identity][$key]) {
+              $lastIo[$identity][$key] = $value
+            }
+          }
+          if ($id -eq [int64]$rootPid) { $rootIo = $io }
+        }
+      } catch {
+        if ($note -notmatch 'io-') { $note = 'io-partial' }
+      } finally {
+        if ($null -ne $ioProcess) { $ioProcess.Dispose() }
       }
     }
     if ($ws -gt $maxTreeWs) { $maxTreeWs = $ws }
@@ -377,12 +464,41 @@ try {
   # keep the larger of the handle value and the last polled working set
   $peak = [int64]$p.PeakWorkingSet64
   if ($peak -gt $maxRootWs) { $maxRootWs = $peak }
+  $finalIo = Read-Io $p
+  if ($null -ne $finalIo) {
+    $rootIo = $finalIo
+    $ioAvailable = $true
+    if ($rootIdentity -eq '') {
+      $rootIdentity = [string]$rootPid + '|' + [string]([int64]$p.StartTime.ToUniversalTime().Ticks)
+    }
+    if (-not $lastIo.ContainsKey($rootIdentity)) { $lastIo[$rootIdentity] = @{} }
+    foreach ($key in $ioKeys) {
+      $value = [int64]$finalIo.$key
+      if (-not $lastIo[$rootIdentity].ContainsKey($key) -or $value -gt $lastIo[$rootIdentity][$key]) {
+        $lastIo[$rootIdentity][$key] = $value
+      }
+    }
+  }
 } catch { $note = 'root-times-unavailable' }
 if ($samples -eq 0) {
   $treeCpu = $rootCpu
   $maxTreeWs = $maxRootWs
 }
 if ($timedOut) { $status = 'timeout' }
+
+$ioTree = @{}
+$ioRoot = @{}
+foreach ($key in $ioKeys) { $ioTree[$key] = [int64]0; $ioRoot[$key] = [int64]0 }
+if ($ioAvailable) {
+  foreach ($pidIo in $lastIo.Values) {
+    foreach ($key in $ioKeys) {
+      if ($pidIo.ContainsKey($key)) { $ioTree[$key] += [int64]$pidIo[$key] }
+    }
+  }
+  if ($null -ne $rootIo) {
+    foreach ($key in $ioKeys) { $ioRoot[$key] = [int64]$rootIo.$key }
+  }
+}
 
 $line = @(
   $status,
@@ -392,6 +508,18 @@ $line = @(
   (Fmt $rootCpu),
   [string]([int64]($maxTreeWs / 1024)),
   [string]([int64]($maxRootWs / 1024)),
+  $(if ($ioAvailable) { [string]$ioTree['ReadOperationCount'] } else { '' }),
+  $(if ($ioAvailable) { [string]$ioRoot['ReadOperationCount'] } else { '' }),
+  $(if ($ioAvailable) { [string]$ioTree['WriteOperationCount'] } else { '' }),
+  $(if ($ioAvailable) { [string]$ioRoot['WriteOperationCount'] } else { '' }),
+  $(if ($ioAvailable) { [string]$ioTree['OtherOperationCount'] } else { '' }),
+  $(if ($ioAvailable) { [string]$ioRoot['OtherOperationCount'] } else { '' }),
+  $(if ($ioAvailable) { [string]$ioTree['ReadTransferCount'] } else { '' }),
+  $(if ($ioAvailable) { [string]$ioRoot['ReadTransferCount'] } else { '' }),
+  $(if ($ioAvailable) { [string]$ioTree['WriteTransferCount'] } else { '' }),
+  $(if ($ioAvailable) { [string]$ioRoot['WriteTransferCount'] } else { '' }),
+  $(if ($ioAvailable) { [string]$ioTree['OtherTransferCount'] } else { '' }),
+  $(if ($ioAvailable) { [string]$ioRoot['OtherTransferCount'] } else { '' }),
   [string]$samples,
   $startMode,
   $note
@@ -411,7 +539,8 @@ mfield() {
 }
 
 # measure_sample <exe> <argstring> <workdir> <env-assignment>...
-# Sets M_STATUS M_EXIT M_WALL M_CPUT M_CPUR M_RSST M_RSSR M_SAMPLES M_NOTE.
+# Sets M_STATUS M_EXIT M_WALL M_CPUT M_CPUR M_RSST M_RSSR, the M_IO_* fields,
+# M_SAMPLES and M_NOTE.  Empty M_IO_* means the platform/API did not collect it.
 measure_sample() {
   local exe=$1 argstring=$2 workdir=$3
   shift 3
@@ -420,6 +549,8 @@ measure_sample() {
   M_PROCS=""; M_RPC=""; M_REQ=""; M_RESP=""
   M_STATUS=""; M_EXIT=""; M_WALL=""; M_CPUT=""; M_CPUR=""
   M_RSST=""; M_RSSR=""; M_SAMPLES=""; M_NOTE=""
+  M_IO_TRO=""; M_IO_RRO=""; M_IO_TWO=""; M_IO_RWO=""; M_IO_TOO=""; M_IO_ROO=""
+  M_IO_TRB=""; M_IO_RRB=""; M_IO_TWB=""; M_IO_RWB=""; M_IO_TOB=""; M_IO_ROB=""
   local res="$SCRATCH/.measure.tsv" out="$workdir/out.log" err="$workdir/err.log"
   : >"$out"
   : >"$err"
@@ -472,8 +603,14 @@ measure_sample() {
   M_CPUR=$(mfield "$res" 5)
   M_RSST=$(mfield "$res" 6)
   M_RSSR=$(mfield "$res" 7)
-  M_SAMPLES=$(mfield "$res" 8)
-  M_NOTE=$(mfield "$res" 10)
+  M_IO_TRO=$(mfield "$res" 8); M_IO_RRO=$(mfield "$res" 9)
+  M_IO_TWO=$(mfield "$res" 10); M_IO_RWO=$(mfield "$res" 11)
+  M_IO_TOO=$(mfield "$res" 12); M_IO_ROO=$(mfield "$res" 13)
+  M_IO_TRB=$(mfield "$res" 14); M_IO_RRB=$(mfield "$res" 15)
+  M_IO_TWB=$(mfield "$res" 16); M_IO_RWB=$(mfield "$res" 17)
+  M_IO_TOB=$(mfield "$res" 18); M_IO_ROB=$(mfield "$res" 19)
+  M_SAMPLES=$(mfield "$res" 20)
+  M_NOTE=$(mfield "$res" 22)
   [ -n "${M_EXIT:-}" ] || M_EXIT=unknown
 }
 
@@ -481,6 +618,9 @@ record_sample() {
   local side=$1 tier=$2 cmd=$3 run=$4 workdir=$5
   local out="$workdir/out.log" err="$workdir/err.log"
   local out_bytes err_bytes head tail base_win base_unx
+  local lock_sha gemspec_count gemspec_manifest spec_dir
+  cp "$out" "$workdir/$run.out"
+  cp "$err" "$workdir/$run.err"
   out_bytes=$(wc -c <"$out" 2>/dev/null | tr -d ' ')
   err_bytes=$(wc -c <"$err" 2>/dev/null | tr -d ' ')
   head=$(head -n1 "$out" 2>/dev/null | tr -d '\r')
@@ -498,11 +638,33 @@ record_sample() {
   tail=${tail//"$base_unx"/<run>}
   head=${head//$'\t'/ }
   tail=${tail//$'\t'/ }
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$side" "$tier" "$cmd" "$run" "${M_EXIT:-}" "${M_STATUS:-error}" \
+  lock_sha=""
+  if [ -f "$workdir/Gemfile.lock" ]; then
+    lock_sha=$(sha256sum "$workdir/Gemfile.lock" | awk '{print $1}')
+  fi
+  gemspec_count=""
+  gemspec_manifest=""
+  spec_dir=""
+  for spec_dir in "$(dirname "$workdir")"/bundle/ruby/*/specifications; do
+    [ -d "$spec_dir" ] && break
+  done
+  if [ -n "$spec_dir" ] && [ -d "$spec_dir" ]; then
+    gemspec_count=$(find "$spec_dir" -maxdepth 1 -type f -name '*.gemspec' | wc -l | tr -d ' ')
+    if [ "$gemspec_count" -gt 0 ]; then
+      gemspec_manifest=$(cd "$spec_dir" && sha256sum *.gemspec | LC_ALL=C sort | sha256sum | awk '{print $1}')
+    else
+      gemspec_manifest=$(printf '' | sha256sum | awk '{print $1}')
+    fi
+  fi
+  printf '%s\t' "$side" "$tier" "$cmd" "$run" "${M_EXIT:-}" "${M_STATUS:-error}" \
     "${M_WALL:-}" "${M_CPUT:-}" "${M_CPUR:-}" "${M_RSST:-}" "${M_RSSR:-}" \
+    "${M_IO_TRO:-}" "${M_IO_RRO:-}" "${M_IO_TWO:-}" "${M_IO_RWO:-}" \
+    "${M_IO_TOO:-}" "${M_IO_ROO:-}" "${M_IO_TRB:-}" "${M_IO_RRB:-}" \
+    "${M_IO_TWB:-}" "${M_IO_RWB:-}" "${M_IO_TOB:-}" "${M_IO_ROB:-}" \
     "${M_PROCS:-}" "${M_RPC:-}" "${M_REQ:-}" "${M_RESP:-}" \
-    "${out_bytes:-0}" "${err_bytes:-0}" "$head" "$tail" >>"$OUT"
+    "${out_bytes:-0}" "${err_bytes:-0}" "$lock_sha" "$gemspec_count" "$gemspec_manifest" \
+    "$head" >>"$OUT"
+  printf '%s\n' "$tail" >>"$OUT"
 }
 
 # sample_env <proj> <bundle> <home> <tmp> <appconfig> <tier>
@@ -518,6 +680,7 @@ sample_env() {
     "TMPDIR=$(winpath "$tmp")"
     "TMP=$(winpath "$tmp")"
     "TEMP=$(winpath "$tmp")"
+    "CRYSTAL_CACHE_DIR=$(winpath "$tmp/crystal-cache")"
     "SSL_CERT_FILE=C:/msys64/usr/ssl/cert.pem"
     "PATH=$CHILD_PATH"
   )
@@ -556,13 +719,15 @@ run_fresh() {
   local side=$1 tier=$2 cmd=$3 label=$4 record=$5
   local base="$SCRATCH/run/$side/$label"
   rm -rf "$base"
-  mkdir -p "$base/proj" "$base/home" "$base/tmp" "$base/cfg" "$base/bundle"
+  mkdir -p "$base/proj" "$base/home" "$base/tmp/crystal-cache" "$base/cfg" "$base/bundle"
   cp "$GEMFILE_SRC" "$base/proj/Gemfile"
   sample_env "$base/proj" "$base/bundle" "$base/home" "$base/tmp" "$base/cfg" "$tier"
   [ "$side" = celerite ] && SAMPLE_ENV+=("CELERITE_BRIDGE_STATS=1")
   side_command "$side" "$cmd" "$base/proj"
   measure_sample "$EXE" "$ARGS" "$base/proj" "${SAMPLE_ENV[@]}"
   [ "$side" = celerite ] && bridge_fields "$base/proj/err.log"
+  cp "$base/proj/out.log" "$base/proj/$label.out"
+  cp "$base/proj/err.log" "$base/proj/$label.err"
   log "$side/$tier [$label] status=$M_STATUS exit=${M_EXIT:-?} wall=${M_WALL:-?}s cpu=${M_CPUT:-?}s rss=${M_RSST:-?}KiB procs=${M_PROCS:-} rpc=${M_RPC:-}"
   [ "$record" = 1 ] && record_sample "$side" "$tier" "$cmd" "$label" "$base/proj"
 }
@@ -575,6 +740,8 @@ run_seeded() {
   side_command "$side" "$cmd" "$seed/proj"
   measure_sample "$EXE" "$ARGS" "$seed/proj" "${SAMPLE_ENV[@]}"
   [ "$side" = celerite ] && bridge_fields "$seed/proj/err.log"
+  cp "$seed/proj/out.log" "$seed/proj/$label.out"
+  cp "$seed/proj/err.log" "$seed/proj/$label.err"
   log "$side/$tier [$label] status=$M_STATUS exit=${M_EXIT:-?} wall=${M_WALL:-?}s cpu=${M_CPUT:-?}s rss=${M_RSST:-?}KiB procs=${M_PROCS:-} rpc=${M_RPC:-}"
   [ "$record" = 1 ] && record_sample "$side" "$tier" "$cmd" "$label" "$seed/proj"
 }
@@ -582,16 +749,26 @@ run_seeded() {
 bootstrap_seed() {
   local side=$1
   local seed="$SCRATCH/seed/$side"
-  mkdir -p "$seed/proj" "$seed/home" "$seed/tmp" "$seed/cfg" "$seed/bundle"
+  mkdir -p "$seed/proj" "$seed/home" "$seed/tmp/crystal-cache" "$seed/cfg" "$seed/bundle"
   [ -f "$seed/proj/Gemfile" ] || cp "$GEMFILE_SRC" "$seed/proj/Gemfile"
   if [ -f "$seed/proj/Gemfile.lock" ] && [ -d "$seed/bundle/ruby" ]; then
-    log "seed $side: reusing $seed (lockfile + installed gems present)"
-    return 0
+    log "seed $side: checking existing tree before reuse ($seed)"
+    run_seeded "$side" bootstrap check seed-check 0
+    if [ "$M_EXIT" = 0 ] && [ "$M_STATUS" = ok ]; then
+      log "seed $side: reusing complete tree (check exit 0)"
+      return 0
+    fi
+    log "seed $side: existing tree incomplete (check status=$M_STATUS exit=${M_EXIT:-?}); reinstalling"
   fi
   log "seed $side: installing rails-min into $seed (measured, not recorded)"
   run_seeded "$side" bootstrap install bootstrap 0
-  if [ ! -f "$seed/proj/Gemfile.lock" ]; then
-    log "seed $side: no Gemfile.lock after install (status=$M_STATUS exit=${M_EXIT:-?}); hot/noop unavailable"
+  if [ "$M_EXIT" != 0 ] || [ "$M_STATUS" != ok ] || [ ! -f "$seed/proj/Gemfile.lock" ]; then
+    log "seed $side: install failed or produced no lock (status=$M_STATUS exit=${M_EXIT:-?}); hot/noop unavailable"
+    return 1
+  fi
+  run_seeded "$side" bootstrap check seed-verify 0
+  if [ "$M_EXIT" != 0 ] || [ "$M_STATUS" != ok ]; then
+    log "seed $side: installed tree failed check (status=$M_STATUS exit=${M_EXIT:-?}); hot/noop unavailable"
     return 1
   fi
   return 0
@@ -715,8 +892,8 @@ field() {
 }
 
 printf '\n'
-printf '| side | tier | runs | wall_s median [range] | cpu_tree_s | rss_tree_kib | procs | rpc | exit |\n'
-printf '| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n'
+printf '| side | tier | runs | wall_s median [range] | cpu_tree_s | cpu_root_s | rss_tree_kib | rss_root_kib | procs | rpc | req_bytes | resp_bytes | exit |\n'
+printf '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n'
 for side in $(printf '%s' "$SIDE_LIST" | tr ',' ' '); do
   want_side "$side" || continue
   tiers="cold cold-lock hot noop"
@@ -728,23 +905,52 @@ for side in $(printf '%s' "$SIDE_LIST" | tr ',' ' '); do
     esac
     walls=$(field "$side" "$tier" 7)
     cpus=$(field "$side" "$tier" 8)
+    cpur=$(field "$side" "$tier" 9)
     rsss=$(field "$side" "$tier" 10)
-    procs=$(field "$side" "$tier" 12)
-    rpcs=$(field "$side" "$tier" 13)
+    rssr=$(field "$side" "$tier" 11)
+    procs=$(field "$side" "$tier" 24)
+    rpcs=$(field "$side" "$tier" 25)
+    reqs=$(field "$side" "$tier" 26)
+    resps=$(field "$side" "$tier" 27)
     exits=$(field "$side" "$tier" 5 | sort -u | tr '\n' ',' | sed 's/,$//')
     n=$(printf '%s\n' "$walls" | grep -cE '^[0-9]')
     [ "${n:-0}" -gt 0 ] || continue
-    printf '| %s | %s | %s | %s [%s] | %s | %s | %s | %s | %s |\n' \
+    printf '| %s | %s | %s | %s [%s] | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
       "$side" "$tier" "$n" \
       "$(median3 $walls)" "$(minmax $walls)" \
-      "$(median3 $cpus)" "$(median3 $rsss)" \
+      "$(median3 $cpus)" "$(median3 $cpur)" \
+      "$(median3 $rsss)" "$(median3 $rssr)" \
       "$(median_int $procs)" "$(median_int $rpcs)" \
+      "$(median_int $reqs)" "$(median_int $resps)" \
       "${exits:--}"
   done
 done
 
-# correctness: compare both sides per tier on exit code and stdout head/tail
-printf '\n# cross-side agreement (exit code / first stdout line / last stdout line)\n'
+printf '\n| side | tier | I/O read ops tree/root | write ops tree/root | other ops tree/root | read bytes tree/root | write bytes tree/root | other bytes tree/root |\n'
+printf '| --- | --- | --- | --- | --- | --- | --- | --- |\n'
+for side in $(printf '%s' "$SIDE_LIST" | tr ',' ' '); do
+  want_side "$side" || continue
+  for tier in cold hot noop; do
+    want_tier "$tier" || continue
+    walls=$(field "$side" "$tier" 7)
+    n=$(printf '%s\n' "$walls" | grep -cE '^[0-9]')
+    [ "${n:-0}" -gt 0 ] || continue
+    io_read_ops="$(median_int "$(field "$side" "$tier" 12)")/$(median_int "$(field "$side" "$tier" 13)")"
+    io_write_ops="$(median_int "$(field "$side" "$tier" 14)")/$(median_int "$(field "$side" "$tier" 15)")"
+    io_other_ops="$(median_int "$(field "$side" "$tier" 16)")/$(median_int "$(field "$side" "$tier" 17)")"
+    io_read_bytes="$(median_int "$(field "$side" "$tier" 18)")/$(median_int "$(field "$side" "$tier" 19)")"
+    io_write_bytes="$(median_int "$(field "$side" "$tier" 20)")/$(median_int "$(field "$side" "$tier" 21)")"
+    io_other_bytes="$(median_int "$(field "$side" "$tier" 22)")/$(median_int "$(field "$side" "$tier" 23)")"
+    printf '| %s | %s | %s | %s | %s | %s | %s | %s |\n' \
+      "$side" "$tier" "$io_read_ops" "$io_write_ops" "$io_other_ops" \
+      "$io_read_bytes" "$io_write_bytes" "$io_other_bytes"
+  done
+done
+
+# correctness: compare both sides per tier on exit code, stdout head/tail,
+# Gemfile.lock SHA-256, gemspec count, and sorted gemspec-content manifest.
+# For cold installs also compare the lockfiles with cmp to prove byte identity.
+printf '\n# cross-side agreement (exit code / stdout / lock SHA-256 / gemspec count / gemspec manifest; cold lock byte cmp)\n'
 MISMATCH=0
 for tier in cold hot noop; do
   want_tier "$tier" || continue
@@ -753,22 +959,53 @@ for tier in cold hot noop; do
   [ "$(field bundle "$tier" 5 | grep -c .)" -gt 0 ] || continue
   exits_c=$(field celerite "$tier" 5 | sort -u | tr '\n' ',')
   exits_b=$(field bundle "$tier" 5 | sort -u | tr '\n' ',')
-  head_c=$(field celerite "$tier" 18 | sort -u | head -n1)
-  head_b=$(field bundle "$tier" 18 | sort -u | head -n1)
-  tail_c=$(field celerite "$tier" 19 | sort -u | head -n1)
-  tail_b=$(field bundle "$tier" 19 | sort -u | head -n1)
+  head_c=$(field celerite "$tier" 32 | sort -u | tr '\n' '|')
+  head_b=$(field bundle "$tier" 32 | sort -u | tr '\n' '|')
+  tail_c=$(field celerite "$tier" 33 | sort -u | tr '\n' '|')
+  tail_b=$(field bundle "$tier" 33 | sort -u | tr '\n' '|')
+  lock_c=$(field celerite "$tier" 28 | sort -u | tr '\n' '|')
+  lock_b=$(field bundle "$tier" 28 | sort -u | tr '\n' '|')
+  count_c=$(field celerite "$tier" 29 | sort -u | tr '\n' '|')
+  count_b=$(field bundle "$tier" 29 | sort -u | tr '\n' '|')
+  manifest_c=$(field celerite "$tier" 30 | sort -u | tr '\n' '|')
+  manifest_b=$(field bundle "$tier" 30 | sort -u | tr '\n' '|')
   verdict=agree
   [ "$exits_c" = "$exits_b" ] || verdict=DIFF-exit
   [ "$head_c" = "$head_b" ] || verdict=DIFF-stdout-head
   [ "$tail_c" = "$tail_b" ] || verdict=DIFF-stdout-tail
+  [ "$lock_c" = "$lock_b" ] || verdict=DIFF-lock-sha256
+  [ "$count_c" = "$count_b" ] || verdict=DIFF-gemspec-count
+  [ "$manifest_c" = "$manifest_b" ] || verdict=DIFF-gemspec-manifest
+  lock_byte_cmp="n/a"
+  if [ "$tier" = cold ]; then
+    lock_byte_cmp=yes
+    lock_pairs=0
+    for label in warmup-cold $(seq 1 "$RUNS" | sed 's/^/cold-/'); do
+      c_lock="$SCRATCH/run/celerite/$label/Gemfile.lock"
+      b_lock="$SCRATCH/run/bundle/$label/Gemfile.lock"
+      if [ -f "$c_lock" ] && [ -f "$b_lock" ]; then
+        lock_pairs=$((lock_pairs + 1))
+        cmp -s "$c_lock" "$b_lock" || lock_byte_cmp=no
+      else
+        lock_byte_cmp=missing
+      fi
+    done
+    [ "$lock_pairs" -gt 0 ] || lock_byte_cmp=missing
+  fi
   [ "$verdict" = agree ] || MISMATCH=1
-  printf '# %-5s %s  exit(celerite)=%s exit(bundle)=%s\n' "$tier" "$verdict" "${exits_c:--}" "${exits_b:--}"
+  if [ "$tier" = cold ] && [ "$lock_byte_cmp" != yes ]; then
+    MISMATCH=1
+  fi
+  printf '# %-5s %s  exit(celerite)=%s exit(bundle)=%s cold_lock_byte_cmp=%s\n' "$tier" "$verdict" "${exits_c:--}" "${exits_b:--}" "$lock_byte_cmp"
   if [ "$verdict" != agree ]; then
     printf '#       stdout head celerite=%s | bundle=%s\n' "$head_c" "$head_b"
     printf '#       stdout tail celerite=%s | bundle=%s\n' "$tail_c" "$tail_b"
+    printf '#       lock SHA-256 celerite=%s | bundle=%s\n' "$lock_c" "$lock_b"
+    printf '#       gemspec count celerite=%s | bundle=%s\n' "$count_c" "$count_b"
+    printf '#       gemspec manifest celerite=%s | bundle=%s\n' "$manifest_c" "$manifest_b"
   fi
 done
-printf '# samples=%s file=%s\n' "$(grep -vc '^#' "$OUT" 2>/dev/null || echo 0)" "$OUT"
+printf '# samples=%s file=%s\n' "$(awk -F'\t' 'NF >= 34 && $1 !~ /^#/ { n++ } END { print n+0 }' "$OUT" 2>/dev/null || echo 0)" "$OUT"
 
 [ "$MISMATCH" = 1 ] && exit 4
 [ "$FAILED" = 1 ] && exit 3
