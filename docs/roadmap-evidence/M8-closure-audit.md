@@ -12,7 +12,7 @@
 | L163 | 桥复用与可观测性 | 不可勾 | 1 | 复用/idle/超时/结构化错误/统计均有实现与 spec，唯「批量大小控制」无实现。 |
 | L164 | 无变化 `lock`/`install` 走快路径 | 不可勾 | 2 | 两条命令都在空操作短路之前起桥（`lock` 1 proc/2 rpc、`install` 1 proc/9 rpc）。 |
 | L165 | 持久化解析/安装计划缓存 | 不可勾 | 5 | 持久化缓存存在，但缓存对象是求值结果而非解析/安装计划；键缺 source 身份、checksum、ABI、build 配置。 |
-| L166 | 只读命令索引复用 + Rails 规模性能对照 | 不可勾 | 2 | 仅 `list` 无组选择零 spawn；`check`/`show` 仍起桥；无任何 Rails 规模 wall/CPU/RSS+RPC+I/O 报告。 |
+| L166 | 只读命令索引复用 + Rails 规模性能对照 | 不可勾 | 2 | 仅 `list` 无组选择零 spawn；`check`/`show` 仍起桥；无任何 Rails 规模 wall/CPU/RSS+RPC+I/O 报告。task-241 已提供 `docs/roadmap-evidence/M8-rails-bench.md` 的 Rails 8.0.2 三档壁钟/CPU/峰值 RSS+RPC 对照与两侧退出码比对（YJIT 本机不可验证、I/O 未采集），故「无报告」一项已改观，但该分句仍不成立。 |
 
 缺项合计 15。六行无一可勾。
 
