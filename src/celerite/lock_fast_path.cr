@@ -90,6 +90,19 @@ module Celerite
       File.dirname(File.expand_path(definition.gemfile_path))
     end
 
+    # `Bundler::Plugin.root` = `<app_config>/plugin`. Missing or empty means no
+    # plugin can be loaded, which is the state the cached evaluation was proven
+    # in. Anything else -- including a root we cannot read -- sends the command
+    # back to Ruby: an unreadable directory is unknown, never "empty".
+    private def self.plugin_root_absent?(definition : Definition) : Bool
+      plugin_root = File.join(Config.app_config_path(project_root(definition)), "plugin")
+      return true unless File.exists?(plugin_root)
+      return false unless File.directory?(plugin_root)
+      Dir.children(plugin_root).empty?
+    rescue
+      false
+    end
+
     # Returns `{hit, nil}` when the whole gate holds, otherwise `{nil, reason}`.
     # `reason` is a short stable token used by `CELERITE_FAST_PATH_DEBUG=1`;
     # `nil` means "not even considered" (the switches are off), which is the
@@ -105,6 +118,15 @@ module Celerite
 
       lockfile = definition.lockfile!
       return {nil, "platforms"} unless lockfile.platforms.includes?(Gem::Platform.local.to_s)
+
+      # Nothing in the persisted entry records what is installed under the
+      # plugin root: `verify.files` digests the Gemfile chain and the gemspecs,
+      # and the evaluation config records the root's path only. A plugin
+      # installed after the entry was written can still change the DSL the
+      # Gemfile evaluates to (hooks, `plugin` sources, command registration), so
+      # a populated root always means "this evaluation is stale" -- decided
+      # locally, without starting Ruby.
+      return {nil, "plugin-index"} unless plugin_root_absent?(definition)
 
       record = load_record(definition)
       return {nil, "record"} if record.nil?
