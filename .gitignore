@@ -9,3 +9,6 @@ dist/
 pkg/
 .difftmp/
 .d/
+
+# PowerShell 模块分析缓存会在 cwd 下生成 Microsoft/Windows/PowerShell
+Microsoft/
