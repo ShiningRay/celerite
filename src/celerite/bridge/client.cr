@@ -2,6 +2,7 @@ require "digest/sha256"
 require "json"
 require "process"
 require "../errors"
+require "../eval_fingerprint"
 
 module Celerite
   module Bridge
@@ -71,63 +72,141 @@ module Celerite
       end
     end
 
-    # Per-command memo for `evaluate_gemfile`. One Celerite command evaluates
-    # the same Gemfile from several sites (`check` deliberately twice: once for
-    # the dependency diff, once inside the frozen branch), and every evaluation
-    # is a full RPC round trip. The reference evaluates a Gemfile once per
-    # process (`bundler.rb` `@definition ||=`) and reuses that definition, so a
-    # command never re-evaluates an unchanged file; the cache reproduces that
-    # without changing what any caller sees.
+    # Per-command memo for `evaluate_gemfile` / `evaluate_batch`. One Celerite
+    # command evaluates the same Gemfile from several sites (`check`
+    # deliberately twice: once for the dependency diff, once inside the frozen
+    # branch), and every evaluation is a full RPC round trip. The reference
+    # evaluates a Gemfile once per process (`bundler.rb` `@definition ||=`) and
+    # reuses that definition, so a command never re-evaluates an unchanged
+    # file; the cache reproduces that without changing what any caller sees.
     #
-    # A hit is only trusted when the bytes on disk still hash to the digest the
-    # bridge reported (`gemfile_sha256`): commands rewrite the Gemfile in the
-    # middle of a run (`add` appends a gem and then installs), and a size/mtime
-    # key cannot tell an equal-length rewrite inside the same millisecond. The
-    # cache only lives inside one `CLI.run` (see `begin_run`/`finish`).
+    # F2 (roadmap L162): a hit no longer rests on the main Gemfile alone. The
+    # entry carries the evaluation fingerprint produced by the very same
+    # evaluation (slice F1), and a hit requires all three of:
+    #
+    #  1. the fingerprint text still hashes to its digest and every file in its
+    #     `verify` set re-hashes equal — the main Gemfile, every file reached
+    #     through `eval_gemfile` and every loaded gemspec. A missing file, a
+    #     changed eval-chain file or a changed gemspec is a miss. This is
+    #     exactly the hole the old check left open.
+    #  2. the runtime records (`ruby.*`, `rubygems.version`, `bundler.version`,
+    #     `platform`) equal the answering process. The comparison is skipped
+    #     only when the entry was produced by this very client, i.e. by the
+    #     same bridge process, where the records are equal by construction.
+    #  3. the environment signature still matches. F1's fingerprint does not
+    #     cover ENV, so the whole environment stays a conservative component.
+    #     It is stored hashed, never in plaintext.
+    #
+    # Why this cannot cost a second evaluation: the fingerprint arrives in the
+    # response of the evaluation it describes, so storing it is free; on a hit
+    # the runtime records come from `ruby_environment` (one RPC per client,
+    # memoized) only when the entry came from another client, and the file set
+    # is re-hashed locally. No code path asks the bridge to run the Gemfile DSL
+    # again to obtain a fingerprint. The cache still lives only inside one
+    # `CLI.run` (see `begin_run`/`finish`).
     module EvaluationCache
+      struct Entry
+        getter evaluation : GemfileEvaluation
+        getter fingerprint : Bridge::EvalFingerprint?
+        getter document : Celerite::EvalFingerprint::Document?
+        getter gemspecs : Array(String)?
+        getter env_signature : String
+        getter owner_cache_id : Int32
+
+        def initialize(@evaluation : GemfileEvaluation, @fingerprint : Bridge::EvalFingerprint?,
+                       @document : Celerite::EvalFingerprint::Document?, @gemspecs : Array(String)?,
+                       @env_signature : String, @owner_cache_id : Int32)
+        end
+      end
+
       @@active = false
-      @@entries = {} of String => GemfileEvaluation
+      @@entries = {} of String => Entry
+      @@hits = 0
+      @@misses = 0
 
       def self.begin_run : Nil
         @@active = true
         @@entries.clear
+        @@hits = 0
+        @@misses = 0
       end
 
       def self.finish : Nil
         @@active = false
         @@entries.clear
+        @@hits = 0
+        @@misses = 0
       end
 
-      private def self.key(path : String) : String
-        # Bundler's evaluation reads the process environment (BUNDLE_GEMFILE,
-        # BUNDLE_WITHOUT, BUNDLE_FROZEN, ...), and commands temporarily rewrite
-        # those. An entry evaluated under another environment must not answer.
-        "#{File.expand_path(path)}|#{environment_signature}"
+      def self.hits : Int32
+        @@hits
+      end
+
+      def self.misses : Int32
+        @@misses
+      end
+
+      private def self.normalized(path : String) : String
+        File.expand_path(path).tr("\\", "/")
       end
 
       private def self.environment_signature : String
-        ENV.to_h.to_a.sort_by { |pair| pair[0] }.map { |(key, value)| "#{key}=#{value}" }.join('\u0001')
+        # Bundler's evaluation reads the process environment (BUNDLE_GEMFILE,
+        # BUNDLE_WITHOUT, BUNDLE_FROZEN, ...), and commands temporarily rewrite
+        # those. An entry evaluated under another environment must not answer.
+        # The signature is hashed so no environment value (credentials, tokens)
+        # is ever kept in memory as plaintext.
+        material = ENV.to_h.to_a.sort_by { |pair| pair[0] }.map { |(key, value)| "#{key}=#{value}" }.join('\u0001')
+        Digest::SHA256.hexdigest(material)
       end
 
-      private def self.contents(path : String) : String?
-        File.read(path)
-      rescue
-        nil
+      private def self.miss(reason : String) : Nil
+        @@misses += 1
+        if ENV["CELERITE_EVAL_DEBUG"]? == "1"
+          STDERR.puts "eval-cache: miss (#{reason})"
+          STDERR.flush
+        end
       end
 
-      def self.fetch(path : String) : GemfileEvaluation?
+      # Returns the cached entry when the fingerprint, the runtime records and
+      # the environment signature all still hold. `runtime` is evaluated lazily
+      # and only for entries produced by a different client: for our own
+      # entries the records cannot have changed.
+      def self.fetch(path : String, sections : Array(String), cache_id : Int32,
+                     &runtime : -> Celerite::EvalFingerprint::Runtime) : Entry?
         return nil unless @@active
-        entry = @@entries[key(path)]?
+        entry = @@entries[normalized(path)]?
         return nil if entry.nil?
-        bytes = contents(File.expand_path(path))
-        return nil if bytes.nil?
-        return nil unless Digest::SHA256.hexdigest(bytes) == entry.gemfile_sha256
+
+        return miss("env") unless entry.env_signature == environment_signature
+        return miss("path") unless normalized(entry.evaluation.gemfile) == normalized(path)
+
+        document = entry.document
+        return miss("fingerprint") if document.nil?
+        if sections.includes?("gemspecs") && entry.gemspecs.nil?
+          return miss("gemspecs")
+        end
+
+        current_runtime = entry.owner_cache_id == cache_id ? nil : runtime.call
+        if reason = document.verify(File.dirname(File.expand_path(path)), current_runtime)
+          return miss(reason)
+        end
+
+        @@hits += 1
+        if ENV["CELERITE_EVAL_DEBUG"]? == "1"
+          STDERR.puts "eval-cache: hit"
+          STDERR.flush
+        end
         entry
       end
 
-      def self.store(path : String, evaluation : GemfileEvaluation) : Nil
+      def self.store(path : String, evaluation : GemfileEvaluation, cache_id : Int32,
+                     fingerprint : Bridge::EvalFingerprint? = nil,
+                     gemspecs : Array(String)? = nil) : Nil
         return unless @@active
-        @@entries[key(path)] = evaluation
+        document = fingerprint.try { |fp| Celerite::EvalFingerprint::Document.parse(fp.text, fp.digest, fp.verify) }
+        @@entries[normalized(path)] = Entry.new(evaluation, fingerprint, document, gemspecs,
+          environment_signature, cache_id)
       end
     end
 
@@ -434,10 +513,21 @@ module Celerite
       @@shared_key : String? = nil
       @@shared_mutex = Mutex.new
 
+      # Monotonic identity for cache ownership checks. `object_id` can be
+      # recycled after a client is collected, and a recycled id would make a
+      # stale entry look like it came from the current process.
+      @@cache_serial = 0_i32
+
+      # Identifies this client to `EvaluationCache`: an entry owned by the same
+      # id was produced by this very bridge process, so its runtime records
+      # need no re-check.
+      getter cache_id : Int32
+
       def initialize(ruby_exe : String? = nil, server_path : String? = nil, timeout : Time::Span = 30.seconds)
         ruby = ruby_exe || ENV["CELERITE_RUBY"]? || "ruby"
         server = server_path || Client.locate_server
         @timeout = timeout
+        @cache_id = (@@cache_serial += 1)
         env = ENV.to_h
         env["CELERITE_REFERENCE_BUNDLER_VERSION"] = reference_bundler_version
         if bundler_lib = reference_bundler_lib
@@ -577,27 +667,30 @@ module Celerite
         # warnings ledger already printed that evaluation's warnings once, so a
         # hit must not record them again (that would duplicate them when the
         # per-command dedupe is bypassed).
-        if cached = EvaluationCache.fetch(path)
-          return cached
-        end
-        evaluation = GemfileEvaluation.from_json(request("evaluate_gemfile", {"gemfile" => path}).to_json)
-        GemfileWarnings.record(evaluation.warnings)
-        EvaluationCache.store(path, evaluation)
-        evaluation
+        #
+        # The request asks for the `fingerprint` section: the fingerprint is
+        # produced by the same single Gemfile evaluation the bridge performs
+        # for this request (slice F1), so carrying it costs no second
+        # evaluation and no extra RPC — it is what lets the cache verify a hit.
+        evaluate_batch(path, ["fingerprint"]).evaluation
       end
 
       # One request that answers what `evaluate_gemfile` answers plus the
       # sections named in `include` (roadmap L161, slice S2: `gemspecs`;
-      # roadmap L162, slice F1: `fingerprint`). With no section requested this
-      # is the old single-op call: the payload omits `include`, and the cache
-      # may answer it exactly as before. A request that names a section cannot
-      # be served from the cache — the cache stores evaluations, not sections —
-      # so it always goes to the bridge; that also keeps a cached evaluation
-      # from standing in for a fingerprint computed from different inputs.
+      # roadmap L162, slice F1: `fingerprint`). A cached entry can answer a
+      # request when every requested section is one the entry itself carries;
+      # sections it cannot vouch for must reach the bridge. `fingerprint` is
+      # itself the cache's invalidation evidence (see `EvaluationCache`), so
+      # asking for it does not bypass the cache — a hit still re-verifies it.
       def evaluate_batch(path : String, include sections : Array(String) = [] of String) : BatchGemfileEvaluation
-        if sections.empty?
-          if cached = EvaluationCache.fetch(path)
-            return BatchGemfileEvaluation.new(cached)
+        cacheable = sections.all? { |section| section == "fingerprint" || section == "gemspecs" }
+        if cacheable
+          if entry = EvaluationCache.fetch(path, sections, cache_id) { cache_runtime }
+            return BatchGemfileEvaluation.new(
+              entry.evaluation,
+              sections.includes?("gemspecs") ? entry.gemspecs : nil,
+              sections.includes?("fingerprint") ? entry.fingerprint : nil,
+            )
           end
         end
 
@@ -609,10 +702,30 @@ module Celerite
         result = request("evaluate_batch", payload)
         evaluation = GemfileEvaluation.from_json(result.to_json)
         GemfileWarnings.record(evaluation.warnings)
-        EvaluationCache.store(path, evaluation)
         gemspecs = result["gemspecs"]?.try(&.as_a?).try(&.map(&.as_s))
         fingerprint = EvalFingerprint.parse(result["fingerprint"]?)
+        EvaluationCache.store(path, evaluation, cache_id, fingerprint, gemspecs)
         BatchGemfileEvaluation.new(evaluation, gemspecs, fingerprint)
+      end
+
+      # Runtime facts a cache hit must match when the entry came from another
+      # client (another bridge process). `ruby_environment` is memoized per
+      # client, so this costs at most one RPC per command. `bundler.version`
+      # is compared against the requested profile version: the bridge refuses
+      # to evaluate when the process loaded a different release
+      # (`BundlerVersionMismatch`), so the requested version is the one the
+      # evaluation ran under.
+      private def cache_runtime : Celerite::EvalFingerprint::Runtime
+        environment = ruby_environment
+        Celerite::EvalFingerprint::Runtime.new(
+          ruby_version: environment.ruby_version,
+          patchlevel: environment.patchlevel || "-",
+          engine: environment.engine,
+          engine_version: environment.engine_version,
+          rubygems_version: environment.rubygems_version,
+          bundler_version: reference_bundler_version,
+          platform: environment.platform,
+        )
       end
 
       # Specs exposed by a plugin source (`Bundler::Plugin::API::Source#specs`).
