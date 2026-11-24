@@ -7,6 +7,22 @@ require "./cli/commands"
 require "./cli/gemfile_warnings"
 
 module Celerite
+  module Commands
+    # Installed-spec discovery is cached in process-global class variables.
+    # A command that runs without a bridge (or with a different environment)
+    # can cache an empty system-gem directory list; a later command in the
+    # same process must not inherit it. CLI.run resets these alongside the
+    # other per-invocation caches.
+    def self.reset_environment_caches : Nil
+      @@system_gem_search_dirs = nil
+      @@system_gem_search_signature = nil
+      @@installed_index = nil
+      @@installed_index_signature = nil
+    end
+  end
+end
+
+module Celerite
   module CLI
     # Friendly-errors semantics (pinned contract: `Bundler.with_friendly_errors`):
     # BundlerError subclasses exit with their status_code; Thor::Error with 15;
@@ -24,6 +40,7 @@ module Celerite
     def self.run(args : Array(String), stdout : IO, stderr : IO) : Int32
       Bridge::BridgeStats.begin_run
       Bridge::EvaluationCache.begin_run
+      Commands.reset_environment_caches
       # Command families opt out of the `BUNDLE_GEMFILE` existence check
       # (`Commands::RAW_GEMFILE_READ_COMMANDS`); every run starts from the
       # reference default so one command cannot leak the setting into the next.
