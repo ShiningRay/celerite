@@ -16,35 +16,46 @@ end
 # CLI resolution deliberately honours BUNDLE_GEMFILE/BUNDLE_LOCKFILE. The suite
 # must start from a clean baseline so ambient values cannot redirect a spec's
 # read-only project to a writable one; examples that need them set explicitly.
-{"BUNDLE_GEMFILE", "BUNDLE_LOCKFILE"}.each do |name|
-  ENV.delete(name)
+private SPEC_ENV_WINDOWS = {{ flag?(:windows) }}
+
+private def spec_environment_name(name : String) : String
+  SPEC_ENV_WINDOWS ? name.downcase : name
 end
 
 private def spec_environment_key?(name : String) : Bool
-  key = name.downcase
+  key = spec_environment_name(name)
   key == "home" || key == "userprofile" || key == "path" ||
     key == "tmpdir" || key == "tmp" || key == "temp" ||
-    name.starts_with?("BUNDLE_") || name.starts_with?("GEM_") ||
-    name.starts_with?("CELERITE_")
+    key.starts_with?("bundle_") || key.starts_with?("gem_") ||
+    key.starts_with?("celerite_")
+end
+
+private def delete_spec_environment_variants(name : String) : Nil
+  normalized = spec_environment_name(name)
+  ENV.keys.each do |key|
+    ENV.delete(key) if spec_environment_name(key) == normalized
+  end
+end
+
+{"BUNDLE_GEMFILE", "BUNDLE_LOCKFILE"}.each do |name|
+  delete_spec_environment_variants(name)
 end
 
 Spec.around_each do |example|
-  saved = {} of String => String?
-  ENV.each do |name, value|
-    saved[name] = value if spec_environment_key?(name)
-  end
+  saved = ENV.to_h
   begin
     example.run
   ensure
-    names = (saved.keys + ENV.keys.select { |name| spec_environment_key?(name) }).uniq
+    names = (saved.keys + ENV.keys).select { |name| spec_environment_key?(name) }.uniq
     names.each do |name|
-      current = ENV[name]?
-      previous = saved[name]?
-      next if current == previous
+      normalized = spec_environment_name(name)
+      previous = saved.select { |key, _| spec_environment_name(key) == normalized }.first?
+      # Windows keeps the original spelling of an environment key when a spec
+      # writes a different case. Remove every variant before restoring the one
+      # canonical key so `Path` and `PATH` cannot coexist across examples.
+      delete_spec_environment_variants(name)
       if previous
-        ENV[name] = previous
-      else
-        ENV.delete(name)
+        ENV[previous[0]] = previous[1]
       end
     end
   end
