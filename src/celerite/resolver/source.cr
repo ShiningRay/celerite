@@ -17,11 +17,15 @@ module Celerite
       # Set for interpreter default-gem fallback candidates
       # (`cli/common.rb:98-101`); ordinary index entries leave it nil.
       getter default_gem_path : String?
+      # Compact-index timestamp, when the entry supplied one. Nil means absent;
+      # callers must not replace it with the current time.
+      getter created_at : Int64?
 
       def initialize(@name : String, @version : Gem::Version, @platform : Gem::Platform,
                      @dependencies : Array(DepSpec), @required_ruby_version : Gem::Requirement,
                      @required_rubygems_version : Gem::Requirement = Gem::Requirement.new,
-                     @checksum : String? = nil, @default_gem_path : String? = nil)
+                     @checksum : String? = nil, @default_gem_path : String? = nil,
+                     @created_at : Int64? = nil)
       end
 
       def platform_ruby? : Bool

@@ -4,6 +4,7 @@ require "process"
 require "../errors"
 require "../eval_cache_store"
 require "../eval_fingerprint"
+require "./solve_batch"
 
 module Celerite
   module Bridge
@@ -1068,6 +1069,26 @@ module Celerite
         BatchGemfileEvaluation.new(evaluation, gemspecs, fingerprint)
       end
 
+      # M8 L161 S3a: transport and strict pure-data conversion only. Candidate
+      # collection and Resolution backfill are intentionally left to S3b.
+      def solve_batch(request : SolveBatch::Request) : SolveBatch::Response
+        result = self.request(
+          "solve_batch",
+          request.payload_hash,
+          limit: request.timeout,
+          max_response_bytes: SolveBatch::MAX_RESPONSE_BYTES,
+          max_request_bytes: SolveBatch::MAX_REQUEST_BYTES,
+        )
+        response = SolveBatch::Response.parse(result, request)
+        if failure = response.failure
+          SolveBatch::Diagnostics.emit("failure", failure.category)
+        end
+        response
+      rescue ex
+        SolveBatch::Diagnostics.emit("error", ex.class.name)
+        raise ex
+      end
+
       # Runtime facts a cache hit must match when the entry came from another
       # client (another bridge process). `ruby_environment` is memoized per
       # client, so this costs at most one RPC per command. `bundler.version`
@@ -1304,7 +1325,7 @@ module Celerite
       # `limit: nil` for those; everything else keeps the safety net.
       # `evaluate_batch` carries an array (`include`), which the string-only
       # payload hashes cannot express; the envelope itself is unchanged.
-      private def request(op : String, payload : Hash(String, String) | Hash(String, String?) | Hash(String, JSON::Any) = {} of String => String, limit : Time::Span? = @timeout, max_response_bytes : Int32? = nil) : JSON::Any
+      private def request(op : String, payload : Hash(String, String) | Hash(String, String?) | Hash(String, JSON::Any) = {} of String => String, limit : Time::Span? = @timeout, max_response_bytes : Int32? = nil, max_request_bytes : Int32? = nil) : JSON::Any
         @mutex.synchronize do
           @last_used = Time.instant
           @request_id += 1
@@ -1317,15 +1338,18 @@ module Celerite
               json.field "payload", payload
             end
           end
+          if (cap = max_request_bytes) && line.bytesize + 1 > cap
+            raise SolveBatch::TooLargeError.new("#{op} request is #{line.bytesize + 1} bytes, limit is #{cap}")
+          end
           @stdin.puts(line)
           @stdin.flush
           BridgeStats.record_request(line.bytesize + 1)
 
-          finish_response(id, read_response(limit, max_response_bytes, id))
+          finish_response(id, read_response(limit, max_response_bytes, id, op))
         end
       end
 
-      private def read_response(limit : Time::Span?, max_bytes : Int32? = nil, id : Int32 = -1) : JSON::Any
+      private def read_response(limit : Time::Span?, max_bytes : Int32? = nil, id : Int32 = -1, op : String = "evaluate_batch") : JSON::Any
         done = Channel(JSON::Any).new(1)
 
         spawn(name: "bridge-reader") do
@@ -1337,7 +1361,7 @@ module Celerite
             if (cap = max_bytes) && line.bytesize > cap
               # One response is one line, so the oversized line has been fully
               # consumed and the stream stays aligned.
-              done.send(crash_response(id, "evaluate_batch response is #{line.bytesize} bytes, limit is #{cap}", "BatchTooLarge"))
+              done.send(crash_response(id, "#{op} response is #{line.bytesize} bytes, limit is #{cap}", "BatchTooLarge"))
             else
               begin
                 done.send(JSON.parse(line))
