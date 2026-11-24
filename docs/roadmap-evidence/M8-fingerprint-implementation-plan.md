@@ -351,3 +351,35 @@ V13 是总门禁：**指纹缓存必须对可观测行为透明**。V1-V12/V14-V
 - 运行时实测：0 次（未编译、未跑 spec、未跑差分）。本机是否有第二个 Ruby 未探测。
 - 推断（未跑，需实现后取证）：F1-F5 的收益数字、verify 集成本、Windows rename 覆盖行为、`RUBYOPT`/`RUBYLIB` 对 Gemfile `require` 的实际影响、`mode=unknown` 在真实 Gemfile 上的触发率。
 - 222 报告的参考侧行号（`dsl.rb`、`ruby_dsl.rb`、`plugin.rb`、`definition.rb`、`bundler.rb` 等）为**转引**，本轮未复读参考源。
+
+## 9. 落地后回写（task-251，2026-11-24，HEAD ae6a135）
+
+口径：只登记「计划要求 → 实现实际」的偏差，不改前 8 节原文；行号均为 HEAD `ae6a135` 实测（`git grep -n`）。差异定性三档：**已声明残余风险**（claims 边界已写，可判满足）、**等效实现**（形状不同、语义等效）、**未实现**（计划要求未落，不得按满足读）。claims 指向 `docs/compat-claims/M8-batch-bridge.md`。
+
+### 9.1 B1：gemspec 候选集（计划 §2.2 行 180）
+
+- 计划要求：每项记 `path`/`sha256`/`root`/`glob`，另用 `Dir.glob` 重展开同一 `root/glob`，把排序后的候选集写成 `gemspec.candidate.<i>`；并注明「候选集是必需项」——新增加一个 gemspec 文件会让参考在 `dsl.rb:95-97` 报多组合法性错误，而 Gemfile 字节不变。
+- 实现实际：`assets/bridge/server.rb:445-448` 的 `bridge_fingerprint_gemspecs` 只取 `builder.gemspecs.filter_map(&:loaded_from)`、绝对化、去重、排序，逐项写 `gemspec.<i>.path/sha256`（`assets/bridge/server.rb:583-586`）；不重展开 glob，records 全集（`:566-627`）中无 `gemspec.candidate.*` 键。`Dir.glob` 只用于插件源候选（`:1091`/`:1120`/`:1130`），与求值指纹无关。
+- 差异定性：**已声明残余风险**。`C-M8-1-009` 边界 B1 项写明「gemspec glob 候选集之外的新增文件（不降级，属残余风险：新增文件未被引用时不失效）」，消费者不会被误读为完备；计划正文的「必需项」判据与实现相反，保留原文以存计划时点判断。
+- claims 指向：`C-M8-1-009`（边界 B1 项）。
+
+### 9.2 A1：`gemfile.source=env|search`（计划 §2.1 行 170）
+
+- 计划要求：记 `gemfile.path`（绝对化）+ `gemfile.source=env|search`，并给可观测判据（`config["gemfile"]` 非空而我们用了 search 结果 → `mode=unknown`）；F1 补优先级 `ENV → config gemfile → search_up`。
+- 实现实际：`assets/bridge/server.rb:575` 只写 `gemfile.path`（`:376-378` 绝对化并统一 `/`），指纹内无 `gemfile.source` 键；求值侧 `src/celerite/definition.cr:56-63` 的 `find_gemfile` 仍只有 `ENV["BUNDLE_GEMFILE"]` 与 `search_up`，全库无 `config["gemfile"]` 读取点（`git grep -n '"gemfile"\]' -- src/` 无命中）。
+- 差异定性：**未实现**。缺 `gemfile.source` 不影响「路径是求值输入」的失效判定（路径或内容变则指纹变），但「配置 `gemfile` 键被忽略」这一偏差不会降级为 `unknown`；现由 claims 的边界口径兜底（配置求值键未覆盖，见 §9.3）。
+- claims 指向：`C-M8-1-009`（边界 D1 项）、`C-M8-1-014`（配置覆盖范围）。
+
+### 9.3 D1：四个配置求值键（计划 §2.4 行 202）
+
+- 计划要求：`config.digest` = SHA-256 over 排序后的 `k=v`，键为 `plugins`、`gemfile`、`path`、`force_ruby_platform`，值统一从 `Config#[]` 取（已合并 CLI/ENV/本地/全局），另记 `config.app_config` 与全局文件路径。
+- 实现实际：`assets/bridge/server.rb:412-421` 的 `bridge_fingerprint_config` 只取 `Bundler.app_config_path` 与 `bridge_fingerprint_plugin_root`，digest 只覆盖这两项（`:419`），写入 `config.app_config`/`config.plugin_root`/`config.digest`（`:601-603`）；四键不在 digest 内，也不在指纹任何键内。
+- 差异定性：**未实现**（四键未覆盖）。有 `config.digest` 不等于 D1 达成——它只对两条路径取摘要。`C-M8-1-014` 的边界已按实测收窄；task-251 把其「取代」句同步收窄为「仅取代 009 的 ABI 部分，D1 四键仍不覆盖」，并在 009 边界加行内标记，读者不必跳到 014 即可判断。
+- claims 指向：`C-M8-1-014`（边界与取代句）。
+
+### 9.4 E3：`bundler.profile`（计划 §2.5 行 210）
+
+- 计划要求：`bundler.version`（加载后 `Bundler::VERSION`）与 `bundler.profile`（`Celerite::Profile.bundler_version`）两者**必须都记**，不一致 → `mode=unknown`。
+- 实现实际：指纹只记 `bundler.version`（`assets/bridge/server.rb:592`），无 `bundler.profile` 键。等效路径有两处：① 客户端把期望值钉在 profile 上——`src/celerite/bridge/client.cr:1069` 的 `cache_runtime` 用 `reference_bundler_version`（`:876-877` = `Celerite::Profile.bundler_version`）填 `EvalFingerprint::Runtime#bundler_version`，`src/celerite/eval_fingerprint.cr:243` 把它与指纹里的 `bundler.version` 逐项比对，不等即 `runtime:bundler.version` 失效（`:246-251`）；② 求值前桥侧先拒错——`assets/bridge/server.rb:302` 调 `bridge_ensure_bundler_version!`（`:156`），已加载版本与 `CELERITE_PROFILE_BUNDLER_VERSION`（回退 `CELERITE_REFERENCE_BUNDLER_VERSION`，`:146-150`）不符即抛 `BundlerVersionMismatch`（`:140`），不会产出带错版本的指纹。
+- 差异定性：**等效实现**。显式双键与「期望值固定为 profile」重复；残余风险是「指纹文本自身不含 profile 版本，若客户端读到的 profile 与桥进程实际加载版本不一致（护栏未设或两端环境变量串线），文本无法自证」，该情形由 `C-M8-1-006` 边界的「两者都未设时不校验」承接。
+- claims 指向：`C-M8-1-008`（边界：运行记录 `bundler.version` 与 `Celerite::Profile.bundler_version` 比较 + 护栏保证）、`C-M8-1-009`（我方行为：`bundler.version` 记录）。
