@@ -372,6 +372,7 @@
 | C-M8-1-015 | 原生扩展构建前的 MSYS2 PATH 前置：重放 RubyGems 的 Gem.pre_install 钩子（L166 / M7-9 收口） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_bridge_extension_msys2_path_spec.cr' = '2 exampl…` |
 | C-M8-1-016 | 只读命令复用磁盘上的已安装 gem 索引：默认 gem 不再依赖桥（L166 第一半） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_installed_index_spec.cr' = '12 examples, 0 failu…` |
 | C-M8-1-017 | 无 Ruby 快路径的运行时事实记录与决策记录（M8 L164 S8b） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_fast_path_store_spec.cr' = '15 examples, 0 failu…` |
+| C-M8-1-018 | 无变化 `lock` 的无 Ruby 快路径（M8 L164 S8c） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_lock_fast_path_spec.cr' = '15 examples, 0 failur…` |
 | C-cross-001 | `bundle exec` 的子进程在 Unix 上随父进程收到 SIGINT/SIGTERM 而终止，Windows 上共享控制台 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'crystal spec spec/m7_exec_spec.cr'` |
 | C-cross-002 | 可直接加载的 Ruby 脚本走 `Kernel.load` 运行时适配器，`disable_exec_load` 可绕过 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential exec-loader exec-loader-disabled exec-thor-v…` |
 | C-cross-003 | install / update / pristine 在 `<bundle_path>/bundler` 上取独占锁，并发运行串行化 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'crystal spec spec/process_lock_spec.cr spec/process_race_spec.cr'` |
@@ -387,5 +388,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 275 条断言（已实现 228 · 已声明差异 35 · 未实现 4 · 未验证 3 · 已取代 5）。
+合计 276 条断言（已实现 229 · 已声明差异 35 · 未实现 4 · 未验证 3 · 已取代 5）。
 <!-- END GENERATED INDEX -->
