@@ -45,11 +45,21 @@ end
 # celerite -> `Error opening file with mode 'w' ... 拒绝访问`).
 private def with_read_only(path : String, &)
   {% if flag?(:windows) %}
-    Process.run("cmd.exe", ["/c", "attrib", "+R", path], output: Process::Redirect::Close, error: Process::Redirect::Close)
+    attrib = "C:\\Windows\\System32\\attrib.exe"
+    set = Process.run(attrib, ["+R", path], output: Process::Redirect::Close, error: Process::Redirect::Close)
+    set.success?.should be_true
+    original = File.read(path)
     begin
+      # `attrib +R` returning 0 is not enough: prove this file really rejects a
+      # write in this process before trusting any exit code from the CLI.
+      expect_raises(File::AccessDeniedError) do
+        File.open(path, "w") { |io| io << "t257-write-probe" }
+      end
       yield
     ensure
-      Process.run("cmd.exe", ["/c", "attrib", "-R", path], output: Process::Redirect::Close, error: Process::Redirect::Close)
+      clear = Process.run(attrib, ["-R", path], output: Process::Redirect::Close, error: Process::Redirect::Close)
+      clear.success?.should be_true
+      File.write(path, original)
     end
   {% else %}
     pending!("read-only file attribute is Windows-specific")
