@@ -369,6 +369,7 @@
 | C-M8-1-012 | 批量大小控制：include 段数与响应体的协议上限（L163） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_batch_size_limit_spec.cr' = '7 examples, 0 failu…` |
 | C-M8-1-013 | 无 Ruby 的运行时事实来源：由 rbconfig 重建 Runtime 七字段（L164 S8a） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_runtime_facts_spec.cr' = '11 examples, 0 failure…` |
 | C-M8-1-014 | 求值指纹纳入求值配置与 Ruby ABI：任一变化必须使缓存失效（M8 L162 收口） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'spec/m8_eval_fingerprint_config_abi_spec.cr'（6 例）——指纹文本含 'abi.*'/'con…` |
+| C-M8-1-015 | 原生扩展构建前的 MSYS2 PATH 前置：重放 RubyGems 的 Gem.pre_install 钩子（L166 / M7-9 收口） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_bridge_extension_msys2_path_spec.cr' = '2 exampl…` |
 | C-cross-001 | `bundle exec` 的子进程在 Unix 上随父进程收到 SIGINT/SIGTERM 而终止，Windows 上共享控制台 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'crystal spec spec/m7_exec_spec.cr'` |
 | C-cross-002 | 可直接加载的 Ruby 脚本走 `Kernel.load` 运行时适配器，`disable_exec_load` 可绕过 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential exec-loader exec-loader-disabled exec-thor-v…` |
 | C-cross-003 | install / update / pristine 在 `<bundle_path>/bundler` 上取独占锁，并发运行串行化 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'crystal spec spec/process_lock_spec.cr spec/process_race_spec.cr'` |
@@ -384,5 +385,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 272 条断言（已实现 225 · 已声明差异 35 · 未实现 4 · 未验证 3 · 已取代 5）。
+合计 273 条断言（已实现 226 · 已声明差异 35 · 未实现 4 · 未验证 3 · 已取代 5）。
 <!-- END GENERATED INDEX -->
