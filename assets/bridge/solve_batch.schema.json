@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://celerite.invalid/schemas/celerite.solve_batch-3.json",
+  "title": "celerite.solve_batch/3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "evaluation", "requirements", "candidates_by_source", "locked_base", "promotion", "constraints", "candidate_closure", "limits"],
+  "properties": {
+    "schema": {"const": "celerite.solve_batch/3"},
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gemfile", "fingerprint", "sources", "plugins", "groups"],
+      "properties": {
+        "gemfile": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path_sha256", "sha256"],
+          "properties": {
+            "path_sha256": {"$ref": "#/$defs/sha256"},
+            "sha256": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "fingerprint": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["format", "digest", "state", "state_reason", "verify_files", "runtime", "config"],
+          "properties": {
+            "format": {"const": "celerite-eval-v1"},
+            "digest": {"$ref": "#/$defs/sha256"},
+            "state": {"enum": ["deterministic", "unknown", "broken"]},
+            "state_reason": {"type": ["string", "null"]},
+            "verify_files": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["role", "path", "sha256"],
+                "properties": {
+                  "role": {"type": "string", "minLength": 1, "maxLength": 100},
+                  "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+                  "sha256": {"$ref": "#/$defs/sha256"}
+                }
+              }
+            },
+            "runtime": {"type": "object"},
+            "config": {"type": "object"}
+          }
+        },
+        "sources": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source_id", "type", "name", "identity_sha256", "uri_redacted", "remotes", "path", "revision", "ref", "branch", "tag", "glob", "submodules", "plugin_type", "lock_options", "materialization"],
+            "properties": {
+              "source_id": {"type": "string", "minLength": 1, "maxLength": 200},
+              "type": {"enum": ["Rubygems", "Path", "Git", "Plugin", "Metadata", "Unknown"]},
+              "name": {"type": ["string", "null"], "maxLength": 200},
+              "identity_sha256": {"$ref": "#/$defs/sha256"},
+              "uri_redacted": {"type": ["string", "null"], "maxLength": 4096},
+              "remotes": {"type": "array", "maxItems": 100, "items": {"type": "string", "maxLength": 4096}, "uniqueItems": true},
+              "path": {"type": ["string", "null"], "maxLength": 4096},
+              "revision": {"type": ["string", "null"], "maxLength": 200},
+              "ref": {"type": ["string", "null"], "maxLength": 200},
+              "branch": {"type": ["string", "null"], "maxLength": 200},
+              "tag": {"type": ["string", "null"], "maxLength": 200},
+              "glob": {"type": ["string", "null"], "maxLength": 4096},
+              "submodules": {"type": ["boolean", "null"]},
+              "plugin_type": {"type": ["string", "null"], "maxLength": 200},
+              "lock_options": {"type": "object"},
+              "materialization": {"enum": ["pure_data", "path", "git", "plugin", "unknown"]}
+            }
+          }
+        },
+        "plugins": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "version", "source_id", "declaration_sha256"],
+            "properties": {
+              "name": {"type": "string", "minLength": 1, "maxLength": 200},
+              "version": {"type": ["string", "null"], "maxLength": 100},
+              "source_id": {"type": ["string", "null"], "maxLength": 200},
+              "declaration_sha256": {"$ref": "#/$defs/sha256"}
+            }
+          }
+        },
+        "groups": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["with", "without", "optional", "all"],
+          "properties": {
+            "with": {"type": "array", "items": {"type": "string", "maxLength": 200}, "uniqueItems": true},
+            "without": {"type": "array", "items": {"type": "string", "maxLength": 200}, "uniqueItems": true},
+            "optional": {"type": "array", "items": {"type": "string", "maxLength": 200}, "uniqueItems": true},
+            "all": {"type": "array", "items": {"type": "string", "maxLength": 200}, "uniqueItems": true}
+          }
+        }
+      }
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "requirements", "source_id", "groups", "platforms", "autorequire", "force_ruby_platform", "gemspec_dev_dep", "direct"],
+        "properties": {
+          "name": {"$ref": "#/$defs/gem_name"},
+          "requirements": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1, "maxLength": 500}},
+          "source_id": {"type": ["string", "null"], "maxLength": 200},
+          "groups": {"type": "array", "items": {"type": "string", "maxLength": 200}, "uniqueItems": true},
+          "platforms": {"type": "array", "items": {"type": "string", "maxLength": 100}, "uniqueItems": true},
+          "autorequire": {"type": "array", "items": {"type": "string", "maxLength": 200}, "uniqueItems": true},
+          "force_ruby_platform": {"type": "boolean"},
+          "gemspec_dev_dep": {"type": "boolean"},
+          "direct": {"type": "boolean"}
+        }
+      }
+    },
+    "candidates_by_source": {
+      "type": "object",
+      "maxProperties": 4096,
+      "additionalProperties": {"type": "array", "maxItems": 100000, "items": {"$ref": "#/$defs/candidate"}}
+    },
+    "locked_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "specs"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "specs": {"type": "array", "items": {"$ref": "#/$defs/locked_spec"}}
+      }
+    },
+    "promotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "strict", "pre", "unlock", "conservative", "prefer_local", "local_only"],
+      "properties": {
+        "level": {"enum": ["patch", "minor", "major"]},
+        "strict": {"type": "boolean"},
+        "pre": {"type": "boolean"},
+        "unlock": {"type": "boolean"},
+        "conservative": {"type": "boolean"},
+        "prefer_local": {"type": "boolean"},
+        "local_only": {"type": "boolean"}
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ruby_version", "ruby_patchlevel", "ruby_engine", "ruby_engine_version", "rubygems_version", "bundler_version", "platforms", "added_platforms", "removed_platforms", "force_ruby_platform"],
+      "properties": {
+        "ruby_version": {"$ref": "#/$defs/version"},
+        "ruby_patchlevel": {"type": ["integer", "null"], "minimum": -1},
+        "ruby_engine": {"type": "string", "minLength": 1, "maxLength": 100},
+        "ruby_engine_version": {"$ref": "#/$defs/version"},
+        "rubygems_version": {"$ref": "#/$defs/version"},
+        "bundler_version": {"const": "4.0.24"},
+        "platforms": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"$ref": "#/$defs/platform"}, "uniqueItems": true},
+        "added_platforms": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/platform"}, "uniqueItems": true},
+        "removed_platforms": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/platform"}, "uniqueItems": true},
+        "force_ruby_platform": {"type": "boolean"}
+      }
+    },
+    "candidate_closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["complete", "digest", "name_count", "candidate_count"],
+      "properties": {
+        "complete": {"type": "boolean"},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "name_count": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "candidate_count": {"type": "integer", "minimum": 0, "maximum": 100000}
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timeout_ms"],
+      "properties": {"timeout_ms": {"type": "integer", "minimum": 1, "maximum": 60000}}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "gem_name": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
+    "version": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": "^[0-9]+(?:[.][0-9]+)*(?:[-.][0-9A-Za-z.-]+)?$"},
+    "platform": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "requirements"],
+      "properties": {
+        "name": {"$ref": "#/$defs/gem_name"},
+        "requirements": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1, "maxLength": 500}}
+      }
+    },
+    "checksum": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["algorithm", "value"],
+          "properties": {
+            "algorithm": {"const": "sha256"},
+            "value": {"$ref": "#/$defs/sha256"}
+          }
+        }
+      ]
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "platform", "dependencies", "required_ruby_version", "required_rubygems_version", "created_at", "checksum"],
+      "properties": {
+        "name": {"$ref": "#/$defs/gem_name"},
+        "version": {"$ref": "#/$defs/version"},
+        "platform": {"$ref": "#/$defs/platform"},
+        "dependencies": {"type": "array", "items": {"$ref": "#/$defs/dependency"}},
+        "required_ruby_version": {"type": ["string", "null"], "maxLength": 500},
+        "required_rubygems_version": {"type": ["string", "null"], "maxLength": 500},
+        "created_at": {"type": ["string", "null"], "maxLength": 100},
+        "checksum": {"$ref": "#/$defs/checksum"}
+      }
+    },
+    "locked_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "platform", "source_id", "dependencies", "checksum"],
+      "properties": {
+        "name": {"$ref": "#/$defs/gem_name"},
+        "version": {"$ref": "#/$defs/version"},
+        "platform": {"$ref": "#/$defs/platform"},
+        "source_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "dependencies": {"type": "array", "items": {"$ref": "#/$defs/dependency"}},
+        "checksum": {"$ref": "#/$defs/checksum"}
+      }
+    }
+  }
+}

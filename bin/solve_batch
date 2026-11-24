@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Executable pure-data harness. It reads one JSON request from stdin and writes
+# exactly one JSON response to stdout. Well-formed solver failures are protocol
+# results (exit 0); malformed JSON/schema uses EX_USAGE (64); oversize uses
+# EX_DATAERR (65). No lockfile or existing command is consulted.
+reference_lib = ENV["CELERITE_REFERENCE_BUNDLER_LIB"] ||
+                "C:/Ruby40-x64/lib/ruby/gems/4.0.0/gems/bundler-4.0.24/lib"
+$LOAD_PATH.unshift(reference_lib)
+require_relative "../assets/bridge/solve_batch"
+
+raw = STDIN.read(Celerite::SolveBatch::MAX_REQUEST_BYTES + 1)
+if raw.bytesize > Celerite::SolveBatch::MAX_REQUEST_BYTES
+  error = Celerite::SolveBatch::Error.new("candidate_incomplete", "request exceeds 32 MiB", "BatchTooLarge")
+  response = Celerite::SolveBatch.send(:failure_response, error,
+    Celerite::SolveBatch.send(:base_stats, raw, {}))
+  STDOUT.write(JSON.generate(response) + "\n")
+  exit 65
+end
+
+begin
+  request = Celerite::SolveBatch.parse(raw)
+rescue Celerite::SolveBatch::SchemaError => error
+  response = Celerite::SolveBatch.send(:failure_response, error,
+    Celerite::SolveBatch.send(:base_stats, raw, {}))
+  STDOUT.write(JSON.generate(response) + "\n")
+  exit 64
+end
+
+response = Celerite::SolveBatch.call(request)
+STDOUT.write(JSON.generate(response) + "\n")
+exit 0
