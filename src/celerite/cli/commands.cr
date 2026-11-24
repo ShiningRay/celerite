@@ -2965,7 +2965,12 @@ module Celerite
       # reads `Bundler.default_lockfile` and only redirects the write target
       # (`cli.rb:69-77`, `cli/lock.rb:81-93`).
       with_gemfile_overrides(rest, lockfile_env: false) do
-        run_lock(stdout, stderr, rest)
+        code = run_lock(stdout, stderr, rest)
+        # S8c: a completed lock is the only moment this project's runtime record
+        # may be written, and it is derived from the evaluation that just ran
+        # (`LockFastPath` reads that entry back from disk and refuses a guess).
+        LockFastPath.remember_after_lock if code == 0
+        code
       end
     end
 
@@ -3103,6 +3108,26 @@ module Celerite
       # `--add-checksums` explicitly asks to compute (`cli/lock.rb:70`).
       checksum_refresh = !definition.checksums_need_refresh?(rest.includes?("--local") && !add_checksums).nil?
 
+      # S8c of the zero-Ruby slice (roadmap L164): a bare `lock` on a project
+      # whose Gemfile evaluation and runtime are already proven on disk rewrites
+      # the same locked bytes without constructing a `Resolution` -- and
+      # therefore without loading Bundler or starting Ruby. `LockFastPath`
+      # re-checks every condition the no-op branch below re-checks, from the
+      # lockfile and the persisted evaluation only; any switch, any missing or
+      # stale fingerprint, and any runtime disagreement falls through to the
+      # existing path unchanged.
+      fast_path_hit, fast_path_miss = LockFastPath.attempt(definition, rest)
+      if hit = fast_path_hit
+        # Evidence that must never reach stdout or another command.
+        if LockFastPath.debug?
+          stderr.puts "fast-path: lock hit (digest=#{hit.digest[0, 12]})"
+        end
+        return write_locked_lockfile(definition, hit.bundler_version, lockfile_write_path,
+          print_mode, stdout, stderr)
+      elsif fast_path_miss && LockFastPath.debug?
+        stderr.puts "fast-path: lock miss (#{fast_path_miss})"
+      end
+
       resolution = Resolution.new(definition, unlock)
       # `cli/lock.rb:78-97` has no "skip the write" short circuit: whether the
       # lockfile is rewritten and whether anything is resolved are decided by
@@ -3141,25 +3166,8 @@ module Celerite
          resolution.incomplete_locked_spec_names.empty? &&
          definition.lockfile_exists? && definition.lockfile_matches_dependencies?(resolution.evaluation.dependencies) && lockfile_platforms_cover_local?(definition.lockfile!.platforms)
         resolution.close
-        text = with_profile_indent(definition.lockfile!.to_lock)
-        # `definition.rb:401-418 write_lock` serializes `Bundler::VERSION`
-        # unconditionally, so a no-op rewrite retargets BUNDLED WITH even when
-        # the saved version came from the other profile (measured on 2.7.2
-        # rewriting a 4.0.24 lock: the version line becomes `   2.7.2`).
-        text = text.gsub(/(BUNDLED WITH\n[ \t]*)[^\n]*/) { "#{$1}#{resolution.bridge_bundler_version}" }
-        # 2.7.x never records a bundler self-checksum. A no-op `lock` rewrites
-        # the locked text as-is, so drop the entry a 4.x lockfile may carry
-        # (`lockfile_generator.rb` only emits it on the 4.x line).
-        if resolution.bridge_bundler_version.starts_with?("2.")
-          text = text.lines(chomp: false).reject { |line| line.starts_with?("  bundler (") }.join
-        end
-        if print_mode
-          stdout.print text
-        else
-          stdout.puts "Writing lockfile to #{lockfile_write_path.gsub(/\\/, "/")}"
-          return lockfile_write_result(lockfile_write_path, text, stderr)
-        end
-        return 0
+        return write_locked_lockfile(definition, resolution.bridge_bundler_version,
+          lockfile_write_path, print_mode, stdout, stderr)
       end
       # The Bundler dependency API warning for scoped Rubygems sources
       # without one is printed by the reference before resolution.
@@ -3273,6 +3281,37 @@ module Celerite
       print_cooldown_summary(resolution, print_mode ? stderr : stdout)
       resolution.close
       0
+    end
+
+    # The text a no-op `lock` writes, and the write itself. Both the Ruby path
+    # (a resolved `resolution` whose evaluation proves the lockfile current) and
+    # the S8c fast path (a persisted evaluation that proves the same thing) end
+    # here, so the bytes and the surrounding output cannot diverge.
+    #
+    # `definition.lockfile!.to_lock` re-serializes the *saved* lockfile, so the
+    # write is byte-identical to the one on disk apart from the retargeted
+    # BUNDLED WITH line below.
+    private def self.write_locked_lockfile(definition : Definition, bundler_version : String,
+                                           write_path : String, print_mode : Bool,
+                                           stdout : IO, stderr : IO) : Int32
+      text = with_profile_indent(definition.lockfile!.to_lock)
+      # `definition.rb:401-418 write_lock` serializes `Bundler::VERSION`
+      # unconditionally, so a no-op rewrite retargets BUNDLED WITH even when
+      # the saved version came from the other profile (measured on 2.7.2
+      # rewriting a 4.0.24 lock: the version line becomes `   2.7.2`).
+      text = text.gsub(/(BUNDLED WITH\n[ \t]*)[^\n]*/) { "#{$1}#{bundler_version}" }
+      # 2.7.x never records a bundler self-checksum. A no-op `lock` rewrites
+      # the locked text as-is, so drop the entry a 4.x lockfile may carry
+      # (`lockfile_generator.rb` only emits it on the 4.x line).
+      if bundler_version.starts_with?("2.")
+        text = text.lines(chomp: false).reject { |line| line.starts_with?("  bundler (") }.join
+      end
+      if print_mode
+        stdout.print text
+        return 0
+      end
+      stdout.puts "Writing lockfile to #{write_path.gsub(/\\/, "/")}"
+      lockfile_write_result(write_path, text, stderr)
     end
 
     # `lock --lockfile PATH` writes the expanded path the reference hands to

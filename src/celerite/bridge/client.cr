@@ -222,13 +222,33 @@ module Celerite
         File.expand_path(path).tr("\\", "/")
       end
 
-      private def self.environment_signature : String
+      # Switches that only change how *celerite* reports on or reuses a run.
+      # Bundler's evaluation cannot observe them, so an entry written with one
+      # setting must keep answering with another: `CELERITE_FAST_PATH` is
+      # turned on *after* the run that records the entry (S8c), and a
+      # diagnostics switch must not invalidate a cache it only decorates.
+      IGNORED_ENVIRONMENT = %w[
+        CELERITE_FAST_PATH
+        CELERITE_FAST_PATH_DEBUG
+        CELERITE_EVAL_DEBUG
+        CELERITE_BRIDGE_STATS
+      ]
+
+      # Public for the S8c fast path: it reads a persisted entry without going
+      # through `fetch`, and has to apply the same environment test the writer
+      # applied. `CELERITE_EVAL_CACHE` stays *in* the signature because both
+      # sides need it set, so it cannot differ between a writer and a reader.
+      def self.environment_signature : String
         # Bundler's evaluation reads the process environment (BUNDLE_GEMFILE,
         # BUNDLE_WITHOUT, BUNDLE_FROZEN, ...), and commands temporarily rewrite
         # those. An entry evaluated under another environment must not answer.
         # The signature is hashed so no environment value (credentials, tokens)
         # is ever kept in memory as plaintext.
-        material = ENV.to_h.to_a.sort_by { |pair| pair[0] }.map { |(key, value)| "#{key}=#{value}" }.join('\u0001')
+        material = ENV.to_h.to_a
+          .reject { |(key, _value)| IGNORED_ENVIRONMENT.includes?(key) }
+          .sort_by { |pair| pair[0] }
+          .map { |(key, value)| "#{key}=#{value}" }
+          .join('\u0001')
         Digest::SHA256.hexdigest(material)
       end
 

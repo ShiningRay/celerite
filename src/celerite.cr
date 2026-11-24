@@ -27,6 +27,7 @@ require "./celerite/compact_index/cache"
 require "./celerite/resolution"
 require "./celerite/runtime_facts"
 require "./celerite/fast_path_store"
+require "./celerite/lock_fast_path"
 require "./celerite/installed_index"
 
 module Celerite

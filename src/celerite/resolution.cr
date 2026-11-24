@@ -445,29 +445,35 @@ module Celerite
     # A row with no edges at all (S3: the edge line is absent) is complete and
     # keeps the reference's no-op behavior.
     def incomplete_locked_spec_names : Array(String)
-      @incomplete_locked_names ||= begin
-        names = [] of String
-        if @definition.lockfile_exists?
-          rows = [] of Lockfile::Spec
-          @definition.lockfile!.sources.each { |source| rows.concat(source.specs) }
-          by_name = Hash(String, Array(Lockfile::Spec)).new
-          rows.each { |row| (by_name[row.name] ||= [] of Lockfile::Spec) << row }
-          rows.each do |row|
-            incomplete = row.dependencies.any? do |edge|
-              next false if edge.name == "bundler"
-              targets = by_name[edge.name]?
-              if targets.nil?
-                true
-              else
-                !targets.any? { |target| edge.requirement.satisfied_by?(Gem::Version.new(target.version)) }
-              end
+      @incomplete_locked_names ||= Resolution.incomplete_locked_spec_names(@definition)
+    end
+
+    # The same judgment computed from the lockfile alone, without the evaluation
+    # or the bridge this instance was built with. `incomplete_locked_spec_names`
+    # delegates here so the two can never drift; the S8c fast path calls it to
+    # make the decision before it has a `Resolution` at all.
+    def self.incomplete_locked_spec_names(definition : Definition) : Array(String)
+      names = [] of String
+      if definition.lockfile_exists?
+        rows = [] of Lockfile::Spec
+        definition.lockfile!.sources.each { |source| rows.concat(source.specs) }
+        by_name = Hash(String, Array(Lockfile::Spec)).new
+        rows.each { |row| (by_name[row.name] ||= [] of Lockfile::Spec) << row }
+        rows.each do |row|
+          incomplete = row.dependencies.any? do |edge|
+            next false if edge.name == "bundler"
+            targets = by_name[edge.name]?
+            if targets.nil?
+              true
+            else
+              !targets.any? { |target| edge.requirement.satisfied_by?(Gem::Version.new(target.version)) }
             end
-            names << row.name if incomplete
           end
+          names << row.name if incomplete
         end
-        names.uniq!
-        names
       end
+      names.uniq!
+      names
     end
 
     # ------------------------------------------------------------------
