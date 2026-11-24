@@ -19,6 +19,7 @@ module Celerite
     MAX_CANDIDATES = 100_000
     MAX_SOURCES = 4_096
     MAX_NAMES = 10_000
+    MAX_TIMEOUT_MS = 60_000
     SCHEMA_PATH = File.expand_path("solve_batch.schema.json", __dir__)
     SCHEMA_DOCUMENT = JSON.parse(File.read(SCHEMA_PATH)).freeze
 
@@ -298,20 +299,34 @@ module Celerite
     end
 
     def call(request)
-      raw = request.is_a?(String) ? request : JSON.generate(request)
-      parsed = parse(raw)
-      stats = base_stats(raw, parsed)
-      spec_set, timings, context = solve_internal(parsed, stats)
-      chosen = serialize_chosen(spec_set, context)
-      result = {
-        "chosen" => chosen,
-        "edges" => serialize_edges(chosen, parsed["requirements"]),
-        "variants" => serialize_variants(chosen),
-        "failure" => nil,
-        "stats" => stats.merge("materialize_ms" => timings[0], "solve_ms" => timings[1])
-      }
-      check_response_size!(result)
-      {"schema" => SCHEMA, "ok" => true, "result" => result}
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      stats = nil
+      raw = request if request.is_a?(String)
+      # The timeout lives in the request body, so parsing is first bounded by the
+      # protocol maximum. Once parsed, the caller's deadline covers all remaining
+      # work, including semantic validation, materialization and serialization.
+      parsed = Timeout.timeout(MAX_TIMEOUT_MS / 1000.0) do
+        raw ||= JSON.generate(request)
+        parse(raw)
+      end
+      timeout_ms = parsed.dig("limits", "timeout_ms") || MAX_TIMEOUT_MS
+      remaining = timeout_ms / 1000.0 - (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started)
+      raise Timeout::Error, "solve_batch exceeded #{timeout_ms} ms" if remaining <= 0
+
+      Timeout.timeout(remaining) do
+        stats = base_stats(raw, parsed)
+        spec_set, timings, context = solve_internal(parsed, stats)
+        chosen = serialize_chosen(spec_set, context)
+        result = {
+          "chosen" => chosen,
+          "edges" => serialize_edges(chosen, parsed["requirements"]),
+          "variants" => serialize_variants(chosen),
+          "failure" => nil,
+          "stats" => stats.merge("materialize_ms" => timings[0], "solve_ms" => timings[1])
+        }
+        check_response_size!(result)
+        {"schema" => SCHEMA, "ok" => true, "result" => result}
+      end
     rescue Error => error
       failure_response(error, stats || base_stats(raw.to_s, {}))
     rescue Timeout::Error => error
@@ -752,9 +767,25 @@ module Celerite
       end
     end
 
+    def self.bound_message(message, limit)
+      text = message.to_s.dup.force_encoding(Encoding::UTF_8).scrub
+      return text if text.bytesize <= limit
+
+      budget = limit - 3
+      bounded = +""
+      bytes = 0
+      text.each_char do |char|
+        char_bytes = char.bytesize
+        break if bytes + char_bytes > budget
+
+        bounded << char
+        bytes += char_bytes
+      end
+      bounded + "…"
+    end
+
     def failure_response(error, stats)
-      message = error.message.to_s.byteslice(0, 16_384).to_s.scrub
-      message += "…" if error.message.to_s.bytesize > 16_384
+      message = bound_message(error.message, 16_384)
       result = {
         "chosen" => [],
         "edges" => [],

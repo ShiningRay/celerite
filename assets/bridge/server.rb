@@ -42,6 +42,9 @@ BRIDGE_PROTO_SUPPORTED = (BRIDGE_PROTO_MIN..BRIDGE_PROTO).to_a.freeze
 # on the bound in a test run.
 BRIDGE_BATCH_MAX_INCLUDE_SECTIONS = 4
 BRIDGE_BATCH_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+BRIDGE_SOLVE_BATCH_MAX_LINE_BYTES = 32 * 1024 * 1024 + 64 * 1024
+BRIDGE_SOLVE_BATCH_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+BRIDGE_MAX_ERROR_MESSAGE_BYTES = 16 * 1024
 
 # Raised when a batch request or its answer exceeds a bound above. The class
 # name is what reaches the client (`bridge_error` sends `e.class.name`), so it
@@ -58,6 +61,26 @@ def bridge_batch_max_response_bytes
   parsed
 end
 
+def bridge_solve_batch_max_line_bytes
+  value = ENV["CELERITE_SOLVE_BATCH_MAX_LINE_BYTES"].to_s.strip
+  return BRIDGE_SOLVE_BATCH_MAX_LINE_BYTES if value.empty?
+
+  parsed = Integer(value, exception: false)
+  return BRIDGE_SOLVE_BATCH_MAX_LINE_BYTES if parsed.nil? || parsed <= 0
+
+  [parsed, BRIDGE_SOLVE_BATCH_MAX_LINE_BYTES].min
+end
+
+def bridge_solve_batch_max_response_bytes
+  value = ENV["CELERITE_SOLVE_BATCH_MAX_RESPONSE_BYTES"].to_s.strip
+  return BRIDGE_SOLVE_BATCH_MAX_RESPONSE_BYTES if value.empty?
+
+  parsed = Integer(value, exception: false)
+  return BRIDGE_SOLVE_BATCH_MAX_RESPONSE_BYTES if parsed.nil? || parsed <= 0
+
+  [[parsed, 320].max, BRIDGE_SOLVE_BATCH_MAX_RESPONSE_BYTES].min
+end
+
 # Capabilities advertised through `ping.features`. Only list what this process
 # can actually serve: a client that probes `features` and then calls the op
 # would turn a premature advertisement into `UnknownOp`. `evaluate_batch`
@@ -67,15 +90,33 @@ end
 # `fingerprint` is a section `evaluate_batch` can return, not an op: it is
 # listed so a client can tell this server from one that predates the section
 # and degrade instead of guessing. Callers must not call it as an op.
-BRIDGE_FEATURES = %w[evaluate_gemfile gemspec_paths plugin_gemfile_eval evaluate_batch fingerprint].freeze
+BRIDGE_FEATURES = %w[evaluate_gemfile gemspec_paths plugin_gemfile_eval evaluate_batch fingerprint solve_batch].freeze
 
 def bridge_emit(response)
   $stdout.puts JSON.generate(response)
   $stdout.flush
 end
 
+def bridge_bound_message(message, limit)
+  text = message.to_s.dup.force_encoding(Encoding::UTF_8).scrub
+  return text if text.bytesize <= limit
+
+  budget = limit - 3
+  bounded = +""
+  bytes = 0
+  text.each_char do |char|
+    char_bytes = char.bytesize
+    break if bytes + char_bytes > budget
+
+    bounded << char
+    bytes += char_bytes
+  end
+  bounded + "…"
+end
+
 def bridge_error(id, klass, message, status = nil, proto: BRIDGE_PROTO)
-  error = { "class" => klass, "message" => message }
+  bounded_message = bridge_bound_message(message, BRIDGE_MAX_ERROR_MESSAGE_BYTES)
+  error = { "class" => klass.to_s, "message" => bounded_message }
   error["status"] = status if status
   bridge_emit("proto" => proto, "id" => id, "ok" => false, "error" => error)
 end
@@ -676,6 +717,36 @@ def op_evaluate_batch(payload)
   result["gemspecs"] = builder.gemspecs.map(&:loaded_from) if sections.include?("gemspecs")
   result["fingerprint"] = bridge_fingerprint(builder, gemfile, contents) if sections.include?("fingerprint")
   result
+end
+
+# M8 L161 S2: the payload is the complete celerite.solve_batch/3 request. The
+# bridge envelope still describes transport/dispatch success; the nested S1
+# envelope describes solver success or a categorized domain failure. Keeping
+# both is deliberate: a conflict is a valid answer to a valid request, not a
+# bridge crash, and existing proto 1/2 clients keep their envelope semantics.
+def op_solve_batch(payload)
+  bridge_activate_bundler
+  require "bundler"
+  require_relative "solve_batch"
+
+  unless payload.is_a?(Hash)
+    return Celerite::SolveBatch.failure_response(
+      Celerite::SolveBatch::SchemaError.new("solve_batch payload must be a JSON object"), {}
+    )
+  end
+
+  unless Bundler::VERSION == Celerite::SolveBatch::REFERENCE_BUNDLER
+    return Celerite::SolveBatch.failure_response(
+      Celerite::SolveBatch::Error.new(
+        "internal",
+        "solve_batch requires Bundler #{Celerite::SolveBatch::REFERENCE_BUNDLER}, loaded #{Bundler::VERSION}",
+        "bundler_version_mismatch"
+      ),
+      {}
+    )
+  end
+
+  Celerite::SolveBatch.call(payload)
 end
 
 def op_bundler_cache_file(payload)
@@ -1410,6 +1481,7 @@ def bridge_dispatch(id, op, payload, proto)
            when "ruby_environment" then op_ruby_environment(payload)
            when "evaluate_gemfile" then op_evaluate_gemfile(payload)
            when "evaluate_batch"  then op_evaluate_batch(payload)
+           when "solve_batch"     then op_solve_batch(payload)
            when "gemspec_paths"   then op_gemspec_paths(payload)
            when "bundler_cache_file" then op_bundler_cache_file(payload)
            when "read_gem_spec" then op_read_gem_spec(payload)
@@ -1442,10 +1514,52 @@ def bridge_dispatch(id, op, payload, proto)
       raise BatchTooLarge,
             "evaluate_batch response is #{bytes} bytes, limit is #{bridge_batch_max_response_bytes}"
     end
+  elsif op == "solve_batch"
+    bytes = JSON.generate(response).bytesize
+    limit = bridge_solve_batch_max_response_bytes
+    if bytes > limit
+      fallback = Celerite::SolveBatch.failure_response(
+        Celerite::SolveBatch::Error.new(
+          "internal", "solve_batch response is #{bytes} bytes, limit is #{limit}", "response_too_large"
+        ),
+        {}
+      )
+      response["result"] = fallback
+      if JSON.generate(response).bytesize > limit
+        response["result"] = {
+          "schema" => Celerite::SolveBatch::SCHEMA, "ok" => false,
+          "result" => {
+            "chosen" => [], "edges" => [], "variants" => {},
+            "failure" => {"class" => "response_too_large", "message" => "response limit exceeded", "category" => "internal", "incompatibilities" => []},
+            "stats" => {}
+          }
+        }
+      end
+    end
   end
   bridge_emit(response)
 rescue Exception => e # rubocop:disable Lint/RescueException — bridge boundary: everything is reported, nothing escapes
   bridge_error(id, e.class.name.to_s, e.message.to_s, (e.status_code if e.respond_to?(:status_code)), proto: proto)
+end
+
+def bridge_read_request_line
+  limit = bridge_solve_batch_max_line_bytes
+  line = $stdin.gets("\n", limit + 1)
+  return nil if line.nil?
+
+  if line.bytesize > limit
+    bridge_drain_request_line(line)
+    raise BatchTooLarge, "bridge request line exceeds #{limit} bytes"
+  end
+  line
+end
+
+def bridge_drain_request_line(line)
+  return if line.end_with?("\n")
+
+  while (chunk = $stdin.gets("\n", 64 * 1024))
+    break if chunk.end_with?("\n")
+  end
 end
 
 # Third line of defence (task-230): activation happens before the loop accepts
@@ -1454,14 +1568,33 @@ end
 bridge_activate_bundler
 
 loop do
-  line = $stdin.gets
-  break if line.nil?
+  begin
+    line = bridge_read_request_line
+    break if line.nil?
 
-  line = line.strip
-  next if line.empty?
+    line = line.strip
+    next if line.empty?
 
-  request = JSON.parse(line)
+    request = JSON.parse(line)
+  rescue JSON::ParserError => error
+    bridge_error(nil, "JSONParseError", "invalid JSON request: #{error.message}", proto: BRIDGE_PROTO)
+    next
+  rescue BatchTooLarge => error
+    bridge_error(nil, error.class.name, error.message, proto: BRIDGE_PROTO)
+    next
+  end
+
+  unless request.is_a?(Hash)
+    bridge_error(nil, "InvalidRequest", "request must be a JSON object", proto: BRIDGE_PROTO)
+    next
+  end
+
   id = request["id"]
+  unless id.is_a?(Integer) && id >= -2_147_483_648 && id <= 2_147_483_647
+    bridge_error(nil, "InvalidRequest", "id must be a signed 32-bit integer", proto: BRIDGE_PROTO)
+    next
+  end
+
   proto = request["proto"]
   # An unsupported version cannot be echoed back as-is (the peer would reject
   # the envelope before reading the error), so the rejection speaks the highest
