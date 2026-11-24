@@ -33,6 +33,31 @@ BRIDGE_PROTO = 2
 BRIDGE_PROTO_MIN = 1
 BRIDGE_PROTO_SUPPORTED = (BRIDGE_PROTO_MIN..BRIDGE_PROTO).to_a.freeze
 
+# Batch bounds (roadmap L163, task-243). The reference Bundler has no batch
+# concept, so these are this protocol's own limits; exceeding one is a
+# structured `BatchTooLarge` rejection, never a truncated or sharded answer.
+# `CELERITE_BATCH_MAX_BYTES` (positive integer) only shrinks the byte cap so a
+# spec can trigger the rejection without a multi-megabyte fixture; the client
+# reads the same variable (`src/celerite/bridge/client.cr`), so both peers agree
+# on the bound in a test run.
+BRIDGE_BATCH_MAX_INCLUDE_SECTIONS = 4
+BRIDGE_BATCH_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+
+# Raised when a batch request or its answer exceeds a bound above. The class
+# name is what reaches the client (`bridge_error` sends `e.class.name`), so it
+# must stay `BatchTooLarge` (`Bridge::BatchTooLargeError#error_class`).
+class BatchTooLarge < StandardError; end
+
+def bridge_batch_max_response_bytes
+  value = ENV["CELERITE_BATCH_MAX_BYTES"].to_s.strip
+  return BRIDGE_BATCH_MAX_RESPONSE_BYTES if value.empty?
+
+  parsed = Integer(value, exception: false)
+  return BRIDGE_BATCH_MAX_RESPONSE_BYTES if parsed.nil? || parsed <= 0
+
+  parsed
+end
+
 # Capabilities advertised through `ping.features`. Only list what this process
 # can actually serve: a client that probes `features` and then calls the op
 # would turn a premature advertisement into `UnknownOp`. `evaluate_batch`
@@ -570,6 +595,10 @@ def op_evaluate_batch(payload)
 
   sections = payload["include"]
   sections = [] unless sections.is_a?(Array)
+  if sections.size > BRIDGE_BATCH_MAX_INCLUDE_SECTIONS
+    raise BatchTooLarge,
+          "evaluate_batch include has #{sections.size} sections, limit is #{BRIDGE_BATCH_MAX_INCLUDE_SECTIONS}"
+  end
 
   builder, contents, warnings = bridge_evaluate_gemfile(gemfile)
   result = bridge_serialize_evaluation(gemfile, builder, contents, warnings)
@@ -1299,7 +1328,19 @@ def bridge_dispatch(id, op, payload, proto)
            else
              return bridge_error(id, "UnknownOp", "unknown bridge op #{op.inspect}", proto: proto)
            end
-  bridge_emit("proto" => proto, "id" => id, "ok" => true, "result" => result)
+  # The byte cap covers the exact serialized line the client reads, envelope
+  # included. Checking before `bridge_emit` is what keeps the rejection
+  # structured: the client receives one `BatchTooLarge` error line, never a
+  # truncated success followed by nothing.
+  response = { "proto" => proto, "id" => id, "ok" => true, "result" => result }
+  if op == "evaluate_batch"
+    bytes = JSON.generate(response).bytesize
+    if bytes > bridge_batch_max_response_bytes
+      raise BatchTooLarge,
+            "evaluate_batch response is #{bytes} bytes, limit is #{bridge_batch_max_response_bytes}"
+    end
+  end
+  bridge_emit(response)
 rescue Exception => e # rubocop:disable Lint/RescueException — bridge boundary: everything is reported, nothing escapes
   bridge_error(id, e.class.name.to_s, e.message.to_s, (e.status_code if e.respond_to?(:status_code)), proto: proto)
 end

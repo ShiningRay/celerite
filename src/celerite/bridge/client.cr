@@ -16,6 +16,26 @@ module Celerite
     PROTOCOL     = 2
     PROTOCOL_MIN = 1
 
+    # Batch bounds (roadmap L163, task-243). The reference Bundler has no batch
+    # concept at all (`git grep batch` over bundler 4.0.24 finds nothing), so
+    # these limits belong to this bridge protocol, not to a reference behaviour:
+    # one request may not ask for unbounded work (`include` sections), and its
+    # answer may not be unbounded either. Both sides enforce them and both
+    # answer with a structured `BatchTooLarge` error — never truncation, never
+    # sharding, never a degraded success.
+    #
+    # Every existing call site requests exactly two sections (`fingerprint`,
+    # `gemspecs`, from GemfileEvaluator), so four is twice the observed ceiling
+    # and no existing command can reach it. The byte cap is sized from measured
+    # data (docs/compat-evidence/2026-11-23.md, task-243): the largest single
+    # batch response observed is 2,125 bytes, and the largest whole-command
+    # response total recorded in the differential runs is 289,430 bytes over up
+    # to 15 RPCs, so no single response can exceed that. 4 MiB is ~1,970x the
+    # measured response and ~14x that command total: bounded, yet unreachable
+    # by any real Gemfile.
+    MAX_INCLUDE_SECTIONS     = 4
+    MAX_BATCH_RESPONSE_BYTES = 4 * 1024 * 1024
+
     # Counters behind `CELERITE_BRIDGE_STATS` (M8 baseline: one process, one
     # line). The variable is off when unset, empty, or exactly "0"; any other
     # value turns it on. Counting is scoped to one `CLI.run` invocation so
@@ -455,6 +475,50 @@ module Celerite
       def status_code : Int32
         @status || 1
       end
+    end
+
+    # A batch request or answer exceeded `MAX_INCLUDE_SECTIONS` /
+    # `MAX_BATCH_RESPONSE_BYTES`. `error_class` is the protocol class name the
+    # Ruby side sends (`BatchTooLarge`), so code that inspects `error_class` and
+    # code that rescues this type agree.
+    class BatchTooLargeError < BridgeError
+      def initialize(message : String, status : Int32? = nil)
+        super("BatchTooLarge", message, status)
+      end
+    end
+
+    # Section-count gate for `evaluate_batch`. Kept callable on its own because
+    # the constructor spawns the bridge eagerly (`Client#initialize`): a caller
+    # that must not start a bridge process validates here first. `evaluate_batch`
+    # calls it before any cache lookup or RPC, so the limit can never be turned
+    # into a slower request.
+    def self.validate_batch_sections!(sections : Array(String)) : Nil
+      return if sections.size <= MAX_INCLUDE_SECTIONS
+
+      raise BatchTooLargeError.new(
+        "evaluate_batch include has #{sections.size} sections, limit is #{MAX_INCLUDE_SECTIONS}")
+    end
+
+    # Byte cap applied to a batch response line, with the test/diagnostic
+    # override shared with `assets/bridge/server.rb`.
+    def self.batch_response_bytes_limit : Int32
+      value = ENV["CELERITE_BATCH_MAX_BYTES"]?
+      return MAX_BATCH_RESPONSE_BYTES if value.nil? || value.empty?
+
+      parsed = value.to_i?
+      return MAX_BATCH_RESPONSE_BYTES if parsed.nil? || parsed <= 0
+
+      parsed
+    end
+
+    # Rejects an over-long response line. The whole response is one line, so a
+    # refusal consumes exactly the bytes it rejects and the stream stays in
+    # sync for the next request.
+    def self.check_batch_response_bytes!(bytesize : Int32, limit : Int32 = batch_response_bytes_limit) : Nil
+      return if bytesize <= limit
+
+      raise BatchTooLargeError.new(
+        "evaluate_batch response is #{bytesize} bytes, limit is #{limit}")
     end
 
     # Repeated-declaration warnings raised while a Gemfile is evaluated
@@ -926,6 +990,7 @@ module Celerite
       # itself the cache's invalidation evidence (see `EvaluationCache`), so
       # asking for it does not bypass the cache — a hit still re-verifies it.
       def evaluate_batch(path : String, include sections : Array(String) = [] of String) : BatchGemfileEvaluation
+        Bridge.validate_batch_sections!(sections)
         cacheable = sections.all? { |section| section == "fingerprint" || section == "gemspecs" }
         if cacheable
           if entry = EvaluationCache.fetch(path, sections, cache_id) { cache_runtime }
@@ -943,7 +1008,7 @@ module Celerite
         end
 
         BridgeStats.record_evaluation
-        result = request("evaluate_batch", payload)
+        result = request("evaluate_batch", payload, max_response_bytes: Bridge.batch_response_bytes_limit)
         evaluation = GemfileEvaluation.from_json(result.to_json)
         GemfileWarnings.record(evaluation.warnings)
         gemspecs = result["gemspecs"]?.try(&.as_a?).try(&.map(&.as_s))
@@ -1178,7 +1243,7 @@ module Celerite
       # `limit: nil` for those; everything else keeps the safety net.
       # `evaluate_batch` carries an array (`include`), which the string-only
       # payload hashes cannot express; the envelope itself is unchanged.
-      private def request(op : String, payload : Hash(String, String) | Hash(String, String?) | Hash(String, JSON::Any) = {} of String => String, limit : Time::Span? = @timeout) : JSON::Any
+      private def request(op : String, payload : Hash(String, String) | Hash(String, String?) | Hash(String, JSON::Any) = {} of String => String, limit : Time::Span? = @timeout, max_response_bytes : Int32? = nil) : JSON::Any
         @mutex.synchronize do
           @last_used = Time.instant
           @request_id += 1
@@ -1195,23 +1260,29 @@ module Celerite
           @stdin.flush
           BridgeStats.record_request(line.bytesize + 1)
 
-          finish_response(id, read_response(limit))
+          finish_response(id, read_response(limit, max_response_bytes, id))
         end
       end
 
-      private def read_response(limit : Time::Span?) : JSON::Any
+      private def read_response(limit : Time::Span?, max_bytes : Int32? = nil, id : Int32 = -1) : JSON::Any
         done = Channel(JSON::Any).new(1)
 
         spawn(name: "bridge-reader") do
           line = @stdout.gets
           if line.nil?
-            done.send(crash_response("bridge server closed the connection", "BridgeCrashed"))
+            done.send(crash_response(id, "bridge server closed the connection", "BridgeCrashed"))
           else
             BridgeStats.record_response(line.bytesize)
-            begin
-              done.send(JSON.parse(line))
-            rescue ex
-              done.send(crash_response("bridge sent non-JSON output: #{ex.message}", "ProtocolError"))
+            if (cap = max_bytes) && line.bytesize > cap
+              # One response is one line, so the oversized line has been fully
+              # consumed and the stream stays aligned.
+              done.send(crash_response(id, "evaluate_batch response is #{line.bytesize} bytes, limit is #{cap}", "BatchTooLarge"))
+            else
+              begin
+                done.send(JSON.parse(line))
+              rescue ex
+                done.send(crash_response(id, "bridge sent non-JSON output: #{ex.message}", "ProtocolError"))
+              end
             end
           end
         end
@@ -1228,11 +1299,11 @@ module Celerite
         end
       end
 
-      private def crash_response(message : String, error_class : String) : JSON::Any
+      private def crash_response(id : Int32, message : String, error_class : String) : JSON::Any
         text = JSON.build do |json|
           json.object do
             json.field "proto", PROTOCOL
-            json.field "id", -1
+            json.field "id", id
             json.field "ok", false
             json.field "error" do
               json.object do
@@ -1258,7 +1329,15 @@ module Celerite
           response["result"]
         else
           error = response["error"]
-          raise BridgeError.new(error["class"].as_s, error["message"].as_s, error["status"]?.try(&.as_i?))
+          error_class = error["class"].as_s
+          message = error["message"].as_s
+          status = error["status"]?.try(&.as_i?)
+          # Keep the type and the protocol class name in step: a peer's
+          # `BatchTooLarge` rejection is as much a `BatchTooLargeError` as the
+          # local pre-flight/byte checks above.
+          raise BatchTooLargeError.new(message, status) if error_class == "BatchTooLarge"
+
+          raise BridgeError.new(error_class, message, status)
         end
       end
     end
