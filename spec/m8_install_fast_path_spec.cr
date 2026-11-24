@@ -15,6 +15,7 @@ private IFP_SWITCHES = %w[
   CELERITE_CACHE_DIR CELERITE_BRIDGE_STATS CELERITE_BRIDGE_SERVER
   CELERITE_PROFILE_BUNDLER_VERSION CELERITE_REFERENCE_BUNDLER_VERSION
   CELERITE_REFERENCE_BUNDLER_LIB CELERITE_VERBOSE
+  CELERITE_PLAN_CACHE CELERITE_PLAN_CACHE_DEBUG
 ]
 private IFP_ISOLATED = %w[HOME USERPROFILE BUNDLE_PATH BUNDLE_WITHOUT BUNDLE_APP_CONFIG BUNDLE_USER_HOME BUNDLE_USER_PLUGIN TMPDIR TMP TEMP]
 
@@ -805,6 +806,70 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
       stats[0].should be >= 1
       ifp_lines(errors, IFP_HIT).should be_empty
       ifp_lines(errors, IFP_MISS).should contain("switches")
+    end
+  end
+
+  it "rehydrates a trusted locked plan after an install no-op miss" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      full_name = ifp_full_name(project)
+      env = {"CELERITE_PLAN_CACHE" => "1", "CELERITE_PLAN_CACHE_DEBUG" => "1"}
+      FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
+      status, output, errors, stats = ifp_hot(project, ["install"], env)
+      status.should eq(0)
+      stats[0].should eq(1)
+      errors.should contain("[plan-cache] status=miss")
+      output.should contain("Bundle complete!")
+
+      FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
+      status, hit_output, hit_errors, hit_stats = ifp_hot(project, ["install"], env)
+      status.should eq(0)
+      hit_stats[0].should eq(1)
+      hit_errors.should contain("[plan-cache] status=hit reason=ok")
+      hit_output.should eq(output)
+    end
+  end
+
+  it "keeps corrupt, mistyped, escaping and credential-bearing plan payloads on the compatible path" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      full_name = ifp_full_name(project)
+      env = {"CELERITE_PLAN_CACHE" => "1", "CELERITE_PLAN_CACHE_DEBUG" => "1"}
+      FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
+      ifp_hot(project, ["install"], env)
+      entry = Dir.glob(File.join(project, ".celerite", "cache", "plan", "*", "*.json").tr("\\", "/")).first
+      original = File.read(entry)
+      ["not json", "[]", %({"schema":"celerite-locked-plan/1","plan":{"specs":"../escape"}})].each do |broken|
+        File.write(entry, broken)
+        FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
+        status, _output, errors, stats = ifp_hot(project, ["install"], env)
+        status.should eq(0)
+        stats[0].should eq(1)
+        errors.should_not contain("[plan-cache] status=hit")
+      end
+      File.write(entry, original)
+    end
+  end
+
+  it "misses for semantic flags and falls back for Bundler 2.7.2" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      env = {"CELERITE_PLAN_CACHE" => "1", "CELERITE_PLAN_CACHE_DEBUG" => "1"}
+      status, _output, errors, stats = ifp_hot(project, ["install", "--local"], env)
+      status.should eq(0)
+      stats[0].should be >= 1
+      errors.should_not contain("[plan-cache] status=hit")
+    end
+
+    with_project({} of String => String) do |project|
+      ifp_ready(project, "2.7.2")
+      full_name = ifp_full_name(project)
+      env = {"CELERITE_PLAN_CACHE" => "1", "CELERITE_PLAN_CACHE_DEBUG" => "1"}
+      FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
+      status, _output, errors, stats = ifp_hot(project, ["install"], env, "2.7.2")
+      status.should eq(0)
+      stats[0].should be >= 1
+      errors.should_not contain("[plan-cache] status=hit")
     end
   end
 end
