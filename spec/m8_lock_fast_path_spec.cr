@@ -1,4 +1,5 @@
 require "./spec_helper"
+require "./m8_fast_path_matrix_support"
 
 # S8c (roadmap L164, `docs/roadmap-evidence/M8-fast-path-plan.md`): a `lock`
 # whose Gemfile evaluation and runtime are already proven on disk rewrites the
@@ -165,6 +166,58 @@ private def lfp_ready(project : String) : String
 
   lfp_record_paths(project).size.should eq(1)
   lfp_digest(project)
+end
+
+# Run one negative case from byte-identical warm/cold state through the explicit
+# compatibility switch and the enabled fast path. This asserts exit, normalized
+# stdout/stderr and every non-cache file-tree item, not merely `procs >= 1`.
+private def lfp_matrix_parity(project : String, args : Array(String) = ["lock"]) : Nil
+  archive = File.join(Dir.tempdir, "celerite-m8-lock-matrix-#{Process.pid}-#{Random.rand(1_000_000)}")
+  m8_matrix_snapshot(project, archive)
+  begin
+    reference_env = lfp_env("CELERITE_EVAL_CACHE", "CELERITE_BRIDGE_STATS")
+    reference_env["CELERITE_FAST_PATH"] = "0"
+    lfp_with_env(project, reference_env) do
+      m8_matrix_restore(project, archive)
+      reference = m8_matrix_run(project, args)
+      reference_tree = m8_matrix_tree(project)
+      lfp_with_env(project, lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_BRIDGE_STATS")) do
+        m8_matrix_restore(project, archive)
+        candidate = m8_matrix_run(project, args)
+        candidate_tree = m8_matrix_tree(project)
+        m8_matrix_assert_compat_parity(reference, candidate, project, reference_tree, candidate_tree)
+      end
+    end
+  ensure
+    FileUtils.rm_rf(archive)
+  end
+end
+
+# Change both independently persisted ABI views. Updating the fingerprint text,
+# its SHA-256 and its digest directory keeps the old cache internally
+# consistent: this is the tamper shape that used to bypass the store's
+# rbconfig-only check.
+private def lfp_tamper_abi(project : String, field : String, value : String) : Nil
+  record_path = lfp_record_paths(project).first
+  record = JSON.parse(File.read(record_path)).as_h
+  record["abi"].as_h[field] = JSON::Any.new(value)
+  File.write(record_path, record.to_json)
+
+  entry_path = lfp_entry_paths(project).first
+  payload = JSON.parse(File.read(entry_path)).as_h
+  fingerprint = payload["fingerprint"].as_h
+  text = fingerprint["text"].as_s
+  record_key = "abi.#{field}"
+  changed = text.gsub(/#{Regex.escape(record_key)}\t[^\r\n]+/, "#{record_key}\t#{value}")
+  changed.should_not eq(text)
+  digest = Digest::SHA256.hexdigest(changed)
+  fingerprint["text"] = JSON::Any.new(changed)
+  fingerprint["digest"] = JSON::Any.new(digest)
+  payload["digest"] = JSON::Any.new(digest)
+  old_dir = File.dirname(entry_path)
+  new_dir = File.join(File.dirname(old_dir), digest)
+  File.rename(old_dir, new_dir)
+  File.write(File.join(new_dir, "entry.json"), payload.to_json)
 end
 
 describe "lock takes the no-Ruby fast path on an unchanged project" do
@@ -376,6 +429,137 @@ describe "lock takes the no-Ruby fast path on an unchanged project" do
       lfp_hits(errors).size.should eq(1)
       fast_out.should eq(ruby_out)
       lfp_digest(project).should eq(before)
+    end
+  end
+
+  it "keeps CELERITE_FAST_PATH=0 on the compatibility path with full observable parity" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+
+      reference_env = lfp_env("CELERITE_EVAL_CACHE", "CELERITE_BRIDGE_STATS")
+      reference_env["CELERITE_FAST_PATH"] = "0"
+      reference = nil.as(M8MatrixRun?)
+      reference_tree = {} of String => String
+      lfp_with_env(project, reference_env) do
+        reference = m8_matrix_run(project, ["lock"])
+        reference_tree = m8_matrix_tree(project)
+      end
+      lfp_with_env(project, lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_BRIDGE_STATS")) do
+        candidate = m8_matrix_run(project, ["lock"])
+        candidate_tree = m8_matrix_tree(project)
+        reference.not_nil!.procs.should be >= 1
+        candidate.status.should eq(reference.not_nil!.status)
+        m8_matrix_normalize(candidate.stdout, project).should eq(m8_matrix_normalize(reference.not_nil!.stdout, project))
+        m8_matrix_normalize(m8_matrix_observable_stderr(candidate), project)
+          .should eq(m8_matrix_normalize(m8_matrix_observable_stderr(reference.not_nil!), project))
+        candidate_tree.should eq(reference_tree)
+        candidate.procs.should eq(0)
+        candidate.rpc.should eq(0)
+        candidate.req_bytes.should eq(0)
+        candidate.resp_bytes.should eq(0)
+      end
+    end
+  end
+
+  it "falls back with full compatibility parity on a cold cache" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_install(project)
+      FileUtils.rm_rf(File.join(project, ".celerite", "cache"))
+      lfp_matrix_parity(project)
+    end
+  end
+
+  it "hits through a bad bridge URL with exact zero process, RPC and byte counters" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      env = lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_BRIDGE_STATS")
+      env["CELERITE_BRIDGE_SERVER"] = "http://127.0.0.1:1"
+      lfp_with_env(project, env) do
+        run = m8_matrix_run(project, ["lock"])
+        run.status.should eq(0)
+        run.procs.should eq(0)
+        run.rpc.should eq(0)
+        run.req_bytes.should eq(0)
+        run.resp_bytes.should eq(0)
+      end
+    end
+  end
+
+  it "rejects an empty credential namespace with full compatibility parity" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      path = lfp_record_paths(project).first
+      payload = JSON.parse(File.read(path)).as_h
+      payload["credential_namespace"] = JSON::Any.new("")
+      File.write(path, payload.to_json)
+      lfp_matrix_parity(project)
+    end
+  end
+
+  it "rejects independently tampered ruby and extension ABI views with full compatibility parity" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      original_record = File.read(lfp_record_paths(project).first)
+      original_entry = File.read(lfp_entry_paths(project).first)
+      original_entry_dir = File.dirname(lfp_entry_paths(project).first)
+      begin
+        lfp_tamper_abi(project, "ruby_api_version", "4.0.1")
+        lfp_matrix_parity(project)
+      ensure
+        File.write(lfp_record_paths(project).first, original_record)
+        lfp_entry_paths(project).each { |entry| FileUtils.rm_rf(File.dirname(entry)) }
+        Dir.mkdir_p(original_entry_dir)
+        File.write(File.join(original_entry_dir, "entry.json"), original_entry)
+      end
+      lfp_tamper_abi(project, "extension_api_version", "4.0.0-static")
+      lfp_matrix_parity(project)
+    end
+  end
+
+  it "rejects runtime-record and lock-platform changes with full compatibility parity" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      path = lfp_record_paths(project).first
+      original = File.read(path)
+      payload = JSON.parse(original).as_h
+      payload["engine"] = JSON::Any.new("jruby")
+      payload["engine_version"] = JSON::Any.new("9.4.0.0")
+      File.write(path, payload.to_json)
+      lfp_matrix_parity(project)
+
+      File.write(path, original)
+      lock_path = File.join(project, "Gemfile.lock")
+      lock = File.read(lock_path)
+      changed = lock.gsub("PLATFORMS\n  x64-mingw-ucrt", "PLATFORMS\n  x64-mingw-ucrt\n  x86_64-linux")
+      changed.should_not eq(lock)
+      File.write(lock_path, changed)
+      lfp_matrix_parity(project)
+    end
+  end
+
+  it "rejects a path source with full compatibility parity" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      gem_root = File.join(project, "vendor", "json_pure")
+      Dir.mkdir_p(gem_root)
+      File.write(File.join(gem_root, "json_pure.gemspec"), <<-CRYSTAL)
+        Gem::Specification.new do |s|
+          s.name = "json_pure"
+          s.version = "2.0.0"
+          s.summary = "path source"
+          s.authors = ["celerite"]
+          s.files = []
+        end
+        CRYSTAL
+      File.write(File.join(project, "Gemfile"), %(source "#{LFP_INDEX}"\n\ngem "json_pure", path: "vendor/json_pure"\n))
+      lfp_matrix_parity(project)
     end
   end
 

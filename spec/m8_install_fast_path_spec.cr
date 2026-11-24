@@ -1,5 +1,6 @@
 require "json"
 require "./spec_helper"
+require "./m8_fast_path_matrix_support"
 require "../src/celerite/gem/platform"
 require "../src/celerite/runtime_facts"
 require "../src/celerite/resolution"
@@ -83,6 +84,28 @@ private def ifp_ready(project : String) : Nil
     status, output, errors = ifp_run(project, ["install"])
     fail "cold install failed (#{status}): #{output} #{errors}" unless status == 0
     ifp_stats(errors)[0].should be >= 1
+  end
+end
+
+private def ifp_matrix_parity(project : String, args : Array(String) = ["install"]) : Nil
+  archive = File.join(Dir.tempdir, "celerite-m8-install-matrix-#{Process.pid}-#{Random.rand(1_000_000)}")
+  m8_matrix_snapshot(project, archive)
+  begin
+    reference_env = ifp_env("CELERITE_EVAL_CACHE", "CELERITE_BRIDGE_STATS")
+    reference_env["CELERITE_FAST_PATH"] = "0"
+    ifp_with_env(project, reference_env) do
+      m8_matrix_restore(project, archive)
+      reference = m8_matrix_run(project, args)
+      reference_tree = m8_matrix_tree(project)
+      ifp_with_env(project, ifp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_BRIDGE_STATS")) do
+        m8_matrix_restore(project, archive)
+        candidate = m8_matrix_run(project, args)
+        candidate_tree = m8_matrix_tree(project)
+        m8_matrix_assert_compat_parity(reference, candidate, project, reference_tree, candidate_tree)
+      end
+    end
+  ensure
+    FileUtils.rm_rf(archive)
   end
 end
 
@@ -368,6 +391,7 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
   it "conservatively falls back for output-affecting Bundler settings" do
     with_project({} of String => String) do |project|
       ifp_ready(project)
+      lock_before_settings = File.read(File.join(project, "Gemfile.lock"))
       variants = [
         {"BUNDLE_FROZEN", "frozen"},
         {"BUNDLE_DEPLOYMENT", "frozen"},
@@ -381,12 +405,134 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
         ifp_lines(errors, IFP_HIT).should be_empty
         ifp_lines(errors, IFP_MISS).should contain(reason)
       end
+      File.write(File.join(project, "Gemfile.lock"), lock_before_settings)
       Dir.mkdir_p(File.join(project, "custom-cache"))
       File.write(File.join(project, ".bundle", "config"), %(BUNDLE_PLUGINS: "false"\nBUNDLE_CACHE_PATH: "custom-cache"\n))
       _status, _output, errors, stats = ifp_hot(project)
       stats[0].should be >= 1
       ifp_lines(errors, IFP_HIT).should be_empty
       ifp_lines(errors, IFP_MISS).should contain("app-cache")
+    end
+  end
+
+  it "keeps CELERITE_FAST_PATH=0 on the compatibility path and preserves full hot-path parity" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      reference = nil.as(M8MatrixRun?)
+      reference_tree = {} of String => String
+      ifp_with_env(project, ifp_env("CELERITE_EVAL_CACHE", "CELERITE_BRIDGE_STATS").merge({"CELERITE_FAST_PATH" => "0"})) do
+        reference = m8_matrix_run(project, ["install"])
+        reference_tree = m8_matrix_tree(project)
+      end
+      ifp_with_env(project, ifp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_BRIDGE_STATS")) do
+        candidate = m8_matrix_run(project, ["install"])
+        candidate_tree = m8_matrix_tree(project)
+        reference.not_nil!.procs.should be >= 1
+        candidate.status.should eq(reference.not_nil!.status)
+        m8_matrix_normalize(candidate.stdout, project).should eq(m8_matrix_normalize(reference.not_nil!.stdout, project))
+        m8_matrix_normalize(m8_matrix_observable_stderr(candidate), project)
+          .should eq(m8_matrix_normalize(m8_matrix_observable_stderr(reference.not_nil!), project))
+        candidate_tree.should eq(reference_tree)
+        candidate.procs.should eq(0)
+        candidate.rpc.should eq(0)
+        candidate.req_bytes.should eq(0)
+        candidate.resp_bytes.should eq(0)
+      end
+    end
+  end
+
+  it "rejects missing specifications, gem directories and native markers with full compatibility parity" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      full_name = ifp_full_name(project)
+      warm = File.join(Dir.tempdir, "celerite-m8-install-warm-#{Process.pid}-#{Random.rand(1_000_000)}")
+      m8_matrix_snapshot(project, warm)
+      begin
+        m8_matrix_restore(project, warm)
+        File.delete(ifp_installed_file(project, "specifications", "#{full_name}.gemspec"))
+        ifp_matrix_parity(project)
+
+        m8_matrix_restore(project, warm)
+        FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
+        ifp_matrix_parity(project)
+
+        m8_matrix_restore(project, warm)
+        ifp_mark_native_complete(project, full_name)
+        ext = File.join(File.dirname(File.dirname(ifp_installed_file(project, "specifications", "#{full_name}.gemspec"))),
+          "extensions", Celerite::Gem::Platform.local.to_s, ifp_abi, full_name)
+        File.delete(File.join(ext, "gem.build_complete"))
+        Dir.exists?(ext).should be_true
+        ifp_matrix_parity(project)
+      ensure
+        FileUtils.rm_rf(warm)
+      end
+    end
+  end
+
+  it "rejects broken fingerprints, unknown runtimes and corrupt records with full compatibility parity" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      entry = ifp_cache_entries(project).first
+      original_entry = File.read(entry)
+      payload = JSON.parse(original_entry).as_h
+      payload["fingerprint"].as_h["state"] = JSON::Any.new("broken")
+      File.write(entry, payload.to_json)
+      ifp_matrix_parity(project)
+
+      File.write(entry, original_entry)
+      record_path = Dir.glob(File.join(project, ".celerite", "cache", "fast-path", "v1", "*", "*.json").tr("\\", "/")).first
+      original_record = File.read(record_path)
+      record = JSON.parse(original_record).as_h
+      record["engine"] = JSON::Any.new("jruby")
+      record["engine_version"] = JSON::Any.new("9.4.0.0")
+      File.write(record_path, record.to_json)
+      ifp_matrix_parity(project)
+
+      File.write(record_path, "not json\n")
+      ifp_matrix_parity(project)
+    end
+  end
+
+  it "rejects project gemspec additions and changes with full compatibility parity" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      gemspec = File.join(project, "demo.gemspec")
+      File.write(gemspec, <<-CRYSTAL)
+        Gem::Specification.new do |s|
+          s.name = "demo"
+          s.version = "1.0.0"
+          s.summary = "first"
+          s.authors = ["celerite"]
+          s.files = []
+        end
+        CRYSTAL
+      gemfile = File.join(project, "Gemfile")
+      File.write(gemfile, File.read(gemfile) + "\ngemspec\n")
+      ifp_matrix_parity(project)
+      File.write(gemspec, File.read(gemspec).sub(%q(s.summary = "first"), %q(s.summary = "changed")))
+      ifp_matrix_parity(project)
+    end
+  end
+
+  it "rejects dynamic DSL and plugin hooks with full compatibility parity" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      warm = File.join(Dir.tempdir, "celerite-m8-install-dsl-#{Process.pid}-#{Random.rand(1_000_000)}")
+      m8_matrix_snapshot(project, warm)
+      begin
+        gemfile = File.join(project, "Gemfile")
+        File.write(gemfile, File.read(gemfile) + "\neval(\"gem 'json_pure'\")\n")
+        ifp_matrix_parity(project)
+
+        m8_matrix_restore(project, warm)
+        File.write(File.join(project, ".bundle", "config"), %(BUNDLE_PLUGINS: "true"\n))
+        plugin_root = File.join(project, ".bundle", "plugin")
+        Dir.mkdir_p(plugin_root)
+        File.write(File.join(plugin_root, "index"), %(---\nplugins:\n- name: example\n  hooks:\n    after-install: example\n))
+        ifp_matrix_parity(project)
+      ensure
+        FileUtils.rm_rf(warm)
+      end
     end
   end
 

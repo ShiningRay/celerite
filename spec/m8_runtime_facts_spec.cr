@@ -18,7 +18,7 @@ end
 # commented-out `CONFIG["arch"]`, a `RUBY_VERSION.start_with? ... or raise`
 # guard and a non-literal `prefix`, so a passing parse proves the parser only
 # accepts the literal assignment shape.
-private def with_fake_ruby(with_rbconfig = true, &)
+private def with_fake_ruby(with_rbconfig = true, shared : String? = "yes", gem_dir : Bool = true, &)
   dir = File.join(Dir.tempdir, "celerite-runtime-facts-#{Process.pid}-#{Random.rand(1_000_000)}")
   root = File.join(dir, "RubyFake")
   bin = File.join(root, "bin")
@@ -42,12 +42,15 @@ private def with_fake_ruby(with_rbconfig = true, &)
       %q(  CONFIG["prefix"] = (TOPDIR || DESTDIR + "/.")),
       %q(  CONFIG["exec_prefix"] = "$(prefix)"),
       %q(  CONFIG["libdir"] = "$(exec_prefix)/lib"),
-      %q(  CONFIG["rubylibprefix"] = "$(libdir)/$(RUBY_BASE_NAME)"),
-      %q(  CONFIG["RUBY_BASE_NAME"] = "ruby"),
       %q(  CONFIG["arch"] = "fake-arch"),
       %q(  CONFIG["ruby_version"] = "9.9.0"),
-      %q(end),
     ]
+    if gem_dir
+      lines << %q(  CONFIG["rubylibprefix"] = "$(libdir)/$(RUBY_BASE_NAME)")
+      lines << %q(  CONFIG["RUBY_BASE_NAME"] = "ruby")
+    end
+    lines << "  CONFIG[\"ENABLE_SHARED\"] = \"#{shared}\"" unless shared.nil?
+    lines << %q(end)
     File.write(File.join(arch_dir, "rbconfig.rb"), lines.join('\n') + '\n')
   end
   begin
@@ -78,6 +81,8 @@ describe Celerite::RuntimeFacts do
     facts.bundler_version.value.should eq(Celerite::Profile.bundler_version)
     facts.bundler_version.source.should eq(Celerite::RuntimeFacts::Source::Profile)
     facts.abi.value.should eq("4.0.0")
+    facts.ruby_api_version.value.should eq("4.0.0")
+    facts.extension_api_version.value.should eq("4.0.0")
     facts.ruby_exe.should eq(REAL_RUBY_EXE)
   end
 
@@ -142,6 +147,35 @@ describe Celerite::RuntimeFacts do
     end
   end
 
+  it "derives RubyGems ABI views and leaves missing or unknown build modes unknown" do
+    {
+      "yes"   => {"9.9.0", "9.9.0"},
+      "no"    => {"9.9.0", "9.9.0-static"},
+      nil     => {"9.9.0", nil},
+      "maybe" => {"9.9.0", nil},
+    }.each do |shared, expected|
+      with_fake_ruby(shared: shared) do |root|
+        facts = facts_for(File.join(root, "bin", "ruby.exe"))
+        facts.ruby_api_version.value.should eq(expected[0])
+        facts.extension_api_version.value.should eq(expected[1])
+      end
+    end
+  end
+
+  it "leaves an uncertain default gem path unknown" do
+    previous = ENV["GEM_HOME"]?
+    ENV.delete("GEM_HOME")
+    begin
+      with_fake_ruby(gem_dir: false) do |root|
+        facts = facts_for(File.join(root, "bin", "ruby.exe"))
+        facts.default_gem_dir.known?.should be_false
+        facts.default_gem_dir.source.should eq(Celerite::RuntimeFacts::Source::Unknown)
+      end
+    ensure
+      ENV["GEM_HOME"] = previous
+    end
+  end
+
   it "returns nil for a ruby_exe that does not exist" do
     missing = File.join(Dir.tempdir, "no-such-ruby-#{Random.rand(1_000_000)}.exe")
     File.exists?(missing).should be_false
@@ -163,6 +197,7 @@ describe Celerite::RuntimeFacts do
       field.call(values[3]), field.call(values[4]), field.call(values[5]),
       field.call(values[6]),
       field.call("C:/fake/lib/ruby/gems/4.0.0"), field.call("4.0.0"),
+      field.call("4.0.0"), field.call("4.0.0"),
       field.call("C:/fake"), field.call("C:/fake/lib"),
     )
 

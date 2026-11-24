@@ -94,13 +94,17 @@ private def m8_fp_facts(*, ruby_version : String? = "4.0.6",
                         platform : String? = "x64-mingw-ucrt",
                         rubygems_version : String? = "4.0.16",
                         bundler_version : String? = "4.0.24",
-                        abi : String? = "4.0.0") : Celerite::RuntimeFacts::Facts
+                        abi : String? = "4.0.0",
+                        ruby_api_version : String? = "4.0.0",
+                        extension_api_version : String? = "4.0.0") : Celerite::RuntimeFacts::Facts
   Celerite::RuntimeFacts::Facts.new("C:/Ruby40-x64/bin/ruby.exe",
     m8_fp_field(ruby_version), m8_fp_field(patchlevel),
     m8_fp_field(engine), m8_fp_field(engine_version),
     m8_fp_field(rubygems_version), m8_fp_field(bundler_version),
     m8_fp_field(platform), m8_fp_field("C:/Ruby40-x64/lib/ruby/gems/4.0.0"),
-    m8_fp_field(abi), m8_fp_field("C:/Ruby40-x64"),
+    m8_fp_field(abi), m8_fp_field(ruby_api_version),
+    m8_fp_field(extension_api_version),
+    m8_fp_field("C:/Ruby40-x64"),
     m8_fp_field("C:/Ruby40-x64/lib"))
 end
 
@@ -288,7 +292,45 @@ describe Celerite::FastPathStore do
       verdict = Celerite::FastPathStore.decision(
         project, m8_fp_digest(project), m8_fp_facts(abi: "4.0.1"),
         record, m8_fp_deterministic)
-      verdict.reason.should eq("facts-mismatch:abi")
+      verdict.reason.should eq("facts-mismatch:rbconfig_ruby_version")
+    end
+  end
+
+  it "requires Ruby when any ABI view is unknown or disagrees" do
+    m8_fp_with do |project, _cache|
+      digest = m8_fp_digest(project)
+      record = m8_fp_record(project)
+      variants = [
+        {m8_fp_facts(ruby_api_version: nil), "facts-unknown:ruby_api_version"},
+        {m8_fp_facts(extension_api_version: nil), "facts-unknown:extension_api_version"},
+        {m8_fp_facts(abi: nil), "facts-unknown:rbconfig_ruby_version"},
+        {m8_fp_facts(ruby_api_version: "4.0.1"), "facts-mismatch:ruby_api_version"},
+        {m8_fp_facts(extension_api_version: "4.0.1"), "facts-mismatch:extension_api_version"},
+        {m8_fp_facts(abi: "4.0.1"), "facts-mismatch:rbconfig_ruby_version"},
+      ]
+      variants.each do |(facts, reason)|
+        Celerite::FastPathStore.decision(project, digest, facts, record, m8_fp_deterministic)
+          .reason.should eq(reason)
+      end
+
+      changed = m8_fp_record(project, abi: m8_fp_abi("4.0.1", "4.0.0", "4.0.0"))
+      Celerite::FastPathStore.decision(project, digest, m8_fp_facts, changed, m8_fp_deterministic)
+        .reason.should eq("facts-mismatch:ruby_api_version")
+      changed = m8_fp_record(project, abi: m8_fp_abi("4.0.0", "4.0.0-static", "4.0.0"))
+      Celerite::FastPathStore.decision(project, digest, m8_fp_facts, changed, m8_fp_deterministic)
+        .reason.should eq("facts-mismatch:extension_api_version")
+    end
+  end
+
+  it "rejects an empty or malformed credential namespace instead of treating it as a wildcard" do
+    m8_fp_with do |project, _cache|
+      digest = m8_fp_digest(project)
+      ["", "not-a-namespace", "0123456789abcdeZ"].each do |namespace|
+        record = m8_fp_record(project, namespace: namespace)
+        record.complete?.should be_false
+        Celerite::FastPathStore.decision(project, digest, m8_fp_facts, record, m8_fp_deterministic)
+          .reason.should eq("record-incomplete")
+      end
     end
   end
 
@@ -362,6 +404,14 @@ describe Celerite::FastPathStore do
       no_abi = Celerite::EvalFingerprint::Runtime.new(
         "4.0.6", "0", "ruby", "4.0.6", "4.0.16", "4.0.24", "x64-mingw-ucrt")
       Celerite::FastPathStore.record_from(project, m8_fp_facts, no_abi).should be_nil
+
+      # A real ABI that disagrees with the install tree cannot seed a record.
+      changed_abi = Celerite::EvalFingerprint::Runtime.new(
+        "4.0.6", "0", "ruby", "4.0.6", "4.0.16", "4.0.24", "x64-mingw-ucrt",
+        Celerite::EvalFingerprint::Abi.new("4.0.0", "4.0.0-static", "4.0.0"))
+      Celerite::FastPathStore.record_from(project, m8_fp_facts, changed_abi).should be_nil
+      Celerite::FastPathStore.record_from(project,
+        m8_fp_facts(extension_api_version: nil), bridge).should be_nil
     end
   end
 
