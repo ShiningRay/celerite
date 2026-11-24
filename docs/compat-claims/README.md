@@ -372,7 +372,7 @@
 | C-M8-1-015 | 原生扩展构建前的 MSYS2 PATH 前置：重放 RubyGems 的 Gem.pre_install 钩子（L166 / M7-9 收口） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_bridge_extension_msys2_path_spec.cr' = '2 exampl…` |
 | C-M8-1-016 | 只读命令复用磁盘上的已安装 gem 索引：默认 gem 不再依赖桥（L166 第一半） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_installed_index_spec.cr' = '12 examples, 0 failu…` |
 | C-M8-1-017 | 无 Ruby 快路径的运行时事实记录与决策记录（M8 L164 S8b） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_fast_path_store_spec.cr' = '15 examples, 0 failu…` |
-| C-M8-1-018 | 无变化 `lock` 的无 Ruby 快路径（M8 L164 S8c） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_lock_fast_path_spec.cr' = '15 examples, 0 failur…` |
+| C-M8-1-018 | 无变化 `lock` 的无 Ruby 快路径（M8 L164 S8c） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_lock_fast_path_spec.cr' = '17 examples, 0 failur…` |
 | C-cross-001 | `bundle exec` 的子进程在 Unix 上随父进程收到 SIGINT/SIGTERM 而终止，Windows 上共享控制台 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'crystal spec spec/m7_exec_spec.cr'` |
 | C-cross-002 | 可直接加载的 Ruby 脚本走 `Kernel.load` 运行时适配器，`disable_exec_load` 可绕过 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential exec-loader exec-loader-disabled exec-thor-v…` |
 | C-cross-003 | install / update / pristine 在 `<bundle_path>/bundler` 上取独占锁，并发运行串行化 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'crystal spec spec/process_lock_spec.cr spec/process_race_spec.cr'` |
