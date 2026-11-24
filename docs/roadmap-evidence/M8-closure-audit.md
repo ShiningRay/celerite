@@ -181,3 +181,17 @@
 - §7 第 1 条把 `BRIDGE_FEATURES` 定在 `assets/bridge/server.rb:48`，实际在 `:45`（`:48` 是 `bridge_emit` 的定义）；把 claim 的「我方行为」定在 `:29`，实际在 `:21`。
 - §7 第 7 条漏记 `C-M8-1-010` 的同一处「插件声明」误记（见上第 8 点）。
 - 其余引用行（`M8-no-ruby-fast-path.md:12`/`:148`/`:153`/`:201`/`:317-319`、`M8-batch-bridge.md:13`、`eval_cache_store.cr:11-13`）与 `7ea8333` 一致。
+## 10. L163 勾选裁定（首辅，task-243 之后）
+
+`docs/roadmap.md` 第 163 行的复选框已由首辅勾为 `[x]`。逐分句依据：
+
+| 分句 | 判定 | 依据 |
+| --- | --- | --- |
+| 同一求值复用 bridge | 满足 | `C-M8-1-002`（`Client.shared` + `shutdown` + idle 回收）；`C-M8-1-011`（F5 单一入口，一次命令最多求值一次） |
+| 加入 idle 回收 | 满足 | `C-M8-1-002`，`CELERITE_BRIDGE_IDLE_MS` 超时即 `dispose` 重建；`spec/m8_bridge_reuse_spec.cr` |
+| 协议超时 | 满足 | `C-M8-1-002`（`Client#request` 的 `limit` 与 `BridgeError("Timeout", …)`） |
+| 结构化错误 | 满足 | `C-M8-1-002`（`BridgeError` 带 `error_class` 与可选 `status_code`）；`C-M8-1-012`（`BatchTooLarge`） |
+| 批量大小控制 | 满足 | `C-M8-1-012`（`MAX_INCLUDE_SECTIONS = 4`、`MAX_BATCH_RESPONSE_BYTES = 4 MiB`，两侧超限均结构化拒绝；`spec/m8_batch_size_limit_spec.cr` 7 例；task-243） |
+| 统计一次命令的 Ruby 进程数、RPC 次数和传输字节数 | 满足 | `CELERITE_BRIDGE_STATS=1` 输出 `bridge: procs=… rpc=… req_bytes=… resp_bytes=…`；无桥时也会输出（`procs=0`），见 `docs/roadmap-evidence/M8-fast-path-plan.md` §0 的实测与 `docs/compat-evidence/2026-11-23.md` 的 task-219 节 |
+
+未验证：① 4 MiB 上限没有真实超大 Gemfile 的端到端触发证据（只有 spec 级注入小上限 + 2,125 B 实测响应规模作余量依据）；② 客户端读行无单行长度上限，字节上限只防「接受超限结果」，不防对端先灌满内存；③ 该切片未跑差分（task-243 期间端口 8765 被全量差分占用），全量差分门禁以 `## Current metrics` 记的最近一次为准。

@@ -160,7 +160,7 @@ M0–M6 是历史实施记录；`[x]` 只表示已有实现或场景证据，不
 
 - [ ] 定义版本化、批次级求值协议：一次导出完整 dependencies、groups、source、autorequire、platform、Ruby 约束和插件声明；一次提交完整候选集并返回解，禁止在 PubGrub 循环中逐版本跨桥。
 - [ ] 完成求值指纹：Gemfile/eval_gemfile、引用 gemspec、读取的 ENV、配置、Ruby/RubyGems/Bundler 版本与 ABI；任一输入变化必须使缓存失效，不使用内容哈希代替完整环境指纹。
-- [ ] 同一求值复用 bridge，加入 idle 回收、协议超时、结构化错误和批量大小控制；统计一次命令的 Ruby 进程数、RPC 次数和传输字节数。
+- [x] 同一求值复用 bridge，加入 idle 回收、协议超时、结构化错误和批量大小控制；统计一次命令的 Ruby 进程数、RPC 次数和传输字节数。
 - [ ] 无变化 `lock`/`install` 直接使用 lockfile 和安装计划：不加载 Bundler、不启动 Ruby；有动态 DSL、插件或指纹不确定时显式走兼容路径。
 - [ ] 实现持久化、版本化的解析/安装计划缓存，键包含 source 身份、凭据隔离标识、checksum、平台、Ruby ABI 和 build 配置；缓存损坏安全回退，不把未校验产物视为可用。
 - [ ] 让 `check/list/show` 等只读命令复用已安装 gem 索引；为真实 Rails 规模冷/热/无变化运行建立性能对照，包含 Bundler + YJIT。
