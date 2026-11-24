@@ -300,3 +300,33 @@ L164 勾选条件：S8c+S8d+S8e 全绿，且 §2.5 第 3 条（旧二进制 FAIL
   当前按 §2.3 一律走兼容路径。
 - 空闲回收（`CELERITE_BRIDGE_IDLE_MS`）与协议超时在快路径下无桥可回收，未做运行时验证。
 - `rbconfig.rb` 解析耗时未精确计时（只按 15181 B 规模估算 <1 ms）。
+
+## 附录 A：本机探针原始记录
+
+环境：Windows，`C:\Ruby40-x64`（Ruby 4.0.6 / RubyGems 4.0.16 / profile Bundler 4.0.24）；
+`bin/celerite.exe` 由 `crystal build src/cli.cr -o bin/celerite.exe` 现场构建（Crystal 1.22.1）。
+夹具：`.tmp-scratch/proj`，`HOME`/`USERPROFILE`/`BUNDLE_PATH` 隔离，
+`source "file:///C:/temp/celerite-t242/fixtures/gem-index"`，`gem "thor", "1.3.2"`。
+
+| # | 命令（cwd = 夹具） | exit | 统计行 / 关键输出 |
+| --- | --- | --- | --- |
+| 1 | `celerite.exe version` | 0 | `bridge: procs=0 rpc=0 req_bytes=0 resp_bytes=0`（stdout `4.0.24 (2026-11-05 commit 3b396e4)`） |
+| 2 | `celerite.exe lock`（冷，CHECKSUMS 空） | 0 | `procs=1 rpc=4 req_bytes=342 resp_bytes=286669`，含 `Resolving dependencies...` |
+| 3 | 补 `sha256=…` 后再 `celerite.exe lock` | 0 | `procs=1 rpc=2 req_bytes=231 resp_bytes=1499`，无 `Resolving` |
+| 4 | `celerite.exe install`（首装） | 0 | `procs=1 rpc=15 req_bytes=3257 resp_bytes=289382` |
+| 5 | `celerite.exe install`（第二次） | 0 | `procs=1 rpc=9 req_bytes=1652 resp_bytes=287066` |
+| 6 | `CELERITE_BRIDGE_SERVER=C:\nope\server.rb celerite.exe lock` | 1 | `ruby: No such file or directory -- C:/nope/server.rb (LoadError)`；`response id mismatch: expected 1, got -1`；`procs=1 rpc=1` |
+| 7 | 同上，换 `install` | 1 | 同上错误形态，`procs=1` |
+| 8 | `CELERITE_EVAL_CACHE=1` 冷跑 | 0 | `eval-cache: state=deterministic`；`persisted ab45df8b15a0` |
+| 9 | `CELERITE_EVAL_CACHE=1` 热跑 | 0 | `eval-cache: hit (persistent)`；`procs=1 rpc=2 req_bytes=132 resp_bytes=1227` |
+| 10 | 假 sha256 下 `install` | 37 | `SHA256 mismatch for thor-1.3.2: downloaded artifact does not match the compact index checksum` |
+
+`rbconfig.rb` 探针（`C:\Ruby40-x64\lib\ruby\4.0.0\x64-mingw-ucrt\rbconfig.rb`，15181 B）：
+`ruby_version="4.0.0"`（`:58`）、`arch="x64-mingw-ucrt"`（`:60`）、`PATCHLEVEL="0"`（`:25`）、
+`MAJOR/MINOR/TEENY = 4/0/6`（`:22-24`）、`host_os="$(target_os)"`（`:211`）、
+`rubylibprefix="$(libdir)/$(RUBY_BASE_NAME)"`（`:132`）、
+`TOPDIR = File.dirname(__FILE__).chomp!("/lib/ruby/4.0.0/x64-mingw-ucrt")`（`:15`）。
+对照实跑：`Gem::Platform.local.to_s` = `x64-mingw-ucrt`；`Gem.extension_api_version` = `4.0.0`
+（非 static 构建 = `ruby_api_version`）；`Gem::VERSION` = `4.0.16`；`RbConfig::CONFIG["ruby_version"]` = `4.0.0`。
+
+按任务约束未新增 `spec/`、`fixtures/` 文件：以上是手工探针，S7/S8 落地时转成 §1.5 与 §2.5 的断言。
