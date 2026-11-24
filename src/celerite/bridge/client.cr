@@ -2,6 +2,7 @@ require "digest/sha256"
 require "json"
 require "process"
 require "../errors"
+require "../eval_cache_store"
 require "../eval_fingerprint"
 
 module Celerite
@@ -139,6 +140,10 @@ module Celerite
       end
 
       def self.finish : Nil
+        # The on-disk store (F4) is pruned here, while the entry just written is
+        # still the newest: the cap is per entry count and total bytes and never
+        # touches an entry this command would still answer from.
+        EvalCacheStore.prune if EvalCacheStore.enabled?
         @@active = false
         @@entries.clear
         @@withheld.clear
@@ -203,7 +208,7 @@ module Celerite
           if withheld = @@withheld[normalized(path)]?
             return miss(withheld)
           end
-          return nil
+          return load_persisted(path, sections, cache_id) { runtime.call }
         end
 
         return miss("env") unless entry.env_signature == environment_signature
@@ -229,6 +234,91 @@ module Celerite
         @@hits += 1
         debug("eval-cache: hit")
         entry
+      end
+
+      # Cross-command lookup (F4). The entry must prove itself without trusting
+      # the fingerprint that ships with it: the directory name is the digest,
+      # the stored text must hash to that digest, every file in `verify` is
+      # re-hashed from disk, and the runtime records still come from the bridge.
+      # A corrupt or stale entry is deleted and reported as a miss; the command
+      # never fails because of the cache.
+      private def self.load_persisted(path : String, sections : Array(String), cache_id : Int32,
+                                      &runtime : -> Celerite::EvalFingerprint::Runtime) : Entry?
+        return nil unless EvalCacheStore.enabled?
+        base = File.dirname(File.expand_path(path))
+        stale : String? = nil
+        EvalCacheStore.read_all.each do |stored|
+          evaluation_node = stored.json["evaluation"]?
+          next if evaluation_node.nil?
+          recorded = evaluation_node["gemfile"]?.try(&.as_s?)
+          next if recorded.nil? || normalized(recorded) != normalized(path)
+
+          entry = begin
+            persisted_entry(stored, sections, base, cache_id) { runtime.call }
+          rescue
+            {nil, "unreadable"}
+          end
+          candidate, reason = entry
+          if candidate
+            @@entries[normalized(path)] = candidate
+            @@hits += 1
+            debug("eval-cache: hit (persistent)")
+            return candidate
+          end
+          if reason
+            stale = reason
+            EvalCacheStore.delete(stored.digest) if discard_persisted?(reason)
+            # A runtime record can differ from another machine/Ruby and come
+            # back later; the safe response is a miss, not a deleted entry.
+            debug("eval-cache: persistent miss (#{reason})")
+          end
+        end
+        stale ? miss("persistent:#{stale}") : nil
+      end
+
+      private def self.persisted_entry(stored : EvalCacheStore::EntryFile, sections : Array(String),
+                                       base : String, cache_id : Int32,
+                                       &runtime : -> Celerite::EvalFingerprint::Runtime) : {Entry?, String?}
+        node = stored.json
+        return {nil, "format"} unless node["format"]?.try(&.as_s?) == EvalCacheStore::FORMAT
+        # The full environment signature is a conservative requirement: a
+        # command that runs under a different environment must re-evaluate.
+        return {nil, "env"} unless node["env"]?.try(&.as_s?) == environment_signature
+
+        fp_node = node["fingerprint"]?.try(&.as_h?)
+        return {nil, "fingerprint"} if fp_node.nil?
+        text = fp_node["text"]?.try(&.as_s?)
+        digest = fp_node["digest"]?.try(&.as_s?)
+        verify = fp_node["verify"]?
+        return {nil, "fingerprint"} if text.nil? || digest.nil? || verify.nil?
+        return {nil, "digest"} unless digest == stored.digest
+
+        state = Celerite::EvalFingerprint::State.parse(fp_node["state"]?.try(&.as_s?))
+        return {nil, "state"} unless state.deterministic?
+
+        document = Celerite::EvalFingerprint::Document.parse(text, digest, verify)
+        return {nil, "fingerprint"} if document.nil?
+        if reason = document.integrity_reason
+          return {nil, reason}
+        end
+        if sections.includes?("gemspecs") && node["gemspecs"]?.try(&.as_a?).nil?
+          return {nil, "gemspecs"}
+        end
+        if reason = document.verify(base, runtime.call)
+          return {nil, reason}
+        end
+
+        evaluation = GemfileEvaluation.from_json(node["evaluation"].to_json)
+        gemspecs = node["gemspecs"]?.try(&.as_a?).try(&.map(&.as_s))
+        fingerprint = Bridge::EvalFingerprint.new(
+          text, digest, verify, state, fp_node["state_reason"]?.try(&.as_s?))
+        {Entry.new(evaluation, fingerprint, document, gemspecs, node["env"].as_s, cache_id), nil}
+      end
+
+      private def self.discard_persisted?(reason : String) : Bool
+        return true if Celerite::EvalFingerprint.broken_reason?(reason)
+        return true if reason.starts_with?("sha256:") || reason.starts_with?("missing:")
+        {"format", "digest", "state", "gemfile", "unreadable"}.includes?(reason)
       end
 
       # Only a `deterministic` evaluation may be reused. `unknown` means the
@@ -268,8 +358,59 @@ module Celerite
 
         debug("eval-cache: state=deterministic")
         @@withheld.delete(normalized(path))
-        @@entries[normalized(path)] = Entry.new(evaluation, fingerprint, document, gemspecs,
+        entry = Entry.new(evaluation, fingerprint, document, gemspecs,
           environment_signature, cache_id)
+        @@entries[normalized(path)] = entry
+        persist(entry)
+      end
+
+      # Writes the proof-carrying entry documented in plan §1.5: the evaluation
+      # is the only payload; the fingerprint and its `verify` set let a later
+      # command re-check the cache without a second evaluation. Refused when the
+      # evaluation itself embeds a credential-bearing URI.
+      private def self.persist(entry : Entry) : Nil
+        return unless EvalCacheStore.enabled?
+        fingerprint = entry.fingerprint
+        return if fingerprint.nil?
+
+        payload = JSON.build do |json|
+          json.object do
+            json.field "format", EvalCacheStore::FORMAT
+            json.field "digest", fingerprint.digest
+            json.field "env", entry.env_signature
+            json.field "fingerprint" do
+              json.object do
+                json.field "text", fingerprint.text
+                json.field "digest", fingerprint.digest
+                json.field "state", fingerprint.state.wire
+                json.field "state_reason", fingerprint.state_reason
+                json.field "verify", fingerprint.verify
+              end
+            end
+            json.field "gemspecs" do
+              if gemspecs = entry.gemspecs
+                json.array { gemspecs.each { |name| json.string(name) } }
+              else
+                json.null
+              end
+            end
+            json.field "evaluation", JSON.parse(entry.evaluation.to_json)
+          end
+        end
+
+        unless EvalCacheStore.persistable?(payload)
+          debug("eval-cache: persist skipped (credential)")
+          return
+        end
+        if EvalCacheStore.write(fingerprint.digest, payload)
+          debug("eval-cache: persisted #{fingerprint.digest[0, 12]}")
+        else
+          debug("eval-cache: persist failed")
+        end
+      rescue ex
+        # Persistence is an optimization: a read-only home, a full disk or a
+        # racing GC must not change the command's output or exit status.
+        debug("eval-cache: persist failed (#{ex.class})")
       end
     end
 
