@@ -313,3 +313,27 @@ config.plugin_root / config.digest
    - 坐标矛盾：009「我方行为」把 `Document#verify` 记在 `src/celerite/eval_fingerprint.cr:165`，014「我方行为」记 `:221`；HEAD 是 `:221`。两条 claim 并存且都可读，前者已失效。
    - 内容矛盾：009「边界」列「ABI 记录（runtime 无 `abi` 键）」「D1 `.bundle/config` 等配置文件的求值相关键（F1 不含，仅由客户端全量 ENV 签名兜底）」为未覆盖项；014 在「取代」句里声明取代 009 边界中「F1 指纹不含 D1 配置求值键、runtime 无 `abi.*` 键」的部分。ABI 部分确实已被取代（HEAD 有 4 条 `abi.*`），但 **D1 部分没有被取代**：014 实际只加 `config.app_config`/`config.plugin_root` 两条路径记录 + 对这两条的 `config.digest`（`server.rb:412-419`），并不含 plan D1 要求的四个配置求值键（`plugins`/`gemfile`/`path`/`force_ruby_platform`）。故 009 那条边界在实质上仍成立，014 的取代句覆盖过头。
    - 009「边界」正文内没有行内标记指出哪几句已被 014 取代，读者必须读到 014 的「取代」行才能判断。
+
+## 12. L162 勾选裁定（首辅，task-249 / task-251 之后）
+
+裁定对象仍为 `docs/roadmap.md` 第 162 行的原文。依据 task-249 的只读复审（§11）与 task-251 的账本订正（`888516c`、`25bc9f3`），并加首辅本人的一次独立复跑。
+
+**裁定：L162 勾 `[x]`，缺 0 项。**
+
+理由（三条，逐条落到可复查的东西上）：
+
+1. **六类输入全部有载体**：Gemfile 与 `eval_gemfile` 链与被引用 gemspec 走 `gemfile.sha256` / `evalchain.<i>.*` / `gemspec.<i>.*` 记录；配置走 `config.app_config` / `config.plugin_root` / `config.digest`；Ruby / RubyGems / Bundler 版本与平台走七条独立记录；ABI 走四条 `abi.*` 记录；读取的 ENV 走缓存键 `environment_signature` 与持久化条目的 `env` 字段（载体不是指纹文本 —— 这一条已由 task-251 写进 `C-M8-1-008`「我方行为」，避免字面读者误判）。
+2. **「任一输入变化必须使缓存失效」有分层证据**：Gemfile / `eval_gemfile` 链 / gemspec / ENV 四项有进程级失效反例（spec 反例 + task-249 §11.1 的 R3/R5/R6 实测，原因串分别是 `sha256:gemfile:Gemfile`、`sha256:gemspec:exp-proj.gemspec`、`env`）；配置有 spec 内真实运行期反例（换 cwd 使 `Bundler.app_config_path` 变化）；版本与 ABI 只有「伪造已记录值」级的反例（spec 内伪造 `bundler.version` / `platform` / `abi.*` / `config.digest` 后分别报 `runtime:*` / `config.digest`）——伪造记录正是跨版本、跨 ABI 命中时的真实形态，故比对逻辑被测到，但桥侧读真值的分支在第二解释器下未跑。
+3. **未退化为内容哈希**：指纹是「魔数 `celerite-eval-v1` + 定序 `key\tvalue` 记录」的整体 SHA-256，缓存键再叠加全量 ENV 签名与归一项目路径；`git grep gemfile_sha256` 在生产侧只有 `getter`，没有任何分支以单个文件哈希作唯一键。
+
+首辅独立复跑（本轮，HEAD 含 task-251 两笔）：`crystal spec spec\m8_eval_fingerprint_spec.cr spec\m8_eval_fingerprint_cache_spec.cr spec\m8_eval_fingerprint_config_abi_spec.cr spec\m8_eval_cache_state_spec.cr spec\m8_eval_cache_store_spec.cr` = **34 examples, 0 failures, 0 errors, 0 pending**（34.42 s，退出 0）；`script/compat-claims-index --check` = `273 claims, index up to date`；`git diff --check` 退出 0。
+
+**勾选时一并落账、但不构成缺项的限制**（均已写进 `C-M8-1-009` / `C-M8-1-014` 的「边界」，此处只汇总）：
+- `abi.source` 恒 `real`，计划里的 `derived` 形态未实现；`extension_api_version` 的 `-static` 分支只按参考源码实现、未在 `ENABLE_SHARED=no` 的构建上验证。
+- 本机只有 `C:\Ruby40-x64` 一个解释器，「换 ABI / 换版本必失效」没有进程级实测，只有伪造记录级证据。
+- 计划 D1 的四个配置求值键（`plugins` / `gemfile` / `path` / `force_ruby_platform`）**仍不覆盖**；task-251 已把 `C-M8-1-014` 的「取代」句收窄为「只取代 `C-M8-1-009` 边界中的 ABI 部分」，并在 009 的边界里加了行内标记，故这条不再是账本口径含糊，而是明确的已声明残差。
+- gemspec glob 候选集之外的新增文件、`ruby file:` 目标内容、插件索引内容、目录 mtime 均不在指纹内（前者属残余风险、后者按降级 `unknown` 处理）。
+- `C-M8-1-008` 的 `verify` 对同 client 条目跳过 runtime / abi / config 三段比较（`eval_fingerprint.cr` 的 `next if current.nil?`），结论来自读码（进程内版本与 ABI 不可变、ENV 变化由签名兜住、cwd 变化由路径键兜住），未写反例证明；task-251 已在 008 就地记录该形态。
+- task-251 只把**能被 `git grep` 复核的**坐标刷新到 HEAD（008 逐项刷新、010–015 就地写「旧→新」对照注记），仍有个别行号标「以符号名为准」——这是账本精度问题，不影响本条判定。
+
+未验证（本轮仍未做）：`eval_gemfile` 链的进程级反例（夹具无 `eval_gemfile`，`evalchain.count=0`）；配置变化的 CLI 级复现；`CELERITE_EVAL_CACHE` 关闭态的对照跑；跨 Bundler 的差分（端口 8765 禁令）。
