@@ -162,3 +162,22 @@
 - **ABI 推导等价性**：`ruby_abi_for` 只吃 `ruby_version`（`src/celerite/resolution.cr:164-165`），「version+platform 足以定 ABI」未验证。
 - **Rails 规模性能**：未跑；YJIT 在 `C:\Ruby40-x64`（4.0.24）下的可用性与 `RUBY_YJIT_ENABLE` 行为未实测；本机是否有可复用的 64 gem 安装树未核实。
 - **`include:["plugins"]` 并入的副作用**：按 `C-M8-1-004` 边界的论证采信（二次 DSL、重复 warning、hook 副作用），未实测。
+
+## 9. 交叉不一致的处理结果（task-240）
+
+工作树 `C:\temp\celerite-t240`（detach 于 `7ea8333`）。逐条对应 §7 的编号；核对以代码与文档实际内容为准，改动保留原说法并标注「已被取代 / 误记」，未静默改写历史判断。
+
+1. **第 1 条：已改。** 实测 `assets/bridge/server.rb:45` 为 5 项（`evaluate_gemfile`、`gemspec_paths`、`plugin_gemfile_eval`、`evaluate_batch`、`fingerprint`）。`docs/compat-claims/M8-batch-bridge.md` 的 `C-M8-1-003`「我方行为」改为：初始 3 项（原记 `:41`，已被后续切片取代）+ 追加 `evaluate_batch`（C-M8-1-004）与 `fingerprint`（C-M8-1-007），现为 5 项；行号改为 `:45`。
+2. **第 2 条：已改。** `docs/compat-claims/M8-batch-bridge.md` 头部（首条 claim 之前）新增口径块：「本文件的断言覆盖的是**切片**，行级闭合由 `docs/roadmap-evidence/M8-closure-audit.md` 的分句判据表裁定。」原文件无同义说明，未重复。
+3. **第 3 条：已改（只改证据文档）。** `docs/roadmap-evidence/M8-batch-protocol.md` §5.3 表后加注：`docs/roadmap.md:161` 的「一次提交完整候选集并返回解」在 Crystal 侧求解的架构下不适用（Ruby 侧无接收候选集的求解器，PubGrub 在 `src/celerite/resolver/`）；`docs/roadmap.md` 未改。
+4. **第 4 条：已改。** `docs/roadmap-evidence/M8-no-ruby-fast-path.md:12` 与 `:201` 各加 task-240 注：`check`/`show` 因判据②（不得改报错时机与退出码）被否决，见 §8.4；`:12` 的「4 条」保留为 task-223 的盘点口径。
+5. **第 5 条：已改。** 核对 hash 与 claims 对应：`c657fce`=F1（C-M8-1-007）、`6a2dfc0`=F2（C-M8-1-008）、`0826f63`=F3（C-M8-1-009）、`8032aaf`=F4（C-M8-1-010），与审计所列一致。`:148` 依赖图后与 `:153` 各加一句：指纹三态与持久化缓存已落地，仍缺 config/ABI 入键，故 L164 仍未可做；`:153` 的 YJIT 未测结论不变。
+6. **第 6 条：已改。** `docs/roadmap-evidence/M8-batch-bridge.md:13` 删去易腐行数，改为「task-217 盘点时 577 行；task-240 复核为 1235 行，此后不再记数」。
+7. **第 7 条：已改（仅注释）。** `src/celerite/eval_cache_store.cr:11-19` 删去「plugin declarations」，注明该段曾误记、`plugins` include 仍留待 S3（C-M8-1-004）；持久化逻辑未动。
+8. **附带发现（同一缺陷的第二处）：已改。** `docs/compat-claims/M8-batch-bridge.md` 的 `C-M8-1-010`「我方行为」也把「插件声明」列入持久化产物；`GemfileEvaluation`（`src/celerite/bridge/client.cr:612-627`）无该字段，故同步标注为误记。
+
+审计结论有误之处：
+
+- §7 第 1 条把 `BRIDGE_FEATURES` 定在 `assets/bridge/server.rb:48`，实际在 `:45`（`:48` 是 `bridge_emit` 的定义）；把 claim 的「我方行为」定在 `:29`，实际在 `:21`。
+- §7 第 7 条漏记 `C-M8-1-010` 的同一处「插件声明」误记（见上第 8 点）。
+- 其余引用行（`M8-no-ruby-fast-path.md:12`/`:148`/`:153`/`:201`/`:317-319`、`M8-batch-bridge.md:13`、`eval_cache_store.cr:11-13`）与 `7ea8333` 一致。

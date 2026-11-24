@@ -226,6 +226,8 @@ check       bridge: procs=1 rpc=2 req_bytes=182 resp_bytes=1698   (exit 1，rake
 | 需要 gemspec 扫描的项目 | 有 `gemspec` 声明的项目，`gemspec_paths` 要读 `Dir` 并 `load` | 同上：include 才做；不做时 `features` 缺 `gemspecs`，消费方退回 `op_gemspec_paths` |
 | 「一次提交完整候选集」 | 需要 Ruby 侧有求解器接收候选集并返回解 | **不实现**：Celerite 的 PubGrub 在 Crystal（`src/celerite/resolver/`），Ruby 侧只有元数据读取与安装能力；`all_specs` 已按名记忆化（§3），不存在逐版本跨桥。若未来把求解下放到参考 Bundler，才需要 `solve_batch`，届时载荷为 `{candidates:[{name, versions:[...]}], constraints:[...]}`，与本协议解耦 |
 
+> 注（task-240）：`docs/roadmap.md:161` 的「一次提交完整候选集并返回解」分句在 Crystal 侧求解的架构下不适用——Ruby 侧没有接收候选集并返回解的求解器，Celerite 的 PubGrub 在 Crystal（`src/celerite/resolver/`）。本节的「不实现」与 §0-6 即为该分句的处置；`docs/roadmap.md` 原文不改。
+
 ## 6. 切片与判据
 
 依赖顺序 S1 → S2 → S3 → S4（S3 依赖 S2 的 `include` 机制；S4 依赖 S2/S3 落地后才测得出数字）。四片都可独立验收，都不需要全量差分。

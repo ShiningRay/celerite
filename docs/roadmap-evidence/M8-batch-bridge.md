@@ -10,7 +10,7 @@
 
 ### 协议与 op 面
 
-**`src/celerite/bridge/` 只有 `client.cr`（577 行）**，职责是单一：拉起 ruby 子进程 + 保持一条 JSON 行 RPC 通道。命令面、序列化、超时、错误映射全在这一个文件里。
+**`src/celerite/bridge/` 只有 `client.cr`**（task-217 盘点时 577 行；task-240 复核为 1235 行，行数易腐，此后不再记数），职责是单一：拉起 ruby 子进程 + 保持一条 JSON 行 RPC 通道。命令面、序列化、超时、错误映射仍全在这一个文件里。
 
 - 进程拉起：`client.cr:232-250`，`ruby = ruby_exe || ENV['CELERITE_RUBY'] || "ruby"`（`client.cr:233`），`Process.new(ruby, [server], input: pipe, output: pipe, error: inherit, ...)`（`client.cr:241-246`）。
 - server 定位：`client.cr:265-281`，`CELERITE_BRIDGE_SERVER` 优先，否则取可执行文件旁的 `assets/bridge/server.rb`。

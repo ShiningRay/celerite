@@ -9,7 +9,7 @@
 ## 0. 结论先行
 
 1. **现在就能免 Ruby 的命令：0 条。** 严格口径下，`lock`/`install`/`check`/`list`/`show`/`pristine`/`exec`/`binstubs` 在 HEAD 上都至少有一次 `Bridge::Client.new`（`src/celerite/cli/commands.cr:3054`、`src/celerite/cli/commands_install.cr:266`、`src/celerite/cli/commands.cr:1570`、`:1769`、`:2077`、`src/celerite/cli/commands_surface.cr:3075`、`src/celerite/cli/commands_install.cr:1764`、`:2188`）。
-2. **数据已在手、只差去掉 spawn 的：4 条**——`lock`（无变化）、`check`、`list`（无组过滤）、`show`（非 verbose）。四者的判定输入落在 lockfile、已装目录与 `Platform.local`（`src/celerite/gem/platform.cr:96-118`）里，无一项必须问 Ruby；唯一例外是 `lock` 的「Gemfile 未变」证明，无缓存时只能退化为 lockfile `DEPENDENCIES` 段弱判据（见 R3 与 §5-S5）。
+2. **数据已在手、只差去掉 spawn 的：4 条**——`lock`（无变化）、`check`、`list`（无组过滤）、`show`（非 verbose）。四者的判定输入落在 lockfile、已装目录与 `Platform.local`（`src/celerite/gem/platform.cr:96-118`）里，无一项必须问 Ruby；唯一例外是 `lock` 的「Gemfile 未变」证明，无缓存时只能退化为 lockfile `DEPENDENCIES` 段弱判据（见 R3 与 §5-S5）。（task-240 注：`check`/`show` 因判据②——不得改报错时机与退出码——被否决，见本文件 §8.4；「4 条」保留为 task-223 的盘点口径。）
 3. **需要先补数据（缓存求值结果）的：4 条**——`list`/`show` 的组归属、`check` 的 `BUNDLE_WITHOUT` 分支、`install`（无变化）、`binstubs`/`pristine` 的可执行文件与 ABI。前三条依赖 task-222 的求值指纹；`binstubs` 还额外缺 gemspec 文本解析器（现只有 `src/celerite/cli/commands.cr:2640` 的 summary/homepage/metadata 三字段）。
 4. **必须 Ruby 的：5 条**——`add`、`remove`、`update`、`install`（首装/变更）、`lock` 的编辑类开关（`--update`、`--add-platform`、`--remove-platform`、`--add-checksums`、`--normalize-platforms`）。它们要产生新的 resolution，不是"证明不变"。
 5. **最危险的三条漂移**：`check` 的满足判据（静默降级已被实测成 exit 0）、`list` 的组归属与顺序、`lock` 的"不改写"判定与 `BUNDLED WITH` 版本来源。
@@ -145,12 +145,12 @@
 - 判据形状：stdout 逐字、exit 0、spawn 0、锁文件与 `.bundle/cache` 状态与参考一致；有缺 gem / 有 plugin / git 源变化时回落到今天的路径（spawn ≥1）。
 - 回归面：`spec/m7_install_after_lock_keeps_transitive_spec.cr`、`spec/m7_install_without_spec.cr`、`spec/m7_local_install_spec.cr`、`spec/m7_frozen_source_normalization_spec.cr`、`spec/m7_path_source_missing_gem_spec.cr`、`spec/m7_plugin_hook_all_events_spec.cr`。
 
-依赖图：`S1 → S2 → S5(前移) → S3 → S4`；`S3` 的前置是 task-222（指纹）；`S5` 的零 spawn 验收点落在 `S3` 之后。
+依赖图：`S1 → S2 → S5(前移) → S3 → S4`；`S3` 的前置是 task-222（指纹）；`S5` 的零 spawn 验收点落在 `S3` 之后。（task-240 复评：指纹三态与持久化缓存已由 `c657fce`/`6a2dfc0`/`0826f63`/`8032aaf`（C-M8-1-007/008/009/010）落地，task-222 不再只是设计文档；仍缺 config/ABI 入键，故 L164 仍未可做。）
 
 ## 6. 本机不可验证项
 
 - **Rails 规模**：仓库内无 Railties 量级 fixture；100+ gem 时快路径判定的耗时与缓存体积未测。
-- **YJIT / 解释器差异**：只装了 4.0.24 一个参考；YJIT 开关改变 `ruby_environment` 的取值形状未测。
+- **YJIT / 解释器差异**：只装了 4.0.24 一个参考；YJIT 开关改变 `ruby_environment` 的取值形状未测。（task-240 复评：指纹三态与持久化缓存已落地，见 §5 依赖图的注；YJIT 仍未测，本项结论不变。）
 - **Linux / macOS**：`Platform.local` 的 `uname` 分支（`src/celerite/gem/platform.cr:112-116`）与 `ruby_abi` 目录形态未在本机跑过。
 - **多 ABI / 多解释器共存**：`<install_path>/ruby/*` 出现多个 ABI 时，`pristine`/`binstubs` 的目标推导未测（推测需以缓存记录 ABI，否则须回退兼容路径）。
 - **真网络**：无变化场景本不该联网，但 `--verbose`/`--outdated`/`--add-checksums` 会；离线行为未测。
@@ -198,7 +198,7 @@
 | 原文位置 | 原判断 | 结论 | 依据（HEAD `5018400`） |
 | --- | --- | --- | --- |
 | §0-1（`M8-no-ruby-fast-path.md:11`） | 0 条命令可免 Ruby；8 条命令各含一次 `Bridge::Client.new` | **仍成立**（表述过期：现均为 `.shared`） | `commands.cr:1570`（→`:1369`）、`:1769`、`:2077`、`:3054`；`commands_install.cr:266`、`:1764`、`:2188`；`commands_surface.cr:3075`。实测 8 条命令 procs≥1（§8.2）；实测 procs=0 的只有 `version` |
-| §0-2 四条「只差去 spawn」 | `lock` 无变化 / `check` / `list` 无组 / `show` 非 verbose | **仍成立** | 判定输入仍全在 lockfile + 已装目录 + `Gem::Platform.local`（`src/celerite/gem/platform.cr:96-118`）；三条 spawn 点未动（`:3054`、`:1570`、`:1769`、`:2077`） |
+| §0-2 四条「只差去 spawn」 | `lock` 无变化 / `check` / `list` 无组 / `show` 非 verbose | **仍成立**（task-240 注：`check`/`show` 因判据②被否决，见 §8.4；此处指数据已在手，不是待做项） | 判定输入仍全在 lockfile + 已装目录 + `Gem::Platform.local`（`src/celerite/gem/platform.cr:96-118`）；三条 spawn 点未动（`:3054`、`:1570`、`:1769`、`:2077`） |
 | §0-2 末句（`lock` 例外） | 「Gemfile 未变」无缓存时只能弱判据 | **仍成立** | `lockfile_matches_dependencies?`（`src/celerite/definition.cr:182`）与 `dependency_sources_changed?`（`:348`）仍吃 `Bridge::EvaluatedDependency`/`EvaluatedSource`（调用点 `commands.cr:3087-3090`） |
 | §0-3 四条「需补数据」 | 组归属 / `BUNDLE_WITHOUT` / install 无变化 / binstubs+pristine | **仍成立** | 组归属仍只来自求值（`commands.cr:2728-2743`、`:2745-2758`）；ABI 与 `default_gem_dir` 仍只来自 `bridge.ruby_environment`（`commands_install.cr:299`、`commands_surface.cr:3078-3079`） |
 | §0-4 五条「必须 Ruby」 | add/remove/update/install 变更/lock 编辑类 | **仍成立** | 均需新 resolution（`commands.cr:3054`、`commands_surface.cr:3077`、`commands_install.cr:293`） |
