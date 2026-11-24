@@ -16,7 +16,7 @@ private IFP_SWITCHES = %w[
   CELERITE_PROFILE_BUNDLER_VERSION CELERITE_REFERENCE_BUNDLER_VERSION
   CELERITE_REFERENCE_BUNDLER_LIB CELERITE_VERBOSE
 ]
-private IFP_ISOLATED = %w[HOME USERPROFILE BUNDLE_PATH BUNDLE_WITHOUT TMPDIR TMP TEMP]
+private IFP_ISOLATED = %w[HOME USERPROFILE BUNDLE_PATH BUNDLE_WITHOUT BUNDLE_APP_CONFIG BUNDLE_USER_HOME BUNDLE_USER_PLUGIN TMPDIR TMP TEMP]
 
 private def ifp_bin : String
   path = ENV["CELERITE_TEST_BINARY"]? || File.expand_path("../bin/celerite.exe", __DIR__)
@@ -120,14 +120,17 @@ private def ifp_lines(errors : String, regex : Regex) : Array(String)
   errors.lines.compact_map { |line| line.match(regex).try(&.[1]) }
 end
 
-private def ifp_ready(project : String, profile : String = "4.0.24") : Nil
+private def ifp_ready(project : String, profile : String = "4.0.24",
+                      overrides : Hash(String, String) = {} of String => String) : Nil
   pending!("no Ruby interpreter on PATH for the bridge") unless ruby_available?
   File.write(File.join(project, "Gemfile"), %(source "#{IFP_INDEX}"\n\neval_gemfile "extra.rb"\n))
   File.write(File.join(project, "extra.rb"), %(gem "json_pure"\n))
   FileUtils.mkdir_p(File.join(project, ".bundle"))
-  File.write(File.join(project, ".bundle", "config"), %(BUNDLE_PLUGINS: "false"\n))
+  # Leave BUNDLE_PLUGINS unset: task-269's zero-Ruby guarantee is for the
+  # default plugins=true configuration, not the legacy explicit-false fixture.
   env = ifp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG")
   env.merge!(ifp_profile_env(profile))
+  env.merge!(overrides)
   ifp_with_env(project, env) do
     status, output, errors = ifp_run(project, ["install"])
     fail "cold install failed (#{status}): #{output} #{errors}" unless status == 0
@@ -209,6 +212,11 @@ private def ifp_cache_entries(project : String) : Array(String)
       path if File.file?(path)
     end
   end
+end
+
+private def ifp_plugin_certificates(project : String) : Array(String)
+  base = File.join(project, ".celerite", "cache", "plugin-gemfile", "v1")
+  Celerite::Glob.paths(base, "*").map { |digest| File.join(digest, "certificate.json") }
 end
 
 private def ifp_rename_indexed_spec(project : String, full_name : String,
@@ -301,7 +309,7 @@ describe "Celerite::InstallSummary" do
 end
 
 describe "install takes the no-Ruby fast path on an unchanged project" do
-  it "uses one Ruby process on the cold install and zero processes/rpc/bytes on the hot install" do
+  it "uses one Ruby process on the cold install and zero processes/rpc/bytes on the default-plugin hot install" do
     with_project({} of String => String) do |project|
       ifp_ready(project)
       status, output, errors, stats = ifp_hot(project)
@@ -470,6 +478,130 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
     end
   end
 
+  it "falls back when the global plugin root or index is nonempty" do
+    with_project({} of String => String) do |project|
+      global_root = File.join(project, "global-plugin")
+      override = {"BUNDLE_USER_PLUGIN" => global_root}
+      ifp_ready(project, "4.0.24", override)
+      FileUtils.mkdir_p(File.join(global_root, "cache"))
+      _status, _output, errors, stats = ifp_hot(project, ["install"], override)
+      stats[0].should be >= 1
+      ifp_lines(errors, IFP_HIT).should be_empty
+      ifp_lines(errors, IFP_MISS).should contain("hooks")
+
+      FileUtils.rm_rf(global_root)
+      FileUtils.mkdir_p(global_root)
+      File.write(File.join(global_root, "index"), %(---\nplugins:\n- name: example\n))
+      _status, _output, errors, stats = ifp_hot(project, ["install"], override)
+      stats[0].should be >= 1
+      ifp_lines(errors, IFP_HIT).should be_empty
+      ifp_lines(errors, IFP_MISS).should contain("hooks")
+    end
+  end
+
+  it "still hits with empty local and global plugin trees" do
+    with_project({} of String => String) do |project|
+      FileUtils.mkdir_p(File.join(project, ".bundle", "plugin"))
+      global_root = File.join(project, "global-plugin")
+      FileUtils.mkdir_p(global_root)
+      override = {"BUNDLE_USER_PLUGIN" => global_root}
+      ifp_ready(project, "4.0.24", override)
+      status, _output, errors, stats = ifp_hot(project, ["install"], override)
+      status.should eq(0)
+      stats.should eq({0, 0, 0, 0})
+      ifp_lines(errors, IFP_HIT).size.should eq(1)
+    end
+  end
+
+  it "falls back when the empty-plugin certificate is missing or corrupt" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      certificate = ifp_plugin_certificates(project).first
+      payload = JSON.parse(File.read(certificate))
+      payload["format"].as_s.should eq("celerite-plugin-gemfile-cache/1")
+      payload["plugin_names"].as_a.should be_empty
+      payload.as_h.keys.sort.should eq(["digest", "format", "plugin_names"])
+
+      File.delete(certificate)
+      _status, _output, errors, stats = ifp_hot(project)
+      stats[0].should be >= 1
+      ifp_lines(errors, IFP_HIT).should be_empty
+      ifp_lines(errors, IFP_MISS).should contain("hooks")
+
+      certificate = ifp_plugin_certificates(project).first
+      File.write(certificate, "{not-json")
+      _status, _output, errors, stats = ifp_hot(project)
+      stats[0].should be >= 1
+      ifp_lines(errors, IFP_HIT).should be_empty
+      ifp_lines(errors, IFP_MISS).should contain("hooks")
+    end
+  end
+
+  it "replaces a preexisting certificate by direct rename without target deletion or temp residue" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      certificate = ifp_plugin_certificates(project).first
+      payload = JSON.parse(File.read(certificate))
+      digest = payload["digest"].as_s
+      replacement = payload.to_json + "\n"
+
+      ifp_with_env(project, ifp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH")) do
+        Celerite::PluginGemfileCache.write(digest, replacement).should be_true
+      end
+      File.read(certificate).should eq(replacement)
+      Dir.children(File.dirname(certificate)).sort.should eq(["certificate.json"])
+
+      source_path = File.expand_path("../src/celerite/plugin_gemfile_cache.cr", __DIR__)
+      source = File.read(source_path)
+      source.should_not contain("File.delete(target)")
+      source.should contain("File.rename(temp, target)")
+    end
+  end
+
+  it "invalidates the plugin certificate when the evaluation chain changes" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      old_certificate = ifp_plugin_certificates(project).first
+      extra = File.join(project, "extra.rb")
+      File.write(extra, File.read(extra) + "\n# fingerprint invalidation\n")
+      _status, _output, errors, stats = ifp_hot(project)
+      stats[0].should be >= 1
+      ifp_lines(errors, IFP_HIT).should be_empty
+      ifp_lines(errors, IFP_MISS).should contain("entry")
+      ifp_plugin_certificates(project).size.should eq(2)
+      File.exists?(old_certificate).should be_true
+    end
+  end
+
+  it "does not skip plugin preflight when the cached evaluation has warnings" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      certificate = ifp_plugin_certificates(project).first
+      certificate_before = File.read(certificate)
+      entry = ifp_cache_entries(project).first
+      payload = JSON.parse(File.read(entry)).as_h
+      payload["evaluation"].as_h["warnings"] = JSON::Any.new([JSON::Any.new("fixture warning")])
+      File.write(entry, payload.to_json)
+
+      _status, _output, errors, stats = ifp_hot(project)
+      stats[0].should be >= 1
+      ifp_lines(errors, IFP_HIT).should be_empty
+      ifp_lines(errors, IFP_MISS).should contain("warnings")
+      File.read(certificate).should eq(certificate_before)
+    end
+  end
+
+  it "does not statically guess a plugin declared through dynamic DSL" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      gemfile = File.join(project, "Gemfile")
+      File.write(gemfile, File.read(gemfile) + %(\neval("plugin 'example'")\n))
+      _status, _output, errors, stats = ifp_hot(project)
+      stats[0].should be >= 1
+      ifp_lines(errors, IFP_HIT).should be_empty
+    end
+  end
+
   it "falls back when either switch is off" do
     with_project({} of String => String) do |project|
       ifp_ready(project)
@@ -504,7 +636,7 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
     end
   end
 
-  it "never hits when plugin hooks are enabled" do
+  it "never hits when plugin hooks are enabled and the plugin root is nonempty" do
     with_project({} of String => String) do |project|
       ifp_ready(project)
       File.write(File.join(project, ".bundle", "config"), %(BUNDLE_PLUGINS: "true"\n))
@@ -513,7 +645,7 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
       _status, _output, errors, stats = ifp_hot(project)
       stats[0].should be >= 1
       ifp_lines(errors, IFP_HIT).should be_empty
-      ifp_lines(errors, IFP_MISS).should contain("hooks")
+      ifp_lines(errors, IFP_MISS).should contain("plugin-index")
     end
   end
 
