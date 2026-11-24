@@ -992,6 +992,36 @@ rescue StandardError => e
   { "error" => e.message, "backtrace" => e.backtrace.first(4) }
 end
 
+# RubyGems runs every registered `Gem.pre_install` hook from
+# `Gem::Installer#install` (`rubygems/installer.rb:271` -> `run_pre_install_hooks`,
+# `installer.rb:311-331`) before `build_extensions` (`installer.rb:285`).
+# RubyInstaller registers one there that prepends its MSYS2/MINGW directories to
+# `PATH` for gems carrying extensions only
+# (`rubygems/defaults/operating_system.rb:33-39` ->
+# `ruby_installer/runtime/msys2_installation.rb:237-260`; the prefix is
+# `ruby_bin;mingw_bin;msys_bin` in that order, `msys2_installation.rb:46,156-163`,
+# and `make` lives in `msys_bin`). `Gem::Ext::Builder` never runs the hook
+# (`ext/builder.rb` has no hook call), so building straight from the builder
+# inherits the caller's `PATH`, where `make` may not exist.
+#
+# Replaying the registered hooks — rather than hardcoding a MSYS2 path table —
+# keeps the directory list and its order owned by RubyInstaller. The hook is
+# idempotent: `enable_msys_apps` only prepends the prefix when it is not
+# already a substring of `PATH` (`msys2_installation.rb:244-253`), so repeated
+# builds in one bridge process do not stack duplicates. Ruby builds without
+# RubyInstaller register no hook, and non-Windows Ruby has none either, so
+# this is a no-op there.
+EXTENSION_BUILD_HOOK_INSTALLER = Struct.new(:spec, :options)
+
+def run_extension_pre_install_hooks(spec)
+  return unless Gem.win_platform?
+  return if spec.extensions.empty?
+  hooks = Gem.pre_install_hooks
+  return if hooks.empty?
+  installer = EXTENSION_BUILD_HOOK_INSTALLER.new(spec, nil)
+  hooks.each { |hook| hook.call(installer) }
+end
+
 # Build native extensions with the reference Ruby/RubyGems toolchain
 # (architecture §2.1: extensions run through the Ruby toolchain, not native code).
 def op_build_extension(payload)
@@ -1032,6 +1062,8 @@ def op_build_extension(payload)
   else
     payload["build_jobs"].to_i
   end
+  # Same hook order as `Gem::Installer#install`: environment first, then build.
+  run_extension_pre_install_hooks(spec)
   Gem::Ext::Builder.new(spec, build_args, Gem.target_rbconfig, jobs).build_extensions
   File.write(gem_build_complete, "")
   { "built" => spec.extensions, "complete" => gem_build_complete }
