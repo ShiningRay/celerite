@@ -1746,17 +1746,36 @@ module Celerite
       # Interpreter default gems are not in `<bundle>/specifications` but are
       # still valid for `check/list/show/info` (`cli/common.rb:68-101` falls
       # back to `default_gem_spec`). A custom `path` does not hide them.
-      if (source.nil? || source.type == "GEM") && bridge_available?
-        bridge = Bridge::Client.shared
-        begin
-          if info = bridge.default_gem_spec(spec.name)
-            if info[:version] == spec.version.to_s && (spec.platform.nil? || info[:platform] == spec.platform)
-              return info[:full_gem_path]
-            end
+      if source.nil? || source.type == "GEM"
+        # Disk first: `<root>/specifications/default/<full_name>.gemspec` is a
+        # RubyGems file, so "is this locked spec an installed default gem" needs
+        # no Ruby process (`InstalledIndex`). Consulting it is what makes a
+        # plain run without a bridge agree with the reference here: the bridge
+        # op below is gated on `bridge_available?`, so before the index existed
+        # `check` reported `* date (3.5.1)` as missing while `bundle check`
+        # exits 0 (`spec/m8_installed_index_spec.cr`).
+        if entry = installed_index.default_gem(spec.name)
+          if entry.version == spec.version.to_s &&
+             InstalledIndex::Entry.same_platform?(entry.platform, spec.platform)
+            return entry.gem_dir
           end
-        rescue
-        ensure
-          bridge.close
+        end
+        # Compatibility path: the index cannot answer when the RubyGems roots
+        # are unknown (no interpreter, unreadable `specifications/`) or when a
+        # gem has no specification file at all, so ask the bridge when one is
+        # configured. A bridge failure stays "not found", never "installed".
+        if bridge_available?
+          bridge = Bridge::Client.shared
+          begin
+            if info = bridge.default_gem_spec(spec.name)
+              if info[:version] == spec.version.to_s && (spec.platform.nil? || info[:platform] == spec.platform)
+                return info[:full_gem_path]
+              end
+            end
+          rescue
+          ensure
+            bridge.close
+          end
         end
       end
       nil
@@ -1822,6 +1841,41 @@ module Celerite
 
     private def self.system_gem_environment_signature : String
       [ENV["GEM_HOME"]?, ENV["GEM_PATH"]?, ENV["HOME"]?, ENV["USERPROFILE"]?].join('\u0000')
+    end
+
+    @@installed_index : InstalledIndex? = nil
+    @@installed_index_signature : String? = nil
+
+    # Disk-only view of the specification files under `system_gem_search_dirs`
+    # (`Celerite::InstalledIndex`), cached under the same environment signature
+    # as the directory list so a process that changes GEM_HOME/GEM_PATH
+    # recomputes instead of reusing a stale index.
+    #
+    # This is the "installed gem index" the read-only commands reuse: the
+    # bridge ops that used to answer "which gems are installed, at which paths"
+    # (`installed_specs`, `default_gem_spec`) read exactly these files
+    # (`assets/bridge/server.rb:718-785`), so the answer is available on disk.
+    #
+    # When the bridge cannot report the RubyGems directories, the interpreter's
+    # own default gem directory is recovered from `rbconfig.rb`
+    # (`RuntimeFacts`, task-236) — still without starting a Ruby process.
+    def self.installed_index : InstalledIndex
+      signature = system_gem_environment_signature
+      if index = @@installed_index
+        return index if @@installed_index_signature == signature
+      end
+      roots = system_gem_search_dirs
+      if roots.empty?
+        if facts = RuntimeFacts.detect
+          if dir = facts.default_gem_dir.value
+            roots = [dir] unless dir.empty?
+          end
+        end
+      end
+      index = InstalledIndex.load(roots)
+      @@installed_index = index
+      @@installed_index_signature = signature
+      index
     end
 
     private def self.installed_git_checkout(definition : Definition, name : String, remote : String, revision : String) : String?

@@ -1974,6 +1974,26 @@ module Celerite
     end
 
     private def self.lookup_default_gem(name : String) : DefaultGemInfo?
+      # `cli/info.rb:59-65` asks RubyGems for the interpreter's default gem with
+      # this name. That gem is a `specifications/default/<full_name>.gemspec`
+      # file, so the installed index can name it (and its `gems/<full_name>`
+      # path) with no Ruby process; the block's Summary/Homepage/metadata come
+      # from that same specification file via `read_gemspec_info` (bridge when
+      # configured, disk parser otherwise).
+      if entry = installed_index.default_gem(name)
+        summary, homepage, metadata = read_gemspec_info(entry.gem_dir, entry.full_name)
+        return DefaultGemInfo.new(
+          name: entry.name,
+          version: entry.version,
+          full_name: entry.full_name,
+          path: entry.gem_dir,
+          summary: summary,
+          homepage: homepage,
+          metadata: metadata,
+        )
+      end
+      # Compatibility path: an index that cannot see the default gem dir (or a
+      # gem whose default spec file is missing) still asks the bridge.
       return nil unless bridge_available?
       bridge = Bridge::Client.shared
       begin
@@ -2697,6 +2717,17 @@ module Celerite
     # Reference `spec.default_gem?` is true for specs installed in Ruby's
     # default gem directory; bundle-installed gems omit the line.
     private def self.default_gem?(gem_dir : String, name : String, version : String) : Bool
+      # Disk first: "is the newest default gem called NAME the one at GEM_DIR"
+      # is a question about `specifications/default/*.gemspec` file names
+      # (`InstalledIndex`), so no Ruby process is needed. This is what makes
+      # `info date` print `Default Gem: yes` without a bridge, as the reference
+      # does (`spec/m8_installed_index_spec.cr`).
+      if entry = installed_index.default_gem(name)
+        return false unless entry.version == version
+        return entry.gem_dir.gsub('\\', "/").chomp("/") == gem_dir.gsub('\\', "/").chomp("/")
+      end
+      # Compatibility path: index could not answer, ask the bridge when one is
+      # configured (a bridge failure keeps the answer "not a default gem").
       return false unless bridge_available?
 
       bridge = Bridge::Client.shared
