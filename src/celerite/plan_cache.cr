@@ -1,14 +1,17 @@
 require "json"
 require "digest/sha256"
+require "random/secure"
+require "time"
 require "./checksum"
 require "./config"
 require "./fast_path_store"
 require "./lockfile/model"
 require "uri"
 
-# Read-only, opt-in persistent cache for parsed/install plans. P1 deliberately
-# has no writer and no command integration: it only builds safe cache keys and
-# validates entries produced by a later phase.
+# Opt-in persistent cache for parsed/install plans. P1 supplies canonical keys
+# and read-only validation; P2 adds a fail-closed writer and namespace-local
+# pruning. There is still no command integration: callers must opt in and no
+# result is used to change resolution or installation behaviour.
 module Celerite::PlanCache
   FORMAT       = "celerite-plan-cache/1"
   LAYOUT       = "plan/v1"
@@ -18,15 +21,44 @@ module Celerite::PlanCache
   MAX_ENTRIES  = 256
   MAX_BYTES    = 16_i64 * 1024 * 1024
 
-  DIGEST    = /\A[0-9a-f]{64}\z/
-  NAMESPACE = /\A[0-9a-f]{16}\z/
-  REVISION  = /\A[0-9a-fA-F]{40}\z/
+  DIGEST         = /\A[0-9a-f]{64}\z/
+  NAMESPACE      = /\A[0-9a-f]{16}\z/
+  REVISION       = /\A[0-9a-fA-F]{40}\z/
+  ENTRY_FILE     = /\A[0-9a-f]{64}\.json\z/
+  CREDENTIAL_URI = %r{://[^/"\\\s]+@}
+  SENSITIVE_KEY  = /\A(?:api[_-]?key|authorization|credential|credentials|password|passwd|secret|token)\z/i
+  PAYLOAD_KEYS   = %w[installed_snapshot plan specs]
+
+  @@debug_io : IO = STDERR
+
+  def self.debug_io : IO
+    @@debug_io
+  end
+
+  def self.debug_io=(io : IO) : IO
+    @@debug_io = io
+  end
 
   enum Status
     Hit
     Miss
     Unknown
     Corrupt
+  end
+
+  enum WriteStatus
+    Written
+    Disabled
+    InvalidKey
+    InvalidComponents
+    InvalidNamespace
+    InvalidPayload
+    InvalidDigest
+    NonPortablePayload
+    CredentialPayload
+    TooLarge
+    RootUnavailable
+    IoError
   end
 
   struct ReadResult
@@ -51,6 +83,18 @@ module Celerite::PlanCache
 
     def corrupt? : Bool
       @status.corrupt?
+    end
+  end
+
+  struct WriteResult
+    getter status : WriteStatus
+    getter reason : String
+
+    def initialize(@status : WriteStatus, @reason : String)
+    end
+
+    def written? : Bool
+      @status.written?
     end
   end
 
@@ -322,20 +366,208 @@ module Celerite::PlanCache
 
   def self.delete(key : String?) : Bool
     return false unless key && valid_key?(key)
+    return false unless enabled?
     path = entry_path(key)
     return false unless path
     discard(path)
     true
   end
 
+  # Persist one complete, self-validating entry. A supplied digest is checked
+  # against the canonical payload; omitting it lets the writer compute digest.
+  # The payload is deliberately root-independent: P2 refuses absolute/home/drive
+  # paths and any parent-directory segment under either separator instead of
+  # pretending that a project-specific plan can be relocated.
+  def self.write(key : String, components : JSON::Any, payload : JSON::Any,
+                 digest : String? = nil) : WriteResult
+    return write_result(WriteStatus::InvalidKey, "invalid_key") unless valid_key?(key)
+    return write_result(WriteStatus::Disabled, "disabled") unless enabled?
+    path = entry_path(key)
+    return write_result(WriteStatus::RootUnavailable, "root_unavailable") unless path
+
+    recomputed = key_for(components)
+    return write_result(WriteStatus::InvalidComponents, "key_invalid") unless recomputed
+    return write_result(WriteStatus::InvalidKey, "key_mismatch") unless recomputed == key
+    embedded_ns = components.as_h["credential_namespace"].as_s?
+    return write_result(WriteStatus::InvalidNamespace, "key_namespace_mismatch") unless embedded_ns == namespace
+    return write_result(WriteStatus::CredentialPayload, "credential_key") unless credential_free_json?(components)
+    return write_result(WriteStatus::InvalidPayload, "payload_invalid") unless valid_payload?(payload)
+    return write_result(WriteStatus::CredentialPayload, "credential_key") unless credential_free_json?(payload)
+    return write_result(WriteStatus::NonPortablePayload, "payload_root_dependent") unless portable_json?(payload)
+
+    begin
+      canonical_payload = canonical_json(payload)
+      computed_digest = Digest::SHA256.hexdigest(canonical_payload)
+      if digest
+        return write_result(WriteStatus::InvalidDigest, "digest_invalid") unless digest.matches?(DIGEST)
+        return write_result(WriteStatus::InvalidDigest, "digest_mismatch") unless digest == computed_digest
+      end
+      entry = JSON::Any.new({
+        "format"     => JSON::Any.new(FORMAT),
+        "written_at" => JSON::Any.new(Time.utc.to_rfc3339),
+        "digest"     => JSON::Any.new(computed_digest),
+        "key"        => components,
+        "payload"    => payload,
+      })
+      text = canonical_json(entry)
+      return write_result(WriteStatus::TooLarge, "too_large") if text.bytesize > MAX_BYTES
+      return write_result(WriteStatus::CredentialPayload, "credential_value") if contains_environment_credential?(text)
+      return write_result(WriteStatus::IoError, "io_error") unless atomic_write(path, text)
+    rescue ex : ArgumentError
+      return write_result(WriteStatus::InvalidPayload, "payload_invalid")
+    rescue ex : IO::Error
+      return write_result(WriteStatus::IoError, "io_error")
+    end
+
+    prune
+    write_result(WriteStatus::Written, "ok")
+  end
+
+  def self.store(key : String, components : JSON::Any, payload : JSON::Any,
+                 digest : String? = nil) : WriteResult
+    write(key, components, payload, digest)
+  end
+
+  # Evict oldest entries until both budgets hold. The directory is resolved
+  # once from the current credential namespace; no root-wide traversal occurs.
+  def self.prune(max_entries : Int32 = MAX_ENTRIES, max_bytes : Int64 = MAX_BYTES) : Bool
+    return false unless enabled?
+    return false if max_entries < 0 || max_bytes < 0
+    dir = namespace_dir
+    return false unless dir
+    return true unless Dir.exists?(dir)
+
+    files = [] of NamedTuple(path: String, size: Int64, mtime: Time)
+    Dir.each_child(dir) do |child|
+      next unless child.matches?(ENTRY_FILE)
+      path = File.join(dir, child)
+      next unless File.file?(path)
+      begin
+        info = File.info(path)
+        files << {path: path, size: info.size, mtime: info.modification_time}
+      rescue ex : File::NotFoundError
+        # Another process may have removed it after enumeration.
+      end
+    end
+    files.sort_by! { |file| {file[:mtime], file[:path]} }
+    total = files.sum { |file| file[:size] }
+    while !files.empty? && (files.size > max_entries || total > max_bytes)
+      oldest = files.shift.not_nil!
+      begin
+        File.delete(oldest[:path])
+      rescue ex : File::NotFoundError
+        # Already absent: the budget still improves by its enumerated size.
+      rescue
+        return false
+      end
+      total -= oldest[:size]
+    end
+    true
+  rescue
+    # Garbage collection is best-effort and must never fail a command.
+    false
+  end
+
   def self.debug_line(status : Status, reason : String) : String
     "[plan-cache] status=#{status.to_s.downcase} reason=#{reason}"
+  end
+
+  private def self.write_result(status : WriteStatus, reason : String) : WriteResult
+    if debug?
+      debug_io.puts "[plan-cache] operation=write status=#{status.to_s.downcase} reason=#{reason}"
+      debug_io.flush
+    end
+    WriteResult.new(status, reason)
+  end
+
+  private def self.atomic_write(path : String, text : String) : Bool
+    temp = File.join(File.dirname(path), ".plan-#{Process.pid}-#{Random::Secure.hex(4)}.tmp")
+    begin
+      Dir.mkdir_p(File.dirname(path))
+      File.open(temp, "w") do |file|
+        file.print(text)
+        file.flush
+        begin
+          file.fsync
+        rescue
+          # Some filesystems do not support fsync; the rename still publishes a
+          # complete temp file and the next read verifies format/key/digest.
+        end
+      end
+      # Both Windows MoveFileExW(MOVEFILE_REPLACE_EXISTING) and POSIX rename(2)
+      # replace an existing file atomically; never unlink the target first.
+      File.rename(temp, path)
+      true
+    rescue
+      begin
+        File.delete(temp) if File.exists?(temp)
+      rescue
+      end
+      false
+    end
+  end
+
+  private def self.valid_payload?(value : JSON::Any) : Bool
+    object = value.as_h?
+    return false unless object && object.keys.sort == PAYLOAD_KEYS
+    object["specs"].as_a?.is_a?(Array(JSON::Any)) &&
+      object["plan"].as_h?.is_a?(Hash(String, JSON::Any)) &&
+      object["installed_snapshot"].as_a?.is_a?(Array(JSON::Any))
+  end
+
+  private def self.portable_json?(value : JSON::Any) : Bool
+    case raw = value.raw
+    when Hash(String, JSON::Any)
+      raw.all? { |_, item| portable_json?(item) }
+    when Array(JSON::Any)
+      raw.all? { |item| portable_json?(item) }
+    when String
+      portable_string?(raw)
+    else
+      true
+    end
+  end
+
+  private def self.portable_string?(value : String) : Bool
+    return false if value.includes?('\u0000')
+    return false if value.starts_with?("/") || value.starts_with?("\\")
+    return false if value.starts_with?("~/") || value.starts_with?("~\\")
+    return false if value.starts_with?("./") || value.starts_with?("../")
+    return false if value.starts_with?(".\\") || value.starts_with?("..\\")
+    # Normalize separators before inspecting every segment. This also rejects
+    # foo/../bar and foo\..\bar, not only strings that begin with a parent segment.
+    return false if value.gsub('\\', '/').split('/').includes?("..")
+    return false if value.matches?(/\A[A-Za-z]:/)
+    return false if value.matches?(/\Afile:\/\//i)
+    true
+  end
+
+  private def self.credential_free_json?(value : JSON::Any) : Bool
+    case raw = value.raw
+    when Hash(String, JSON::Any)
+      raw.all? do |key, item|
+        !key.matches?(SENSITIVE_KEY) && credential_free_json?(item)
+      end
+    when Array(JSON::Any)
+      raw.all? { |item| credential_free_json?(item) }
+    when String
+      !raw.matches?(CREDENTIAL_URI)
+    else
+      true
+    end
+  end
+
+  private def self.contains_environment_credential?(text : String) : Bool
+    ENV.any? do |key, value|
+      credential?(key, value) && !value.empty? && text.includes?(value)
+    end
   end
 
   private def self.result(status : Status, reason : String, payload : JSON::Any? = nil) : ReadResult
     value = ReadResult.new(status, reason, payload)
     if debug?
-      STDERR.puts debug_line(status, reason)
+      debug_io.puts debug_line(status, reason)
+      debug_io.flush
     end
     value
   end
@@ -400,7 +632,7 @@ module Celerite::PlanCache
     sources = object["sources"].as_a?
     return false unless sources && sources.all? do |source|
                           identity = source.as_h?
-                          identity && nonempty_s?(identity["type"]) &&
+                          identity && nonempty_s?(identity["type"]?) &&
                           (identity["remote"]?.try(&.as_s?) || identity["plugin_type"]?.try(&.as_s?))
                         end
     true
