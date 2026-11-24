@@ -1,6 +1,7 @@
 require "./lock_fast_path"
 require "./installed_index"
 require "./glob"
+require "./plugin_gemfile_cache"
 
 module Celerite
   # Pure install-summary rules shared by the compatibility and no-op paths.
@@ -85,6 +86,58 @@ module Celerite
       end
     end
 
+    # The Plugin::DSL preflight may be skipped only when the normal evaluation
+    # and runtime record are already trusted and an empty plugin-name
+    # certificate is bound to that exact fingerprint. This performs no bridge
+    # work; the caller falls back to the existing Ruby preflight on any miss.
+    def self.plugin_precheck_skippable?(definition : Definition, config : Config) : Bool
+      return false unless PluginHooks.enabled?(config)
+      # Both Bundler index files are Ruby-visible: the project-local tree and
+      # the user-global tree. A root may be absent or an empty directory; an
+      # index may be absent or a zero-byte regular file. Any other state keeps
+      # the Plugin::DSL preflight.
+      local_root = File.dirname(PluginHooks.index_path(definition))
+      return false unless plugin_tree_empty?(local_root, File.join(local_root, "index"))
+      if global_root = global_plugin_root
+        return false unless plugin_tree_empty?(global_root, File.join(global_root, "index"))
+      else
+        return false
+      end
+      trusted, _reason = LockFastPath.trusted_attempt(definition)
+      return false if trusted.nil?
+      PluginGemfileCache.trusted?(trusted.digest)
+    rescue
+      false
+    end
+
+    private def self.global_plugin_root : String?
+      if override = ENV["BUNDLE_USER_PLUGIN"]?
+        return nil if override.empty?
+        return File.expand_path(override)
+      end
+      if user_home = ENV["BUNDLE_USER_HOME"]?
+        return nil if user_home.empty?
+        return File.expand_path(File.join(user_home, "plugin"))
+      end
+      home = Config.user_home
+      return nil if home.nil? || home.empty?
+      File.expand_path(File.join(home, ".bundle", "plugin"))
+    end
+
+    private def self.plugin_tree_empty?(root : String, index : String) : Bool
+      if File.exists?(root)
+        return false unless Dir.exists?(root)
+        return false unless Dir.children(root).empty?
+      end
+      if File.exists?(index)
+        return false unless File.file?(index)
+        return false unless File.size(index) == 0
+      end
+      true
+    rescue
+      false
+    end
+
     def self.attempt(definition : Definition, config : Config, rest : Array(String),
                      summary : Bool, show_resolving : Bool, no_reuse : Bool, no_install : Bool,
                      cli_arguments : Bool, refresh_cache : Bool) : {Hit?, String?}
@@ -97,7 +150,6 @@ module Celerite
       # `--verbose`/`BUNDLE_VERBOSE` adds progress and Ruby diagnostics that a
       # zero-spawn hit cannot synthesize.
       return {nil, "verbose"} if ENV["CELERITE_VERBOSE"]? == "1"
-      return {nil, "hooks"} if PluginHooks.enabled?(config)
 
       trusted, reason = LockFastPath.trusted_attempt(definition)
       return {nil, reason} if trusted.nil?
@@ -147,6 +199,8 @@ module Celerite
                       else
                         ""
                       end
+      return {nil, "hooks"} if PluginHooks.enabled?(config) &&
+                               !plugin_precheck_skippable?(definition, config)
       summary = InstallSummary.build(hit.evaluation, reachable_specs(lockfile, hit.evaluation),
         [] of String, [] of String, false, Celerite::Profile.bundler_version, path_mode, relative_path)
       {Hit.new(hit.digest, hit.evaluation, dir, install_root, summary), nil}

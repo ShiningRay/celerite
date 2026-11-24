@@ -107,7 +107,7 @@ module Celerite
     # Each plugin resolves exactly like `celerite plugin install --source`; a
     # missing gem therefore fails with the reference GemNotFoundError (exit 7)
     # before the main install starts.
-    private def self.install_gemfile_plugins(gemfile_path : String, stdout : IO, stderr : IO) : Int32?
+    private def self.install_gemfile_plugins(gemfile_path : String, stdout : IO, stderr : IO) : {Int32?, Array(String)?}
       begin
         names = PluginGemfile.plugin_names(gemfile_path)
       rescue ex : Bridge::BridgeError
@@ -116,13 +116,13 @@ module Celerite
         # PluginGemfileError is 29. Anything else falls through so the normal
         # path reports its own (reference) error.
         raise ex if {4, 7, 15, 29}.includes?(ex.status_code)
-        return nil
+        return {nil, nil}
       rescue ex : Error
         # No usable bridge (e.g. "bridge server script not found" in
         # in-process specs): the normal install path reports its own errors.
-        return nil
+        return {nil, nil}
       end
-      return nil if names.empty?
+      return {nil, names} if names.empty?
 
       remote = PluginGemfile.primary_source(gemfile_path)
       index_path = PluginCommands.index_path(gemfile_path)
@@ -143,9 +143,9 @@ module Celerite
         else
           code = plugin_install_remote([name], [] of String, stdout, stderr, local_only: true, remote_only: remote_only)
         end
-        return code unless code == 0
+        return {code, names} unless code == 0
       end
-      nil
+      {nil, names}
     end
 
     # `--gemfile`/`--lockfile` really take effect for install in the reference;
@@ -263,10 +263,14 @@ module Celerite
       # M7(6): the reference runs `Plugin.gemfile_install` before the main
       # definition is built. Celerite's own client-side policy checks above do
       # not need the bridge, so they run first; only then evaluate the Gemfile
-      # for declared plugins (this is the first bridge work in `install`).
+      # for declared plugins (this is the first bridge work in `install`). A
+      # deterministic empty-plugin certificate may skip that preflight; every
+      # other state keeps the reference-compatible Ruby path.
+      plugin_names : Array(String)? = nil
       if PluginGemfile.enabled?(Config.new(File.dirname(Definition.find_gemfile)))
-        if plugin_code = install_gemfile_plugins(Definition.find_gemfile, stdout, stderr)
-          return plugin_code
+        unless InstallFastPath.plugin_precheck_skippable?(definition, config)
+          plugin_code, plugin_names = install_gemfile_plugins(Definition.find_gemfile, stdout, stderr)
+          return plugin_code if plugin_code
         end
       end
 
@@ -300,8 +304,12 @@ module Celerite
         # for install flows when evaluation is available.
         gemfile_dependencies : Array(Bridge::EvaluatedDependency)? = nil
         gemfile_sources : Array(Bridge::EvaluatedSource)? = nil
+        evaluation : Bridge::GemfileEvaluation? = nil
+        fingerprint : Bridge::EvalFingerprint? = nil
         begin
-          evaluation = GemfileEvaluator.evaluation(definition.gemfile_path, bridge)
+          batch = GemfileEvaluator.fetch(definition.gemfile_path, client: bridge)
+          evaluation = batch.evaluation
+          fingerprint = batch.fingerprint
           gemfile_dependencies = evaluation.dependencies
           gemfile_sources = evaluation.sources
           # `evaluation.ruby` is the human-readable requirement string and drops
@@ -995,6 +1003,12 @@ module Celerite
             Lockfile.write(definition.lockfile_path, text, preserve_crlf: preserve_lockfile_crlf?)
           end
         end
+
+        # The normal compatible install has completed successfully. Only now
+        # bind an empty Plugin::DSL result to the deterministic fingerprint
+        # from the successful evaluation; errors and non-empty warnings/results
+        # never create a certificate.
+        PluginGemfileCache.remember(definition.gemfile_path, plugin_names, evaluation, fingerprint)
 
         0
       ensure
