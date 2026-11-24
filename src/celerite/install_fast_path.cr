@@ -140,7 +140,8 @@ module Celerite
 
     def self.attempt(definition : Definition, config : Config, rest : Array(String),
                      summary : Bool, show_resolving : Bool, no_reuse : Bool, no_install : Bool,
-                     cli_arguments : Bool, refresh_cache : Bool) : {Hit?, String?}
+                     cli_arguments : Bool, refresh_cache : Bool,
+                     trusted_result : {LockFastPath::Hit?, String?}? = nil) : {Hit?, String?}
       return {nil, nil} unless LockFastPath.enabled?
       # Only a bare `bundle install` has a byte-stable no-op transcript. Any
       # flag can change filtering, paths, output, or filesystem side effects.
@@ -151,7 +152,7 @@ module Celerite
       # zero-spawn hit cannot synthesize.
       return {nil, "verbose"} if ENV["CELERITE_VERBOSE"]? == "1"
 
-      trusted, reason = LockFastPath.trusted_attempt(definition)
+      trusted, reason = trusted_result || LockFastPath.trusted_attempt(definition)
       return {nil, reason} if trusted.nil?
       hit = trusted.not_nil!
       lockfile = definition.lockfile!

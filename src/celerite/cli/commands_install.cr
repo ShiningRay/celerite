@@ -6,6 +6,7 @@ require "../lockfile/parser"
 require "../lockfile/writer"
 require "../definition"
 require "../resolution"
+require "../plan_cache"
 require "../mirror"
 require "../proxy"
 require "../installer"
@@ -278,8 +279,10 @@ module Celerite
       # the complete installed tree can both be proved from the lockfile and
       # the verified evaluation before any Ruby process starts. The compatible
       # path's ProcessLock is still acquired around the emitted transcript.
+      trusted_result = LockFastPath.enabled? ? LockFastPath.trusted_attempt(definition) : {nil, nil}
       fast_path_result = InstallFastPath.attempt(definition, config, rest, summary,
-        show_resolving, no_reuse, no_install, cli_arguments, refresh_cache)
+        show_resolving, no_reuse, no_install, cli_arguments, refresh_cache,
+        trusted_result: trusted_result)
       if LockFastPath.debug?
         if fp = fast_path_result[0]
           stderr.puts "fast-path: install hit (digest=#{fp.digest[0, 12]})"
@@ -308,7 +311,11 @@ module Celerite
         fingerprint : Bridge::EvalFingerprint? = nil
         begin
           batch = GemfileEvaluator.fetch(definition.gemfile_path, client: bridge)
-          evaluation = batch.evaluation
+          evaluation = if trusted = trusted_result[0]
+                          trusted.evaluation
+                        else
+                          batch.evaluation
+                        end
           fingerprint = batch.fingerprint
           gemfile_dependencies = evaluation.dependencies
           gemfile_sources = evaluation.sources
@@ -328,7 +335,11 @@ module Celerite
         rescue
         end
 
-        resolution = Resolution.new(definition, false, bridge)
+        resolution = if trusted = trusted_result[0]
+                       Resolution.from_evaluation(definition, trusted.evaluation, bridge)
+                     else
+                       Resolution.new(definition, false, bridge)
+                     end
         resolution.progress = stdout
         # `Bundler.create_bundle_path` runs before the frozen validation
         # (bundler/installer.rb:63-71), so a deployment install that then fails
@@ -431,6 +442,39 @@ module Celerite
         # `empty_checksums_actionable?`.
         checksum_refresh = reuse ? definition.checksums_need_refresh?(rest.includes?("--local")) : nil
         reuse = false if checksum_refresh
+        plan_hit : LockFastPath::Hit? = nil
+        cache_prepared = false
+        if reuse && (trusted = trusted_result[0]) && plan_cache_context?(definition, config, rest,
+            summary, show_resolving, no_reuse, no_install, cli_arguments, refresh_cache)
+          plan_hit = trusted
+          candidate = Resolution.bundler_cache_candidate(definition, trusted.evaluation, bridge, trusted.facts)
+          if components = PlanCache.locked_components(resolution, trusted, candidate)
+            cache_prepared = true
+            if plan = PlanCache.read_locked(resolution, trusted, components)
+              resolution = Resolution.from_plan(definition, trusted.evaluation, bridge,
+                plan.specs, plan.extras, candidate.path)
+            else
+              # A changed/missing default cache entry falls back to Ruby's
+              # authoritative path. Custom layouts already made that RPC above.
+              resolution.bundler_cache_path = if candidate.optimized
+                                                 begin
+                                                   bridge.bundler_cache_file(trusted.bundler_version)
+                                                 rescue Bridge::BridgeError
+                                                   nil
+                                                 end
+                                               else
+                                                 candidate.path
+                                               end
+            end
+          end
+        end
+        if trusted_result[0] && !cache_prepared
+          begin
+            resolution.bundler_cache_path = bridge.bundler_cache_file(resolution.bridge_bundler_version)
+          rescue Bridge::BridgeError
+            resolution.bundler_cache_path = nil
+          end
+        end
         resolution.show_resolving = show_resolving
         # 4.0.24 only re-reads the index to fill an *empty* CHECKSUMS entry: it
         # never reaches the resolver, so it stays silent (measured; `lock` does
@@ -1004,17 +1048,45 @@ module Celerite
           end
         end
 
+<<<<<<< HEAD
         # The normal compatible install has completed successfully. Only now
         # bind an empty Plugin::DSL result to the deterministic fingerprint
         # from the successful evaluation; errors and non-empty warnings/results
         # never create a certificate.
         PluginGemfileCache.remember(definition.gemfile_path, plugin_names, evaluation, fingerprint)
+||||||| parent of 0bce9b6 (fix: rehydrate trusted locked plans)
+=======
+        # P3 publishes only after a successful locked reuse whose semantic lock
+        # stayed unchanged. Cache failure is deliberately invisible to install.
+        if reuse && (trusted = plan_hit) && resolution_can_reuse?(resolution) &&
+            Digest::SHA256.hexdigest(File.read(definition.lockfile_path)) == trusted.lockfile_sha256
+          candidate = Resolution.bundler_cache_candidate(definition, trusted.evaluation, bridge, trusted.facts)
+          if components = PlanCache.locked_components(resolution, trusted, candidate)
+            PlanCache.write_locked(resolution, trusted, components)
+          end
+        end
+>>>>>>> 0bce9b6 (fix: rehydrate trusted locked plans)
 
         0
-      ensure
-        lock.try(&.close)
         bridge.close
       end
+    end
+
+    private def self.plan_cache_context?(definition : Definition, config : Config,
+                                         rest : Array(String), summary : Bool,
+                                         show_resolving : Bool, no_reuse : Bool,
+                                         no_install : Bool, cli_arguments : Bool,
+                                         refresh_cache : Bool) : Bool
+      return false unless PlanCache.enabled?
+      return false unless rest.empty? && summary && show_resolving && !no_reuse &&
+                          !no_install && cli_arguments && refresh_cache
+      return false if ENV["CELERITE_VERBOSE"]? == "1" || PluginHooks.enabled?(config)
+      return false if group_configured?(config) || config.frozen? || config_bool?(config["deployment"])
+      return false if config_bool?(config["disable_shared_gems"]) || config_bool?(config["force_ruby_platform"])
+      return false if config_bool?(config["clean"]) || !config["cooldown"].nil?
+      return false unless definition.lockfile_exists? && definition.lockfile!.valid?
+      definition.lockfile!.bundler_version == Celerite::Profile.bundler_version &&
+        definition.checksums_need_refresh?(false).nil?
     end
 
     # The reference install reuses a valid lockfile without re-resolving

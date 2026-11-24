@@ -267,6 +267,7 @@ module Celerite
       getter lock_options : Hash(String, String)?
     end
 
+    getter definition : Definition
     getter evaluation : Bridge::GemfileEvaluation
     getter resolved_specs : Array(ResolvedSpec)
     getter sources : Array(Bridge::EvaluatedSource)
@@ -309,6 +310,7 @@ module Celerite
     # Cooldown exclusions (name, version, created_at unix seconds) recorded
     # while building the candidate index (4.0.24 profile only).
     @cooldown_skipped = [] of Tuple(String, String, Int64)
+    @plan_loaded : Bool = false
 
     # Clock injection for cooldown tests (unix seconds).
     property cooldown_now : Int64?
@@ -323,20 +325,108 @@ module Celerite
     # lines (stdout for `lock`, stderr for `lock --print` — pinned behavior).
     property progress : IO = IO::Memory.new
 
+    # Reuse a previously trusted evaluation without issuing evaluate_batch.
+    # The caller still owns the ordinary reuse, compatibility and lock checks.
+    def self.from_evaluation(definition : Definition,
+                             evaluation : Bridge::GemfileEvaluation,
+                             bridge : Bridge::Client) : Resolution
+      new(definition, false, bridge, evaluation)
+    end
+
+    # Explicit locked-plan hydration. No allocation followed by scattered
+    # assignments: every field required by lock emission and installation is
+    # initialized here, and resolve! retains its normal stale-edge checks.
+    def self.from_plan(definition : Definition,
+                       evaluation : Bridge::GemfileEvaluation,
+                       bridge : Bridge::Client,
+                       specs : Array(ResolvedSpec),
+                       extras : Array(ResolvedSpec),
+                       bundler_cache_path : String?) : Resolution
+      new(definition, false, bridge, evaluation, specs, extras, bundler_cache_path)
+    end
+
     def initialize(@definition : Definition, @unlock : Bool | Array(String) = false,
                    @bridge : Bridge::Client? = nil)
       @owned_bridge = @bridge.nil?
       @bridge = @bridge || Bridge::Client.shared
-      @evaluation = eval_gemfile
-      @sources = @evaluation.sources
-      @bridge_bundler_version = @evaluation.bundler_version
+      initialize_state(eval_gemfile)
       @bundler_cache_path = query_bundler_cache_path
       @resolved_specs = [] of ResolvedSpec
+      @lock_extra_specs = [] of ResolvedSpec
       @root_dependency_names = [] of String
       @resolved = false
+    end
+
+    private def initialize(@definition : Definition, @unlock : Bool | Array(String),
+                           @bridge : Bridge::Client,
+                           @evaluation : Bridge::GemfileEvaluation)
+      @owned_bridge = false
+      initialize_state(@evaluation)
+      @bundler_cache_path = nil
+      @resolved_specs = [] of ResolvedSpec
+      @lock_extra_specs = [] of ResolvedSpec
+      @root_dependency_names = [] of String
+      @resolved = false
+    end
+
+    private def initialize(@definition : Definition, @unlock : Bool | Array(String),
+                           @bridge : Bridge::Client,
+                           @evaluation : Bridge::GemfileEvaluation,
+                           @resolved_specs : Array(ResolvedSpec),
+                           @lock_extra_specs : Array(ResolvedSpec),
+                           @bundler_cache_path : String?)
+      @owned_bridge = false
+      initialize_state(@evaluation)
+      @root_dependency_names = @evaluation.dependencies.map(&.name)
+      @resolved = true
+      @plan_loaded = true
+    end
+
+    private def initialize_state(evaluation : Bridge::GemfileEvaluation) : Nil
+      @evaluation = evaluation
+      @sources = evaluation.sources
+      @bridge_bundler_version = evaluation.bundler_version
       @current_base_requirements = {} of String => Gem::Requirement
       @current_index = {} of String => Array(Resolver::IndexSpec)
       @prerelease_available = Set(String).new
+    end
+
+    # Set a cache path that was independently validated by the caller. This is
+    # deliberately separate from bridge_bundler_version=, which performs RPC.
+    def bundler_cache_path=(path : String?) : String?
+      @bundler_cache_path = path
+    end
+
+    def locked_plan_rows : Tuple(Array(ResolvedSpec), Array(ResolvedSpec))
+      {materialize_locked, @lock_extra_specs}
+    end
+
+    # A default-layout Bundler cache can be hashed locally. Custom GEM_HOME or
+    # GEM_PATH may make Ruby select a different spec.cache_file, so those cases
+    # (and every unsupported version/shape) retain the original RPC.
+    def self.bundler_cache_candidate(definition : Definition,
+                                     evaluation : Bridge::GemfileEvaluation,
+                                     bridge : Bridge::Client,
+                                     facts : RuntimeFacts::Facts) : NamedTuple(path: String?, sha256: String?, optimized: Bool)
+      version = evaluation.bundler_version
+      fallback = -> do
+        begin
+          {bridge.bundler_cache_file(version), nil, false}
+        rescue Bridge::BridgeError
+          {nil, nil, false}
+        end
+      end
+      return fallback.call unless version.starts_with?("4.") && !version.starts_with?("2.")
+      return fallback.call unless definition.lockfile!.specs.any? { |spec| spec.name == "bundler" }
+      return fallback.call if ENV["GEM_HOME"]? || ENV["GEM_PATH"]?
+      default_dir = facts.default_gem_dir.value
+      return fallback.call if default_dir.nil? || default_dir.empty?
+      path = File.join(default_dir, "cache", "bundler-#{version}.gem")
+      return fallback.call unless File.file?(path)
+      sha256 = Digest::SHA256.hexdigest(File.read(path))
+      {path, sha256, true}
+    rescue
+      fallback.call
     end
 
     def close : Nil
@@ -1195,7 +1285,7 @@ module Celerite
         # materializing (or blindly installing) the gem.
         incompatible = verify_locked_compat ? incompatible_locked_spec_names : [] of String
         if incompatible.empty?
-          @resolved_specs = materialize_locked
+          @resolved_specs = @plan_loaded ? @resolved_specs : materialize_locked
           # `lazy_specification.rb:259-270` compares the lockfile's recorded
           # dependencies with the spec materialized from the index during a strict
           # (install) materialization; a mismatch means the lock is missing a

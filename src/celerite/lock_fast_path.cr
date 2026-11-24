@@ -66,11 +66,13 @@ module Celerite
       getter evaluation : Bridge::GemfileEvaluation
       getter record : FastPathStore::RuntimeRecord
       getter facts : RuntimeFacts::Facts
+      getter lockfile_sha256 : String
 
       def initialize(@digest : String, @bundler_version : String,
                      @evaluation : Bridge::GemfileEvaluation,
                      @record : FastPathStore::RuntimeRecord,
-                     @facts : RuntimeFacts::Facts)
+                     @facts : RuntimeFacts::Facts,
+                     @lockfile_sha256 : String)
       end
     end
 
@@ -171,8 +173,14 @@ module Celerite
         completed, record, EvalFingerprint::State::Deterministic)
       return {nil, "verdict:#{verdict.reason}"} unless verdict.allowed?
 
+      lock_digest = begin
+        Digest::SHA256.hexdigest(File.read(definition.lockfile_path))
+      rescue
+        return {nil, "lock-read"}
+      end
+
       {Hit.new(entry.not_nil!.digest, ev.bundler_version, ev, record.not_nil!,
-        completed.not_nil!), nil}
+        completed.not_nil!, lock_digest), nil}
     end
 
     # Writes the runtime record for this project after a successful Ruby-path

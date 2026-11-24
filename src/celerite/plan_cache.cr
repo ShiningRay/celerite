@@ -6,6 +6,7 @@ require "./checksum"
 require "./config"
 require "./fast_path_store"
 require "./lockfile/model"
+require "./resolution"
 require "uri"
 
 # Opt-in persistent cache for parsed/install plans. P1 supplies canonical keys
@@ -27,7 +28,11 @@ module Celerite::PlanCache
   ENTRY_FILE     = /\A[0-9a-f]{64}\.json\z/
   CREDENTIAL_URI = %r{://[^/"\\\s]+@}
   SENSITIVE_KEY  = /\A(?:api[_-]?key|authorization|credential|credentials|password|passwd|secret|token)\z/i
-  PAYLOAD_KEYS   = %w[installed_snapshot plan specs]
+  PAYLOAD_KEYS          = %w[installed_snapshot plan specs]
+  COMPONENT_KEYS        = %w[abi build checksums credential_namespace platform sources]
+  LOCKED_COMPONENT_KEYS = %w[abi build bundler_cache bundler_version checksums credential_namespace evaluation_digest lockfile_sha256 platform sources]
+  LOCKED_SCHEMA         = "celerite-locked-plan/1"
+  LOCKED_KEYS           = %w[bundler_cache plan provenance schema]
 
   @@debug_io : IO = STDERR
 
@@ -509,10 +514,11 @@ module Celerite::PlanCache
 
   private def self.valid_payload?(value : JSON::Any) : Bool
     object = value.as_h?
-    return false unless object && object.keys.sort == PAYLOAD_KEYS
-    object["specs"].as_a?.is_a?(Array(JSON::Any)) &&
+    return true if object && object.keys.sort == PAYLOAD_KEYS &&
+      object["specs"].as_a?.is_a?(Array(JSON::Any)) &&
       object["plan"].as_h?.is_a?(Hash(String, JSON::Any)) &&
       object["installed_snapshot"].as_a?.is_a?(Array(JSON::Any))
+    valid_locked_payload?(value)
   end
 
   private def self.portable_json?(value : JSON::Any) : Bool
@@ -563,6 +569,161 @@ module Celerite::PlanCache
     end
   end
 
+  struct LockedPlan
+    getter specs : Array(Resolution::ResolvedSpec)
+    getter extras : Array(Resolution::ResolvedSpec)
+
+    def initialize(@specs : Array(Resolution::ResolvedSpec),
+                   @extras : Array(Resolution::ResolvedSpec))
+    end
+  end
+
+  # P3 adds provenance to the existing six key components. The payload remains
+  # root-independent: Bundler cache provenance records only version and digest,
+  # never the absolute cache path.
+  def self.locked_components(resolution : Resolution, hit : LockFastPath::Hit,
+                             candidate : NamedTuple(path: String?, sha256: String?, optimized: Bool)) : JSON::Any?
+    definition = resolution_definition(resolution)
+    return nil unless candidate.sha256.nil? || candidate.sha256.not_nil!.matches?(DIGEST)
+    return nil unless Digest::SHA256.hexdigest(File.read(definition.lockfile_path)) == hit.lockfile_sha256
+    return nil unless definition.lockfile!.bundler_version == hit.bundler_version
+    return nil unless hit.bundler_version == Celerite::Profile.bundler_version
+    return nil unless definition.checksums_need_refresh?(false).nil?
+    base = components_for(resolution.primary_remote, definition.lockfile!,
+      File.dirname(File.expand_path(definition.gemfile_path)), Gem::Platform.local.to_s,
+      hit.record.abi, definition.config)
+    return nil unless base
+    object = base.as_h.dup
+    object["evaluation_digest"] = JSON::Any.new(hit.digest)
+    object["lockfile_sha256"] = JSON::Any.new(hit.lockfile_sha256)
+    object["bundler_version"] = JSON::Any.new(hit.bundler_version)
+    object["bundler_cache"] = if candidate.optimized && candidate.sha256
+                                JSON::Any.new({"version" => JSON::Any.new(hit.bundler_version),
+                                  "sha256" => JSON::Any.new(candidate.sha256.not_nil!)})
+                              else
+                                JSON::Any.new(nil)
+                              end
+    JSON.parse(canonical_json(JSON::Any.new(object)))
+  rescue
+    nil
+  end
+
+  # Definition is intentionally not exposed by Resolution. This small bridge is
+  # replaced by the explicit constructor argument at the command call site.
+  private def self.resolution_definition(resolution : Resolution) : Definition
+    resolution.definition
+  end
+
+  def self.read_locked(resolution : Resolution, hit : LockFastPath::Hit,
+                       components : JSON::Any) : LockedPlan?
+    result = read(key_for(components))
+    return nil unless result.hit?
+    payload = result.payload.not_nil!
+    return nil unless valid_locked_payload?(payload)
+    return nil unless payload["provenance"] == components
+    current, extras = resolution.locked_plan_rows
+    return nil unless payload["plan"] == plan_json(current, extras)
+    specs = payload["plan"]["specs"].as_a.map { |row| spec_from_json(row) }
+    extra_specs = payload["plan"]["extra_platform_specs"].as_a.map { |row| spec_from_json(row) }
+    LockedPlan.new(specs, extra_specs)
+  rescue
+    nil
+  end
+
+  def self.write_locked(resolution : Resolution, hit : LockFastPath::Hit,
+                        components : JSON::Any) : WriteResult
+    current, extras = resolution.locked_plan_rows
+    payload = JSON::Any.new({
+      "schema" => JSON::Any.new(LOCKED_SCHEMA),
+      "provenance" => components,
+      "plan" => plan_json(current, extras),
+      "bundler_cache" => components.as_h["bundler_cache"],
+    })
+    write(key_for(components).not_nil!, components, payload)
+  rescue
+    write_result(WriteStatus::InvalidPayload, "locked_plan_invalid")
+  end
+
+  private def self.plan_json(specs : Array(Resolution::ResolvedSpec),
+                             extras : Array(Resolution::ResolvedSpec)) : JSON::Any
+    JSON::Any.new({
+      "specs" => JSON::Any.new(specs.map { |spec| spec_json(spec) }),
+      "extra_platform_specs" => JSON::Any.new(extras.map { |spec| spec_json(spec) }),
+    })
+  end
+
+  private def self.spec_json(spec : Resolution::ResolvedSpec) : JSON::Any
+    JSON::Any.new({
+      "name" => JSON::Any.new(spec.name),
+      "version" => JSON::Any.new(spec.version.to_s),
+      "platform" => nullable(spec.platform),
+      "dependencies" => JSON::Any.new(spec.dependencies.map do |dep|
+        JSON::Any.new({"name" => JSON::Any.new(dep.name),
+          "requirements" => nullable(dep.requirements.try(&.map { |value| JSON::Any.new(value) }))})
+      end),
+      "checksum" => nullable(spec.checksum),
+      "source_index" => JSON::Any.new(spec.source_index),
+      "source_type" => JSON::Any.new(spec.source_type),
+      "source_info" => nullable(spec.source_info.try(&.to_json)),
+      "source_remote" => nullable(spec.source_remote),
+      "source_declared" => nullable(spec.source_declared),
+      "required_ruby_version" => nullable(spec.required_ruby_version.try(&.to_s)),
+      "required_rubygems_version" => nullable(spec.required_rubygems_version.try(&.to_s)),
+      "default_gem" => JSON::Any.new(spec.default_gem),
+    })
+  end
+
+  private def self.spec_from_json(value : JSON::Any) : Resolution::ResolvedSpec
+    row = value.as_h
+    info = row["source_info"]
+    source_info = info.raw.nil? ? nil : Resolution::ResolvedSpec::SourceInfo.from_json(info.to_json)
+    deps = row["dependencies"].as_a.map do |dep|
+      item = dep.as_h
+      requirements = item["requirements"].raw.nil? ? nil : item["requirements"].as_a.map(&.as_s)
+      Lockfile::SpecDependency.new(item["name"].as_s, requirements)
+    end
+    ruby = row["required_ruby_version"].raw.nil? ? nil : Gem::Requirement.new(row["required_ruby_version"].as_s)
+    rubygems = row["required_rubygems_version"].raw.nil? ? nil : Gem::Requirement.new(row["required_rubygems_version"].as_s)
+    Resolution::ResolvedSpec.new(row["name"].as_s, Gem::Version.new(row["version"].as_s),
+      nullable_string(row["platform"]), deps, nullable_string(row["checksum"]),
+      row["source_index"].as_i, row["source_type"].as_s, source_info,
+      nullable_string(row["source_remote"]), ruby, rubygems, row["default_gem"].as_b).tap do |spec|
+      spec.source_declared = nullable_string(row["source_declared"])
+    end
+  end
+
+  private def self.nullable(value : String?) : JSON::Any
+    JSON::Any.new(value)
+  end
+
+  private def self.nullable(value : JSON::Any?) : JSON::Any
+    value || JSON::Any.new(nil)
+  end
+
+  private def self.nullable(value : Array(JSON::Any)?) : JSON::Any
+    JSON::Any.new(value)
+  end
+
+  private def self.nullable_string(value : JSON::Any) : String?
+    value.raw.nil? ? nil : value.as_s
+  end
+
+  private def self.valid_locked_payload?(value : JSON::Any) : Bool
+    object = value.as_h?
+    return false unless object && object.keys.sort == LOCKED_KEYS
+    return false unless object["schema"].as_s? == LOCKED_SCHEMA
+    return false unless object["provenance"].as_h?.is_a?(Hash(String, JSON::Any))
+    plan = object["plan"].as_h?
+    return false unless plan && plan.keys.sort == %w[extra_platform_specs specs]
+    return false unless plan["specs"].as_a?.is_a?(Array(JSON::Any)) &&
+                        plan["extra_platform_specs"].as_a?.is_a?(Array(JSON::Any))
+    cache = object["bundler_cache"]
+    return true if cache.raw.nil?
+    item = cache.as_h?
+    item != nil && item.keys.sort == %w[sha256 version] &&
+      item["version"].as_s?.is_a?(String) && item["sha256"].as_s?.try(&.matches?(DIGEST)) == true
+  end
+
   private def self.result(status : Status, reason : String, payload : JSON::Any? = nil) : ReadResult
     value = ReadResult.new(status, reason, payload)
     if debug?
@@ -594,7 +755,8 @@ module Celerite::PlanCache
   private def self.valid_components?(value : JSON::Any) : Bool
     object = value.as_h?
     return false unless object
-    return false unless object.keys.sort == %w[abi build checksums credential_namespace platform sources]
+    keys = object.keys.sort
+    return false unless keys == COMPONENT_KEYS || keys == LOCKED_COMPONENT_KEYS
     return false unless object["sources"].as_a?.try(&.size.>(0))
     return false unless object["credential_namespace"].as_s?.try(&.matches?(NAMESPACE))
 
@@ -635,6 +797,18 @@ module Celerite::PlanCache
                           identity && nonempty_s?(identity["type"]?) &&
                           (identity["remote"]?.try(&.as_s?) || identity["plugin_type"]?.try(&.as_s?))
                         end
+    if keys == LOCKED_COMPONENT_KEYS
+      return false unless nonempty_s?(object["bundler_version"])
+      return false unless object["evaluation_digest"].as_s?.try(&.matches?(DIGEST))
+      return false unless object["lockfile_sha256"].as_s?.try(&.matches?(DIGEST))
+      cache = object["bundler_cache"]
+      unless cache.raw.nil?
+        item = cache.as_h?
+        return false unless item && item.keys.sort == %w[sha256 version]
+        return false unless nonempty_s?(item["version"])
+        return false unless item["sha256"].as_s?.try(&.matches?(DIGEST))
+      end
+    end
     true
   end
 
