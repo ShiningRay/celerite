@@ -1,6 +1,7 @@
 require "./config"
 require "./plugin_hooks"
 require "./bridge/client"
+require "./gemfile_evaluation"
 
 module Celerite
   # Gemfile-level plugin declarations (reference: `Bundler::Plugin.gemfile_install`
@@ -24,8 +25,7 @@ module Celerite
     def self.plugin_names(gemfile_path : String) : Array(String)
       bridge = Bridge::Client.shared
       begin
-        result = bridge.plugin_gemfile_eval(gemfile_path)
-        result["plugin_names"].as_a.map(&.as_s)
+        GemfileEvaluator.plugin_names(gemfile_path, bridge)
       ensure
         bridge.close
       end

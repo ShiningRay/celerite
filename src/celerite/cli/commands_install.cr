@@ -271,7 +271,7 @@ module Celerite
         gemfile_dependencies : Array(Bridge::EvaluatedDependency)? = nil
         gemfile_sources : Array(Bridge::EvaluatedSource)? = nil
         begin
-          evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+          evaluation = GemfileEvaluator.evaluation(definition.gemfile_path, bridge)
           gemfile_dependencies = evaluation.dependencies
           gemfile_sources = evaluation.sources
           # `evaluation.ruby` is the human-readable requirement string and drops
@@ -1515,7 +1515,7 @@ module Celerite
             "`bundle clean --force`.")
         end
         begin
-          evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+          evaluation = GemfileEvaluator.evaluation(definition.gemfile_path, bridge)
           if requested = Commands.requested_ruby_version(evaluation)
             RubyRuntime.validate_version!(requested, bridge.ruby_environment)
           end
@@ -1767,7 +1767,7 @@ module Celerite
         # Reference Bundler.setup validates Ruby requirements during exec.
         if current_definition = definition
           begin
-            evaluation = bridge.evaluate_gemfile(current_definition.gemfile_path)
+            evaluation = GemfileEvaluator.evaluation(current_definition.gemfile_path, bridge)
             if requested = Commands.requested_ruby_version(evaluation)
               RubyRuntime.validate_version!(requested, env)
             end

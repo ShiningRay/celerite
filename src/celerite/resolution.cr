@@ -379,7 +379,7 @@ module Celerite
     end
 
     private def eval_gemfile : Bridge::GemfileEvaluation
-      @bridge.not_nil!.evaluate_gemfile(@definition.gemfile_path)
+      GemfileEvaluator.evaluation(@definition.gemfile_path, @bridge)
     end
 
     private def query_bundler_cache_path : String?

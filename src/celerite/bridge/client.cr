@@ -26,6 +26,7 @@ module Celerite
       @@rpc = 0
       @@req_bytes = 0
       @@resp_bytes = 0
+      @@evaluations = 0
 
       def self.enabled? : Bool
         value = ENV["CELERITE_BRIDGE_STATS"]?
@@ -38,6 +39,7 @@ module Celerite
         @@rpc = 0
         @@req_bytes = 0
         @@resp_bytes = 0
+        @@evaluations = 0
       end
 
       # A bridge client spawns exactly one Ruby subprocess (`Process.new`).
@@ -58,6 +60,16 @@ module Celerite
         @@resp_bytes += bytes if enabled?
       end
 
+      # An *evaluation* is one `evaluate_batch` round trip, i.e. one run of
+      # `Bundler::Dsl#eval_gemfile` inside the bridge. It is tracked apart from
+      # `rpc` because F5's invariant is about evaluations, not requests: a
+      # command may spend RPCs on `ruby_environment`/`gemspec_paths` without
+      # evaluating the Gemfile again, and a cache hit costs zero evaluations.
+      # Deliberately absent from `finish`'s line, which is pinned output.
+      def self.record_evaluation : Nil
+        @@evaluations += 1 if enabled?
+      end
+
       def self.finish(io : IO) : Nil
         return unless enabled?
         io.puts "bridge: procs=#{@@procs} rpc=#{@@rpc} req_bytes=#{@@req_bytes} resp_bytes=#{@@resp_bytes}"
@@ -70,6 +82,10 @@ module Celerite
 
       def self.rpc : Int32
         @@rpc
+      end
+
+      def self.evaluations : Int32
+        @@evaluations
       end
     end
 
@@ -358,6 +374,17 @@ module Celerite
 
         debug("eval-cache: state=deterministic")
         @@withheld.delete(normalized(path))
+        # A section the caller did not ask for is not a section that changed:
+        # carrying the earlier entry's `gemspecs` over when the fingerprint
+        # digest is unchanged keeps a later `gemspecs` lookup a cache hit instead
+        # of charging a second evaluation for the very same files (F5).
+        if gemspecs.nil?
+          if (existing = @@entries[normalized(path)]?) &&
+             (previous = existing.fingerprint) && (current = fingerprint) &&
+             previous.digest == current.digest
+            gemspecs = existing.gemspecs
+          end
+        end
         entry = Entry.new(evaluation, fingerprint, document, gemspecs,
           environment_signature, cache_id)
         @@entries[normalized(path)] = entry
@@ -915,6 +942,7 @@ module Celerite
           payload["include"] = JSON::Any.new(sections.map { |section| JSON::Any.new(section) })
         end
 
+        BridgeStats.record_evaluation
         result = request("evaluate_batch", payload)
         evaluation = GemfileEvaluation.from_json(result.to_json)
         GemfileWarnings.record(evaluation.warnings)
@@ -967,6 +995,9 @@ module Celerite
 
       # Absolute paths of the gemspecs loaded by Gemfile `gemspec` directives,
       # in DSL order (reference: `Bundler::Dsl#gemspecs.map(&:loaded_from)`).
+      # Production callers use `GemfileEvaluator.gemspecs`, which gets them from
+      # the evaluation request itself (slice F5); this op stays for protocol
+      # compatibility and for simulations that only implement `gemspec_paths`.
       def gemspec_paths(gemfile : String) : Array(String)
         result = request("gemspec_paths", {"gemfile" => gemfile})
         GemfileWarnings.record(result["warnings"]?.try(&.as_a.map(&.as_s)) || [] of String)

@@ -138,7 +138,7 @@ module Celerite
         # `cli/update.rb` L33-35: `--group` widens the explicit gem list with
         # every dependency of the requested groups.
         if !group_values.empty?
-          evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+          evaluation = GemfileEvaluator.evaluation(definition.gemfile_path, bridge)
           group_gems = evaluation.dependencies.select do |dep|
             dep.groups.any? { |g| group_values.includes?(g) }
           end.map(&.name)
@@ -155,7 +155,7 @@ module Celerite
         end
         unlock : Bool | Array(String) = full_update ? true : gems
         if source_name = sources.first?
-          evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+          evaluation = GemfileEvaluator.evaluation(definition.gemfile_path, bridge)
           matched = evaluation.sources.any? do |s|
             s.name == source_name || s.remote == source_name ||
               (s.remotes || [] of String).includes?(source_name)
@@ -518,7 +518,7 @@ module Celerite
       gemfile_appended = false
       bridge = Bridge::Client.shared
       begin
-        evaluation = bridge.evaluate_gemfile(gemfile_path)
+        evaluation = GemfileEvaluator.evaluation(gemfile_path, bridge)
         desired = explicit_parts || [">= 0"]
         current = evaluation.dependencies.find { |dep| dep.name == name }
         if current && !same_requirement?(current.requirements, desired)
@@ -1272,7 +1272,7 @@ module Celerite
       # Bundler::Env appends `## Gemspecs` after the Gemfile section, one
       # `### <basename>` ruby fence per gemspec loaded by `gemspec` directives
       # (env.rb:51-58); the whole section is omitted when there are none.
-      gemspec_paths = bridge ? bridge.gemspec_paths(definition.gemfile_path) : [] of String
+      gemspec_paths = bridge ? GemfileEvaluator.gemspecs(definition.gemfile_path, bridge) : [] of String
       unless gemspec_paths.empty?
         stdout.puts
         stdout.puts "## Gemspecs"
@@ -1899,7 +1899,7 @@ module Celerite
         # (`definition.specs`), not by lockfile section layout, so the
         # tie-breaker follows the DEPENDENCIES section.
         ordered = [] of Lockfile::Spec
-        bridge.evaluate_gemfile(definition.gemfile_path).dependencies.each do |dependency|
+        GemfileEvaluator.evaluation(definition.gemfile_path, bridge).dependencies.each do |dependency|
           spec = lockfile.specs.find(&.name.==(dependency.name))
           ordered << spec if spec && !ordered.includes?(spec)
         end
@@ -1979,7 +1979,7 @@ module Celerite
       Commands.validate_runtime!(definition)
       bridge = Bridge::Client.shared
       begin
-        evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+        evaluation = GemfileEvaluator.evaluation(definition.gemfile_path, bridge)
         # `--group` is a scalar Thor option (fund.rb:14-20): the last occurrence
         # wins, both `--group=x` and `--group x` are accepted, and a comma stays
         # part of the group name (4.0.24 turns "development,test" into one
@@ -2257,7 +2257,7 @@ module Celerite
         case candidates.size
         when 0
           evaluation = begin
-            bridge.evaluate_gemfile(definition.gemfile_path)
+            GemfileEvaluator.evaluation(definition.gemfile_path, bridge)
           rescue
             nil
           end
@@ -3175,7 +3175,7 @@ module Celerite
       definition = Definition.build
       bridge = Bridge::Client.shared
       begin
-        evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+        evaluation = GemfileEvaluator.evaluation(definition.gemfile_path, bridge)
         if requested = Commands.requested_ruby_version(evaluation)
           RubyRuntime.validate_version!(requested, bridge.ruby_environment)
         end

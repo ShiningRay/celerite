@@ -34,7 +34,7 @@ module Celerite
         return
       end
       begin
-        client.evaluate_gemfile(definition.gemfile_path)
+        GemfileEvaluator.evaluation(definition.gemfile_path, client)
       rescue
         nil
       ensure

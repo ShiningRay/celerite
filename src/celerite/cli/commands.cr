@@ -1275,7 +1275,7 @@ module Celerite
         begin
           bridge = Bridge::Client.shared
           begin
-            evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+            evaluation = GemfileEvaluator.evaluation(definition.gemfile_path, bridge)
             if requested = requested_ruby_version(evaluation)
               ruby_version = requested.single_version_string
             end
@@ -1342,7 +1342,7 @@ module Celerite
         end
       end
       begin
-        evaluation = client.evaluate_gemfile(definition.gemfile_path)
+        evaluation = GemfileEvaluator.evaluation(definition.gemfile_path, client)
         requested = requested_ruby_version(evaluation)
         return unless requested
         env = client.ruby_environment
@@ -1396,7 +1396,7 @@ module Celerite
       return :none unless bridge_available?
       bridge = Bridge::Client.shared
       begin
-        evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+        evaluation = GemfileEvaluator.evaluation(definition.gemfile_path, bridge)
         requested = requested_ruby_version(evaluation)
         return :none if requested.nil?
         lock_ruby = lockfile.ruby_version
@@ -1530,7 +1530,7 @@ module Celerite
       gemfile_evaluation : Bridge::GemfileEvaluation? = nil
       if definition.lockfile_exists?
         begin
-          gemfile_evaluation = Bridge::Client.shared.evaluate_gemfile(definition.gemfile_path)
+          gemfile_evaluation = GemfileEvaluator.evaluation(definition.gemfile_path, Bridge::Client.shared)
         rescue ex : Bridge::BridgeError
           raise ex if {4, 15}.includes?(ex.status_code)
         rescue
@@ -1552,7 +1552,7 @@ module Celerite
       if config.frozen? && definition.lockfile_exists?
         begin
           check_bridge = Bridge::Client.shared
-          check_evaluation = check_bridge.not_nil!.evaluate_gemfile(definition.gemfile_path)
+          check_evaluation = GemfileEvaluator.evaluation(definition.gemfile_path, check_bridge)
           gemfile_dependencies = check_evaluation.not_nil!.dependencies
           gemfile_sources = check_evaluation.not_nil!.sources
           # `definition.rb:153` (`converge_paths`) only guards the 4.x line;
@@ -2739,7 +2739,7 @@ module Celerite
     def self.lockfile_groups(definition : Definition, lockfile : Lockfile::Data) : Array(String)
       bridge = Bridge::Client.shared
       begin
-        evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+        evaluation = GemfileEvaluator.evaluation(definition.gemfile_path, bridge)
         groups = [] of String
         evaluation.dependencies.each do |dep|
           gs = dep.groups.empty? ? ["default"] : dep.groups
@@ -2756,7 +2756,7 @@ module Celerite
     def self.gem_groups_for(definition : Definition, name : String) : Array(String)
       bridge = Bridge::Client.shared
       begin
-        evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+        evaluation = GemfileEvaluator.evaluation(definition.gemfile_path, bridge)
         dep = evaluation.dependencies.find(&.name.==(name))
         groups = dep.try(&.groups) || [] of String
         groups = ["default"] if groups.empty?
@@ -2811,7 +2811,7 @@ module Celerite
       return specs if requested_groups.empty? || requested_groups == lockfile_groups(definition, lockfile)
       bridge = Bridge::Client.shared
       begin
-        evaluation = bridge.evaluate_gemfile(definition.gemfile_path)
+        evaluation = GemfileEvaluator.evaluation(definition.gemfile_path, bridge)
         group_map = {} of String => Array(String)
         evaluation.dependencies.each do |dep|
           groups = dep.groups
