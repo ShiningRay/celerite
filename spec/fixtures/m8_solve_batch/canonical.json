@@ -1,0 +1,118 @@
+{
+  "canonical": {
+    "input": {
+      "z": [
+        {"b": 2, "a": 1},
+        "line\n\"\\\u0001",
+        1.0,
+        0.0000001,
+        1e+20
+      ],
+      "a": {"β": true, "n": null}
+    },
+    "bytes": "{\"a\":{\"n\":null,\"β\":true},\"z\":[{\"a\":1,\"b\":2},\"line\\n\\\"\\\\\\u0001\",1.0,0.0000001,1e+20]}",
+    "sha256": "72961bebecee43631b132dedf13b3787e15b5a0abe0b4dfe11a2e4d5e04b6fe5"
+  },
+  "candidate_digest": {
+    "input": {
+      "default": [
+        {
+          "name": "zeta",
+          "version": "1.0",
+          "platform": "ruby",
+          "dependencies": [
+            {"name": "beta", "requirements": [">= 2", "< 3"]},
+            {"name": "alpha", "requirements": ["~> 1.0", ">= 1"]}
+          ],
+          "required_ruby_version": null,
+          "required_rubygems_version": null,
+          "created_at": null,
+          "checksum": {"algorithm": "sha256", "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+        },
+        {
+          "name": "alpha",
+          "version": "1.0",
+          "platform": "ruby",
+          "dependencies": [],
+          "required_ruby_version": ">= 3.0",
+          "required_rubygems_version": null,
+          "created_at": "2024-01-02T03:04:05Z",
+          "checksum": {"algorithm": "sha256", "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+        }
+      ]
+    },
+    "normalized": {
+      "default": [
+        {
+          "checksum": {"algorithm": "sha256", "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "created_at": "2024-01-02T03:04:05Z",
+          "dependencies": [],
+          "name": "alpha",
+          "platform": "ruby",
+          "required_ruby_version": ">= 3.0",
+          "required_rubygems_version": null,
+          "version": "1.0"
+        },
+        {
+          "checksum": {"algorithm": "sha256", "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+          "created_at": null,
+          "dependencies": [
+            {"name": "alpha", "requirements": [">= 1", "~> 1.0"]},
+            {"name": "beta", "requirements": ["< 3", ">= 2"]}
+          ],
+          "name": "zeta",
+          "platform": "ruby",
+          "required_ruby_version": null,
+          "required_rubygems_version": null,
+          "version": "1.0"
+        }
+      ]
+    },
+    "bytes": "{\"default\":[{\"checksum\":{\"algorithm\":\"sha256\",\"value\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"created_at\":\"2024-01-02T03:04:05Z\",\"dependencies\":[],\"name\":\"alpha\",\"platform\":\"ruby\",\"required_ruby_version\":\">= 3.0\",\"required_rubygems_version\":null,\"version\":\"1.0\"},{\"checksum\":{\"algorithm\":\"sha256\",\"value\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"created_at\":null,\"dependencies\":[{\"name\":\"alpha\",\"requirements\":[\">= 1\",\"~> 1.0\"]},{\"name\":\"beta\",\"requirements\":[\"< 3\",\">= 2\"]}],\"name\":\"zeta\",\"platform\":\"ruby\",\"required_ruby_version\":null,\"required_rubygems_version\":null,\"version\":\"1.0\"}]}",
+    "sha256": "45a4311d4a55a2729b224f6f76cac51c17b75282be92a1e143c47e26b67c92ad"
+  },
+  "source_identity": {
+    "sources": [
+      {
+        "source_id": "default",
+        "type": "Rubygems",
+        "name": "zeta",
+        "identity_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "uri_redacted": "https://rubygems.org",
+        "remotes": ["https://b.example", "https://a.example"],
+        "path": null,
+        "revision": null,
+        "ref": null,
+        "branch": null,
+        "tag": null,
+        "glob": null,
+        "submodules": null,
+        "plugin_type": null,
+        "lock_options": {},
+        "materialization": "pure_data"
+      },
+      {
+        "source_id": "a",
+        "type": "Rubygems",
+        "name": "alpha",
+        "identity_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "uri_redacted": "https://rubygems.org",
+        "remotes": ["https://d.example", "https://c.example"],
+        "path": null,
+        "revision": null,
+        "ref": null,
+        "branch": null,
+        "tag": null,
+        "glob": null,
+        "submodules": null,
+        "plugin_type": null,
+        "lock_options": {},
+        "materialization": "pure_data"
+      }
+    ],
+    "expected": {
+      "zeta": "ab860dd163fd3348b58c92a36a7fffd3f780d936025385923f183f4212d4aaf0",
+      "alpha": "2c315a527b9d4e7335521d18e30d90a90b78a14f3db5b59c6279575cabae4d23"
+    }
+  }
+}
