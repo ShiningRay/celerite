@@ -65,10 +65,12 @@ module Celerite
       getter bundler_version : String
       getter evaluation : Bridge::GemfileEvaluation
       getter record : FastPathStore::RuntimeRecord
+      getter facts : RuntimeFacts::Facts
 
       def initialize(@digest : String, @bundler_version : String,
                      @evaluation : Bridge::GemfileEvaluation,
-                     @record : FastPathStore::RuntimeRecord)
+                     @record : FastPathStore::RuntimeRecord,
+                     @facts : RuntimeFacts::Facts)
       end
     end
 
@@ -110,6 +112,14 @@ module Celerite
     def self.attempt(definition : Definition, rest : Array(String)) : {Hit?, String?}
       return {nil, nil} unless enabled?
       return {nil, "switches"} unless rest.empty?
+      trusted_attempt(definition)
+    end
+
+    # The command-independent part of `attempt`: it assumes the switches are
+    # on and the command's argument shape is already known to be safe. Both
+    # `lock` and `install` call this one gate; command-specific checks stay in
+    # their own modules so they cannot drift from the shared trust decision.
+    def self.trusted_attempt(definition : Definition) : {Hit?, String?}
       return {nil, "no-lockfile"} unless definition.lockfile_exists?
       # The Ruby path computes this with `rest.includes?("--local")`; a bare
       # `lock` has no `--local`, so a missing or empty CHECKSUMS entry forces
@@ -160,7 +170,8 @@ module Celerite
         completed, record, EvalFingerprint::State::Deterministic)
       return {nil, "verdict:#{verdict.reason}"} unless verdict.allowed?
 
-      {Hit.new(entry.not_nil!.digest, ev.bundler_version, ev, record.not_nil!), nil}
+      {Hit.new(entry.not_nil!.digest, ev.bundler_version, ev, record.not_nil!,
+        completed.not_nil!), nil}
     end
 
     # Writes the runtime record for this project after a successful Ruby-path
@@ -194,6 +205,17 @@ module Celerite
     # method's rescue so an exotic config can never turn a completed `lock` into
     # an error just because the record could not be written.
     def self.remember_after_lock : Nil
+      return unless enabled?
+      remember(Definition.build)
+    rescue
+    end
+
+    # Install writes its runtime record only after a successful Ruby-path
+    # install returns 0; a failed install therefore cannot leave a trusted
+    # record behind. `remember` itself re-reads the evaluation entry and
+    # local RuntimeFacts, so a half-written or non-deterministic entry stays
+    # unused.
+    def self.remember_after_install : Nil
       return unless enabled?
       remember(Definition.build)
     rescue

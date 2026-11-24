@@ -232,6 +232,10 @@ module Celerite
         CELERITE_FAST_PATH_DEBUG
         CELERITE_EVAL_DEBUG
         CELERITE_BRIDGE_STATS
+        # Transport selection only: changing the server script cannot change
+        # the Gemfile evaluation or RuntimeFacts. Ignoring it also lets a
+        # verified no-Ruby hit succeed when the server is unreachable.
+        CELERITE_BRIDGE_SERVER
       ]
 
       # Public for the S8c fast path: it reads a persisted entry without going

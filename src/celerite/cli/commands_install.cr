@@ -1,4 +1,5 @@
 require "../../celerite"
+require "../install_fast_path"
 require "../errors"
 require "../gem/platform"
 require "../lockfile/parser"
@@ -155,7 +156,13 @@ module Celerite
       # pass gem names through this entry, so they opt out of that check.
       begin
         with_gemfile_overrides(rest) do
-          run_install(stdout, stderr, rest, summary, show_resolving, no_reuse, no_install, cli_arguments, refresh_cache)
+          code = run_install(stdout, stderr, rest, summary, show_resolving, no_reuse, no_install, cli_arguments, refresh_cache)
+          # Only a completed compatible install may leave a trusted runtime
+          # record for the next bare install. `remember` re-proves every input
+          # and swallows persistence errors, so an optimization never changes
+          # the command result.
+          LockFastPath.remember_after_install if code == 0
+          code
         end
       rescue ex : GemfileNotFound
         # `cli.rb:290-313`: `bundle install` rescues a missing Gemfile, renders
@@ -261,6 +268,29 @@ module Celerite
         if plugin_code = install_gemfile_plugins(Definition.find_gemfile, stdout, stderr)
           return plugin_code
         end
+      end
+
+      # M8 L164 S8d: for a bare, unchanged install, the trusted decision and
+      # the complete installed tree can both be proved from the lockfile and
+      # the verified evaluation before any Ruby process starts. The compatible
+      # path's ProcessLock is still acquired around the emitted transcript.
+      fast_path_result = InstallFastPath.attempt(definition, config, rest, summary,
+        show_resolving, no_reuse, no_install, cli_arguments, refresh_cache)
+      if LockFastPath.debug?
+        if fp = fast_path_result[0]
+          stderr.puts "fast-path: install hit (digest=#{fp.digest[0, 12]})"
+        elsif reason = fast_path_result[1]
+          stderr.puts "fast-path: install miss (#{reason})"
+        end
+      end
+      if fp = fast_path_result[0]
+        process_lock = ProcessLock.lock(InstallPaths.install_path(config, fp.default_gem_dir), fp.install_root)
+        begin
+          InstallFastPath.emit(fp, stdout, definition, config)
+        ensure
+          process_lock.close
+        end
+        return 0
       end
 
       bridge = Bridge::Client.shared
