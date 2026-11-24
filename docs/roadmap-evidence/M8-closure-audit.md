@@ -195,3 +195,119 @@
 | 统计一次命令的 Ruby 进程数、RPC 次数和传输字节数 | 满足 | `CELERITE_BRIDGE_STATS=1` 输出 `bridge: procs=… rpc=… req_bytes=… resp_bytes=…`；无桥时也会输出（`procs=0`），见 `docs/roadmap-evidence/M8-fast-path-plan.md` §0 的实测与 `docs/compat-evidence/2026-11-23.md` 的 task-219 节 |
 
 未验证：① 4 MiB 上限没有真实超大 Gemfile 的端到端触发证据（只有 spec 级注入小上限 + 2,125 B 实测响应规模作余量依据）；② 客户端读行无单行长度上限，字节上限只防「接受超限结果」，不防对端先灌满内存；③ 该切片未跑差分（task-243 期间端口 8765 被全量差分占用），全量差分门禁以 `## Current metrics` 记的最近一次为准。
+
+## 11. L162 闭合判据复审（task-249，2026-11-24，HEAD 456f8d1，只读）
+
+复审对象：`docs/roadmap.md` 第 162 行原文（逐字）：
+
+`- [ ] 完成求值指纹：Gemfile/eval_gemfile、引用 gemspec、读取的 ENV、配置、Ruby/RubyGems/Bundler 版本与 ABI；任一输入变化必须使缓存失效，不使用内容哈希代替完整环境指纹。`
+
+本轮为只读审计：未改 `docs/roadmap.md`、claims、`src/**`、`spec/**`、`fixtures/**`、`script/**`。
+
+### 11.1 本轮实测
+
+**一、五个 fingerprint 相关 spec 文件，一次跑完**
+
+```
+crystal.exe spec spec\m8_eval_fingerprint_spec.cr spec\m8_eval_fingerprint_cache_spec.cr
+  spec\m8_eval_fingerprint_config_abi_spec.cr spec\m8_eval_cache_state_spec.cr
+  spec\m8_eval_cache_store_spec.cr
+→ 34 examples, 0 failures, 0 errors, 0 pending   (EXIT=0, 33.27s)
+```
+
+stderr 仅两条 `File.executable?` 弃用警告，加端到端一例的 `eval-cache: state=unknown reason=token:ENV`（该例故意让指纹不可判定，属预期）。
+
+**二、失效实验**：`crystal build src\cli.cr -o bin\celerite.exe` 退出 0（13,283,294 B）；夹具 `.tmp-scratch\exp-proj` 用 `source "file:///C:/temp/celerite-t249/fixtures/gem-index"` + `gemspec`；每次一个**新进程**跑 `celerite.exe lock`，环境 `CELERITE_EVAL_CACHE=1 CELERITE_EVAL_DEBUG=1 CELERITE_BRIDGE_STATS=1`。
+
+| 轮次 | 改动 | 观测（逐字摘录） | 说明 |
+| --- | --- | --- | --- |
+| R1 | 首次 | `eval-cache: state=deterministic`／`persisted 17050b512751`／`bridge: procs=1 rpc=5 req_bytes=541 resp_bytes=288270` | 指纹判定为可缓存并落盘 |
+| R2 | 无 | `eval-cache: hit (persistent)`／`procs=1 rpc=4 req_bytes=382 resp_bytes=285932` | 命中；rpc 由 5 降到 4，未起第二个进程 |
+| R3 | Gemfile 末尾加一行无关注释 | `persistent miss (sha256:gemfile:Gemfile)`／`miss (persistent:sha256:gemfile:Gemfile)`／persisted `da0377c88d9e`／`rpc=5` | Gemfile 字节变即失效（含无害注释，方向保守） |
+| R4 | 无 | `hit (persistent)`／`rpc=4` | 命中 |
+| R5 | gemspec 的 `add_development_dependency "racc"` 改为 `"json_pure"` | `persistent miss (sha256:gemspec:exp-proj.gemspec)`／`rpc=5` | 被引用 gemspec 变更即失效 |
+| R6 | 新增与求值无关的 ENV `CELERITE_T249_UNRELATED=1` | `persistent miss (env)`／`rpc=5` | 全量 ENV 签名导致保守失效 |
+
+**三、HEAD 上真实指纹键序**（从 R6 落盘的 `entry.json` 逐字读出，1 条魔数行 + 21 条记录）：
+
+```
+celerite-eval-v1 / fp.format / gemfile.path / gemfile.sha256 / evalchain.count / gemspec.count /
+gemspec.0.path / gemspec.0.sha256 / ruby.version / ruby.patchlevel / ruby.engine /
+ruby.engine_version / rubygems.version / bundler.version / platform / abi.ruby_api_version /
+abi.extension_api_version / abi.rbconfig_ruby_version / abi.source / config.app_config /
+config.plugin_root / config.digest
+```
+
+`state=deterministic`，`digest=2f3c7ade…718c45b`，`abi.source=real`，`evalchain.count=0`（该夹具没有 `eval_gemfile`）。**指纹文本内没有 ENV 记录、没有 `gemfile.source`、没有 `bundler.profile`。**
+
+### 11.2 逐分句判定表
+
+| # | 输入项 | 是否进指纹 / 以何载体参与失效 | 判据（claim + spec） | 是否有「改动后重跑」的失效反例 | 判定 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Gemfile 本体 | 进指纹：`gemfile.path` + `gemfile.sha256`，并作为 `verify.files[]` 的 `role=gemfile` 条目重算 | `C-M8-1-007`；`spec/m8_eval_fingerprint_spec.cr` V3；`spec/m8_eval_fingerprint_cache_spec.cr` 第 3 例（`:189`，`misses >= 1`） | 有真反例：spec 第 3 例 + 本轮 R3（`sha256:gemfile:Gemfile`） | 满足 |
+| 2 | `eval_gemfile` 链 | 进指纹：`evalchain.count` + 每条 `evalchain.<i>.path/.sha256`（桥侧 `bridge_fingerprint_eval_chain`，`assets/bridge/server.rb:439`，取 `@gemfiles` 去主文件） | `C-M8-1-007`；cache spec 第 1 例（`:136`） | 有 spec 级反例（改 eval 链文件 → `misses >= 1`）；**无进程级反例**（夹具无 `eval_gemfile`，实跑 `evalchain.count=0`） | 满足（证据仅 spec 级） |
+| 3 | 被引用的 gemspec | 进指纹：`gemspec.count` + `gemspec.<i>.path/.sha256`（`bridge_fingerprint_gemspecs`，`server.rb:445`，取 `builder.gemspecs.map(&:loaded_from)`） | `C-M8-1-007`；cache spec 第 2 例（`:168`） | 有真反例：spec 第 2 例 + 本轮 R5（`sha256:gemspec:exp-proj.gemspec`） | 满足 |
+| 4 | 读取的 ENV | **不在指纹文本**；载体是缓存键 `environment_signature`（`src/celerite/bridge/client.cr:221-233`，全量 `ENV.to_h` 排序 `k=v` 拼接后 SHA-256），持久化条目另存 `env` 字段并在载入时比对（`load_persisted`，`client.cr:329`） | `C-M8-1-008`；cache spec 第 6 例（`:260`，`misses >= 1`） | 有真反例：spec 第 6 例 + 本轮 R6（`persistent miss (env)`） | 满足（载体不是指纹文本，强度更高：非 `BUNDLE_` 前缀也覆盖） |
+| 5 | 配置 | 进指纹：`config.app_config`、`config.plugin_root`、`config.digest`（`bridge_fingerprint_config`，`server.rb:412-419`，`app_config`=`Bundler.app_config_path`、`plugin_root`=`Bundler::Plugin.root`，`nil` 记 `-`） | `C-M8-1-014`；`spec/m8_eval_fingerprint_config_abi_spec.cr` 第 2 例（`:193`，同 ENV、cwd 换到 `other/` 使 `Bundler.app_config_path` 变成 `other/.bundle` → `misses >= 1`）与第 5 例（`:267-283` 伪造三键 → `runtime:config.*`／`config.digest`） | 有真实运行期反例（在 spec 内执行，非伪造）；未用 CLI 独立复现 | 满足（配置键面窄于 plan D1，见 §11.6） |
+| 6 | `ruby.version`／`patchlevel`／`engine`／`engine_version`／`rubygems.version`／`bundler.version`／`platform` | 进指纹：七条独立记录（`bridge_fingerprint` 组装，`server.rb:566-627`） | `C-M8-1-014`；cache spec 第 5 例（`:234`、`:237`，伪造 `bundler.version`／`platform` → `runtime:bundler.version`／`runtime:platform`） | **只有伪造记录级反例**；无第二解释器实测 | 记录满足；失效反例仅单元级 |
+| 7 | ABI（`ruby_api_version`／`extension_api_version`／`rbconfig_ruby_version`） | 进指纹：三条真值记录 + `abi.source`（`bridge_fingerprint_abi`，`server.rb:427`；`source` 恒 `real`） | `C-M8-1-014`；config_abi spec 第 4 例（`:241`、`:244`，伪造两条 ABI → `runtime:abi.*`） | **只有伪造记录级反例**；`-static` 分支与跨 ABI 均未实测 | 同上 |
+| 8 | 附加约束：任一输入变化必须使缓存失效 | 命中须连过四道闸：`@@withheld`（`client.cr:251`）→ `load_persisted` 的目录名/`format`/`env`/`state==deterministic`/`Document.parse`/`integrity_reason`/`verify`（`:288` 起）→ `env_signature` 相等（`:257`）→ 归一路径相等（`:258`）→ `document.verify`（`:267`）。`Document#verify`（`src/celerite/eval_fingerprint.cr:221-288`）逐条覆盖：`verify.files[]` 重算 sha256（`:226-235`）、7 项 runtime（`:237-251`）、4 项 abi（`:253-264`）、2 项 config（`:266-275`）、`config.digest` 自洽（`:279-285`） | `C-M8-1-007`／`C-M8-1-008`／`C-M8-1-014` | 四项主输入有进程级反例；配置有 spec 内真实反例；版本与 ABI 只有伪造记录级反例 | 满足（证据分层，见 §11.5 第 1、2 项） |
+| 9 | 附加约束：不使用内容哈希代替完整环境指纹 | 指纹 = 魔数 `celerite-eval-v1`（`server.rb:361`）+ 定序 `key\tvalue` 文本（`:605-606`）+ 整体 SHA-256（`:622`）；缓存键 = 指纹 `digest` + 全量 ENV 签名 + 归一项目路径（`client.cr:257-267`），**没有任何分支以 `gemfile.sha256` 作唯一键** | `C-M8-1-007`；设计文档 `docs/roadmap-evidence/M8-evaluation-fingerprint.md` §2.4 的反例要求 | `git grep -n gemfile_sha256 -- src spec`：生产侧只有 `src/celerite/bridge/client.cr:730` 的 `getter gemfile_sha256 : String`（供 `GemfileEvaluation` 暴露给上层），其余命中全在 spec（`spec/m8_eval_fingerprint_spec.cr:222,277`、`spec/m8_eval_fingerprint_cache_spec.cr:188,213`、`spec/m8_bridge_reuse_spec.cr:138-139`、`spec/bridge/client_spec.cr:59`） | 满足 |
+
+### 11.3 两个附加约束的判定
+
+**约束一：「任一输入变化必须使缓存失效」——满足（证据分层）。**
+
+结构上每类输入都有独立的失效分支，且失效原因是可读的短字符串（`sha256:<role>:<path>`、`missing:<role>:<path>`、`runtime:<key>`、`record:<key>`、`config.digest`、`env`、`persistent:<reason>`），本轮 R3/R5/R6 的实际输出与 spec 断言的原因字符串一致。
+
+但「有分支」与「有改动后重跑的实测反例」不是一回事，逐项分档：
+
+- **有进程级真反例**：Gemfile（spec 第 3 例 + R3）、`eval_gemfile` 链（spec 第 1 例）、被引用 gemspec（spec 第 2 例 + R5）、ENV（spec 第 6 例 + R6）。
+- **有真实运行期反例但只在 spec 内**：配置（config_abi 第 2 例靠换 cwd 改变 `Bundler.app_config_path`，不是伪造记录）。本轮没有用 CLI 独立复现。
+- **只有伪造记录级反例**：七项版本/platform（cache 第 5 例）与四项 ABI（config_abi 第 4 例）。伪造「已记录值」正是跨版本/跨 ABI 命中时的真实形态，故比对逻辑被测到；但桥侧读真值的分支（`Gem.ruby_api_version` 等）在第二解释器下未跑过。
+
+**约束二：「不使用内容哈希代替完整环境指纹」——满足。**
+
+指纹既含文件内容哈希（gemfile、各 gemspec、各 eval 链文件），也含环境项（版本 7 条、ABI 4 条、配置 3 条），并且是整体 `SHA-256(text)` 而非某个文件哈希；缓存键再叠加全量 ENV 签名与归一路径。反方向的「过度失效」（R3 一行注释也 miss、R6 一个无关变量也 miss）是保守方向，不违反本条。
+
+**结构性注记（不计缺项，但需落账）**：`Document#verify` 对 runtime/abi/config 三段都写成 `next if current.nil?`（`eval_fingerprint.cr:249`、`:262`、`:273`），即**同一 client 的进程内命中不重比这三段**——`fetch` 只对外来条目才计算 runtime（`client.cr:266`）。实际不可达：进程内版本/ABI 不可变，ENV 变化由 `env_signature` 兜住、cwd 变化由路径键兜住。但这是设计捷径，不是实测结论（见 §11.5 第 9 项）。
+
+### 11.4 结论
+
+**L162 可勾 [x]（缺 0 项）。**
+
+三条依据：① 六类输入全部落到具体记录或缓存键，并在 `Document#verify` 有对应比较分支；② 四项主输入有进程级失效反例，配置有 spec 内真实反例，版本/ABI 有伪造记录级反例；③ 缓存键未退化为内容哈希。
+
+勾选时应同时落账、但不构成缺项的限制：`abi.source` 恒 `real`（无 `derived`）、`-static` 分支未实测、gemspec 候选集与 `.bundle/config` 正文/插件索引内容不覆盖、`ruby file:` 目标内容不入指纹（降级 `unknown`）、版本/ABI 的进程级反例缺失。这些都已写在 `C-M8-1-009`「边界」与 `C-M8-1-014`「边界」中，属已声明残余风险，不是未实现的判据。
+
+### 11.5 未验证事项（本轮没能跑到的）
+
+1. **换解释器的真反例**：本机只有 `C:\Ruby40-x64` 一个 Ruby，也没有 `-static`/无扩展构建，无法构造「ABI 或版本变化后重跑」的进程级证据，只能引用 spec 内伪造记录（`config_abi` 第 4 例、cache 第 5 例）。
+2. **`eval_gemfile` 链的进程级反例**：夹具没有 `eval_gemfile`（实跑 `evalchain.count=0`），该项只有 cache 第 1 例。
+3. **配置的 CLI 级复现**：config_abi 第 2 例在 spec 内换 cwd，本轮未用 `celerite.exe` 独立复现同一现象。
+4. **`ruby file:`（plan A4）**：未构造反例；实现按 token 降级为 `state=unknown`（不写缓存），逻辑上既不误命中也不失效，但本轮未实测该降级。
+5. **gemspec 候选集（plan B1）**：未跑「再放一个 `*.gemspec` 让参考报多组合法性错误」的反例；其可达性（需 `CELERITE_EVAL_CACHE=1`、且同一路径第二次命令）也未实测。
+6. **`.bundle/config` 正文与插件索引内容**：未构造反例（`C-M8-1-009`「边界」已声明不覆盖）。
+7. **未跑 `script/differential`**（端口 8765 被他人全量差分占用的禁令），跨 Bundler 差分结论沿用既有记录。
+8. **`CELERITE_EVAL_CACHE` 默认关闭路径**：6 次实验全部开启持久化缓存，未跑关闭态对照（关闭时 `EvaluationCache.active?` 为 false，走桥直算）。
+9. **同一 client 命中不重比 runtime/abi/config**：结论来自读码（`eval_fingerprint.cr:249/262/273` + `client.cr:266`），未写反例证明「进程内换配置也不会误命中」。
+
+### 11.6 交叉不一致
+
+以下按节标题/claim 编号定位，便于逐个回改。
+
+1. **claims 的行号已整体漂移（`docs/compat-claims/M8-batch-bridge.md`）**，逐条核对 HEAD：
+   - `C-M8-1-007`「我方行为」：`bridge_fingerprint` 记 `assets/bridge/server.rb:295-400` → HEAD 实际 `:566-627`（`:361` 魔数、`:605-606` 文本、`:622` digest）。
+   - `C-M8-1-009`「我方行为」：`FINGERPRINT_DYNAMIC_TOKENS` `:389` → `:475`；`bridge_fingerprint_source` `:405` → `:491`；`bridge_fingerprint_dynamic_reason` `:420` → `:506`；`bridge_fingerprint_literal_argument` `:414` → `:500`；`bridge_fingerprint_plugin_reason` `:445` → `:531`；`bridge_fingerprint_state` `:458` → `:544`；`bridge_fingerprint` `:480` → `:566`。同一条还把 `client.cr` 的 `EvalFingerprint` 记 `:492` → 实际 `:740`、`@@withheld` 记 `:124-128` → 实际 `:165`、`fetch` 记 `:196` → 实际 `:244`；`eval_fingerprint.cr` 的 `integrity_reason` 记 `:138` → 实际 `:194`、`verify` 记 `:165` → 实际 `:221`。
+   - 只有 `C-M8-1-014`「我方行为」的 `:405`/`:412`/`:427`、`client.cr:181`/`:994`/`:1054-1057` 与 `eval_fingerprint.cr:103`/`:125`/`:221`/`:254-257`/`:267-268`/`:280`/`:285` 与 HEAD 一致。
+   - 结论：F1/F2 之后 F4（持久化）与 F5（单入口）又改了这两个文件，旧 claim 的坐标没回写；同一文件里两条 claim 对同一函数给出相差数百行的坐标（见第 8 条）。按 claim 里的行号导航会落到无关代码上。
+2. **计划 §2.2 B1 与实现相反**（`docs/roadmap-evidence/M8-fingerprint-implementation-plan.md`，B1 明写「候选集是必需项」）：实现只对 `builder.gemspecs.map(&:loaded_from)` 求到的已加载 gemspec 取哈希（`server.rb:445`），不记录 glob 候选集；`C-M8-1-009`「边界」把同一情形降级为「属残余风险」。计划文档仍是「必需项」的口径，未回写。
+3. **计划 §2.1 A1 要求 `gemfile.source=env|search`**：HEAD 指纹（本轮 11.1 第三段的 22 行）没有该键；`C-M8-1-007`「我方行为」的记录清单也没有。计划未回写，claims 未说明为何省。
+4. **计划 §2.4 D1 与 `C-M8-1-014` 的覆盖键不一致**：D1 要求 `config.digest` 覆盖 `plugins`/`gemfile`/`path`/`force_ruby_platform` 四个求值键；实现覆盖 `app_config`/`plugin_root` 两项（`server.rb:412-419`）。claims 已按 oracle 收窄并给理由，计划未回写——按计划读会以为覆盖 4 键。
+5. **计划 §2.5 E3 的 `bundler.profile` 未落指纹**：E3 要求 `bundler.version` 与 `bundler.profile` 都记；HEAD 只有 `bundler.version`，跨版本一致性由 `Profile.bundler_version` 作期望值比对、桥侧先抛 `BundlerVersionMismatch`。等效但计划文字未更新。
+6. **本文件 §2「分句判定」与 §11 结论相反**：§2 第 4/6/7 行判「配置 不满足」「ABI 不满足」「任一输入变化 不满足」，§11 判全部满足。原因是 task-246（`C-M8-1-014`）在 task-238 之后落地了 config/abi 两段，而 §2 未标注「已被 §11 取代」。本轮只读，未改 §2；是否补历史注记请首辅裁。
+7. **L162 字面「指纹…读取的 ENV」与实现载体不符**：ENV 不进指纹文本，进的是缓存键 `environment_signature` 与持久化条目的 `env` 字段。`C-M8-1-008`「我方行为」与 §2 第 3 行都按「有效覆盖」判满足，但没写明载体不是指纹文本，字面读者会判不满足。
+8. **`C-M8-1-009` 与 `C-M8-1-014` 同文件内互相矛盾，且取代句越权**：
+   - 坐标矛盾：009「我方行为」把 `Document#verify` 记在 `src/celerite/eval_fingerprint.cr:165`，014「我方行为」记 `:221`；HEAD 是 `:221`。两条 claim 并存且都可读，前者已失效。
+   - 内容矛盾：009「边界」列「ABI 记录（runtime 无 `abi` 键）」「D1 `.bundle/config` 等配置文件的求值相关键（F1 不含，仅由客户端全量 ENV 签名兜底）」为未覆盖项；014 在「取代」句里声明取代 009 边界中「F1 指纹不含 D1 配置求值键、runtime 无 `abi.*` 键」的部分。ABI 部分确实已被取代（HEAD 有 4 条 `abi.*`），但 **D1 部分没有被取代**：014 实际只加 `config.app_config`/`config.plugin_root` 两条路径记录 + 对这两条的 `config.digest`（`server.rb:412-419`），并不含 plan D1 要求的四个配置求值键（`plugins`/`gemfile`/`path`/`force_ruby_platform`）。故 009 那条边界在实质上仍成立，014 的取代句覆盖过头。
+   - 009「边界」正文内没有行内标记指出哪几句已被 014 取代，读者必须读到 014 的「取代」行才能判断。
