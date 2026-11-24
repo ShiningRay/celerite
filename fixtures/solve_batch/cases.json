@@ -1,0 +1,97 @@
+{
+  "common": {
+    "source": {
+      "source_id": "default",
+      "type": "Rubygems",
+      "name": null,
+      "identity_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "uri_redacted": "https://example.invalid/",
+      "remotes": ["https://example.invalid/"],
+      "path": null,
+      "revision": null,
+      "ref": null,
+      "branch": null,
+      "tag": null,
+      "glob": null,
+      "submodules": null,
+      "plugin_type": null,
+      "lock_options": {},
+      "materialization": "pure_data"
+    },
+    "constraints": {
+      "ruby_version": "4.0.6",
+      "ruby_patchlevel": 0,
+      "ruby_engine": "ruby",
+      "ruby_engine_version": "4.0.6",
+      "rubygems_version": "4.0.16",
+      "bundler_version": "4.0.24",
+      "platforms": ["ruby"],
+      "added_platforms": [],
+      "removed_platforms": [],
+      "force_ruby_platform": false
+    }
+  },
+  "candidate_sets": {
+    "promotion": [
+      {"name": "app", "version": "1.0.0", "platform": "ruby", "dependencies": [], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null},
+      {"name": "app", "version": "1.0.1", "platform": "ruby", "dependencies": [], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null},
+      {"name": "app", "version": "1.1.0", "platform": "ruby", "dependencies": [], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null},
+      {"name": "app", "version": "2.0.0", "platform": "ruby", "dependencies": [], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null}
+    ],
+    "strict": [
+      {"name": "app", "version": "1.0.0", "platform": "ruby", "dependencies": [], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null},
+      {"name": "app", "version": "1.1.0", "platform": "ruby", "dependencies": [], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null}
+    ],
+    "prerelease": [
+      {"name": "app", "version": "1.0.0", "platform": "ruby", "dependencies": [], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null},
+      {"name": "app", "version": "2.0.0.pre", "platform": "ruby", "dependencies": [], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null}
+    ],
+    "platform": [
+      {"name": "native", "version": "1.0.0", "platform": "ruby", "dependencies": [{"name": "shared", "requirements": [">= 1.0"]}], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null},
+      {"name": "native", "version": "1.0.0", "platform": "x86_64-linux", "dependencies": [{"name": "platform_dep", "requirements": [">= 1.0"]}], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null},
+      {"name": "shared", "version": "1.0.0", "platform": "ruby", "dependencies": [], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null},
+      {"name": "platform_dep", "version": "1.0.0", "platform": "ruby", "dependencies": [], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null}
+    ],
+    "platform_unavailable": [
+      {"name": "native", "version": "1.0.0", "platform": "x86_64-linux", "dependencies": [], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null}
+    ],
+    "ruby": [
+      {"name": "ruby_limited", "version": "1.0.0", "platform": "ruby", "dependencies": [], "required_ruby_version": ">= 3.0", "required_rubygems_version": null, "created_at": null, "checksum": null},
+      {"name": "ruby_limited", "version": "2.0.0", "platform": "ruby", "dependencies": [], "required_ruby_version": ">= 5.0", "required_rubygems_version": null, "created_at": null, "checksum": null}
+    ],
+    "ruby_incompatible": [
+      {"name": "ruby_limited", "version": "2.0.0", "platform": "ruby", "dependencies": [], "required_ruby_version": ">= 5.0", "required_rubygems_version": null, "created_at": null, "checksum": null}
+    ],
+    "relax": [
+      {"name": "relax", "version": "1.0.0", "platform": "ruby", "dependencies": [{"name": "shared", "requirements": ["= 1.0.0"]}], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null},
+      {"name": "relax", "version": "2.0.0", "platform": "ruby", "dependencies": [{"name": "shared", "requirements": [">= 2.0.0"]}], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null},
+      {"name": "shared", "version": "1.0.0", "platform": "ruby", "dependencies": [], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null},
+      {"name": "shared", "version": "2.0.0", "platform": "ruby", "dependencies": [], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null}
+    ],
+    "conflict": [
+      {"name": "left", "version": "1.0.0", "platform": "ruby", "dependencies": [{"name": "core", "requirements": ["= 1.0.0"]}], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null},
+      {"name": "right", "version": "1.0.0", "platform": "ruby", "dependencies": [{"name": "core", "requirements": ["= 2.0.0"]}], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null},
+      {"name": "core", "version": "1.0.0", "platform": "ruby", "dependencies": [], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null},
+      {"name": "core", "version": "2.0.0", "platform": "ruby", "dependencies": [], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": null}
+    ],
+    "checksum": [
+      {"name": "checked", "version": "1.0.0", "platform": "ruby", "dependencies": [], "required_ruby_version": null, "required_rubygems_version": null, "created_at": null, "checksum": {"algorithm": "sha256", "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    ]
+  },
+  "cases": [
+    {"name": "promotion_patch", "candidate_set": "promotion", "requirements": [{"name": "app", "requirements": [">= 1.0.0"], "source_id": "default", "groups": [], "platforms": [], "autorequire": [], "force_ruby_platform": false, "gemspec_dev_dep": false, "direct": true}], "locked_specs": [{"name": "app", "version": "1.0.0", "platform": "ruby", "source_id": "default", "dependencies": [], "checksum": null}], "promotion": {"level": "patch", "strict": false, "pre": false, "unlock": true, "conservative": false, "prefer_local": false, "local_only": false}, "expected_chosen": ["app/1.0.1/ruby"], "expected_failure": null},
+    {"name": "promotion_minor", "candidate_set": "promotion", "requirements": [{"name": "app", "requirements": [">= 1.0.0"], "source_id": "default", "groups": [], "platforms": [], "autorequire": [], "force_ruby_platform": false, "gemspec_dev_dep": false, "direct": true}], "locked_specs": [{"name": "app", "version": "1.0.0", "platform": "ruby", "source_id": "default", "dependencies": [], "checksum": null}], "promotion": {"level": "minor", "strict": false, "pre": false, "unlock": true, "conservative": false, "prefer_local": false, "local_only": false}, "expected_chosen": ["app/1.1.0/ruby"], "expected_failure": null},
+    {"name": "promotion_major", "candidate_set": "promotion", "requirements": [{"name": "app", "requirements": [">= 1.0.0"], "source_id": "default", "groups": [], "platforms": [], "autorequire": [], "force_ruby_platform": false, "gemspec_dev_dep": false, "direct": true}], "locked_specs": [{"name": "app", "version": "1.0.0", "platform": "ruby", "source_id": "default", "dependencies": [], "checksum": null}], "promotion": {"level": "major", "strict": false, "pre": false, "unlock": true, "conservative": false, "prefer_local": false, "local_only": false}, "expected_chosen": ["app/2.0.0/ruby"], "expected_failure": null},
+    {"name": "strict_patch_rejects_minor", "candidate_set": "strict", "requirements": [{"name": "app", "requirements": [">= 1.1.0"], "source_id": "default", "groups": [], "platforms": [], "autorequire": [], "force_ruby_platform": false, "gemspec_dev_dep": false, "direct": true}], "locked_specs": [{"name": "app", "version": "1.0.0", "platform": "ruby", "source_id": "default", "dependencies": [], "checksum": null}], "promotion": {"level": "patch", "strict": true, "pre": false, "unlock": false, "conservative": false, "prefer_local": false, "local_only": false}, "expected_chosen": [], "expected_failure": "requirements_conflict"},
+    {"name": "prerelease_default_skipped", "candidate_set": "prerelease", "requirements": [{"name": "app", "requirements": [">= 1.0.0"], "source_id": "default", "groups": [], "platforms": [], "autorequire": [], "force_ruby_platform": false, "gemspec_dev_dep": false, "direct": true}], "locked_specs": [], "promotion": {"level": "major", "strict": false, "pre": false, "unlock": true, "conservative": false, "prefer_local": false, "local_only": false}, "expected_chosen": ["app/1.0.0/ruby"], "expected_failure": null},
+    {"name": "prerelease_enabled", "candidate_set": "prerelease", "requirements": [{"name": "app", "requirements": [">= 1.0.0"], "source_id": "default", "groups": [], "platforms": [], "autorequire": [], "force_ruby_platform": false, "gemspec_dev_dep": false, "direct": true}], "locked_specs": [], "promotion": {"level": "major", "strict": false, "pre": true, "unlock": true, "conservative": false, "prefer_local": false, "local_only": false}, "expected_chosen": ["app/2.0.0.pre/ruby"], "expected_failure": null},
+    {"name": "platform_variant", "candidate_set": "platform", "requirements": [{"name": "native", "requirements": [">= 1.0.0"], "source_id": "default", "groups": [], "platforms": [], "autorequire": [], "force_ruby_platform": false, "gemspec_dev_dep": false, "direct": true}], "locked_specs": [], "promotion": {"level": "major", "strict": false, "pre": false, "unlock": true, "conservative": false, "prefer_local": false, "local_only": false}, "constraints": {"platforms": ["ruby", "x86_64-linux"]}, "expected_chosen": ["native/1.0.0/ruby", "native/1.0.0/x86_64-linux", "platform_dep/1.0.0/ruby", "shared/1.0.0/ruby"], "expected_failure": null},
+    {"name": "ruby_constraint_selects_compatible", "candidate_set": "ruby", "requirements": [{"name": "ruby_limited", "requirements": [">= 1.0.0"], "source_id": "default", "groups": [], "platforms": [], "autorequire": [], "force_ruby_platform": false, "gemspec_dev_dep": false, "direct": true}], "locked_specs": [], "promotion": {"level": "major", "strict": false, "pre": false, "unlock": true, "conservative": false, "prefer_local": false, "local_only": false}, "expected_chosen": ["ruby_limited/1.0.0/ruby"], "expected_failure": null},
+    {"name": "ruby_constraint_incompatible", "candidate_set": "ruby_incompatible", "requirements": [{"name": "ruby_limited", "requirements": [">= 1.0.0"], "source_id": "default", "groups": [], "platforms": [], "autorequire": [], "force_ruby_platform": false, "gemspec_dev_dep": false, "direct": true}], "locked_specs": [], "promotion": {"level": "major", "strict": false, "pre": false, "unlock": true, "conservative": false, "prefer_local": false, "local_only": false}, "expected_chosen": [], "expected_failure": "ruby_incompatible"},
+    {"name": "locked_relax_keeps_base", "candidate_set": "relax", "requirements": [{"name": "relax", "requirements": [">= 1.0.0"], "source_id": "default", "groups": [], "platforms": [], "autorequire": [], "force_ruby_platform": false, "gemspec_dev_dep": false, "direct": true}], "locked_specs": [{"name": "relax", "version": "1.0.0", "platform": "ruby", "source_id": "default", "dependencies": [{"name": "shared", "requirements": ["= 1.0.0"]}], "checksum": null}, {"name": "shared", "version": "1.0.0", "platform": "ruby", "source_id": "default", "dependencies": [], "checksum": null}], "promotion": {"level": "patch", "strict": false, "pre": false, "unlock": false, "conservative": false, "prefer_local": false, "local_only": false}, "expected_chosen": ["relax/1.0.0/ruby", "shared/1.0.0/ruby"], "expected_failure": null},
+    {"name": "locked_relax_unlocks", "candidate_set": "relax", "requirements": [{"name": "relax", "requirements": [">= 1.0.0"], "source_id": "default", "groups": [], "platforms": [], "autorequire": [], "force_ruby_platform": false, "gemspec_dev_dep": false, "direct": true}], "locked_specs": [{"name": "relax", "version": "1.0.0", "platform": "ruby", "source_id": "default", "dependencies": [{"name": "shared", "requirements": ["= 1.0.0"]}], "checksum": null}, {"name": "shared", "version": "1.0.0", "platform": "ruby", "source_id": "default", "dependencies": [], "checksum": null}], "promotion": {"level": "major", "strict": false, "pre": false, "unlock": true, "conservative": false, "prefer_local": false, "local_only": false}, "expected_chosen": ["relax/2.0.0/ruby", "shared/2.0.0/ruby"], "expected_failure": null},
+    {"name": "requirements_conflict", "candidate_set": "conflict", "requirements": [{"name": "left", "requirements": [">= 1.0.0"], "source_id": "default", "groups": [], "platforms": [], "autorequire": [], "force_ruby_platform": false, "gemspec_dev_dep": false, "direct": true}, {"name": "right", "requirements": [">= 1.0.0"], "source_id": "default", "groups": [], "platforms": [], "autorequire": [], "force_ruby_platform": false, "gemspec_dev_dep": false, "direct": true}], "locked_specs": [], "promotion": {"level": "major", "strict": false, "pre": false, "unlock": true, "conservative": false, "prefer_local": false, "local_only": false}, "expected_chosen": [], "expected_failure": "requirements_conflict"},
+    {"name": "platform_unavailable", "candidate_set": "platform_unavailable", "requirements": [{"name": "native", "requirements": [">= 1.0.0"], "source_id": "default", "groups": [], "platforms": [], "autorequire": [], "force_ruby_platform": false, "gemspec_dev_dep": false, "direct": true}], "locked_specs": [], "promotion": {"level": "major", "strict": false, "pre": false, "unlock": true, "conservative": false, "prefer_local": false, "local_only": false}, "expected_chosen": [], "expected_failure": "platform_unavailable"},
+    {"name": "checksum_bound_to_locked_candidate", "candidate_set": "checksum", "requirements": [{"name": "checked", "requirements": [">= 1.0.0"], "source_id": "default", "groups": [], "platforms": [], "autorequire": [], "force_ruby_platform": false, "gemspec_dev_dep": false, "direct": true}], "locked_specs": [{"name": "checked", "version": "1.0.0", "platform": "ruby", "source_id": "default", "dependencies": [], "checksum": {"algorithm": "sha256", "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}], "promotion": {"level": "patch", "strict": false, "pre": false, "unlock": false, "conservative": false, "prefer_local": false, "local_only": false}, "expected_chosen": ["checked/1.0.0/ruby"], "expected_failure": null}
+  ]
+}
