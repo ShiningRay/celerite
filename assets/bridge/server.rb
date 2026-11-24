@@ -361,6 +361,119 @@ def bridge_fingerprint_gemspecs(builder)
   specs.map { |path| bridge_fingerprint_path(path) }.uniq.sort
 end
 
+# --- Evaluation cache state (roadmap L162, slice F3) ------------------------
+#
+# The cache may reuse an evaluation only when the bridge can show that the
+# evaluation was a function of the inputs the fingerprint covers. Only this
+# process knows what the DSL actually executed, so the state is decided here;
+# the native side consumes it and never guesses one.
+#
+# * "deterministic": the main Gemfile, every eval-chain target and every loaded
+#   gemspec contain only static declarations (source/gem/group/platforms/ruby
+#   with an inline version/gemspec/install_if with a literal condition/...),
+#   no dynamic Ruby was scanned, no plugin source was declared and no plugin
+#   index is installed. Every file the evaluation read is then in `verify`.
+# * "unknown": the scan saw a construct whose effect cannot be replayed from the
+#   files the fingerprint covers — arbitrary Ruby (`ENV`, `File`, `IO`, `Dir`,
+#   `require`, `load`, `eval`, `system`, backticks, `%x`, `open`), a
+#   `eval_gemfile` that is not a plain string literal, an `install_if` whose
+#   condition is not `true`/`false`, `ruby file:` (its target is not hashed), a
+#   typed `source ..., type:` or an installed plugin index. The evaluation is
+#   still returned exactly as without a cache, but it is never stored or reused.
+# * "broken": the fingerprint cannot describe the evaluation at all because a
+#   file it must hash could not be read (its sha256 is `-`, which `verify` would
+#   always reject). Nothing is stored; the evaluation result is still returned.
+#
+# Conservative by design: any token hit is enough to withhold the cache. The
+# token names are recorded, never the matched source text.
+FINGERPRINT_DYNAMIC_TOKENS = [
+  ["ENV", /\bENV\b/],
+  ["File", /(?<![\w:])File\s*(?:\.|::|\()/],
+  ["IO", /(?<![\w:])IO\s*(?:\.|::|\()/],
+  ["Dir", /(?<![\w:])Dir\s*(?:\.|::|\()/],
+  # `require: false` is a `gem` option, not a file read.
+  ["require", /(?<![\w.])require(?:_relative)?\b(?!\s*:)/],
+  ["load", /(?<![\w.])load\b(?!\s*:)/],
+  ["eval", /(?<![\w.])eval\b(?!\s*:)/],
+  ["system", /(?<![\w.])system\s*[(\s]/],
+  ["spawn", /(?<![\w.])spawn\s*[(\s]/],
+  ["open", /(?<![\w.])open\s*[(\s]/],
+  ["backtick", /`/],
+  ["%x", /%x[\(\[\{<|!\/]/],
+].freeze
+
+def bridge_fingerprint_source(path)
+  File.read(path)
+rescue SystemCallError, IOError
+  nil
+end
+
+# The argument of `eval_gemfile`/`install_if` must be a plain literal: no
+# interpolation, no concatenation, no trailing comment. Anything else is
+# resolved at evaluation time and cannot be replayed.
+def bridge_fingerprint_literal_argument(argument)
+  return false if argument.include?('#{')
+
+  argument.match?(/\A(["'])(?:(?!\1)[^\\]|\\.)*\1\z/)
+end
+
+def bridge_fingerprint_dynamic_reason(text, main)
+  FINGERPRINT_DYNAMIC_TOKENS.each do |name, pattern|
+    return "token:#{name}" if text.match?(pattern)
+  end
+  return "ruby-file" if main && text.match?(/^[ \t]*ruby\b[^\n]*\bfile\s*:/)
+  return "plugin-source" if text.match?(/\btype\s*:\s*:[a-z_][a-z0-9_]*/i)
+
+  text.each_line do |line|
+    stripped = line.strip
+    if stripped.start_with?("eval_gemfile")
+      argument = stripped.sub(/\Aeval_gemfile\s*/, "")
+      return "eval_gemfile" unless bridge_fingerprint_literal_argument(argument)
+    elsif stripped.start_with?("install_if")
+      argument = stripped.sub(/\Ainstall_if\s*/, "")
+      return "install_if" unless argument.match?(/\A(true|false)\z/)
+    end
+  end
+
+  nil
+end
+
+# `Bundler.app_config_path/plugin` holds the plugin index and the installed
+# plugins (`Bundler::Plugin::Index`). Presence alone is enough to withhold the
+# cache: F1 does not hash the index contents, and "exists but unreadable" must
+# never be treated as "no plugins" (plan §2.6).
+def bridge_fingerprint_plugin_reason
+  return nil unless defined?(Bundler) && Bundler.respond_to?(:app_config_path)
+
+  root = File.join(Bundler.app_config_path.to_s, "plugin")
+  return nil unless File.directory?(root)
+
+  Dir.children(root).empty? ? nil : "plugin-index"
+rescue SystemCallError, IOError
+  "plugin-index"
+end
+
+# Precedence: a fingerprint that cannot even describe the evaluation ("broken")
+# outranks "unknown", which outranks "deterministic".
+def bridge_fingerprint_state(gemfile, contents, chain, gemspecs)
+  entries = [["gemfile", gemfile, contents]]
+  chain.each { |path| entries << ["evalchain", path, nil] }
+  gemspecs.each { |path| entries << ["gemspec", path, nil] }
+
+  entries.each do |role, path, text|
+    text = bridge_fingerprint_source(path) if text.nil?
+    return ["broken", "unreadable:#{role}"] if text.nil?
+
+    reason = bridge_fingerprint_dynamic_reason(text, role == "gemfile")
+    return ["unknown", reason] if reason
+  end
+
+  plugin = bridge_fingerprint_plugin_reason
+  return ["unknown", plugin] if plugin
+
+  ["deterministic", nil]
+end
+
 # Fixed record order: format, Gemfile, eval chain, gemspecs, interpreter. A
 # field this slice cannot observe is omitted rather than guessed; when a value
 # is absent the record carries `-` so the shape stays fixed.
@@ -406,9 +519,13 @@ def bridge_fingerprint(builder, gemfile, contents)
     verify_files << { "role" => "gemspec", "path" => bridge_fingerprint_relative(path, base), "sha256" => bridge_fingerprint_file_sha256(path) }
   end
 
+  state, state_reason = bridge_fingerprint_state(gemfile, contents, chain, gemspecs)
+
   {
     "text" => text,
     "digest" => Digest::SHA256.hexdigest(text),
+    "state" => state,
+    "state_reason" => state_reason,
     "verify" => { "files" => verify_files },
   }
 end

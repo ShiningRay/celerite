@@ -121,12 +121,19 @@ module Celerite
 
       @@active = false
       @@entries = {} of String => Entry
+      # Paths whose last evaluation was withheld (`unknown` or `broken`), mapped
+      # to the reason. Nothing about the evaluation is kept — only the fact that
+      # a later lookup cannot be served, so it is reported as a miss instead of
+      # silently re-evaluating as if the cache had never seen the path.
+      @@withheld = {} of String => String
       @@hits = 0
       @@misses = 0
+      @@debug_io : IO = STDERR
 
       def self.begin_run : Nil
         @@active = true
         @@entries.clear
+        @@withheld.clear
         @@hits = 0
         @@misses = 0
       end
@@ -134,6 +141,7 @@ module Celerite
       def self.finish : Nil
         @@active = false
         @@entries.clear
+        @@withheld.clear
         @@hits = 0
         @@misses = 0
       end
@@ -144,6 +152,22 @@ module Celerite
 
       def self.misses : Int32
         @@misses
+      end
+
+      # Where `CELERITE_EVAL_DEBUG=1` diagnostics go. STDERR in production; the
+      # specs point it at an `IO::Memory` instead of redirecting the process.
+      def self.debug_io : IO
+        @@debug_io
+      end
+
+      def self.debug_io=(io : IO) : IO
+        @@debug_io = io
+      end
+
+      private def self.debug(message : String) : Nil
+        return unless ENV["CELERITE_EVAL_DEBUG"]? == "1"
+        @@debug_io.puts message
+        @@debug_io.flush
       end
 
       private def self.normalized(path : String) : String
@@ -162,10 +186,7 @@ module Celerite
 
       private def self.miss(reason : String) : Nil
         @@misses += 1
-        if ENV["CELERITE_EVAL_DEBUG"]? == "1"
-          STDERR.puts "eval-cache: miss (#{reason})"
-          STDERR.flush
-        end
+        debug("eval-cache: miss (#{reason})")
       end
 
       # Returns the cached entry when the fingerprint, the runtime records and
@@ -176,7 +197,14 @@ module Celerite
                      &runtime : -> Celerite::EvalFingerprint::Runtime) : Entry?
         return nil unless @@active
         entry = @@entries[normalized(path)]?
-        return nil if entry.nil?
+        if entry.nil?
+          # A path that was evaluated and withheld can never answer; count the
+          # lookup as a miss instead of pretending the cache is empty.
+          if withheld = @@withheld[normalized(path)]?
+            return miss(withheld)
+          end
+          return nil
+        end
 
         return miss("env") unless entry.env_signature == environment_signature
         return miss("path") unless normalized(entry.evaluation.gemfile) == normalized(path)
@@ -189,22 +217,57 @@ module Celerite
 
         current_runtime = entry.owner_cache_id == cache_id ? nil : runtime.call
         if reason = document.verify(File.dirname(File.expand_path(path)), current_runtime)
+          if Celerite::EvalFingerprint.broken_reason?(reason)
+            # The entry contradicts itself. It cannot answer now or later, so
+            # drop it and report the broken state rather than a plain miss.
+            @@entries.delete(normalized(path))
+            return miss("broken:#{reason}")
+          end
           return miss(reason)
         end
 
         @@hits += 1
-        if ENV["CELERITE_EVAL_DEBUG"]? == "1"
-          STDERR.puts "eval-cache: hit"
-          STDERR.flush
-        end
+        debug("eval-cache: hit")
         entry
       end
 
+      # Only a `deterministic` evaluation may be reused. `unknown` means the
+      # bridge could not reproduce the evaluation from the files the fingerprint
+      # covers; `broken` means the fingerprint cannot even describe it. Both are
+      # returned to the caller untouched and never stored, so the observable
+      # behaviour equals a run without a cache. The evaluation itself already
+      # succeeded here: a broken fingerprint must not fail the command.
       def self.store(path : String, evaluation : GemfileEvaluation, cache_id : Int32,
                      fingerprint : Bridge::EvalFingerprint? = nil,
                      gemspecs : Array(String)? = nil) : Nil
         return unless @@active
+        state, reason = if fp = fingerprint
+                          {fp.state, fp.state_reason}
+                        else
+                          {Celerite::EvalFingerprint::State::Unknown, "fingerprint-missing"}
+                        end
         document = fingerprint.try { |fp| Celerite::EvalFingerprint::Document.parse(fp.text, fp.digest, fp.verify) }
+
+        if state.deterministic?
+          # A fingerprint that calls itself deterministic must survive its own
+          # self-check; a corrupt section is `broken`, not a cache entry.
+          if document.nil?
+            state = Celerite::EvalFingerprint::State::Broken
+            reason = "unparsable"
+          elsif (integrity = document.not_nil!.integrity_reason)
+            state = Celerite::EvalFingerprint::State::Broken
+            reason = integrity
+          end
+        end
+
+        unless state.deterministic?
+          debug(reason ? "eval-cache: state=#{state.wire} reason=#{reason}" : "eval-cache: state=#{state.wire}")
+          @@withheld[normalized(path)] = reason ? "#{state.wire}:#{reason}" : state.wire
+          return
+        end
+
+        debug("eval-cache: state=deterministic")
+        @@withheld.delete(normalized(path))
         @@entries[normalized(path)] = Entry.new(evaluation, fingerprint, document, gemspecs,
           environment_signature, cache_id)
       end
@@ -423,8 +486,9 @@ module Celerite
     end
 
     # One `celerite-eval-v1` fingerprint produced by the same evaluation as the
-    # rest of the batch answer (roadmap L162, slice F1). It is output-only in
-    # this slice: no cache decision reads it, and nothing is persisted.
+    # rest of the batch answer (roadmap L162, slice F1). `state` is the bridge's
+    # cacheability verdict (slice F3): only this client's side of the wire is
+    # allowed to consume it, never to infer it.
     struct EvalFingerprint
       getter text : String
       getter digest : String
@@ -433,8 +497,17 @@ module Celerite
       # directory. Kept as JSON so a later slice can widen it without a client
       # break; F1 republishes what the bridge sent.
       getter verify : JSON::Any
+      # See `Celerite::EvalFingerprint::State`. A missing or unrecognized value
+      # degrades to `Unknown`: an old server, or a section this client cannot
+      # read, must never be mistaken for "safe to reuse".
+      getter state : Celerite::EvalFingerprint::State
+      # Why the bridge withheld the cache (`token:ENV`, `plugin-index`, ...);
+      # nil when deterministic.
+      getter state_reason : String?
 
-      def initialize(@text : String, @digest : String, @verify : JSON::Any)
+      def initialize(@text : String, @digest : String, @verify : JSON::Any,
+                     @state : Celerite::EvalFingerprint::State = Celerite::EvalFingerprint::State::Unknown,
+                     @state_reason : String? = nil)
       end
 
       # A malformed section degrades to nil: a server that predates the section
@@ -448,7 +521,9 @@ module Celerite
         verify = object["verify"]?
         return nil unless text && digest && verify
         return nil unless verify.as_h?
-        new(text, digest, verify)
+        state = Celerite::EvalFingerprint::State.parse(object["state"]?.try(&.as_s?))
+        reason = object["state_reason"]?.try(&.as_s?)
+        new(text, digest, verify, state, reason)
       rescue JSON::Error
         nil
       end

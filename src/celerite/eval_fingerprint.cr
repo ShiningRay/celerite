@@ -38,6 +38,56 @@ module Celerite
 
     ROLES = %w(gemfile evalchain gemspec)
 
+    # The three cacheability verdicts the bridge decides (roadmap L162, slice
+    # F3) — only the bridge may pick one, because only it knows what the DSL
+    # actually executed. `EvaluationCache` consumes the verdict and never
+    # upgrades it on its own; a missing or unrecognized value is `Unknown`.
+    #
+    # * `Deterministic` — the main Gemfile, every `eval_gemfile` target and
+    #   every loaded gemspec consist only of static declarations, so the files
+    #   listed in `verify` are the whole input of the evaluation. Such a result
+    #   may be stored and reused while the fingerprint still verifies.
+    # * `Unknown` — the evaluation read something the fingerprint cannot
+    #   describe (dynamic Ruby, an `eval_gemfile` path built at runtime, a
+    #   plugin source, an installed plugin index, ...). The result is still
+    #   returned untouched; it is never stored or reused, so the command
+    #   behaves exactly as it would without a cache.
+    # * `Broken` — the fingerprint contradicts itself (`digest` does not match
+    #   `text`, `fp.format` is unknown, `verify` is corrupt, or a file is
+    #   recorded as `-`). Nothing is stored and `verify` can never pass, but the
+    #   evaluation that produced it stays valid: a broken fingerprint must not
+    #   fail the command.
+    enum State
+      Deterministic
+      Unknown
+      Broken
+
+      def self.parse(value : String?) : State
+        case value
+        when "deterministic" then Deterministic
+        when "broken"        then Broken
+        else                      Unknown
+        end
+      end
+
+      def wire : String
+        case self
+        in Deterministic then "deterministic"
+        in Unknown       then "unknown"
+        in Broken        then "broken"
+        end
+      end
+    end
+
+    # Whether a `verify` reason says the fingerprint itself is corrupt rather
+    # than merely out of date. Only the former is `Broken`; a changed or
+    # missing file makes the entry stale, which is an ordinary miss.
+    def self.broken_reason?(reason : String) : Bool
+      reason == "digest" || reason == "format" || reason == "gemfile" ||
+        reason.starts_with?("count:") || reason.starts_with?("role:") ||
+        reason.starts_with?("unreadable:")
+    end
+
     # One file whose content the evaluation read.
     record FileRef, role : String, path : String, sha256 : String
 
@@ -82,10 +132,10 @@ module Celerite
         new(text, digest, records, files, verify)
       end
 
-      # Recomputes everything the fingerprint claims and compares it with the
-      # current disk and process state. Returns `nil` on a match, otherwise a
-      # short reason so a cache miss can say why it happened.
-      def verify(base_dir : String, runtime : Runtime?) : String?
+      # The part of `verify` that never touches the disk: a fingerprint that
+      # fails here contradicts itself and can never answer, so an entry
+      # carrying one is `Broken` rather than stale.
+      def integrity_reason : String?
         return "digest" unless Digest::SHA256.hexdigest(@text) == @digest
         return "format" unless @records["fp.format"]? == FORMAT
 
@@ -104,7 +154,20 @@ module Celerite
           # The bridge writes "-" when it could not hash a file at evaluation
           # time; such a record can never be re-verified.
           return "unreadable:#{file.role}:#{file.path}" if file.sha256 == "-"
+        end
 
+        nil
+      end
+
+      # Recomputes everything the fingerprint claims and compares it with the
+      # current disk and process state. Returns `nil` on a match, otherwise a
+      # short reason so a cache miss can say why it happened.
+      def verify(base_dir : String, runtime : Runtime?) : String?
+        if reason = integrity_reason
+          return reason
+        end
+
+        @files.each do |file|
           bytes = begin
             File.read(resolve(base_dir, file.path))
           rescue
