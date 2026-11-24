@@ -10,10 +10,14 @@ module Celerite
   #
   # The store is deliberately narrow. It persists only the *evaluation* (the
   # DSL result the bridge returns: dependencies, sources, ruby constraints,
-  # plugin declarations, warnings, gemspec paths) under a content address that
-  # is the F1/F3 fingerprint digest. It never persists a lockfile, an install
-  # plan, or an installed spec: those are produced by later commands from the
-  # evaluation and are not inputs to it.
+  # warnings, gemspec paths) under a content address that is the F1/F3
+  # fingerprint digest. It never persists a lockfile, an install plan, or an
+  # installed spec: those are produced by later commands from the evaluation
+  # and are not inputs to it.
+  #
+  # Plugin declarations are *not* part of this payload: the `plugins` include
+  # stayed deferred to S3 (C-M8-1-004), and an earlier revision of this comment
+  # wrongly listed them.
   #
   # Layout: `<root>/<namespace>/v1/<hex64 digest>/entry.json`, where
   # `<namespace>` is the first 16 hex digits of the SHA-256 over the
