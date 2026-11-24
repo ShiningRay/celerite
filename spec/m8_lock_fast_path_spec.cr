@@ -459,3 +459,58 @@ describe "lock takes the no-Ruby fast path on an unchanged project" do
     end
   end
 end
+
+# A plugin install can change the DSL a Gemfile evaluates to (hooks, `plugin`
+# sources, command registration) without touching anything the fingerprint
+# digests: `verify.files` covers the Gemfile chain and the gemspecs, and the
+# evaluation config records only the plugin root's *path*. So a `deterministic`
+# entry written before the install is silent about the project afterwards, and
+# the gate has to look at the plugin root on disk instead.
+describe "lock refuses the fast path once the plugin root is populated" do
+  it "misses with plugin-index and starts the bridge after the plugin root gains an entry" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      digest = lfp_ready(project)
+
+      # The hit that must not survive the plugin install.
+      status, _out, quiet_errors, procs, _rpc = lfp_lock(project,
+        lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG"))
+      status.should eq(0)
+      procs.should eq(0)
+      lfp_hits(quiet_errors).size.should eq(1)
+
+      # `Bundler::Plugin.root` = `<app_config>/plugin`. An empty directory keeps
+      # the reference's behaviour (it only reads `<root>/index`), but the root
+      # is no longer empty: from here on the cached evaluation cannot be assumed
+      # to describe this project.
+      plugin_root = File.join(project, ".bundle", "plugin")
+      Dir.mkdir_p(File.join(plugin_root, "cache"))
+
+      status, output, errors, procs, _rpc = lfp_lock(project,
+        lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG"))
+      status.should eq(0)
+      lfp_hits(errors).should be_empty
+      lfp_misses(errors).should eq(["plugin-index"])
+      procs.should be >= 1
+      output.should contain("Writing lockfile to")
+      # Falling back does not change the bytes: the reference is a no-op here
+      # too, so the digest the hit would have written is still the one on disk.
+      lfp_digest(project).should eq(digest)
+    end
+  end
+
+  it "still hits when the plugin root exists but is empty" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      Dir.mkdir_p(File.join(project, ".bundle", "plugin"))
+
+      status, _output, errors, procs, _rpc = lfp_lock(project,
+        lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG"))
+      status.should eq(0)
+      lfp_misses(errors).should be_empty
+      lfp_hits(errors).size.should eq(1)
+      procs.should eq(0)
+    end
+  end
+end
