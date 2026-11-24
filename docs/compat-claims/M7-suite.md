@@ -62,3 +62,15 @@
 - 边界：参考 lib 缺席时该家族记 pending 而非红；参考 lib 在场时的断言由同一 spec 覆盖；判据本轮未执行，仅核实文件存在
 - 生效：task-133（`1303546`）
 - 取代：无
+
+## C-M7-suite-007 CLI 入口清空进程级 installed-spec 缓存，避免跨命令假缺 gem
+
+- 状态：已实现
+- 参考行为（4.0.24）：参考每进程只执行一条命令，不存在上一条命令把“桥不可用时的空系统 gem 目录列表”留在进程级缓存里给下一条命令使用的形态；本仓 `spec/spec_helper.cr:97-102` 的 `run_cli` 同进程连跑多条命令，故入口必须重置所有进程级每调用态
+- 我方行为：`src/celerite/cli.cr:9-24` 的 `Celerite::Commands.reset_environment_caches` 清空 `@@system_gem_search_dirs`/`@@system_gem_search_signature`/`@@installed_index`/`@@installed_index_signature`；`:40-43` 在 `CLI.run` 入口调用。不在 CLI.run 中删除或覆盖 `BUNDLE_GEMFILE`。`spec/spec_helper.cr:16-52` 按变体清理 ambient `BUNDLE_GEMFILE`/`BUNDLE_LOCKFILE`，并用无打印 `Spec.around_each` 恢复 HOME/USERPROFILE/PATH/TMP*/BUNDLE_*/GEM_*/CELERITE_* 且不吞异常；Windows 编译期按小写匹配并删除全部大小写变体后写一个规范键，Unix 保持大小写敏感；`spec/env_isolation_spec.cr` 钉住恢复；`spec/m7_filesystem_errors_spec.cr:45-75` 用绝对 `attrib.exe` + 真实写入被拒断言替代“命令 exit 0 即只读”
+- 判据：`crystal spec spec/m7_reverse_dependencies_spec.cr spec/m7_show_group_filter_spec.cr`；`crystal spec spec/m7_filesystem_errors_spec.cr`；`crystal spec spec/env_isolation_spec.cr`；完整 `crystal spec`
+- 验证边界：首辅在 main `b916df7` 定向 11 文件为 82 examples / 0 failures / 0 errors / 0 pending；短路径隔离验收树 `C:\temp\celerite-acc39` 完整 suite 为 **1309 examples, 0 failures, 0 errors, 0 pending**（Finished in 20:31 minutes，EXIT 0）。此前 1191/0/2/51 与 1307/6/4/104 的子进程错误根因为 Windows ENV 大小写 PATH 污染，已由 followup `6dd15de`/`b916df7` 修复。
+- 证据：证据日志 `docs/compat-evidence/2026-11-25.md` 的 "2026-11-25：进程级 installed-spec 空缓存与 read-only 测试环境隔离（task-257）" 节
+- 边界：只覆盖进程级 installed-spec 发现缓存与ENV复原；不宣称 Linux/macOS、第二个 Ruby ABI、ACL/只读目录已验证；不替代 `C-M7-suite-002` 的具体 helper 责任
+- 生效：task-257（fix `2e16025`、test `148f855`、followup `6dd15de`/`b916df7`；docs 提交待补）
+- 取代：无

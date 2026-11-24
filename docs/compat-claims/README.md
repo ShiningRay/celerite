@@ -355,6 +355,7 @@
 | C-M7-suite-004 | 全量 `crystal spec` 在本机能跑到 `Finished` 汇总行 | 已实现 | [M7-suite.md](M7-suite.md) | `'crystal spec'` |
 | C-M7-suite-005 | `m7_clean` 的期望按参考 `use_system_gems?` 守卫更正为 exit 15 | 已实现 | [M7-suite.md](M7-suite.md) | `'crystal spec spec/m7_clean_spec.cr'；'bash script/differential clean-n…` |
 | C-M7-suite-006 | `m7_show_order` 在参考 lib 缺席时记 `pending!`，不硬失败 | 已实现 | [M7-suite.md](M7-suite.md) | `'crystal spec spec/m7_show_order_spec.cr'` |
+| C-M7-suite-007 | CLI 入口清空进程级 installed-spec 缓存，避免跨命令假缺 gem | 已实现 | [M7-suite.md](M7-suite.md) | `'crystal spec spec/m7_reverse_dependencies_spec.cr spec/m7_show_group_…` |
 | C-M8-1-001 | 桥统计计数：CELERITE_BRIDGE_STATS 开启时输出 procs/rpc/req_bytes/resp_bytes 一行 | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_bridge_stats_spec.cr'` |
 | C-M8-1-002 | 桥复用：一次命令单进程、idle 回收可配置、同一求值不重复 | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_bridge_reuse_spec.cr'（check/list 的 'procs=1'、'CE…` |
 | C-M8-1-003 | 桥协议版本区间与 `ping.features` 能力声明 | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `'crystal spec spec/m8_bridge_proto_spec.cr'——直驱 'server.rb' 的 JSON 行断言…` |
@@ -394,5 +395,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 282 条断言（已实现 235 · 已声明差异 35 · 未实现 4 · 未验证 3 · 已取代 5）。
+合计 283 条断言（已实现 236 · 已声明差异 35 · 未实现 4 · 未验证 3 · 已取代 5）。
 <!-- END GENERATED INDEX -->
