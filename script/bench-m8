@@ -1,0 +1,775 @@
+#!/usr/bin/env bash
+# M8 (roadmap L166) real-Rails-scale benchmark driver.
+#
+# The same workload is driven through two sides and three tiers:
+#
+#   sides  celerite   bin/celerite.exe built from this tree
+#          bundle     the pinned reference Bundler (4.0.24) run by the host Ruby
+#
+#   tiers  cold       no lockfile, no installed gems: a fresh BUNDLE_PATH plus a
+#                     fresh HOME on every run, command `install`
+#          hot        lockfile + installed gems, read-only command `check`
+#          noop       lockfile + installed gems, unchanged command `install`
+#
+# For every sample the driver records wall clock, CPU (whole process tree when
+# the platform can be polled, root process always), peak working set, exit code
+# and the first/last stdout line.  Celerite additionally exposes bridge counters
+# through CELERITE_BRIDGE_STATS (`bridge: procs=.. rpc=.. req_bytes=..
+# resp_bytes=..` on stderr); the reference side has no equivalent, so those
+# columns stay empty for it instead of being invented.
+#
+# The cold tier necessarily contains the gem download: this driver neither
+# clears nor bypasses any download cache (a cold number that hides a network
+# fetch is not reproducible).  Report the download share separately.
+#
+# Isolation: every run owns a directory under --scratch holding its own
+# HOME/USERPROFILE, BUNDLE_PATH, BUNDLE_APP_CONFIG and TMPDIR/TMP/TEMP, so no
+# run can see the user's ~/.bundle or the system gem home, and no state outside
+# --scratch is written.
+#
+# One bootstrap `install` per side provides the lockfile and the installed gems
+# for the hot/noop tiers; it is measured but never recorded.  A warmup sample
+# is dropped for every tier as well (--no-warmup turns that off).
+#
+# Usage:
+#   script/bench-m8                            # both sides, three tiers, 3 runs
+#   script/bench-m8 --side celerite --tiers hot,noop
+#   script/bench-m8 --runs 5 --out /tmp/m8.tsv
+#   script/bench-m8 --yjit                     # extra hot/noop samples with
+#                                              # RUBY_YJIT_ENABLE=1, or an
+#                                              # explicit "unsupported" line
+#   script/bench-m8 --help
+#
+# Exit codes:
+#   0  every requested sample ran and both sides agreed on exit code and on the
+#      first/last stdout line
+#   1  usage error or a required executable is missing
+#   3  a requested side/tier could not be produced (missing binary, bootstrap
+#      install failed, timeout, YJIT requested but unsupported)
+#   4  samples were produced but the two sides disagreed (recorded as findings)
+#
+# Platform: Windows uses a PowerShell helper embedded below (PowerShell 7
+# preferred, Windows PowerShell 5.1 accepted); other platforms use
+# /usr/bin/time.  The POSIX path is not exercised on this host.
+set -uo pipefail
+
+PROG=${0##*/}
+SIDE_LIST="celerite,bundle"
+TIER_LIST="cold,hot,noop"
+RUNS=3
+SCRATCH=""
+OUT=""
+GEMFILE_SRC=""
+CELERITE_EXE=""
+RUBY_EXE=""
+BUNDLER_EXE=""
+JOBS=4
+TIMEOUT_S=1200
+POLL_MS=200
+WARMUP=1
+WANT_YJIT=0
+RAILS_VERSION="8.0.2"
+
+usage() {
+  sed -n '2,/^set -uo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
+}
+
+die() {
+  printf '%s: %s\n' "$PROG" "$1" >&2
+  exit "${2:-1}"
+}
+
+log() {
+  printf '%s: %s\n' "$PROG" "$*" >&2
+}
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --help|-h) usage; exit 0 ;;
+    --side) SIDE_LIST=${2:-}; shift 2 ;;
+    --side=*) SIDE_LIST=${1#*=}; shift ;;
+    --tiers) TIER_LIST=${2:-}; shift 2 ;;
+    --tiers=*) TIER_LIST=${1#*=}; shift ;;
+    --runs) RUNS=${2:-}; shift 2 ;;
+    --runs=*) RUNS=${1#*=}; shift ;;
+    --scratch) SCRATCH=${2:-}; shift 2 ;;
+    --scratch=*) SCRATCH=${1#*=}; shift ;;
+    --out) OUT=${2:-}; shift 2 ;;
+    --out=*) OUT=${1#*=}; shift ;;
+    --gemfile) GEMFILE_SRC=${2:-}; shift 2 ;;
+    --gemfile=*) GEMFILE_SRC=${1#*=}; shift ;;
+    --celerite) CELERITE_EXE=${2:-}; shift 2 ;;
+    --celerite=*) CELERITE_EXE=${1#*=}; shift ;;
+    --ruby) RUBY_EXE=${2:-}; shift 2 ;;
+    --ruby=*) RUBY_EXE=${1#*=}; shift ;;
+    --bundle-exe) BUNDLER_EXE=${2:-}; shift 2 ;;
+    --bundle-exe=*) BUNDLER_EXE=${1#*=}; shift ;;
+    --jobs) JOBS=${2:-}; shift 2 ;;
+    --jobs=*) JOBS=${1#*=}; shift ;;
+    --timeout) TIMEOUT_S=${2:-}; shift 2 ;;
+    --timeout=*) TIMEOUT_S=${1#*=}; shift ;;
+    --poll-ms) POLL_MS=${2:-}; shift 2 ;;
+    --poll-ms=*) POLL_MS=${1#*=}; shift ;;
+    --phase) PHASE=${2:-}; shift 2 ;;
+    --no-warmup) WARMUP=0; shift ;;
+    --yjit) WANT_YJIT=1; shift ;;
+    *) die "unknown option: $1 (try --help)" ;;
+  esac
+done
+
+case $RUNS in ''|*[!0-9]*) die "--runs must be a positive integer" ;; esac
+[ "$RUNS" -ge 1 ] || die "--runs must be at least 1"
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+
+# ---------------------------------------------------------------- platform ---
+uname_s=$(uname -s 2>/dev/null || echo unknown)
+case $uname_s in
+  MINGW*|MSYS*|CYGWIN*) PLATFORM=windows ;;
+  *) PLATFORM=posix ;;
+esac
+
+winpath() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+# The children are native Windows programs: they cannot use an MSYS PATH
+# ("/usr/bin:/bin"), and bin/celerite.exe additionally needs the MSYS2 UCRT64
+# runtime DLLs (libgc-1.dll, libssl-3-x64.dll, libcrypto-3-x64.dll,
+# libpcre2-8-0.dll, libyaml-0-2.dll, zlib1.dll, libiconv-2.dll).  Without them
+# the loader fails with 0xC0000135 before main() and the process prints nothing.
+CHILD_PATH=$PATH
+if [ "$PLATFORM" = windows ] && command -v cygpath >/dev/null 2>&1; then
+  CHILD_PATH=$(cygpath -p -w "$PATH")
+fi
+
+# add_child_dir <dir in unix or windows form>: prepend once, if it exists
+add_child_dir() {
+  local u w
+  u=$(cygpath -u "$1" 2>/dev/null) || u=$1
+  [ -d "$u" ] || return 0
+  w=$(cygpath -w "$u" 2>/dev/null) || w=$1
+  case ";$CHILD_PATH;" in *";$w;"*) return 0 ;; esac
+  CHILD_PATH="$w;$CHILD_PATH"
+}
+
+abspath() {
+  case $1 in
+    /*|[A-Za-z]:*) printf '%s' "$1" ;;
+    *) printf '%s/%s' "$PWD" "$1" ;;
+  esac
+}
+
+[ -n "${SCRATCH:-}" ] || SCRATCH="$ROOT/.tmp-scratch/bench-m8"
+SCRATCH=$(abspath "$SCRATCH")
+mkdir -p "$SCRATCH" || die "cannot create scratch dir $SCRATCH"
+
+[ -n "${OUT:-}" ] || OUT="$SCRATCH/samples.tsv"
+OUT=$(abspath "$OUT")
+: >"$OUT" || die "cannot write $OUT"
+
+[ -n "${GEMFILE_SRC:-}" ] || GEMFILE_SRC="$SCRATCH/rails-min.Gemfile"
+if [ ! -f "$GEMFILE_SRC" ]; then
+  printf 'source "https://rubygems.org"\n\ngem "rails", "%s"\n' "$RAILS_VERSION" >"$GEMFILE_SRC"
+fi
+
+[ -n "${CELERITE_EXE:-}" ] || CELERITE_EXE="$ROOT/bin/celerite.exe"
+if [ "$PLATFORM" = posix ] && [ "$CELERITE_EXE" = "$ROOT/bin/celerite.exe" ]; then
+  CELERITE_EXE="$ROOT/bin/celerite"
+fi
+[ -n "${RUBY_EXE:-}" ] || RUBY_EXE="C:/Ruby40-x64/bin/ruby.exe"
+[ -n "${BUNDLER_EXE:-}" ] || BUNDLER_EXE="C:/Ruby40-x64/lib/ruby/gems/4.0.0/gems/bundler-4.0.24/exe/bundle"
+
+if [ "$PLATFORM" = windows ]; then
+  add_child_dir "$(dirname "$RUBY_EXE")"
+  add_child_dir /ucrt64/bin
+  add_child_dir /usr/bin
+  add_child_dir /bin
+fi
+
+want_side() {
+  case ",$SIDE_LIST," in *",$1,"*) return 0 ;; *) return 1 ;; esac
+}
+want_tier() {
+  case ",$TIER_LIST," in *",$1,"*) return 0 ;; *) return 1 ;; esac
+}
+
+for s in $(printf '%s' "$SIDE_LIST" | tr ',' ' '); do
+  case $s in celerite|bundle) ;; *) die "unknown side: $s" ;; esac
+done
+for t in $(printf '%s' "$TIER_LIST" | tr ',' ' '); do
+  case $t in cold|hot|noop) ;; *) die "unknown tier: $t" ;; esac
+done
+
+want_side celerite && [ ! -x "$CELERITE_EXE" ] && die "celerite binary not found/executable: $CELERITE_EXE (build: crystal build src/cli.cr -o bin/celerite.exe)" 1
+if want_side bundle; then
+  [ -x "$RUBY_EXE" ] || die "ruby not found: $RUBY_EXE" 1
+  [ -f "$BUNDLER_EXE" ] || die "reference bundler not found: $BUNDLER_EXE" 1
+fi
+
+# Preflight: a native child that cannot load its DLLs exits with 0xC0000135
+# before printing anything, which would otherwise be recorded as a bogus fast
+# sample.  Refuse to benchmark in that case.
+if want_side celerite; then
+  pf_out=$(PATH=$CHILD_PATH "$CELERITE_EXE" --version 2>&1 | tail -n1)
+  pf_rc=$?
+  if [ "$pf_rc" = "-1073741515" ] || [ "$pf_rc" = "3221225781" ]; then
+    die "celerite.exe cannot load its runtime DLLs (0xC0000135): put the MSYS2 ucrt64 bin directory on PATH (needs libgc-1.dll, libssl-3-x64.dll, libcrypto-3-x64.dll, libpcre2-8-0.dll, libyaml-0-2.dll, zlib1.dll, libiconv-2.dll)" 3
+  fi
+  if [ -z "$pf_out" ]; then
+    die "celerite.exe printed nothing for a preflight call (rc=$pf_rc) - refusing to record samples" 3
+  fi
+fi
+
+# ------------------------------------------------------------------- probe ---
+ruby_version="(not probed)"
+yjit_state="(not probed)"
+if [ -x "$RUBY_EXE" ]; then
+  ruby_version=$("$RUBY_EXE" -e 'print RUBY_VERSION, " ", RUBY_PLATFORM' 2>/dev/null)
+  if "$RUBY_EXE" -e 'exit(defined?(RubyVM::YJIT) ? 0 : 3)' 2>/dev/null; then
+    if RUBY_YJIT_ENABLE=1 "$RUBY_EXE" -e 'exit(RubyVM::YJIT.enabled? ? 0 : 3)' 2>/dev/null; then
+      yjit_state="available"
+    else
+      yjit_state="defined-but-not-enablable"
+    fi
+  else
+    yjit_state="unavailable (ruby built without YJIT)"
+  fi
+fi
+celerite_version="(not probed)"
+if [ -x "$CELERITE_EXE" ]; then
+  celerite_version=$(PATH=$CHILD_PATH "$CELERITE_EXE" --version 2>/dev/null | tail -n1)
+fi
+
+{
+  printf '# bench-m8 metadata\n'
+  printf '# date=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown)"
+  printf '# host=%s platform=%s\n' "$uname_s" "$PLATFORM"
+  printf '# root=%s\n' "$ROOT"
+  printf '# celerite=%s (%s)\n' "$CELERITE_EXE" "$celerite_version"
+  printf '# reference=%s via %s\n' "$BUNDLER_EXE" "$ruby_version"
+  printf '# yjit=%s\n' "$yjit_state"
+  printf '# gemfile=%s runs=%s timeout_s=%s poll_ms=%s warmup=%s\n' "$GEMFILE_SRC" "$RUNS" "$TIMEOUT_S" "$POLL_MS" "$WARMUP"
+  printf '# wall=Stopwatch(100ns tick) cpu=KernelModeTime+UserModeTime(100ns) tree sum, last seen per pid; rss=WorkingSetSize sampled every poll_ms (tree sum), root also PeakWorkingSet64; KiB\n'
+  printf '# columns=side tier cmd run exit status wall_s cpu_tree_s cpu_root_s rss_tree_kib rss_root_kib procs rpc req_bytes resp_bytes out_bytes err_bytes out_head out_tail\n'
+} >>"$OUT"
+
+log "scratch=$SCRATCH out=$OUT runs=$RUNS sides=$SIDE_LIST tiers=$TIER_LIST yjit=$yjit_state"
+
+# ------------------------------------------------------- windows measurement ---
+PS_EXE=""
+HELPER=""
+prepare_windows_helper() {
+  if command -v pwsh >/dev/null 2>&1; then
+    PS_EXE=pwsh
+  elif [ -x "/c/Program Files/PowerShell/7/pwsh.exe" ]; then
+    PS_EXE="/c/Program Files/PowerShell/7/pwsh.exe"
+  elif [ -x /c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe ]; then
+    PS_EXE=/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
+  else
+    die "no PowerShell found" 1
+  fi
+  HELPER="$SCRATCH/measure.ps1"
+  cat >"$HELPER" <<'BENCHPS'
+$ErrorActionPreference = 'Stop'
+$exe      = $env:BENCH_EXE
+$argLine  = $env:BENCH_ARG_LINE
+$workdir  = $env:BENCH_WORKDIR
+$outFile  = $env:BENCH_STDOUT
+$errFile  = $env:BENCH_STDERR
+$tsvFile  = $env:BENCH_TSV
+$pollMs   = [int]$env:BENCH_POLL_MS
+$timeoutS = [int]$env:BENCH_TIMEOUT_S
+$inv      = [Globalization.CultureInfo]::InvariantCulture
+
+function Fmt([double]$v) { $v.ToString('0.000', $inv) }
+
+$status   = 'ok'
+$note     = ''
+$startMode = 'direct'
+$sw = [Diagnostics.Stopwatch]::StartNew()
+$p = $null
+try {
+  $p = Start-Process -PassThru -FilePath $exe -ArgumentList $argLine `
+    -WorkingDirectory $workdir -RedirectStandardOutput $outFile `
+    -RedirectStandardError $errFile -NoNewWindow
+} catch {
+  $startMode = 'cmd'
+  $p = Start-Process -PassThru -FilePath "$env:ComSpec" `
+    -ArgumentList '/c', ('"' + $exe + '" ' + $argLine) `
+    -WorkingDirectory $workdir -RedirectStandardOutput $outFile `
+    -RedirectStandardError $errFile -NoNewWindow
+}
+try { $null = $p.Handle } catch { }
+
+$rootPid     = [int]$p.Id
+$samples     = 0
+$maxTreeWs   = [int64]0
+$maxRootWs   = [int64]0
+$rootCpuTick = [int64]0
+$last        = @{}
+$timedOut    = $false
+
+while ($true) {
+  $hasExited = $false
+  try { $hasExited = $p.HasExited } catch { $hasExited = $true }
+  if ($hasExited) { break }
+  try {
+    $procs = Get-CimInstance Win32_Process -ErrorAction Stop
+    $map = @{}
+    foreach ($q in $procs) { $map[[int64]$q.ProcessId] = $q }
+    $ids = New-Object 'System.Collections.Generic.HashSet[int64]'
+    [void]$ids.Add([int64]$rootPid)
+    $grew = $true
+    while ($grew) {
+      $grew = $false
+      foreach ($q in $procs) {
+        $cid = [int64]$q.ProcessId
+        $ppid = [int64]$q.ParentProcessId
+        if ($ids.Contains($ppid) -and -not $ids.Contains($cid)) {
+          [void]$ids.Add($cid)
+          $grew = $true
+        }
+      }
+    }
+    $ws = [int64]0
+    foreach ($id in $ids) {
+      $q = $map[$id]
+      if ($null -eq $q) { continue }
+      $t = [int64]$q.KernelModeTime + [int64]$q.UserModeTime
+      if (-not $last.ContainsKey($id) -or $t -gt $last[$id]) { $last[$id] = $t }
+      $ws += [int64]$q.WorkingSetSize
+      if ($id -eq [int64]$rootPid) {
+        $rootCpuTick = $t
+        if ([int64]$q.WorkingSetSize -gt $maxRootWs) { $maxRootWs = [int64]$q.WorkingSetSize }
+      }
+    }
+    if ($ws -gt $maxTreeWs) { $maxTreeWs = $ws }
+    $samples++
+  } catch {
+    $note = 'poll-failed'
+  }
+  if ($sw.Elapsed.TotalSeconds -gt $timeoutS) {
+    $timedOut = $true
+    & taskkill /PID $rootPid /T /F 2>$null | Out-Null
+    break
+  }
+  Start-Sleep -Milliseconds $pollMs
+}
+
+try { $p.WaitForExit() } catch { }
+$sw.Stop()
+
+$exitCode = 'unknown'
+try { $exitCode = [string]$p.ExitCode } catch { }
+if ($exitCode -eq '' -or $null -eq $exitCode) { $exitCode = 'unknown' }
+
+$treeCpu = 0.0
+foreach ($v in $last.Values) { $treeCpu += [double]$v / 10000000.0 }
+$rootCpu = [double]$rootCpuTick / 10000000.0
+try {
+  $rootCpu = $p.TotalProcessorTime.TotalSeconds
+  # Start-Process -PassThru often reports PeakWorkingSet64 as 0 after exit, so
+  # keep the larger of the handle value and the last polled working set
+  $peak = [int64]$p.PeakWorkingSet64
+  if ($peak -gt $maxRootWs) { $maxRootWs = $peak }
+} catch { $note = 'root-times-unavailable' }
+if ($samples -eq 0) {
+  $treeCpu = $rootCpu
+  $maxTreeWs = $maxRootWs
+}
+if ($timedOut) { $status = 'timeout' }
+
+$line = @(
+  $status,
+  $exitCode,
+  (Fmt $sw.Elapsed.TotalSeconds),
+  (Fmt $treeCpu),
+  (Fmt $rootCpu),
+  [string]([int64]($maxTreeWs / 1024)),
+  [string]([int64]($maxRootWs / 1024)),
+  [string]$samples,
+  $startMode,
+  $note
+) -join "`t"
+[System.IO.File]::WriteAllText($tsvFile, $line)
+BENCHPS
+}
+
+if [ "$PLATFORM" = windows ]; then
+  prepare_windows_helper
+fi
+
+# --------------------------------------------------------------- one sample ---
+mfield() {
+  # mfield <file> <column>: tab-separated field, empty fields preserved
+  awk -F'\t' -v c="$2" 'NR == 1 { print $c }' "$1"
+}
+
+# measure_sample <exe> <argstring> <workdir> <env-assignment>...
+# Sets M_STATUS M_EXIT M_WALL M_CPUT M_CPUR M_RSST M_RSSR M_SAMPLES M_NOTE.
+measure_sample() {
+  local exe=$1 argstring=$2 workdir=$3
+  shift 3
+  # reset per-sample state: the reference side has no bridge counters, so a
+  # stale value here would silently be attributed to it
+  M_PROCS=""; M_RPC=""; M_REQ=""; M_RESP=""
+  M_STATUS=""; M_EXIT=""; M_WALL=""; M_CPUT=""; M_CPUR=""
+  M_RSST=""; M_RSSR=""; M_SAMPLES=""; M_NOTE=""
+  local res="$SCRATCH/.measure.tsv" out="$workdir/out.log" err="$workdir/err.log"
+  : >"$out"
+  : >"$err"
+  rm -f "$res"
+  if [ "$PLATFORM" = windows ]; then
+    env "$@" \
+      BENCH_EXE="$(winpath "$exe")" \
+      BENCH_ARG_LINE="$argstring" \
+      BENCH_WORKDIR="$(winpath "$workdir")" \
+      BENCH_STDOUT="$(winpath "$out")" \
+      BENCH_STDERR="$(winpath "$err")" \
+      BENCH_TSV="$(winpath "$res")" \
+      BENCH_POLL_MS="$POLL_MS" \
+      BENCH_TIMEOUT_S="$TIMEOUT_S" \
+      "$PS_EXE" -NoProfile -NonInteractive -File "$HELPER" >/dev/null 2>&1
+  else
+    local tfile="$workdir/.time"
+    ( cd "$workdir" && env "$@" /usr/bin/time -f '%e\t%U\t%S\t%M' -o "$tfile" \
+        bash -c "exec \"\$0\" $argstring" "$exe" >"$out" 2>"$err" )
+    local rc=$?
+    if [ -f "$tfile" ]; then
+      local wall user sys maxrss
+      IFS=$'\t' read -r wall user sys maxrss <"$tfile"
+      M_WALL=$wall
+      M_CPUT=$(awk -v u="$user" -v s="$sys" 'BEGIN { printf "%.3f", u + s }')
+      M_CPUR=$M_CPUT
+      M_RSST=$maxrss
+      M_RSSR=$maxrss
+      M_STATUS=ok
+      [ "$rc" -eq 0 ] || M_STATUS=exit-nonzero
+      M_EXIT=$rc
+      M_SAMPLES=0
+      M_NOTE=""
+      return 0
+    fi
+    M_STATUS=error; M_EXIT=$rc; M_WALL=""; M_CPUT=""; M_CPUR=""
+    M_RSST=""; M_RSSR=""; M_SAMPLES=""; M_NOTE="time-not-available"
+    return 0
+  fi
+  if [ ! -f "$res" ]; then
+    M_STATUS=error; M_EXIT=""; M_WALL=""; M_CPUT=""; M_CPUR=""
+    M_RSST=""; M_RSSR=""; M_SAMPLES=""; M_NOTE="helper produced no result"
+    M_PROCS=""; M_RPC=""; M_REQ=""; M_RESP=""
+    return 0
+  fi
+  M_STATUS=$(mfield "$res" 1)
+  M_EXIT=$(mfield "$res" 2)
+  M_WALL=$(mfield "$res" 3)
+  M_CPUT=$(mfield "$res" 4)
+  M_CPUR=$(mfield "$res" 5)
+  M_RSST=$(mfield "$res" 6)
+  M_RSSR=$(mfield "$res" 7)
+  M_SAMPLES=$(mfield "$res" 8)
+  M_NOTE=$(mfield "$res" 10)
+  [ -n "${M_EXIT:-}" ] || M_EXIT=unknown
+}
+
+record_sample() {
+  local side=$1 tier=$2 cmd=$3 run=$4 workdir=$5
+  local out="$workdir/out.log" err="$workdir/err.log"
+  local out_bytes err_bytes head tail base_win base_unx
+  out_bytes=$(wc -c <"$out" 2>/dev/null | tr -d ' ')
+  err_bytes=$(wc -c <"$err" 2>/dev/null | tr -d ' ')
+  head=$(head -n1 "$out" 2>/dev/null | tr -d '\r')
+  tail=$(tail -n1 "$out" 2>/dev/null | tr -d '\r')
+  [ -n "${head:-}" ] || head="(empty)"
+  [ -n "${tail:-}" ] || tail="(empty)"
+  # the two sides write into different scratch directories; without folding
+  # those paths away every stdout comparison would "differ" for the wrong
+  # reason
+  base_unx=$(dirname "$workdir")
+  base_win=$(winpath "$base_unx")
+  head=${head//"$base_win"/<run>}
+  tail=${tail//"$base_win"/<run>}
+  head=${head//"$base_unx"/<run>}
+  tail=${tail//"$base_unx"/<run>}
+  head=${head//$'\t'/ }
+  tail=${tail//$'\t'/ }
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$side" "$tier" "$cmd" "$run" "${M_EXIT:-}" "${M_STATUS:-error}" \
+    "${M_WALL:-}" "${M_CPUT:-}" "${M_CPUR:-}" "${M_RSST:-}" "${M_RSSR:-}" \
+    "${M_PROCS:-}" "${M_RPC:-}" "${M_REQ:-}" "${M_RESP:-}" \
+    "${out_bytes:-0}" "${err_bytes:-0}" "$head" "$tail" >>"$OUT"
+}
+
+# sample_env <proj> <bundle> <home> <tmp> <appconfig> <tier>
+sample_env() {
+  local proj=$1 bundle=$2 home=$3 tmp=$4 cfg=$5 tier=$6
+  SAMPLE_ENV=(
+    "HOME=$(winpath "$home")"
+    "USERPROFILE=$(winpath "$home")"
+    "BUNDLE_PATH=$(winpath "$bundle")"
+    "BUNDLE_APP_CONFIG=$(winpath "$cfg")"
+    "BUNDLE_JOBS=$JOBS"
+    "BUNDLE_SILENCE_ROOT_WARNING=1"
+    "TMPDIR=$(winpath "$tmp")"
+    "TMP=$(winpath "$tmp")"
+    "TEMP=$(winpath "$tmp")"
+    "SSL_CERT_FILE=C:/msys64/usr/ssl/cert.pem"
+    "PATH=$CHILD_PATH"
+  )
+  case $tier in
+    hot-yjit|noop-yjit) SAMPLE_ENV+=("RUBY_YJIT_ENABLE=1") ;;
+  esac
+}
+
+bridge_fields() {
+  local err=$1
+  M_PROCS=""; M_RPC=""; M_REQ=""; M_RESP=""
+  [ -f "$err" ] || return 0
+  local line
+  line=$(grep -a -o 'bridge: procs=[0-9]* rpc=[0-9]* req_bytes=[0-9]* resp_bytes=[0-9]*' "$err" 2>/dev/null | tail -n1)
+  [ -n "$line" ] || return 0
+  M_PROCS=$(printf '%s' "$line" | sed -n 's/.*procs=\([0-9]*\).*/\1/p')
+  M_RPC=$(printf '%s' "$line" | sed -n 's/.*rpc=\([0-9]*\).*/\1/p')
+  M_REQ=$(printf '%s' "$line" | sed -n 's/.*req_bytes=\([0-9]*\).*/\1/p')
+  M_RESP=$(printf '%s' "$line" | sed -n 's/.*resp_bytes=\([0-9]*\).*/\1/p')
+}
+
+# side_command <side> <cmd> <proj>  -> sets EXE / ARGS
+side_command() {
+  local side=$1 cmd=$2 proj=$3
+  if [ "$side" = celerite ]; then
+    EXE=$CELERITE_EXE
+    ARGS=$cmd
+  else
+    EXE=$RUBY_EXE
+    ARGS="\"$(winpath "$BUNDLER_EXE")\" $cmd"
+  fi
+}
+
+run_fresh() {
+  # run_fresh <side> <tier> <cmd> <label> <record>
+  local side=$1 tier=$2 cmd=$3 label=$4 record=$5
+  local base="$SCRATCH/run/$side/$label"
+  rm -rf "$base"
+  mkdir -p "$base/proj" "$base/home" "$base/tmp" "$base/cfg" "$base/bundle"
+  cp "$GEMFILE_SRC" "$base/proj/Gemfile"
+  sample_env "$base/proj" "$base/bundle" "$base/home" "$base/tmp" "$base/cfg" "$tier"
+  [ "$side" = celerite ] && SAMPLE_ENV+=("CELERITE_BRIDGE_STATS=1")
+  side_command "$side" "$cmd" "$base/proj"
+  measure_sample "$EXE" "$ARGS" "$base/proj" "${SAMPLE_ENV[@]}"
+  [ "$side" = celerite ] && bridge_fields "$base/proj/err.log"
+  log "$side/$tier [$label] status=$M_STATUS exit=${M_EXIT:-?} wall=${M_WALL:-?}s cpu=${M_CPUT:-?}s rss=${M_RSST:-?}KiB procs=${M_PROCS:-} rpc=${M_RPC:-}"
+  [ "$record" = 1 ] && record_sample "$side" "$tier" "$cmd" "$label" "$base/proj"
+}
+
+run_seeded() {
+  local side=$1 tier=$2 cmd=$3 label=$4 record=$5
+  local seed="$SCRATCH/seed/$side"
+  sample_env "$seed/proj" "$seed/bundle" "$seed/home" "$seed/tmp" "$seed/cfg" "$tier"
+  [ "$side" = celerite ] && SAMPLE_ENV+=("CELERITE_BRIDGE_STATS=1")
+  side_command "$side" "$cmd" "$seed/proj"
+  measure_sample "$EXE" "$ARGS" "$seed/proj" "${SAMPLE_ENV[@]}"
+  [ "$side" = celerite ] && bridge_fields "$seed/proj/err.log"
+  log "$side/$tier [$label] status=$M_STATUS exit=${M_EXIT:-?} wall=${M_WALL:-?}s cpu=${M_CPUT:-?}s rss=${M_RSST:-?}KiB procs=${M_PROCS:-} rpc=${M_RPC:-}"
+  [ "$record" = 1 ] && record_sample "$side" "$tier" "$cmd" "$label" "$seed/proj"
+}
+
+bootstrap_seed() {
+  local side=$1
+  local seed="$SCRATCH/seed/$side"
+  mkdir -p "$seed/proj" "$seed/home" "$seed/tmp" "$seed/cfg" "$seed/bundle"
+  [ -f "$seed/proj/Gemfile" ] || cp "$GEMFILE_SRC" "$seed/proj/Gemfile"
+  if [ -f "$seed/proj/Gemfile.lock" ] && [ -d "$seed/bundle/ruby" ]; then
+    log "seed $side: reusing $seed (lockfile + installed gems present)"
+    return 0
+  fi
+  log "seed $side: installing rails-min into $seed (measured, not recorded)"
+  run_seeded "$side" bootstrap install bootstrap 0
+  if [ ! -f "$seed/proj/Gemfile.lock" ]; then
+    log "seed $side: no Gemfile.lock after install (status=$M_STATUS exit=${M_EXIT:-?}); hot/noop unavailable"
+    return 1
+  fi
+  return 0
+}
+
+FAILED=0
+
+for side in $(printf '%s' "$SIDE_LIST" | tr ',' ' '); do
+  want_side "$side" || continue
+  if want_tier hot || want_tier noop; then
+    bootstrap_seed "$side" || FAILED=1
+  fi
+done
+
+for side in $(printf '%s' "$SIDE_LIST" | tr ',' ' '); do
+  want_side "$side" || continue
+  if want_tier cold; then
+    if [ "$WARMUP" = 1 ]; then
+      run_fresh "$side" cold install warmup-cold 0
+    fi
+    i=1
+    while [ "$i" -le "$RUNS" ]; do
+      run_fresh "$side" cold install "cold-$i" 1
+      i=$((i + 1))
+    done
+    # cold-lock: same fresh HOME/BUNDLE_PATH, but only resolve and write the
+    # lockfile - no gem is downloaded or installed.  It splits the cold wall
+    # into "metadata/resolution" and "gem download + install".
+    if [ "$WARMUP" = 1 ]; then
+      run_fresh "$side" cold-lock lock warmup-cold-lock 0
+    fi
+    i=1
+    while [ "$i" -le "$RUNS" ]; do
+      run_fresh "$side" cold-lock lock "cold-lock-$i" 1
+      i=$((i + 1))
+    done
+  fi
+  if want_tier hot; then
+    if [ -f "$SCRATCH/seed/$side/proj/Gemfile.lock" ]; then
+      [ "$WARMUP" = 1 ] && run_seeded "$side" hot check warmup-hot 0
+      i=1
+      while [ "$i" -le "$RUNS" ]; do
+        run_seeded "$side" hot check "hot-$i" 1
+        i=$((i + 1))
+      done
+    else
+      log "hot/$side: unavailable (no seed lockfile)"
+    fi
+  fi
+  if want_tier noop; then
+    if [ -f "$SCRATCH/seed/$side/proj/Gemfile.lock" ]; then
+      [ "$WARMUP" = 1 ] && run_seeded "$side" noop install warmup-noop 0
+      i=1
+      while [ "$i" -le "$RUNS" ]; do
+        run_seeded "$side" noop install "noop-$i" 1
+        i=$((i + 1))
+      done
+    else
+      log "noop/$side: unavailable (no seed lockfile)"
+    fi
+  fi
+done
+
+if [ "$WANT_YJIT" = 1 ]; then
+  if [ "$yjit_state" = available ]; then
+    for side in $(printf '%s' "$SIDE_LIST" | tr ',' ' '); do
+      want_side "$side" || continue
+      for tier in hot noop; do
+        want_tier "$tier" || continue
+        [ -f "$SCRATCH/seed/$side/proj/Gemfile.lock" ] || continue
+        cmd=check
+        [ "$tier" = noop ] && cmd=install
+        [ "$WARMUP" = 1 ] && run_seeded "$side" "$tier-yjit" "$cmd" "warmup-$tier-yjit" 0
+        i=1
+        while [ "$i" -le "$RUNS" ]; do
+          run_seeded "$side" "$tier-yjit" "$cmd" "$tier-yjit-$i" 1
+          i=$((i + 1))
+        done
+      done
+    done
+  else
+    log "yjit: not sampled - $yjit_state"
+    printf '# yjit=not-sampled %s\n' "$yjit_state" >>"$OUT"
+    FAILED=1
+  fi
+fi
+
+# ---------------------------------------------------------------- summary ---
+median3() {
+  printf '%s\n' "$@" | grep -E '^[0-9]+([.][0-9]+)?$' | sort -n | awk '
+    { a[NR] = $1 }
+    END {
+      if (NR == 0) { printf "-"; exit }
+      if (NR % 2) { printf "%.3f", a[(NR + 1) / 2] }
+      else { printf "%.3f", (a[NR / 2] + a[NR / 2 + 1]) / 2 }
+    }'
+}
+
+median_int() {
+  printf '%s\n' "$@" | grep -E '^[0-9]+$' | sort -n | awk '
+    { a[NR] = $1 }
+    END {
+      if (NR == 0) { printf "-"; exit }
+      if (NR % 2) { printf "%d", a[(NR + 1) / 2] }
+      else { printf "%d", int((a[NR / 2] + a[NR / 2 + 1]) / 2 + 0.5) }
+    }'
+}
+
+minmax() {
+  printf '%s\n' "$@" | grep -E '^[0-9]+([.][0-9]+)?$' | sort -n | awk '
+    { a[NR] = $1 }
+    END {
+      if (NR == 0) { printf "-"; exit }
+      printf "%.3f..%.3f", a[1], a[NR]
+    }'
+}
+
+field() {
+  # field <side> <tier> <column>   (warmup rows excluded)
+  awk -F'\t' -v s="$1" -v t="$2" -v c="$3" '$1 == s && $2 == t && $4 !~ /^warmup/ { print $c }' "$OUT"
+}
+
+printf '\n'
+printf '| side | tier | runs | wall_s median [range] | cpu_tree_s | rss_tree_kib | procs | rpc | exit |\n'
+printf '| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n'
+for side in $(printf '%s' "$SIDE_LIST" | tr ',' ' '); do
+  want_side "$side" || continue
+  tiers="cold cold-lock hot noop"
+  [ "$WANT_YJIT" = 1 ] && tiers="cold cold-lock hot noop hot-yjit noop-yjit"
+  for tier in $tiers; do
+    case $tier in
+      cold-lock) want_tier cold || continue ;;
+      *) want_tier "${tier%-yjit}" || continue ;;
+    esac
+    walls=$(field "$side" "$tier" 7)
+    cpus=$(field "$side" "$tier" 8)
+    rsss=$(field "$side" "$tier" 10)
+    procs=$(field "$side" "$tier" 12)
+    rpcs=$(field "$side" "$tier" 13)
+    exits=$(field "$side" "$tier" 5 | sort -u | tr '\n' ',' | sed 's/,$//')
+    n=$(printf '%s\n' "$walls" | grep -cE '^[0-9]')
+    [ "${n:-0}" -gt 0 ] || continue
+    printf '| %s | %s | %s | %s [%s] | %s | %s | %s | %s | %s |\n' \
+      "$side" "$tier" "$n" \
+      "$(median3 $walls)" "$(minmax $walls)" \
+      "$(median3 $cpus)" "$(median3 $rsss)" \
+      "$(median_int $procs)" "$(median_int $rpcs)" \
+      "${exits:--}"
+  done
+done
+
+# correctness: compare both sides per tier on exit code and stdout head/tail
+printf '\n# cross-side agreement (exit code / first stdout line / last stdout line)\n'
+MISMATCH=0
+for tier in cold hot noop; do
+  want_tier "$tier" || continue
+  want_side celerite && want_side bundle || continue
+  [ "$(field celerite "$tier" 5 | grep -c .)" -gt 0 ] || continue
+  [ "$(field bundle "$tier" 5 | grep -c .)" -gt 0 ] || continue
+  exits_c=$(field celerite "$tier" 5 | sort -u | tr '\n' ',')
+  exits_b=$(field bundle "$tier" 5 | sort -u | tr '\n' ',')
+  head_c=$(field celerite "$tier" 18 | sort -u | head -n1)
+  head_b=$(field bundle "$tier" 18 | sort -u | head -n1)
+  tail_c=$(field celerite "$tier" 19 | sort -u | head -n1)
+  tail_b=$(field bundle "$tier" 19 | sort -u | head -n1)
+  verdict=agree
+  [ "$exits_c" = "$exits_b" ] || verdict=DIFF-exit
+  [ "$head_c" = "$head_b" ] || verdict=DIFF-stdout-head
+  [ "$tail_c" = "$tail_b" ] || verdict=DIFF-stdout-tail
+  [ "$verdict" = agree ] || MISMATCH=1
+  printf '# %-5s %s  exit(celerite)=%s exit(bundle)=%s\n' "$tier" "$verdict" "${exits_c:--}" "${exits_b:--}"
+  if [ "$verdict" != agree ]; then
+    printf '#       stdout head celerite=%s | bundle=%s\n' "$head_c" "$head_b"
+    printf '#       stdout tail celerite=%s | bundle=%s\n' "$tail_c" "$tail_b"
+  fi
+done
+printf '# samples=%s file=%s\n' "$(grep -vc '^#' "$OUT" 2>/dev/null || echo 0)" "$OUT"
+
+[ "$MISMATCH" = 1 ] && exit 4
+[ "$FAILED" = 1 ] && exit 3
+exit 0
