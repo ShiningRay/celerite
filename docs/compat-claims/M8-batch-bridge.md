@@ -254,6 +254,17 @@
 - 我方行为：新增 `assets/bridge/solve_batch.schema.json` 与 `assets/bridge/solve_batch.rb`：严格校验 v3 请求；校验 redacted URI/hash、source identity、候选闭包 complete/digest/count、locked digest 与 checksum；将纯 GEM 候选装入冻结 `Bundler::Index`，由禁止远端/缓存/已装物化的 `PureGemsSource` 承载，构造 `Bundler::Resolver::Base` + `GemVersionPromoter` + `Resolver#start`，把返回 Array 明确包成 `Bundler::SpecSet` 后序列化 chosen/edges/variants/stats；六类领域失败及 timeout/internal 均返回有界 JSON。新增 `bin/solve_batch`、`script/solve_batch_fixture.rb`、`fixtures/solve_batch/cases.json`、`test/solve_batch_harness_test.rb`、`spec/m8_solve_batch_spec.cr`。
 - 判据：`ruby test/solve_batch_harness_test.rb` = `24 checks, 0 failures`（含 14 fixture：10 成功、4 分类失败，14/14 符合预期；删除候选/改 checksum 在重新密封 digest 后仍失败）；`crystal spec spec/m8_solve_batch_spec.cr` = `1 examples, 0 failures, 0 errors, 0 pending`；`crystal tool format --check src spec`、`shards build`、`ruby -c assets/bridge/solve_batch.rb` 均 exit 0；同一 spec 在旧 main `9355ada` 上运行 = `1 examples, 1 failures`（`ruby: No such file or directory -- test/solve_batch_harness_test.rb`）。
 - 边界：不接桥、不接 CLI、不改 `commands/resolution`，不运行 `bundle install`，不写锁文件；只支持 `Rubygems/pure_data` 与 redacted URI/hash，PATH/GIT/PLUGIN、明文凭据和非纯物化模式拒绝。checksum 只绑定请求中的候选/locked 声明，不校验 gem 包字节；候选闭包重新密封后信任新密封内容，只有 locked checksum 能独立识别已锁候选 checksum 变化。未验证 Linux/macOS、其他 Ruby/Bundler 版本与任何现有命令级行为。
+
+- 生效：M8 期间
+- 取代：无
+
+## C-M8-1-025 无变化 `install` 的 2.7 汇总计数对齐（M8 L164 P4.1，task-265）
+
+- 状态：已实现
+- 参考行为（2.7.2 / 4.0.24）：Bundler 2.7.2 的 `cli/install.rb:78` 用 `gems_installed_for` 输出汇总，`:116-118` 直接 `count = definition.specs.count`，该集合包含 Bundler 自身；4.0.24 的 `cli/install.rb:56` 输出同一模板，但 `:93-95` 显式 `count {|spec| spec.name != "bundler" }`。因此同一 `json_pure` 无变化安装在 2.7.2 为 `Bundle complete! 1 Gemfile dependency, 2 gems now installed.`，4.0.24 为 `Bundle complete! 1 Gemfile dependency, 1 gem now installed.`；路径提示分别见 2.7.2 `:81-85`、4.0.24 `:59-63`。参考文件为 `C:/Ruby40-x64/lib/ruby/gems/4.0.0/gems/bundler-2.7.2/lib/bundler/cli/install.rb` 与 `C:/Ruby40-x64/lib/ruby/gems/4.0.0/gems/bundler-4.0.24/lib/bundler/cli/install.rb`，双 profile oracle 见 `docs/compat-evidence/2026-11-25.md`。
+- 我方行为：在 `src/celerite/install_fast_path.cr:5-69` 提取纯 `Celerite::InstallSummary`，统一依赖数、gem 数、单复数、skipped-groups 与 empty/system/relative 路径提示；`build` 同时过滤 gemspec dev 依赖与 hidden plugin 名，并按 `switched_bundler || bundler_version.starts_with?("2.")` 补运行 Bundler 的 `+1`。`InstallFastPath::Hit` 保存 summary，`:135-152` 用当前 profile 构造，`:158-164` 调共享渲染；普通路径 `src/celerite/cli/commands_install.cr:937-973` 用同一 helper，保留 refresh cache 与其余安装逻辑。`spec/m8_install_fast_path_spec.cr` 增加双 profile 冷/热安装、typed source hidden 名、switched/2.x 计数、单复数、组与路径文案回归。
+- 判据：`crystal spec spec/m8_install_fast_path_spec.cr` = `23 examples, 0 failures, 0 errors, 0 pending`；`BUNDLER_REF_VERSION=4.0.24 script/differential install-noop-summary` 与 `BUNDLER_REF_VERSION=2.7.2 script/differential install-noop-summary` 均 `1 passed, 0 failed, 0 skipped`。夹具连续执行两次 `install`，双 profile `file-equals` 对 `Gemfile.lock` 正文逐字断言，harness 同时比较规范化 stdout/stderr、退出码、项目树与 installed-tree；spec 另断言热路径 `procs=0 rpc=0`、两次 stdout/stderr 逐字相同、锁字符串不变。 首辅在合并 task-261/262/265 后的 main `2ecb5e8` 上复验三文件家族为 `58 examples, 0 failures, 0 errors, 0 pending`，四项构建/格式/差异门禁均 EXIT=0，并独立重跑双 profile 新夹具各 `1 passed, 0 failed, 0 skipped`。
+- 边界：只改汇总构造与渲染，不改解析、安装计划、锁写入、插件安装或快路径门禁；普通路径与既有兼容路径继续使用原安装结果。2.7.2 的 Bundler `+1` 也覆盖 `switched_bundler`，4.0.24 不补；hidden `bundler-source-<type>` 同时从依赖与 spec 计数中排除。typed PLUGIN source 仍被 install 快路径拒绝并回兼容路径，本项只保证共享汇总规则一致，不把插件源变为快路径命中。无变化输出、锁字节与退出码是兼容面；`procs=0` 仍是 celerite 相对参考的性能差异。未验证 Linux/macOS、第二 Ruby ABI 与多进程锁争用。
 - 生效：M8 期间
 - 取代：无
 
@@ -270,6 +281,7 @@
 - 边界：不新增 Ruby 可执行文件摘要、默认 gem 路径摘要或环境指纹字段；不改变 `validate_runtime`，不重写命令输出。静态链接、未知 `ENABLE_SHARED`、任一 ABI 视图未知或记录/指纹被一致篡改时保守回退兼容路径。零进程是 celerite 相对参考的显式性能差异，不代表参考 Bundler 不起 Ruby。锁含额外平台时同样保守回退；完整负向矩阵尚未逐项做 Bundler 命令级差分，仅两条无变化夹具已双 profile 验证。
 - 生效：M8 期间
 - 取代：无
+
 ## C-M8-1-023 解析/安装计划缓存支持原子写入与当前命名空间内裁剪（M8 L165 P2，task-262）
 
 - 状态：已实现
