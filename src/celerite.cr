@@ -29,6 +29,7 @@ require "./celerite/runtime_facts"
 require "./celerite/fast_path_store"
 require "./celerite/lock_fast_path"
 require "./celerite/installed_index"
+require "./celerite/plan_cache"
 
 module Celerite
   VERSION = "0.1.0"
