@@ -303,6 +303,7 @@ describe "M8 persistent evaluation cache (task-237)" do
         gemfile = File.join(project, "Gemfile")
         client = Celerite::Bridge::Client.new(server_path: M8_STORE_SERVER)
         begin
+          Celerite::Bridge::BridgeStats.begin_run
           Celerite::Bridge::EvaluationCache.begin_run
           answer = client.evaluate_batch(gemfile, ["fingerprint"])
           fingerprint = answer.fingerprint.not_nil!
