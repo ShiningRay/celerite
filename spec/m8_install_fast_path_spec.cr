@@ -1,5 +1,7 @@
+require "json"
 require "./spec_helper"
 require "../src/celerite/gem/platform"
+require "../src/celerite/runtime_facts"
 require "../src/celerite/resolution"
 
 private IFP_INDEX    = file_source_url(File.expand_path("../fixtures/gem-index", __DIR__))
@@ -95,8 +97,12 @@ private def ifp_hot(project : String, args = ["install"], overrides = {} of Stri
   result
 end
 
+private def ifp_abi : String
+  Celerite::RuntimeFacts.detect.try(&.abi.value) || fail("RuntimeFacts ABI is unavailable")
+end
+
 private def ifp_installed_file(project : String, kind : String, full_name : String) : String
-  root = File.join(project, "bundle", "ruby", Celerite::InstallPaths.ruby_abi_for("4.0.0"))
+  root = File.join(project, "bundle", "ruby", ifp_abi)
   File.join(root, kind, full_name)
 end
 
@@ -104,6 +110,48 @@ private def ifp_full_name(project : String) : String
   lock = File.read(File.join(project, "Gemfile.lock"))
   version = lock.match(/json_pure \((\d+\.\d+\.\d+)\)/).not_nil![1]
   "json_pure-#{version}"
+end
+
+private def ifp_cache_entries(project : String) : Array(String)
+  base = File.join(project, ".celerite", "cache", "eval")
+  Celerite::Glob.paths(base, "*").flat_map do |namespace|
+    Celerite::Glob.paths(File.join(namespace, "v1"), "*").compact_map do |digest|
+      path = File.join(digest, "entry.json")
+      path if File.file?(path)
+    end
+  end
+end
+
+private def ifp_rename_indexed_spec(project : String, full_name : String,
+                                    renamed_name : String, renamed : String) : Nil
+  File.rename(ifp_installed_file(project, "specifications", "#{full_name}.gemspec"),
+    ifp_installed_file(project, "specifications", "#{renamed}.gemspec"))
+  File.rename(ifp_installed_file(project, "gems", full_name),
+    ifp_installed_file(project, "gems", renamed))
+  lock_path = File.join(project, "Gemfile.lock")
+  lock = File.read(lock_path)
+    .gsub("  json_pure\n", "  #{renamed_name}\n")
+    .gsub("  json_pure (", "  #{renamed_name} (")
+  File.write(lock_path, lock)
+  ifp_cache_entries(project).each do |path|
+    json = JSON.parse(File.read(path))
+    json["evaluation"].as_h["dependencies"].as_a.each do |dep|
+      dep.as_h["name"] = JSON::Any.new(renamed_name) if dep["name"].as_s? == "json_pure"
+    end
+    File.write(path, json.to_json)
+  end
+end
+
+private def ifp_mark_native_complete(project : String, full_name : String) : Nil
+  gemspec = ifp_installed_file(project, "specifications", "#{full_name}.gemspec")
+  text = File.read(gemspec)
+  closing = text.rindex("end")
+  fail "unexpected gemspec shape" unless closing
+  File.write(gemspec, text[0...closing] + "  s.extensions = [\"extconf.rb\"]\n" + text[closing..])
+  ext = File.join(File.dirname(File.dirname(gemspec)), "extensions",
+    Celerite::Gem::Platform.local.to_s, ifp_abi, full_name)
+  Dir.mkdir_p(ext)
+  File.write(File.join(ext, "gem.build_complete"), "")
 end
 
 describe "install takes the no-Ruby fast path on an unchanged project" do
@@ -170,7 +218,6 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
     with_project({} of String => String) do |project|
       ifp_ready(project)
       path = File.join(project, "Gemfile.lock")
-      path = File.join(project, "Gemfile.lock")
       lock = File.read(path)
       changed = lock.sub("DEPENDENCIES\n  json_pure\n", "DEPENDENCIES\n  json_pure\n  thor\n")
       changed.should_not eq(lock)
@@ -217,11 +264,35 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
       fail "unexpected gemspec shape" unless closing
       File.write(gemspec, text[0...closing] + "  s.extensions = [\"extconf.rb\"]\n" + text[closing..])
       ext = File.join(File.dirname(File.dirname(gemspec)), "extensions",
-        Celerite::Gem::Platform.local.to_s, Celerite::InstallPaths.ruby_abi_for("4.0.0"), full_name)
+        Celerite::Gem::Platform.local.to_s, ifp_abi, full_name)
       status, _output, errors, stats = ifp_hot(project)
       stats[0].should be >= 1
       ifp_lines(errors, IFP_HIT).should be_empty
       fail "native extension dir unexpectedly exists" if Dir.exists?(ext)
+    end
+  end
+
+  it "never hits when InstalledIndex cannot parse an installed full name" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      full_name = ifp_full_name(project)
+      renamed = "0json_pure-#{full_name[/\d+\.\d+\.\d+$/]}"
+      ifp_rename_indexed_spec(project, full_name, "0json_pure", renamed)
+      _status, _output, errors, stats = ifp_hot(project)
+      stats[0].should be >= 1
+      ifp_lines(errors, IFP_HIT).should be_empty
+      ifp_lines(errors, IFP_MISS).should contain("install-index:#{renamed}")
+    end
+  end
+
+  it "still hits when a native extension marker is complete and indexed" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      ifp_mark_native_complete(project, ifp_full_name(project))
+      status, _output, errors, stats = ifp_hot(project)
+      status.should eq(0)
+      stats.should eq({0, 0, 0, 0})
+      ifp_lines(errors, IFP_HIT).size.should eq(1)
     end
   end
 
