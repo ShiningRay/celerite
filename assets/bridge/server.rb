@@ -220,8 +220,9 @@ def bridge_collect_warnings
   collector.warnings
 end
 
-def op_ruby_environment(_payload)
+def op_ruby_environment(payload)
   require "rubygems"
+  abi = bridge_fingerprint_abi
   env = {
     "ruby_version" => RUBY_VERSION,
     "ruby_description" => RUBY_DESCRIPTION,
@@ -233,6 +234,11 @@ def op_ruby_environment(_payload)
     "patchlevel" => RUBY_PATCHLEVEL.to_s,
     "platform" => bridge_platform_string,
     "ruby_exe" => RbConfig.ruby,
+    # ABI facts (task-246), so a cache entry recorded by another bridge
+    # process can be re-checked against this one.
+    "ruby_api_version" => abi["ruby_api_version"],
+    "extension_api_version" => abi["extension_api_version"],
+    "rbconfig_ruby_version" => abi["rbconfig_ruby_version"],
     # `Bundler::Env#report` prints `Gem.path` (env.rb:73), which appends the
     # default gem dir when a user-set GEM_PATH omits it — splitting GEM_PATH
     # verbatim would drop that entry.
@@ -266,6 +272,20 @@ def op_ruby_environment(_payload)
   env["openssl_loaded"] = (defined?(OpenSSL) ? OpenSSL::OPENSSL_LIBRARY_VERSION : nil)
   env["openssl_cert_file"] = (defined?(OpenSSL::X509) ? OpenSSL::X509::DEFAULT_CERT_FILE : nil)
   env["openssl_cert_dir"] = (defined?(OpenSSL::X509) ? OpenSSL::X509::DEFAULT_CERT_DIR : nil)
+  # The fingerprint's configuration records (task-246), requested only by the
+  # cache: `bundle env` neither prints nor pays for them. The cache asks before
+  # its first evaluation, so load Bundler the same way an evaluation would;
+  # without it the plugin root cannot be resolved and the caller treats the
+  # entry as unverifiable.
+  if payload && payload["evaluation_config"]
+    begin
+      bridge_activate_bundler
+      require "bundler"
+      env["evaluation_config"] = bridge_fingerprint_config
+    rescue StandardError
+      nil
+    end
+  end
   env
 end
 
@@ -370,6 +390,47 @@ def bridge_fingerprint_file_sha256(path)
   Digest::SHA256.file(path).hexdigest
 rescue SystemCallError, IOError
   "-"
+end
+
+# `Bundler::Dsl#eval_gemfile` reads exactly one configuration value: a
+# `source "...", type: <plugin>` declaration asks `Plugin.source?`, which
+# consults the plugin index under `Bundler::Plugin.root`
+# (`bundler/dsl.rb:119-145`, `bundler/plugin.rb:138-148`). Inside a bundle that
+# root is `<app_config>/plugin`; outside one it is `BUNDLE_USER_PLUGIN` or
+# `<BUNDLE_USER_HOME>/plugin`. Everything else (`BUNDLE_WITHOUT`, `ONLY`,
+# `FROZEN`, `LOCKFILE`, `PLUGINS`) is read after the Definition exists or only
+# by install-time hooks, so it cannot change what this evaluation returns and
+# is deliberately not recorded (task-246, oracle in
+# `docs/compat-evidence/2026-11-23.md`).
+def bridge_fingerprint_plugin_root
+  return nil unless defined?(Bundler::Plugin)
+  Bundler::Plugin.root
+rescue StandardError
+  nil
+end
+
+def bridge_fingerprint_config
+  app_config = bridge_fingerprint_path(Bundler.app_config_path.to_s)
+  root = bridge_fingerprint_plugin_root
+  plugin_root = root.nil? ? "-" : bridge_fingerprint_path(root.to_s)
+  {
+    "app_config" => app_config,
+    "plugin_root" => plugin_root,
+    "digest" => Digest::SHA256.hexdigest("app_config=#{app_config}\nplugin_root=#{plugin_root}\n"),
+  }
+end
+
+# The ABI values RubyGems itself reports. `Gem.extension_api_version` appends
+# `-static` when Ruby was built without shared libraries, and native
+# extensions are installed per that ABI, so the plain interpreter version is
+# not a substitute.
+def bridge_fingerprint_abi
+  {
+    "ruby_api_version" => Gem.ruby_api_version,
+    "extension_api_version" => Gem.extension_api_version,
+    "rbconfig_ruby_version" => RbConfig::CONFIG["ruby_version"],
+    "source" => "real",
+  }
 end
 
 # `Bundler::Dsl#with_gemfile` appends every `eval_gemfile` target to
@@ -530,6 +591,16 @@ def bridge_fingerprint(builder, gemfile, contents)
   records << ["rubygems.version", Gem::VERSION]
   records << ["bundler.version", Bundler::VERSION]
   records << ["platform", bridge_platform_string]
+
+  abi = bridge_fingerprint_abi
+  records << ["abi.ruby_api_version", abi["ruby_api_version"]]
+  records << ["abi.extension_api_version", abi["extension_api_version"]]
+  records << ["abi.rbconfig_ruby_version", abi["rbconfig_ruby_version"]]
+  records << ["abi.source", abi["source"]]
+  config = bridge_fingerprint_config
+  records << ["config.app_config", config["app_config"]]
+  records << ["config.plugin_root", config["plugin_root"]]
+  records << ["config.digest", config["digest"]]
 
   text = +"#{FINGERPRINT_MAGIC}\n"
   records.each { |key, value| text << "#{key}\t#{bridge_fingerprint_escape(value)}\n" }

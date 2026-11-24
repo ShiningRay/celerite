@@ -175,6 +175,13 @@ module Celerite
         @@misses = 0
       end
 
+      # Whether a command has started its cache lifetime. The client asks for
+      # the fingerprint's configuration records only while this holds, so
+      # commands that run without a cache keep their RPC shape unchanged.
+      def self.active? : Bool
+        @@active
+      end
+
       def self.finish : Nil
         # The on-disk store (F4) is pruned here, while the entry just written is
         # still the newest: the cap is per entry count and total bytes and never
@@ -601,6 +608,15 @@ module Celerite
       getter openssl_loaded : String? = nil
       getter openssl_cert_file : String? = nil
       getter openssl_cert_dir : String? = nil
+      # ABI facts (task-246). `Gem.extension_api_version` carries the `-static`
+      # suffix when Ruby was built without shared libraries; the plain
+      # `ruby_version` record cannot distinguish those builds.
+      getter ruby_api_version : String? = nil
+      getter extension_api_version : String? = nil
+      getter rbconfig_ruby_version : String? = nil
+      # Only requested for the evaluation cache; `bundle env` leaves it nil and
+      # an older bridge answers without it.
+      getter evaluation_config : Celerite::EvalFingerprint::EvaluationConfig? = nil
     end
 
     struct EvaluatedDependency
@@ -815,6 +831,10 @@ module Celerite
       @closed = false
       @last_used = Time.instant
       @ruby_environment : RubyEnvironment? = nil
+      # The runtime records a cache hit is re-verified against (task-246). Built
+      # once per client from `ruby_environment`, which already carries the
+      # configuration records while the cache is active.
+      @fingerprint_runtime : Celerite::EvalFingerprint::Runtime? = nil
 
       @@shared : Client? = nil
       @@shared_key : String? = nil
@@ -965,8 +985,15 @@ module Celerite
 
       # The bridge process's Ruby environment never changes for a given spawn,
       # so one command needs at most one lookup (install used to pay nine).
+      # While the evaluation cache is active the same answer carries the
+      # configuration the fingerprint records (task-246), so verification costs
+      # no extra RPC: a persisted hit still pays fewer requests than a cold run.
       def ruby_environment : RubyEnvironment
-        @ruby_environment ||= RubyEnvironment.from_json(request("ruby_environment").to_json)
+        @ruby_environment ||= begin
+          payload = {} of String => JSON::Any
+          payload["evaluation_config"] = JSON::Any.new(true) if EvaluationCache.active?
+          RubyEnvironment.from_json(request("ruby_environment", payload).to_json)
+        end
       end
 
       def evaluate_gemfile(path : String) : GemfileEvaluation
@@ -1025,16 +1052,26 @@ module Celerite
       # (`BundlerVersionMismatch`), so the requested version is the one the
       # evaluation ran under.
       private def cache_runtime : Celerite::EvalFingerprint::Runtime
-        environment = ruby_environment
-        Celerite::EvalFingerprint::Runtime.new(
-          ruby_version: environment.ruby_version,
-          patchlevel: environment.patchlevel || "-",
-          engine: environment.engine,
-          engine_version: environment.engine_version,
-          rubygems_version: environment.rubygems_version,
-          bundler_version: reference_bundler_version,
-          platform: environment.platform,
-        )
+        @fingerprint_runtime ||= begin
+          environment = ruby_environment
+          config = environment.evaluation_config
+          abi = if (api = environment.ruby_api_version) &&
+                   (extension = environment.extension_api_version) &&
+                   (rbconfig = environment.rbconfig_ruby_version)
+                  Celerite::EvalFingerprint::Abi.new(api, extension, rbconfig)
+                end
+          Celerite::EvalFingerprint::Runtime.new(
+            ruby_version: environment.ruby_version,
+            patchlevel: environment.patchlevel || "-",
+            engine: environment.engine,
+            engine_version: environment.engine_version,
+            rubygems_version: environment.rubygems_version,
+            bundler_version: reference_bundler_version,
+            platform: environment.platform,
+            abi: abi,
+            config: config,
+          )
+        end
       end
 
       # Specs exposed by a plugin source (`Bundler::Plugin::API::Source#specs`).

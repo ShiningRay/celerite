@@ -91,8 +91,61 @@ module Celerite
     # One file whose content the evaluation read.
     record FileRef, role : String, path : String, sha256 : String
 
+    # The Ruby ABI the evaluation ran under (task-246). The values come from
+    # RubyGems rather than from the version string: `Gem.extension_api_version`
+    # appends `-static` when the interpreter was built without shared
+    # libraries, and native extensions are installed per that ABI, so two
+    # builds reporting the same `ruby.version` can still disagree.
+    #
+    # `source` records how the values were obtained. `real` means the
+    # answering process reported them itself; a fingerprint that cannot be
+    # re-checked against `real` values must not answer a cache hit.
+    struct Abi
+      getter ruby_api_version : String
+      getter extension_api_version : String
+      getter rbconfig_ruby_version : String
+      getter source : String
+
+      def initialize(@ruby_api_version : String, @extension_api_version : String,
+                     @rbconfig_ruby_version : String, @source : String = "real")
+      end
+    end
+
+    # The evaluation-relevant configuration (task-246).
+    #
+    # `Bundler::Dsl#eval_gemfile` reads exactly one configuration value: a
+    # `source "...", type: <plugin>` declaration asks
+    # `Bundler::Plugin.source?` (`bundler/dsl.rb:119-145`), which consults the
+    # plugin index under `Bundler::Plugin.root` (`bundler/plugin.rb:138-148`).
+    # That root is `<app_config>/plugin` inside a bundle and
+    # `<BUNDLE_USER_PLUGIN>` (or `<BUNDLE_USER_HOME>/plugin`) outside one.
+    # `BUNDLE_WITHOUT`/`ONLY`/`FROZEN`/`LOCKFILE` and `BUNDLE_PLUGINS` are
+    # read after the Definition exists or only by install-time hooks, so they
+    # are deliberately absent: recording them would only cost hits.
+    struct EvaluationConfig
+      include JSON::Serializable
+
+      getter app_config : String
+      getter plugin_root : String
+      # SHA-256 over the two values above. The text already contains both;
+      # the digest lets `verify` reject a half-edited record set and gives
+      # logs one stable identifier for the configuration state.
+      getter digest : String
+
+      def initialize(@app_config : String, @plugin_root : String, @digest : String = "")
+        @digest = self.class.digest_of(@app_config, @plugin_root) if @digest.empty?
+      end
+
+      # The canonical bytes both sides hash: fixed key order, `\n` after each.
+      def self.digest_of(app_config : String, plugin_root : String) : String
+        Digest::SHA256.hexdigest("app_config=#{app_config}\nplugin_root=#{plugin_root}\n")
+      end
+    end
+
     # The runtime facts recorded by the fingerprint, as reported by the
-    # current process.
+    # current process. `abi` and `config` are optional so an older bridge (or
+    # a spec that only exercises the interpreter records) still constructs a
+    # `Runtime`; when they are absent the records must merely exist.
     struct Runtime
       getter ruby_version : String
       getter patchlevel : String
@@ -101,10 +154,13 @@ module Celerite
       getter rubygems_version : String
       getter bundler_version : String
       getter platform : String
+      getter abi : Abi?
+      getter config : EvaluationConfig?
 
       def initialize(@ruby_version : String, @patchlevel : String, @engine : String,
                      @engine_version : String, @rubygems_version : String,
-                     @bundler_version : String, @platform : String)
+                     @bundler_version : String, @platform : String,
+                     @abi : Abi? = nil, @config : EvaluationConfig? = nil)
       end
     end
 
@@ -193,6 +249,40 @@ module Celerite
           next if current.nil?
           return "runtime:#{key}" unless recorded == current
         end
+
+        abi_records = {
+          "abi.ruby_api_version"      => runtime.try(&.abi).try(&.ruby_api_version),
+          "abi.extension_api_version" => runtime.try(&.abi).try(&.extension_api_version),
+          "abi.rbconfig_ruby_version" => runtime.try(&.abi).try(&.rbconfig_ruby_version),
+          "abi.source"                => runtime.try(&.abi).try(&.source),
+        }
+        abi_records.each do |key, current|
+          recorded = @records[key]?
+          return "record:#{key}" if recorded.nil?
+          next if current.nil?
+          return "runtime:#{key}" unless recorded == current
+        end
+
+        config_records = {
+          "config.app_config"  => runtime.try(&.config).try(&.app_config),
+          "config.plugin_root" => runtime.try(&.config).try(&.plugin_root),
+        }
+        config_records.each do |key, current|
+          recorded = @records[key]?
+          return "record:#{key}" if recorded.nil?
+          next if current.nil?
+          return "runtime:#{key}" unless recorded == current
+        end
+
+        # The digest covers the two values above, so a record set edited
+        # inconsistently cannot pass even when both sides agree on the values.
+        config_digest = @records["config.digest"]?
+        return "record:config.digest" if config_digest.nil?
+        recomputed = EvaluationConfig.digest_of(
+          @records["config.app_config"],
+          @records["config.plugin_root"],
+        )
+        return "config.digest" unless config_digest == recomputed
 
         nil
       end
