@@ -301,3 +301,16 @@
 - 边界：不升 bridge proto，不新增 Crystal client 方法，不接 CLI/resolution，不运行 `bundle install`，不写锁文件；PATH/GIT/PLUGIN、非 deterministic、明文凭据、非纯物化与 Bundler 版本不符均分类失败或回落。未验证 Linux/macOS、第二 ABI、真实 Rails/差分与性能阈值、S3 调用接线。
 - 生效：M8 期间
 - 取代：无
+
+## C-M8-1-027 默认插件设置下无变化 install 的零 Ruby 快路径（M8 L164，task-269）
+
+- 状态：已实现
+- 参考行为（4.0.24）：`vendor/reference/v4.0.24/lib/bundler/plugin/index.rb:33-42` 同时读取 global/local 插件索引；`plugin.rb:138-152` 定义两套插件根；`bundler.rb:282-295` 按 `BUNDLE_USER_PLUGIN`、`BUNDLE_USER_HOME/plugin`、`~/.bundle/plugin` 决定 global 根。默认启用插件不等于 Gemfile 声明插件，动态 `Plugin::DSL` 不能由静态文本扫描安全判定。
+- 我方行为：
+  - 新增 `src/celerite/plugin_gemfile_cache.cr`，仅在 eval cache 与 fast path 两个开关均开启时签发 `format/digest/plugin_names` 三字段证书；不存项目根、ENV、source URI 或凭据，同目录 temp+fsync+rename 原子发布，损坏即删除，缓存失败不影响命令。
+  - `src/celerite/install_fast_path.cr` 仅在有可信 eval/runtime/lock/安装树记录、当前确定性 fingerprint、空 plugin_names、空 evaluation warnings，且 local/global 插件根与索引均不存在/为空时跳过 plugin 预检；`src/celerite/cli/commands_install.cr` 在兼容路径用真实成功求值结果与同一批 `GemfileEvaluator.fetch` fingerprint 绑定证书，不新增求值、不改 stdout/stderr/exit。
+- 判据：`crystal spec spec/m8_install_fast_path_spec.cr spec/m8_lock_fast_path_spec.cr spec/bridge/client_spec.cr` = `65 examples, 0 failures, 0 errors, 0 pending`；`crystal tool format --check src spec`、`shards build`（最终修复后两次）、`crystal build --no-codegen src/cli.cr`、`git diff --check` 均 EXIT=0；`ruby script/compat-claims-index --check` = `283 claims, index up to date`。双 profile 定向差分：Bundler 4.0.24/2.7.2 的 `install-noop-summary` 与 `install-rerun` 各 `1 passed, 0 failed, 0 skipped`。反假绿：当前默认插件热路径 spec 配 b916df7 基线二进制 EXIT=1，`expected {0,0,0,0}`、`got {1,8,1913,286332}`。
+- 首辅独立复验：在 task-269 树重跑 format/shards/no-codegen/binary build/diff check 均 EXIT=0，目标家族 65 examples, 0 failures, 0 errors, 0 pending；合并 main `7fd2908` 后主仓构建门禁全 0、同家族再次 65/0/0/0（3:10，作业 `pwsh-0f73ea5f9b774239`）；主仓 binary/bridge 下 Bundler 4.0.24 与 2.7.2 的 `install-noop-summary`/`install-rerun` 各 2 passed, 0 failed, 0 skipped。
+- 边界：不静态猜测 plugin 声明；plugin_names 非空、warnings 非空、unknown/broken/变化 fingerprint、缺失/损坏证书、非空插件根/索引或任一既有信任门失败均回 Ruby 兼容路径。证书只证明“同一 deterministic fingerprint 上一次 `Plugin::DSL` 为空”，不能证明下一次运行期 `rand`/time/反射生成的 plugin 声明仍为空；已识别 Unknown 的动态 DSL 仍回落，未识别随机 DSL 是 task-271 设计裁断留下的未解决残余。任意 `Plugin::DSL` Ruby 副作用与直接写 inherited stderr 的 `warn` 不在确定性零 spawn 合约内。未验证 Linux/macOS、第二 ABI、真实 ACL/多进程并发；完整 `crystal spec` 由首辅统一运行，本任务未启动。
+- 生效：M8 期间（task-269；fix `f5f2cf0`、test `6a8451c`）
+- 取代：无；细化 C-M8-1-019 的插件门禁，不取代其既有安装树、锁与运行时信任边界。
