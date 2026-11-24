@@ -161,3 +161,13 @@ bash script/bench-m8 --runs 3 \
 ```
 
 不加参数时 `--help` 打印全部选项；退出码 `0/1/3/4` 含义见第三节。
+
+### 首辅复核（2026-11-24，task-247 定因）
+
+- 复核目的：本报告的读数称 `cold` 档 `celerite` 的 exit 5「是行为差异，不是环境不可用」。该判断需要机制层面的证据，我用最小夹具（`fixtures/gem-index` 的单依赖 `racc 1.8.1`，含 `ext/racc/cparse` 原生扩展）跑了三组对照。
+- 对照一（PATH 含 `C:\msys64\usr\bin`、`C:\msys64\ucrt64\bin`、`C:\Ruby40-x64\bin`）：`celerite install` 退出 5，`gem_make.out` 末行 `make failedNo such file or directory - make`；本机的 `make` 只装在 `C:\Ruby40-x64\msys64\usr\bin`，故该 PATH 里仍无 `make`。
+- 对照二（PATH 只留 `C:\Ruby40-x64\bin`）：同样退出 5、同样 `make failed`。
+- 对照三（PATH 换为 `C:\Ruby40-x64\msys64\usr\bin;C:\Ruby40-x64\msys64\ucrt64\bin;C:\Ruby40-x64\bin`，即把 `make` 放进来）：退出 0，装出 2 个 `.so`，stdout 与其他成功案例同形。
+- 参考侧对照（决定性）：把 PATH 收窄为 `C:\Ruby40-x64\bin;C:\Windows\system32;C:\Windows`（`Get-Command make` 为空），用 `ruby.exe` 跑 `bundler-4.0.24\exe\bundle install` 处理同一项目 → 退出 0、同样 2 个 `.so`、stderr 空。
+- 结论：这不是环境不可用，而是真实的兼容性差异。参考侧在装原生扩展前会由 RubyGems 的 `Gem.pre_install` 钩子把 RubyInstaller 自带的 MSYS2 目录前置进 `PATH`（`C:\Ruby40-x64\lib\ruby\4.0.0\rubygems\defaults\operating_system.rb` 的钩子 → `ruby_installer/runtime/msys2_installation.rb`），因此不依赖调用者 PATH 里有没有 `make`；`celerite` 的桥直接调 `Gem::Ext::Builder`（`assets/bridge/server.rb` 的 `op_build_extension`），不走 `Gem::Installer#install`，该钩子不触发，`make` 不可见时必然失败。同一机制也解释了 task-199 记录过的 `.so` 内嵌 `GCC: (Rev6 ...) 16.2.0` 与参考 `Rev5 ... 16.1.0` 的差异（两套 MSYS2 发行版）。
+- 已派 task-247 收口：在桥的扩展构建路径上复刻该前置行为；判据用「PATH 不含 `make` 时 `celerite install` 必须退出 0 且装出 `.so`」，反假绿用本提交之前的二进制在同一 PATH 下必须退出 5。
