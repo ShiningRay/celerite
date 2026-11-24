@@ -270,3 +270,12 @@
 - 边界：不新增 Ruby 可执行文件摘要、默认 gem 路径摘要或环境指纹字段；不改变 `validate_runtime`，不重写命令输出。静态链接、未知 `ENABLE_SHARED`、任一 ABI 视图未知或记录/指纹被一致篡改时保守回退兼容路径。零进程是 celerite 相对参考的显式性能差异，不代表参考 Bundler 不起 Ruby。锁含额外平台时同样保守回退；完整负向矩阵尚未逐项做 Bundler 命令级差分，仅两条无变化夹具已双 profile 验证。
 - 生效：M8 期间
 - 取代：无
+## C-M8-1-023 解析/安装计划缓存支持原子写入与当前命名空间内裁剪（M8 L165 P2，task-262）
+
+- 状态：已实现
+- 参考行为（4.0.24）：参考 Bundler 4.0.24 没有跨命令的解析/安装计划缓存；`lib/bundler/definition.rb:205-219` 的 `resolve_with_cache!`/`resolve_remotely!` 都进入单次 Ruby 进程内的 `resolve`。本项不与参考作缓存能力兼容声明，只约束新增模块不改变既有命令 stdout/stderr、退出码与锁文件行为。
+- 我方行为：在 `src/celerite/plan_cache.cr:381-429` 新增 `write`/`store` 与 `WriteResult`，写前验证 canonical key、components、当前 credential namespace、payload 三段形状、digest、大小与凭据；`:433-469` 新增只裁剪当前 namespace 的 `prune`，默认 256 条/16 MiB，按 mtime 升序淘汰；`:483-508` 使用同目录 temp、flush、fsync（不支持时忽略）与 `File.rename` 原子发布，失败清 temp；`:518-564` 递归拒绝 root-dependent 路径、任意 `..` 路径段、敏感键、URI userinfo 与环境凭据值。`CELERITE_PLAN_CACHE` 仍只认精确 `1`，关闭时 write/prune/delete 不动作；诊断仅 `CELERITE_PLAN_CACHE_DEBUG=1`。
+- 判据：`crystal spec spec/m8_plan_cache_spec.cr` = `53 examples, 0 failures, 0 errors, 0 pending`（P2 新增 28 例，覆盖往返、替换、非法 payload/digest、超限、namespace 隔离、损坏删除、oldest/字节裁剪、rename 失败清 temp、不可写失败路径、debug/关闭态、root 迁移、空 PATH 零 Ruby）；`crystal spec spec/bridge/client_spec.cr` = `6 examples, 0 failures, 0 errors, 0 pending`；`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`shards build`、`crystal build src/cli.cr -o bin/celerite.exe`、`git diff --check` 均 EXIT=0。反假绿：最终 spec 复制到 base `95e19a0` 后 EXIT=1，报 `Error: undefined method 'write' for Celerite::PlanCache:Module`。
+- 边界：P2 不接 CLI/resolution，不读取缓存跳过解析或安装，不宣称节省 RPC；`CELERITE_PLAN_CACHE=1` 的命令输出零变化由未接线保证。payload 必须 root-independent，拒绝绝对项目/安装根路径；未来复用此类计划必须增加 project/install-root 二次校验。prune 只遍历当前 namespace，不删除其它 namespace、`.tmp` 或无关文件。未验证 Linux/macOS、第二 ABI、真实 ACL、多进程并发、kill/断电崩溃注入与 `script/differential`；原「强制 kill 后无 `.tmp` 残留」未标为完成。完整套件为 `1279 examples, 4 failures`（既有 show-group 顺序污染，单独 `4/0`），本单不宣称全量通过；task-257 修复合并后须重跑全量。
+- 生效：M8 期间（task-262；fix `54c76f2`、test `a8c2949`）
+- 取代：无；扩展 C-M8-1-020 的「无写 API、无 prune」边界，只读校验结论不变。

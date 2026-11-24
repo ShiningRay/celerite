@@ -220,3 +220,17 @@
 8. **未验证 `check` 的解析入口细节**：只测到 rpc=2 / 3115 B / 366 ms，未读其代码路径。
 9. **未验证凭据形态覆盖**：只按 `eval_cache_store.cr:80-83` 的判定逻辑推演，未构造真实凭据配置文件测试 `persistable?` 分支。
 10. **未跑 `script/differential`**（按任务约束，lead 的全量差分占用端口 8765），因此「零输出变化」在差分基准层面的证据缺失，仅靠本机逐字节比对。
+
+## 10. P2 写入与命名空间内裁剪实现记录（2026-11-25，task-262）
+
+本节记录 P2 的实际实现与验证；第 3 节中「删除目标再 rename」和「跨 namespace 全局裁剪」两处旧设计由本节取代，旧文保留作为设计沿革。
+
+- **API 与状态**：`src/celerite/plan_cache.cr:381-429` 新增 `write`/`store`，返回 `WriteResult`；状态区分 `Written`、`Disabled`、`InvalidKey`、`InvalidComponents`、`InvalidNamespace`、`InvalidPayload`、`InvalidDigest`、`NonPortablePayload`、`CredentialPayload`、`TooLarge`、`RootUnavailable`、`IoError`。`:433-469` 新增 `prune(max_entries = 256, max_bytes = 16 MiB)`，返回布尔结果。P2 仍不接 CLI 或 resolution，不宣称节省 RPC。
+- **写前验证**：依次验证 canonical key 可重算且与调用方一致、嵌入 `credential_namespace` 等于当前 namespace、components/payload 不含敏感键或 URI userinfo、payload 恰含 `specs`/`plan`/`installed_snapshot` 三段、payload 不含 root-dependent 路径、显式 digest 合法且匹配 canonical payload、整条不超过 16 MiB、最终文本不含当前环境中的凭据值。任一失败均返回明确状态，不向正常路径抛异常（`src/celerite/plan_cache.cr:381-424`）。
+- **可移植边界**：`portable_json?` 递归检查所有字符串，包括未使用字段；拒绝绝对路径、home 路径、盘符、`file://`，并把 `/` 与 `\` 统一后拒绝任意精确 `..` 路径段（`src/celerite/plan_cache.cr:518-543`）。因此 P2 不接受含绝对项目/安装根的 payload；未来若必须缓存此类计划，须在复用前增加 project/install-root 二次校验，不能把本实现当成可重定位缓存。
+- **原子写**：同目录 `.plan-<pid>-<random>.tmp` → print/flush → fsync（不支持时忽略）→ `File.rename(temp, target)`（`src/celerite/plan_cache.cr:483-508`）。Windows Crystal stdlib 的 `rename` 使用 `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)`，POSIX 使用 `rename(2)`；两者均覆盖既有目标，故不先删除目标。写失败时清理 temp；正常异常不向调用方抛出。
+- **裁剪**：只枚举当前 `namespace_dir` 内符合 `<hex64>.json` 的普通文件，按 `{mtime, path}` 升序删除最旧条目，直到同时满足条数与字节预算（`src/celerite/plan_cache.cr:431-469`）。不遍历其它 namespace，不删除 `.tmp` 或无关文件；目录不存在视为已满足，负预算返回 false。
+- **开关与诊断**：`CELERITE_PLAN_CACHE` 仍只认精确 `1`；关闭时 write/prune/delete 均不动作。只有 `CELERITE_PLAN_CACHE_DEBUG=1` 才输出 `[plan-cache]` 诊断，且不打印凭据明文。P2 未接命令，因此 `CELERITE_PLAN_CACHE=1` 对 CLI 输出零变化。
+- **验证结果**：`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`shards build`、`crystal build src/cli.cr -o bin/celerite.exe`、`git diff --check` 均退出 0；`spec/m8_plan_cache_spec.cr` 为 `53 examples, 0 failures, 0 errors, 0 pending`，其中 P2 新增 28 例；`spec/bridge/client_spec.cr` 为 `6 examples, 0 failures, 0 errors, 0 pending`。同一最终 spec 复制到 base `95e19a0` 后按预期编译失败：`Error: undefined method 'write' for Celerite::PlanCache:Module`，证明新 spec 不是空实现假绿。实现与测试提交分别为 `54c76f2`、`a8c2949`。
+- **全量门禁遗留**：完整 `crystal spec --no-color` 为 `1279 examples, 4 failures, 0 errors, 0 pending`；4 例全在既有 `spec/m7_show_group_filter_spec.cr:60/75/90/105`，报 `Could not find json_pure-2.8.1 in locally installed gems`。该文件单独重跑 `4/0`，本单不宣称全量通过。task-257 正在独立修复全套顺序/共享 `GEM_HOME` 污染，合并后须重跑全量。
+- **未验证边界**：Windows 单进程 rename 覆盖与失败清 temp 已由 spec 实测；Linux/macOS、第二 Ruby ABI、真实 ACL、多进程并发与 kill/断电崩溃注入未测。原 P2 验收中的「强制 kill 后无 `.tmp` 残留」仍未验证，本切片不把该项标为完成；未跑 `script/differential`，命令级零输出变化仍只由「未接线」保证。
