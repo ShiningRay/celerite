@@ -202,3 +202,22 @@ bash script/bench-m8 --side bundle --tiers hot,noop --runs 3 \
 `libcrypto-3-x64.dll`、`libpcre2-8-0.dll`、`libyaml-0-2.dll`、`zlib1.dll`、`libiconv-2.dll`）；
 `objdump -p bin/celerite.exe` 可见这些导入。缺任一目录时进程在 `main()` 前以 `0xC0000135`
 退出且不打印任何东西，驱动为此加了 preflight，拒绝把这种失败记成"很快的样本"。
+
+## 7. task-255 过程矩阵原始口径（非最终证据）
+
+以下来自 `C:\Temp\celerite-t255\.tmp-run2\log\driver.stderr.log`，工作树 `ad97fa5`。此为与 task-257 等活动重叠的过程数据；最终安静矩阵已按裁断停止，等待新基线重跑。每档 warmup 1 次、计入 3 次；wall 中位与范围如下。
+
+| side | tier | n | wall median [range] s | CPU tree median s | RSS tree median KiB | RPC |
+| --- | --- | --- | --- | --- | --- | --- |
+| celerite | cold | 3 | 478.626 [428.481..482.262] | 282.703 | 1,440,524 | 418 |
+| celerite | hot | 3 | 1.781 [1.115..5.753] | 0.641 | 35,820 | 2 |
+| celerite | noop | 3 | 174.160 [155.971..185.074] | 161.391 | 211,468 | 72 |
+| bundle | cold | 3 | 130.197 [115.154..144.014] | 175.656 | 1,402,500 | - |
+| bundle | hot | 3 | 0.856 [0.771..0.859] | 0.188 | 19,276 | - |
+| bundle | noop | 3 | 1.203 [0.777..1.422] | 0.828 | 36,708 | - |
+
+逐次原始 stdout/stderr 保留在 `C:\Temp\celerite-t255\.tmp-scratch\bench-m8\run\{celerite,bundle}\<label>.out/.err`；首轮失败证据在 `.tmp-scratch\bench-m8-first-run\`。第二轮逐次 TSV 已被后续 schema smoke 覆盖，不可复核，故不在此复制 I/O 数字。
+
+驱动 schema 已扩为 34 列，在 `side tier cmd run exit status wall_s cpu_tree_s cpu_root_s rss_tree_kib rss_root_kib` 之后依次为 12 个 Windows I/O 字段（tree/root 的 read/write/other ops 与 bytes），随后 `procs rpc req_bytes resp_bytes out_bytes err_bytes lock_sha256 gemspec_count gemspec_manifest_sha256 out_head out_tail`。`lock_sha256` 是 `proj/Gemfile.lock` 的 SHA-256；`gemspec_count`/`gemspec_manifest_sha256` 覆盖 `bundle/ruby/*/specifications` 下排序后的 gemspec 文件名与内容。冷安装两侧 lock 逐字节相同；gemspec 计数 65/64，差异是 celerite 树含 bundler gemspec。
+
+I/O 采集口径见 `docs/roadmap-evidence/M8-rails-bench.md` task-255 节：`GetProcessIoCounters` 为进程累计 I/O，不是块设备物理 I/O；树按 pid+creation-time identity 轮询，短命/不可访问进程漏计，API 不可用留空。YJIT 快速失败实测 exit=3，无样本。POSIX 路径未采 I/O，不估算。
