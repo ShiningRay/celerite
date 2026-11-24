@@ -163,7 +163,7 @@ module Celerite
         return "gem-dir:#{full_name}" if indices.empty?
         gem_dir = indices.first
         return "gem-dir:#{full_name}" unless File.directory?(gem_dir)
-        next unless specs.find_full_name(full_name)
+        return "install-index:#{full_name}" unless specs.find_full_name(full_name)
 
         text = File.read(gemspec_path)
         next unless text.match(/\bextensions\b/)
