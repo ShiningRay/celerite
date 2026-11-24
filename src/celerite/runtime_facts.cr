@@ -85,6 +85,11 @@ module Celerite
       getter platform : Field
       getter default_gem_dir : Field
       getter abi : Field
+      # RubyGems' two ABI views, reconstructed from the same rbconfig values
+      # `Gem.ruby_api_version` / `Gem.extension_api_version` use. The extension
+      # API carries `-static` only when `ENABLE_SHARED == "no"`.
+      getter ruby_api_version : Field
+      getter extension_api_version : Field
       # `TOPDIR` as substituted from the rbconfig path; `prefix` is that value.
       getter prefix : Field
       getter libdir : Field
@@ -94,6 +99,7 @@ module Celerite
                      @engine_version : Field, @rubygems_version : Field,
                      @bundler_version : Field, @platform : Field,
                      @default_gem_dir : Field, @abi : Field,
+                     @ruby_api_version : Field, @extension_api_version : Field,
                      @prefix : Field, @libdir : Field)
       end
 
@@ -281,13 +287,40 @@ module Celerite
       version = version_field.value
       default_gem_dir = default_gem_dir(with_prefix, config["ruby_version"]?)
       abi = version.nil? ? Field.new(nil, Source::Unknown) : Field.new(InstallPaths.ruby_abi_for(version), Source::Rbconfig)
+      ruby_api_version, extension_api_version = api_version_fields(config)
       prefix = expanded_field(with_prefix, "prefix")
       libdir = expanded_field(with_prefix, "libdir")
 
       # Positional order matches `Facts#initialize`.
       Facts.new(exe, version_field, patchlevel,
         Field.new(nil, Source::Unknown), Field.new(nil, Source::Unknown),
-        rubygems, bundler, platform, default_gem_dir, abi, prefix, libdir)
+        rubygems, bundler, platform, default_gem_dir, abi,
+        ruby_api_version, extension_api_version, prefix, libdir)
+    end
+
+    # RubyGems derives `ruby_api_version` from `target_rbconfig["ruby_version"]`
+    # and appends `-static` to `extension_api_version` only for a non-shared
+    # build (`lib/ruby/<version>/rubygems.rb:506-511,906-907`). Missing or
+    # unrecognized build evidence stays Unknown; it is never guessed from the
+    # executable's MAJOR.MINOR.TEENY version.
+    private def self.api_version_fields(config : Hash(String, String)) : {Field, Field}
+      lib_version = config["ruby_version"]?
+      ruby_api = nonempty_field(lib_version, Source::Rbconfig)
+      shared = config["ENABLE_SHARED"]?
+      extension = case shared
+                  when "yes"
+                    ruby_api
+                  when "no"
+                    value = ruby_api.value
+                    value ? Field.new("#{value}-static", Source::Rbconfig) : Field.new(nil, Source::Unknown)
+                  else
+                    Field.new(nil, Source::Unknown)
+                  end
+      {ruby_api, extension}
+    end
+
+    private def self.nonempty_field(value : String?, source : Source) : Field
+      value.nil? || value.empty? ? Field.new(nil, Source::Unknown) : Field.new(value, source)
     end
 
     private def self.field(value : String?, source : Source) : Field

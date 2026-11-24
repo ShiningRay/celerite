@@ -115,6 +115,7 @@ module Celerite
       def complete? : Bool
         @format == FORMAT && !@written_at.empty? &&
           @project_digest.matches?(DIGEST) &&
+          @credential_namespace.matches?(NAMESPACE) &&
           !@ruby_version.empty? && !@patchlevel.empty? &&
           !@engine.empty? && !@engine_version.empty? &&
           !@platform.empty? && !@rubygems_version.empty? &&
@@ -263,6 +264,16 @@ module Celerite
         return nil
       end
 
+      if facts
+        local = facts.not_nil!
+        return nil unless local.ruby_api_version.known? &&
+                          local.ruby_api_version.value == real_abi.ruby_api_version
+        return nil unless local.extension_api_version.known? &&
+                          local.extension_api_version.value == real_abi.extension_api_version
+        return nil unless local.abi.known? &&
+                          local.abi.value == real_abi.rbconfig_ruby_version
+      end
+
       values = {} of String => String
       FIELDS.each do |name|
         local = facts.try { |f| field_of(f, name) }
@@ -299,8 +310,9 @@ module Celerite
     #    project and this credential namespace, and be complete;
     # 5. the seven runtime fields must be known to `Facts` and equal the
     #    record, in `FIELDS` order;
-    # 6. the ABI must be known to `Facts` and equal the record's
-    #    `rbconfig_ruby_version`.
+    # 6. the three ABI views must be known to `Facts` and equal the record's
+    #    `ruby_api_version`, `extension_api_version` and
+    #    `rbconfig_ruby_version` respectively.
     #
     # Any deviation returns `RequiresRuby`, never `Allowed`; an unknown field
     # is a mismatch, never a wildcard.
@@ -327,7 +339,7 @@ module Celerite
       return Verdict.requires_ruby("project-mismatch") unless rec.project_digest == project_digest(project_root)
 
       namespace = EvalCacheStore.namespace
-      unless rec.credential_namespace.empty? || rec.credential_namespace == namespace
+      unless rec.credential_namespace == namespace
         return Verdict.requires_ruby("namespace-mismatch")
       end
 
@@ -349,11 +361,18 @@ module Celerite
         end
       end
 
-      unless facts.abi.known?
-        return Verdict.requires_ruby("facts-unknown:abi")
-      end
-      unless facts.abi.value == rec.abi.rbconfig_ruby_version
-        return Verdict.requires_ruby("facts-mismatch:abi")
+      abi_pairs = {
+        {name: "ruby_api_version", local: facts.ruby_api_version, recorded: rec.abi.ruby_api_version},
+        {name: "extension_api_version", local: facts.extension_api_version, recorded: rec.abi.extension_api_version},
+        {name: "rbconfig_ruby_version", local: facts.abi, recorded: rec.abi.rbconfig_ruby_version},
+      }
+      abi_pairs.each do |pair|
+        unless pair[:local].known?
+          return Verdict.requires_ruby("facts-unknown:#{pair[:name]}")
+        end
+        unless pair[:local].value == pair[:recorded]
+          return Verdict.requires_ruby("facts-mismatch:#{pair[:name]}")
+        end
       end
 
       Verdict.allowed

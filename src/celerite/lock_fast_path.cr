@@ -127,7 +127,8 @@ module Celerite
       return {nil, "checksums"} unless definition.checksums_need_refresh?(false).nil?
 
       lockfile = definition.lockfile!
-      return {nil, "platforms"} unless lockfile.platforms.includes?(Gem::Platform.local.to_s)
+      local_platform = Gem::Platform.local.to_s
+      return {nil, "platforms"} unless lockfile.platforms == [local_platform]
 
       # Nothing in the persisted entry records what is installed under the
       # plugin root: `verify.files` digests the Gemfile chain and the gemspecs,
@@ -236,7 +237,9 @@ module Celerite
         RuntimeFacts::Field.new(record.engine, RuntimeFacts::Source::Record),
         RuntimeFacts::Field.new(record.engine_version, RuntimeFacts::Source::Record),
         facts.rubygems_version, facts.bundler_version, facts.platform,
-        facts.default_gem_dir, facts.abi, facts.prefix, facts.libdir)
+        facts.default_gem_dir, facts.abi,
+        facts.ruby_api_version, facts.extension_api_version,
+        facts.prefix, facts.libdir)
     end
 
     # The runtime the entry's own records must agree with. Using the record
