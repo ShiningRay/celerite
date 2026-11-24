@@ -246,3 +246,13 @@
 - 边界：**不接线、不改命令行为**——`src/celerite/cli/` 下没有本模块调用点；`CELERITE_PLAN_CACHE=1` 单独开启零输出变化，只有额外 `CELERITE_PLAN_CACHE_DEBUG=1` 才打印静态状态/原因，且不含凭据明文。六成分键故意不含 Gemfile 工程根、`BUNDLE_PATH` 或安装根，故同一 HOME 与同一锁/源/checksum/ABI/build 可得到同一 key；P2 若复用命中条目，必须要求 payload 与项目根无关，或在复用前重查 project/install root，绝不盲目接受含绝对路径的 payload。无写 API、无 prune；MAX_ENTRIES 仅为 P2 裁剪预留常量，MAX_BYTES 在 P1 只用于单条目读取上限；无 HOME 且未设 `CELERITE_CACHE_DIR` 时路径不可用；删除失败不影响返回非 hit。未验证：未在 Linux/macOS 或第二 ABI 实测键稳定性，未测多进程并发读写，未验证 P2 写入器与真实命中行为。
 - 生效：M8 期间
 - 取代：无
+
+## C-M8-1-021 批次级求解纯数据 schema 与 Bundler 4.0.24 resolver harness（M8 L161 S1）
+
+- 状态：已实现
+- 参考行为（4.0.24）：`Bundler::Resolver#start` 从 `Resolver::Base` 的 requirements/packages 与 source specs 建立 PubGrub 求解，返回 variants 合并后的解析结果；本 release 的返回值在 `SpecSet#specs_with_additional_variants_from` 后是 Array，须显式包回 `Bundler::SpecSet`。promotion 的 patch/minor/major、strict、pre 由 `Bundler::GemVersionPromoter` 决定；locked 精确 pin 只有在名称被 unlock 且从 resolution base 收敛后才可升级。参考没有 `celerite.solve_batch/3` JSON 协议，本项只声明对真 Resolver 输入/结果边界的兼容，不声明命令输出兼容。
+- 我方行为：新增 `assets/bridge/solve_batch.schema.json` 与 `assets/bridge/solve_batch.rb`：严格校验 v3 请求；校验 redacted URI/hash、source identity、候选闭包 complete/digest/count、locked digest 与 checksum；将纯 GEM 候选装入冻结 `Bundler::Index`，由禁止远端/缓存/已装物化的 `PureGemsSource` 承载，构造 `Bundler::Resolver::Base` + `GemVersionPromoter` + `Resolver#start`，把返回 Array 明确包成 `Bundler::SpecSet` 后序列化 chosen/edges/variants/stats；六类领域失败及 timeout/internal 均返回有界 JSON。新增 `bin/solve_batch`、`script/solve_batch_fixture.rb`、`fixtures/solve_batch/cases.json`、`test/solve_batch_harness_test.rb`、`spec/m8_solve_batch_spec.cr`。
+- 判据：`ruby test/solve_batch_harness_test.rb` = `24 checks, 0 failures`（含 14 fixture：10 成功、4 分类失败，14/14 符合预期；删除候选/改 checksum 在重新密封 digest 后仍失败）；`crystal spec spec/m8_solve_batch_spec.cr` = `1 examples, 0 failures, 0 errors, 0 pending`；`crystal tool format --check src spec`、`shards build`、`ruby -c assets/bridge/solve_batch.rb` 均 exit 0；同一 spec 在旧 main `9355ada` 上运行 = `1 examples, 1 failures`（`ruby: No such file or directory -- test/solve_batch_harness_test.rb`）。
+- 边界：不接桥、不接 CLI、不改 `commands/resolution`，不运行 `bundle install`，不写锁文件；只支持 `Rubygems/pure_data` 与 redacted URI/hash，PATH/GIT/PLUGIN、明文凭据和非纯物化模式拒绝。checksum 只绑定请求中的候选/locked 声明，不校验 gem 包字节；候选闭包重新密封后信任新密封内容，只有 locked checksum 能独立识别已锁候选 checksum 变化。未验证 Linux/macOS、其他 Ruby/Bundler 版本与任何现有命令级行为。
+- 生效：M8 期间
+- 取代：无
