@@ -52,6 +52,9 @@ private def with_f3_project(files : Hash(String, String), *,
       ENV.delete("CELERITE_EVAL_DEBUG")
     end
     begin
+      # Same order as `CLI.run`: the process-wide counters must start at zero,
+      # otherwise an earlier spec in the same process leaks its RPC counts in.
+      Celerite::Bridge::BridgeStats.begin_run
       Celerite::Bridge::EvaluationCache.begin_run
       yield project
     ensure
@@ -209,6 +212,8 @@ describe "M8 evaluation cache state (task-236)" do
         forged.verify(project, nil).should eq("digest")
         Celerite::EvalFingerprint.broken_reason?("digest").should be_true
 
+        # Same order as `CLI.run`: reset both counters before asserting.
+        Celerite::Bridge::BridgeStats.begin_run
         Celerite::Bridge::EvaluationCache.begin_run
         wire = Celerite::Bridge::EvalFingerprint.new(
           forged.text, forged.digest, forged.verify,

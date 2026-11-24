@@ -45,6 +45,9 @@ private def with_f2_project(files : Hash(String, String), *,
       ENV.delete("CELERITE_BRIDGE_STATS")
     end
     begin
+      # Same order as `CLI.run`: the process-wide counters must start at zero,
+      # otherwise an earlier spec in the same process leaks its RPC counts in.
+      Celerite::Bridge::BridgeStats.begin_run
       Celerite::Bridge::EvaluationCache.begin_run
       yield project
     ensure
