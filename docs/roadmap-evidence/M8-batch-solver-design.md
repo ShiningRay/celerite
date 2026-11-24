@@ -106,9 +106,17 @@ Envelope 沿用 `assets/bridge/server.rb:11-19`，加 `"schema":"celerite.solve_
 | 片 | 目标 / 交付物 | 验收与反假绿 | 依赖 |
 |---|---|---|---|
 | S1 schema + 纯数据 solver | JSON schema、fixture、Ruby 纯数据 harness：冻结 Index → Resolver → SpecSet；不接桥 | 至少覆盖 promotion 三档/strict、prerelease、平台 variant、Ruby 约束、locked relax、冲突分类；故意删一个候选/改一个 checksum 必须失败；M7 现有输出/锁/exit 不变（本片不接命令） | 无 |
-| S2 op 实现 | `assets/bridge/server.rb` 增 `solve_batch`、features、字节/超时/凭据隔离、结构化失败；`src/celerite/bridge/client.cr` 增结构与 envelope | 单测断言一次请求、零 callback、未知 op 兼容；毒化 source_id/候选摘要/超时必须失败；evaluate_batch 输出/锁/exit 不变 | S1 |
+| S2 Ruby bridge op（本任务范围；Crystal client 移至 S3） | `assets/bridge/server.rb` 增 `solve_batch`、features、字节/超时/凭据隔离、结构化失败；不新增 Crystal client 结构 | 单测断言一次请求、零 callback、未知 op 兼容；毒化 source_id/候选摘要/超时必须失败；evaluate_batch 输出/锁/exit 不变 | S1 |
 | S3 Crystal 调用点 | `src/celerite/resolution.cr` 的预物化与一次提交；快路优先级不变 | 静态断言 solve 前无 fetcher 调用；关节拍测候选完整才提交；无变化样例 procs/output/lock/exit 与 M7 基线相同；负值夹具不得静默 fallback 后报成功 | S2 |
 | S4 真实 Rails/差分回归 | Rails 规模样本、双 Bundler profile、输出/锁文件/退出码三断言、性能与字节统计 | 首辅执行；本设计未跑。任一输出/锁/exit 差异不得用「求解器等价」解释；兼容场景单列，不并入 L161 成功数 | S3 |
+
+### S2 落地裁定（2026-11-25，task-263）
+
+- **协议不升级**：bridge proto 保持 1/2；`ping.features` 新增 `solve_batch` 作能力协商。请求 payload 为 S1 的 `celerite.solve_batch/3` 对象。响应外层仍为 `{proto,id,ok,result}`；`result` 保留完整 S1 `{schema,ok,result}`。外层 `ok` 只表示 transport/dispatch 成功，内层 `ok` 表示 solver 领域成败，分类失败不升级成 bridge error。
+- **边界有界**：JSONL 单行上限 32 MiB + 64 KiB envelope 余量；超限先排空到换行/EOF，再返回 `BatchTooLarge`，后续请求继续。非法 JSON、非对象请求、非法 signed 32-bit id 均结构化返回。solve 完整外层响应上限 8 MiB；超限先替换为短 S1 failure，仍超限则替换固定短失败，保证单行不超配置上限。错误 message 与 S1 failure message 均按完整 UTF-8 字符截到 16 KiB。
+- **整 op 超时**：`Celerite::SolveBatch.call` 在硬上限 60 s 内完成 JSON 生成/解析，再按请求 `limits.timeout_ms` 计算剩余时间，包住 stats、validate/build、真 Resolver、closure 校验、序列化与响应大小检查；resolver 内部仍有原 timeout。
+- **隔离不放松**：只接受 deterministic + `Rubygems/pure_data`，Bundler 必须为 4.0.24；PATH/GIT/PLUGIN、远端/缓存/已装物化、凭据字段或 URI userinfo 均分类失败或显式 fallback，不偷偷 materialize。
+- **本片边界**：未改 Crystal client、CLI 或 `resolution`；S3 调用接线仍未实现。
 
 ## 6. 风险与裁定建议
 
@@ -119,7 +127,7 @@ Envelope 沿用 `assets/bridge/server.rb:11-19`，加 `"schema":"celerite.solve_
 
 ## 未验证
 
-- 未运行 build/spec/differential，未测 8765；所有性能阈值、Rails 候选规模、32/8 MiB 上限和 60 s 超时均为提案，未实测。
-- 未实测 Ruby 冻结 Index 包装能否在全部 Rails 候选上产出与原生 `Definition#resolver` 逐字节相同的 lock；`EndpointSpecification` 的 fetcher/remote 依赖（`bundler/endpoint_specification.rb:131-151`）可能在下游安装阶段触发材料化。
+- S1/S2 已在 Windows x64、Ruby 4.0.6、Bundler 4.0.24 上跑通 `ruby test/solve_batch_harness_test.rb`（35 checks）与 `crystal spec spec/m8_solve_batch_spec.cr`（2 examples）；完整 build/format/claims 门禁结果见当日证据。
+- 未验证 Linux/macOS、第二 ABI、真实 Rails 规模样本或双 Bundler 差分；32/8 MiB、候选/source/name 上限与 60 s 超时只在 fixture 边界验证，未做容量或性能量化。
 - 未验证插件 source 在「候选纯数据 + 对象 session」模式下仍可执行且不二次求值；未验证非 MRI 引擎、Windows 凭据 URI、source 同名多源的参考错误映射。
-- 本文未改 `docs/roadmap.md`、claims、索引或任何源码；L161 是否闭合由首辅按原 Oracle 裁定。
+- S2 未改 Crystal client、CLI 或 `resolution`，L161 的 S3 调用接线仍未闭合；不得把桥 op 已实现等同于命令级求解已启用。

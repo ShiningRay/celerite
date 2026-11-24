@@ -291,3 +291,13 @@
 - 边界：P2 不接 CLI/resolution，不读取缓存跳过解析或安装，不宣称节省 RPC；`CELERITE_PLAN_CACHE=1` 的命令输出零变化由未接线保证。payload 必须 root-independent，拒绝绝对项目/安装根路径；未来复用此类计划必须增加 project/install-root 二次校验。prune 只遍历当前 namespace，不删除其它 namespace、`.tmp` 或无关文件。未验证 Linux/macOS、第二 ABI、真实 ACL、多进程并发、kill/断电崩溃注入与 `script/differential`；原「强制 kill 后无 `.tmp` 残留」未标为完成。完整套件为 `1279 examples, 4 failures`（既有 show-group 顺序污染，单独 `4/0`），本单不宣称全量通过；task-257 修复合并后须重跑全量。
 - 生效：M8 期间（task-262；fix `54c76f2`、test `a8c2949`）
 - 取代：无；扩展 C-M8-1-020 的「无写 API、无 prune」边界，只读校验结论不变。
+
+## C-M8-1-024 Ruby 桥 solve_batch 操作与有界失败响应（M8 L161 S2）
+
+- 状态：已实现
+- 参考行为（4.0.24）：桥的 JSON Lines 协议按请求回显 proto 与 id，以 `{proto,id,ok,result/error}` 分隔传输成功与操作异常；`Bundler::Resolver` 只在调用方提供的 requirements/packages 与 source specs 上求解，不应由求解过程自行联网、读缓存或读已安装 gem。参考 Bundler 没有 `solve_batch` 桥操作，本项声明桥信封与真 Resolver 输入/结果边界的兼容，不声明命令输出或 Crystal client API 兼容。
+- 我方行为：`assets/bridge/server.rb` 在既有 proto 1/2 上新增 `solve_batch` feature 与 dispatch，payload 为完整 `celerite.solve_batch/3` 请求，`result` 保留 S1 `{schema,ok,result}`；外层 `ok=true` 表示请求已被桥接收并完成分派，内层 `ok` 表示领域求解成败。JSONL 单行限制为 32 MiB+64 KiB，超限先排空到换行/EOF 再返回 `BatchTooLarge`；非法 JSON、非对象请求、非法 id/proto 均结构化返回。响应限 8 MiB，超限以两段有界 S1 failure 退化；错误消息按 UTF-8 完整字符截到 16 KiB。`assets/bridge/solve_batch.rb` 的 `call` 以请求剩余 timeout 覆盖 parse、语义校验、构造、求解、序列化与响应检查；仅接受 deterministic + `Rubygems/pure_data` + Bundler 4.0.24，禁止远端/缓存/已装物化。
+- 判据：`ruby test/solve_batch_harness_test.rb` = `35 checks, 0 failures`；`crystal spec spec/m8_solve_batch_spec.cr` = `2 examples, 0 failures, 0 errors, 0 pending`（10.1 s）；`ruby -c assets/bridge/server.rb`、`ruby -c assets/bridge/solve_batch.rb`、`ruby -c test/solve_batch_harness_test.rb`、`crystal tool format --check src spec`、`shards build`（连续两次）、`git diff 95e19a0..HEAD --check`、`script/compat-claims-index --check`（exit 0）均 exit 0；同一 `solve_batch` 请求在 base `95e19a0` 返回 `UnknownOp`，证明测试不是假绿。
+- 边界：不升 bridge proto，不新增 Crystal client 方法，不接 CLI/resolution，不运行 `bundle install`，不写锁文件；PATH/GIT/PLUGIN、非 deterministic、明文凭据、非纯物化与 Bundler 版本不符均分类失败或回落。未验证 Linux/macOS、第二 ABI、真实 Rails/差分与性能阈值、S3 调用接线。
+- 生效：M8 期间
+- 取代：无
