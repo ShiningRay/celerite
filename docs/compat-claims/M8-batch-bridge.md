@@ -256,3 +256,17 @@
 - 边界：不接桥、不接 CLI、不改 `commands/resolution`，不运行 `bundle install`，不写锁文件；只支持 `Rubygems/pure_data` 与 redacted URI/hash，PATH/GIT/PLUGIN、明文凭据和非纯物化模式拒绝。checksum 只绑定请求中的候选/locked 声明，不校验 gem 包字节；候选闭包重新密封后信任新密封内容，只有 locked checksum 能独立识别已锁候选 checksum 变化。未验证 Linux/macOS、其他 Ruby/Bundler 版本与任何现有命令级行为。
 - 生效：M8 期间
 - 取代：无
+
+## C-M8-1-022 无 Ruby 快路径按三组 ABI 视图与严格凭据命名空间收口（M8 L164 S8e，task-261）
+
+- 状态：已实现
+- 参考行为（4.0.24）：参考 Bundler 没有跨命令持久运行时记录；RubyGems 在当次解释器内以 `rbconfig["ruby_version"]` 取得 `ruby_api_version`（`C:\Ruby40-x64\lib\ruby\4.0.0\rubygems.rb:906-907`），并以 `ENABLE_SHARED` 决定 extension API 是否追加 `-static`（同文件 `:506-511`）。本项不声明新的命令兼容面，只收口 celerite 零 Ruby 命中前对当前解释器的安全判定；stdout/stderr/退出码/锁与安装树仍逐项对齐参考。
+- 我方行为：
+  - `src/celerite/runtime_facts.cr` 的 `Facts` 新增 `ruby_api_version`、`extension_api_version`，均由本机 rbconfig 本地推导；`ENABLE_SHARED=yes` 时两者等于 `ruby_version`，`no` 时 extension API 为 `<ruby_version>-static`，缺失或其它值保持 Unknown，绝不猜测。
+  - `src/celerite/lock_fast_path.cr` 的 `complete_facts` 把两组新鲜视图补入 CRuby 不变式；`src/celerite/fast_path_store.cr` 的 `decision` 要求记录的 `ruby_api_version`、`extension_api_version`、`rbconfig_ruby_version` 与新鲜事实逐一相等，`record_from` 也拒绝与本地事实冲突或本地视图未知的写入。
+  - `credential_namespace` 由“空值通配”改为 16 位小写十六进制完整性要求与精确相等；损坏、空值或格式错误的记录一律不命中。
+  - src/celerite/lock_fast_path.cr 的共享信任门把「锁平台包含本机」收紧为「锁平台恰为 [local_platform]」；锁内新增任一其它平台都保守回退兼容路径，不以多平台锁误命中单平台安装记录。
+- 判据：`crystal spec spec/m8_lock_fast_path_spec.cr spec/m8_install_fast_path_spec.cr spec/m8_fast_path_store_spec.cr spec/m8_runtime_facts_spec.cr spec/bridge/client_spec.cr` = `84 examples, 0 failures, 0 errors, 0 pending`；`crystal tool format --check src spec`、`shards build`（两次）、`crystal build --no-codegen src/cli.cr`、`git diff --check` 均 exit 0；同一 ABI 反例在旧 main `95e19a0` 二进制上 = `1 examples, 1 failures`（`candidate.procs` 实际 0）。Bundler 4.0.24/2.7.2 的 `lock-noop`/`install-rerun` 命令级差分各为 `2 passed, 0 failed, 0 skipped`。完整证据见 `docs/compat-evidence/2026-11-25.md`。
+- 边界：不新增 Ruby 可执行文件摘要、默认 gem 路径摘要或环境指纹字段；不改变 `validate_runtime`，不重写命令输出。静态链接、未知 `ENABLE_SHARED`、任一 ABI 视图未知或记录/指纹被一致篡改时保守回退兼容路径。零进程是 celerite 相对参考的显式性能差异，不代表参考 Bundler 不起 Ruby。锁含额外平台时同样保守回退；完整负向矩阵尚未逐项做 Bundler 命令级差分，仅两条无变化夹具已双 profile 验证。
+- 生效：M8 期间
+- 取代：无
