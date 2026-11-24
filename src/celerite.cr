@@ -25,6 +25,7 @@ require "./celerite/gemfile_evaluation"
 require "./celerite/file_url"
 require "./celerite/compact_index/cache"
 require "./celerite/resolution"
+require "./celerite/runtime_facts"
 
 module Celerite
   VERSION = "0.1.0"
