@@ -3,6 +3,71 @@ require "./installed_index"
 require "./glob"
 
 module Celerite
+  # Pure install-summary rules shared by the compatibility and no-op paths.
+  # Keeping the numbers and transcript rendering together prevents the fast
+  # path from drifting on Bundler's own gem, typed sources, or path hints.
+  module InstallSummary
+    record Summary,
+      deps_count : Int32,
+      gems_count : Int32,
+      skipped_groups : Array(String),
+      path_mode : Symbol,
+      relative_path : String
+
+    def self.build(evaluation : Bridge::GemfileEvaluation,
+                   spec_names : Enumerable(String),
+                   hidden_names : Enumerable(String),
+                   skipped_groups : Array(String),
+                   switched_bundler : Bool,
+                   bundler_version : String,
+                   path_mode : Symbol,
+                   relative_path : String) : Summary
+      hidden = hidden_names.to_set
+      deps_count = evaluation.dependencies.count do |dep|
+        !dep.gemspec_dev_dep && !hidden.includes?(dep.name)
+      end
+      # `cli/install.rb:93-96` counts `definition.specs`, i.e. the
+      # materialized form of the requested dependencies. A typed source's
+      # inferred `bundler-source-<type>` gem is installed by the plugin
+      # installer, not the application definition, and is hidden on both sides.
+      gems_count = spec_names.count { |name| !hidden.includes?(name) }
+      # 2.7.x counts the running Bundler; a switched run counts the
+      # switched-to Bundler instead (`cli/common.rb:57`).
+      gems_count += 1 if switched_bundler || bundler_version.starts_with?("2.")
+      Summary.new(deps_count, gems_count, skipped_groups, path_mode, relative_path)
+    end
+
+    def self.complete_line(summary : Summary) : String
+      count = summary.deps_count
+      gems = summary.gems_count
+      "Bundle complete! #{count} Gemfile dependenc#{count == 1 ? "y" : "ies"}, " \
+      "#{gems} gem#{gems == 1 ? "" : "s"} now installed."
+    end
+
+    def self.skipped_groups_line(summary : Summary) : String?
+      groups = summary.skipped_groups
+      return nil if groups.empty?
+      label = if groups.size == 1
+                "group '#{groups.first}'"
+              else
+                quoted = groups.map { |group| "'#{group}'" }
+                "groups #{quoted[0...-1].join(", ")} and #{quoted.last}"
+              end
+      "Gems in the #{label} were not installed."
+    end
+
+    def self.path_line(summary : Summary) : String
+      case summary.path_mode
+      when :empty
+        "Bundled gems are installed into `./.`"
+      when :system
+        "Use `bundle info [gemname]` to see where a bundled gem is installed."
+      else
+        "Bundled gems are installed into `#{summary.relative_path}`"
+      end
+    end
+  end
+
   # Unchanged-install fast path. It reuses `LockFastPath.trusted_attempt` for
   # every decision that can be made from the lockfile and cached evaluation;
   # only install-specific gates (argument shape, hooks, output-affecting
@@ -13,13 +78,10 @@ module Celerite
       getter evaluation : Bridge::GemfileEvaluation
       getter default_gem_dir : String
       getter install_root : String
-      getter deps_count : Int32
-      getter gems_count : Int32
-      getter path_mode : Symbol
+      getter summary : InstallSummary::Summary
 
       def initialize(@digest : String, @evaluation : Bridge::GemfileEvaluation, @default_gem_dir : String,
-                     @install_root : String, @deps_count : Int32, @gems_count : Int32,
-                     @path_mode : Symbol)
+                     @install_root : String, @summary : InstallSummary::Summary)
       end
     end
 
@@ -70,7 +132,6 @@ module Celerite
       plan_reason = plan_complete?(lockfile, install_root, hit)
       return {nil, plan_reason} if plan_reason
 
-      deps_count = hit.evaluation.dependencies.count { |dep| !dep.gemspec_dev_dep }
       gems_count = reachable_specs(lockfile, hit.evaluation).size
       return {nil, "plan"} if gems_count.zero? && !lockfile.specs.empty?
 
@@ -81,25 +142,25 @@ module Celerite
                   else
                     :relative
                   end
-      {Hit.new(hit.digest, hit.evaluation, dir, install_root, deps_count, gems_count, path_mode), nil}
+      relative_path = if path_mode == :relative
+                        InstallPaths.base_path_relative_to_pwd(config, definition.project_root)
+                      else
+                        ""
+                      end
+      summary = InstallSummary.build(hit.evaluation, reachable_specs(lockfile, hit.evaluation),
+        [] of String, [] of String, false, Celerite::Profile.bundler_version, path_mode, relative_path)
+      {Hit.new(hit.digest, hit.evaluation, dir, install_root, summary), nil}
     end
 
     # Prints the exact two-line no-op transcript of the compatible path.
     # `ProcessLock` is acquired by the caller around this call, matching the
     # compatibility path's serialization semantics.
     def self.emit(hit : Hit, stdout : IO, definition : Definition, config : Config) : Nil
-      count = hit.deps_count
-      stdout.puts "Bundle complete! #{count} Gemfile dependenc#{count == 1 ? "y" : "ies"}, " \
-                  "#{hit.gems_count} gem#{hit.gems_count == 1 ? "" : "s"} now installed."
-      case hit.path_mode
-      when :empty
-        stdout.puts "Bundled gems are installed into `./.`"
-      when :system
-        stdout.puts "Use `bundle info [gemname]` to see where a bundled gem is installed."
-      else
-        relative = InstallPaths.base_path_relative_to_pwd(config, definition.project_root)
-        stdout.puts "Bundled gems are installed into `#{relative}`"
+      stdout.puts InstallSummary.complete_line(hit.summary)
+      if line = InstallSummary.skipped_groups_line(hit.summary)
+        stdout.puts line
       end
+      stdout.puts InstallSummary.path_line(hit.summary)
     end
 
     private def self.config_bool?(value) : Bool

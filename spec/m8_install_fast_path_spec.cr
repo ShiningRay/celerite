@@ -4,6 +4,7 @@ require "./m8_fast_path_matrix_support"
 require "../src/celerite/gem/platform"
 require "../src/celerite/runtime_facts"
 require "../src/celerite/resolution"
+require "../src/celerite/install_fast_path"
 
 private IFP_INDEX    = file_source_url(File.expand_path("../fixtures/gem-index", __DIR__))
 private IFP_STATS    = /^bridge: procs=(\d+) rpc=(\d+) req_bytes=(\d+) resp_bytes=(\d+)$/
@@ -12,6 +13,7 @@ private IFP_MISS     = /^fast-path: install miss \((.+)\)$/
 private IFP_SWITCHES = %w[
   CELERITE_FAST_PATH CELERITE_FAST_PATH_DEBUG CELERITE_EVAL_CACHE
   CELERITE_CACHE_DIR CELERITE_BRIDGE_STATS CELERITE_BRIDGE_SERVER
+  CELERITE_PROFILE_BUNDLER_VERSION CELERITE_REFERENCE_BUNDLER_VERSION
   CELERITE_REFERENCE_BUNDLER_LIB CELERITE_VERBOSE
 ]
 private IFP_ISOLATED = %w[HOME USERPROFILE BUNDLE_PATH BUNDLE_WITHOUT TMPDIR TMP TEMP]
@@ -26,6 +28,51 @@ private def ifp_env(*switches : String) : Hash(String, String)
   env = {"CELERITE_BRIDGE_STATS" => "1"}
   switches.each { |name| env[name] = "1" }
   env
+end
+
+private def ifp_profile_env(profile : String) : Hash(String, String)
+  reference_lib = if profile == "2.7.2"
+                    "C:/Ruby40-x64/lib/ruby/gems/4.0.0/gems/bundler-2.7.2/lib"
+                  else
+                    File.expand_path("../.upstream-specs/v4.0.24/bundler/lib", __DIR__)
+                  end
+  {
+    "CELERITE_PROFILE_BUNDLER_VERSION"   => profile,
+    "CELERITE_REFERENCE_BUNDLER_VERSION" => profile,
+    "CELERITE_REFERENCE_BUNDLER_LIB"     => reference_lib,
+  }
+end
+
+private def ifp_dependency(name : String, gemspec_dev_dep : Bool = false) : Celerite::Bridge::EvaluatedDependency
+  Celerite::Bridge::EvaluatedDependency.from_json(%({
+    "name":#{name.to_json},
+    "requirements":[],
+    "groups":["default"],
+    "platforms":[],
+    "autorequire":null,
+    "force_ruby_platform":null,
+    "gemspec_dev_dep":#{gemspec_dev_dep},
+    "source":null
+  }))
+end
+
+private def ifp_evaluation(profile : String, names : Array(String),
+                           dev_names : Array(String) = [] of String) : Celerite::Bridge::GemfileEvaluation
+  dependencies = names.map { |name| ifp_dependency(name) }
+  dependencies.concat(dev_names.map { |name| ifp_dependency(name, true) })
+  Celerite::Bridge::GemfileEvaluation.from_json(%({
+    "gemfile":"Gemfile",
+    "dependencies":#{dependencies.to_json},
+    "sources":[],
+    "ruby":null,
+    "ruby_version":null,
+    "ruby_patchlevel":null,
+    "ruby_engine":null,
+    "ruby_engine_version":null,
+    "bundler_version":#{profile.to_json},
+    "gemfile_sha256":#{("0" * 64).to_json},
+    "warnings":[]
+  }))
 end
 
 private def ifp_with_env(project : String, overrides : Hash(String, String), &)
@@ -73,13 +120,14 @@ private def ifp_lines(errors : String, regex : Regex) : Array(String)
   errors.lines.compact_map { |line| line.match(regex).try(&.[1]) }
 end
 
-private def ifp_ready(project : String) : Nil
+private def ifp_ready(project : String, profile : String = "4.0.24") : Nil
   pending!("no Ruby interpreter on PATH for the bridge") unless ruby_available?
   File.write(File.join(project, "Gemfile"), %(source "#{IFP_INDEX}"\n\neval_gemfile "extra.rb"\n))
   File.write(File.join(project, "extra.rb"), %(gem "json_pure"\n))
   FileUtils.mkdir_p(File.join(project, ".bundle"))
   File.write(File.join(project, ".bundle", "config"), %(BUNDLE_PLUGINS: "false"\n))
   env = ifp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG")
+  env.merge!(ifp_profile_env(profile))
   ifp_with_env(project, env) do
     status, output, errors = ifp_run(project, ["install"])
     fail "cold install failed (#{status}): #{output} #{errors}" unless status == 0
@@ -109,8 +157,20 @@ private def ifp_matrix_parity(project : String, args : Array(String) = ["install
   end
 end
 
-private def ifp_hot(project : String, args = ["install"], overrides = {} of String => String) : {Int32, String, String, Tuple(Int32, Int32, Int32, Int32)}
+private def ifp_compatible(project : String, profile : String = "4.0.24") : {Int32, String, String}
+  env = ifp_env("CELERITE_EVAL_CACHE")
+  env.merge!(ifp_profile_env(profile))
+  result = {0, "", ""}
+  ifp_with_env(project, env) do
+    result = ifp_run(project, ["install"])
+  end
+  result
+end
+
+private def ifp_hot(project : String, args = ["install"], overrides = {} of String => String,
+                    profile : String = "4.0.24") : {Int32, String, String, Tuple(Int32, Int32, Int32, Int32)}
   env = ifp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG")
+  env.merge!(ifp_profile_env(profile))
   env.merge!(overrides)
   result = {0, "", "", {0, 0, 0, 0}}
   ifp_with_env(project, env) do
@@ -118,6 +178,12 @@ private def ifp_hot(project : String, args = ["install"], overrides = {} of Stri
     result = {status, output, errors, ifp_stats(errors)}
   end
   result
+end
+
+private def ifp_user_stderr(errors : String) : String
+  errors.lines.reject do |line|
+    line.starts_with?("bridge: procs=") || line.starts_with?("fast-path: install ")
+  end.join
 end
 
 private def ifp_abi : String
@@ -177,6 +243,63 @@ private def ifp_mark_native_complete(project : String, full_name : String) : Nil
   File.write(File.join(ext, "gem.build_complete"), "")
 end
 
+describe "Celerite::InstallSummary" do
+  it "counts Bundler for 2.x and switched runs without counting gemspec development dependencies" do
+    evaluation = ifp_evaluation("4.0.24", ["json_pure"], ["dev_only"])
+    current = Celerite::InstallSummary.build(evaluation, ["json_pure"], [] of String,
+      [] of String, false, "4.0.24", :empty, "")
+    current.deps_count.should eq(1)
+    current.gems_count.should eq(1)
+    Celerite::InstallSummary.complete_line(current).should eq(
+      "Bundle complete! 1 Gemfile dependency, 1 gem now installed.")
+
+    legacy = Celerite::InstallSummary.build(evaluation, ["json_pure"], [] of String,
+      [] of String, false, "2.7.2", :empty, "")
+    legacy.gems_count.should eq(2)
+    Celerite::InstallSummary.complete_line(legacy).should eq(
+      "Bundle complete! 1 Gemfile dependency, 2 gems now installed.")
+
+    switched = Celerite::InstallSummary.build(evaluation, ["json_pure"], [] of String,
+      [] of String, true, "4.0.24", :empty, "")
+    switched.gems_count.should eq(2)
+  end
+
+  it "hides an inferred typed-source gem from both dependency and spec counts" do
+    evaluation = ifp_evaluation("4.0.24", ["stub-gem", "bundler-source-mpath"], ["dev_only"])
+    summary = Celerite::InstallSummary.build(evaluation,
+      ["stub-gem", "bundler-source-mpath"], ["bundler-source-mpath"],
+      [] of String, false, "4.0.24", :relative, "./vendor/bundle")
+    summary.deps_count.should eq(1)
+    summary.gems_count.should eq(1)
+    Celerite::InstallSummary.complete_line(summary).should eq(
+      "Bundle complete! 1 Gemfile dependency, 1 gem now installed.")
+    Celerite::InstallSummary.path_line(summary).should eq(
+      "Bundled gems are installed into `./vendor/bundle`")
+  end
+
+  it "renders skipped groups and all path hints with the compatible wording" do
+    evaluation = ifp_evaluation("4.0.24", [] of String)
+    summary = Celerite::InstallSummary.build(evaluation, [] of String, [] of String,
+      ["test", "development"], false, "4.0.24", :relative, "./bundle")
+    Celerite::InstallSummary.skipped_groups_line(summary).should eq(
+      "Gems in the groups 'test' and 'development' were not installed.")
+    Celerite::InstallSummary.path_line(summary).should eq(
+      "Bundled gems are installed into `./bundle`")
+
+    empty = Celerite::InstallSummary.build(evaluation, [] of String, [] of String,
+      [] of String, false, "4.0.24", :empty, "")
+    Celerite::InstallSummary.skipped_groups_line(empty).should be_nil
+    Celerite::InstallSummary.path_line(empty).should eq("Bundled gems are installed into `./.`")
+
+    system = Celerite::InstallSummary.build(evaluation, [] of String, [] of String,
+      ["test"], false, "4.0.24", :system, "")
+    Celerite::InstallSummary.skipped_groups_line(system).should eq(
+      "Gems in the group 'test' were not installed.")
+    Celerite::InstallSummary.path_line(system).should eq(
+      "Use `bundle info [gemname]` to see where a bundled gem is installed.")
+  end
+end
+
 describe "install takes the no-Ruby fast path on an unchanged project" do
   it "uses one Ruby process on the cold install and zero processes/rpc/bytes on the hot install" do
     with_project({} of String => String) do |project|
@@ -189,19 +312,25 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
     end
   end
 
-  it "prints the same stdout as the compatible no-op install, twice" do
-    with_project({} of String => String) do |project|
-      ifp_ready(project)
-      baseline = {0, "", ""}
-      ifp_with_env(project, ifp_env("CELERITE_EVAL_CACHE")) do
-        baseline = ifp_run(project, ["install"])
-      end
-      baseline[0].should eq(0)
-      2.times do
-        status, output, errors, stats = ifp_hot(project)
-        status.should eq(0)
-        stats.should eq({0, 0, 0, 0})
-        output.should eq(baseline[1])
+  {"4.0.24" => 1, "2.7.2" => 2}.each do |profile, expected_gems|
+    it "prints the same no-op transcript and lock bytes as the compatible install under #{profile}" do
+      with_project({} of String => String) do |project|
+        ifp_ready(project, profile)
+        lock_path = File.join(project, "Gemfile.lock")
+        lock_before = File.read(lock_path)
+        baseline = ifp_compatible(project, profile)
+        baseline[0].should eq(0)
+        baseline[1].should contain("Bundle complete! 1 Gemfile dependency, #{expected_gems} gem#{expected_gems == 1 ? "" : "s"} now installed.")
+        File.read(lock_path).should eq(lock_before)
+        2.times do
+          status, output, errors, stats = ifp_hot(project, ["install"], {} of String => String, profile)
+          status.should eq(baseline[0])
+          stats.should eq({0, 0, 0, 0})
+          ifp_lines(errors, IFP_HIT).size.should eq(1)
+          output.should eq(baseline[1])
+          ifp_user_stderr(errors).should eq(ifp_user_stderr(baseline[2]))
+          File.read(lock_path).should eq(lock_before)
+        end
       end
     end
   end

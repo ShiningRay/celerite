@@ -935,25 +935,28 @@ module Celerite
         end
 
         if summary
-          deps_count = resolution.evaluation.dependencies.count { |d| !d.gemspec_dev_dep && !hidden_plugins.includes?(d.name) }
-          # `cli/install.rb:93-96` counts `definition.specs`, i.e. the
-          # materialized form of the requested dependencies
-          # (`definition.rb:249-251`). A typed source's inferred
-          # `bundler-source-<type>` gem is only ever installed by
-          # `Plugin::Installer` into `Plugin.root` (`plugin/dsl.rb:39-49` and
-          # `plugin/installer.rb:94`), so it is never part of the application
-          # definition and must not be counted here either.
-          gems_count = installable.count { |spec| !hidden_plugins.includes?(spec.name) }
           # `cli/common.rb:57`: the notice names the excluded groups that still
           # have Gemfile dependencies, in configuration order.
           skipped_groups = skipped_group_names(resolution, without_groups)
-          # 2.7.x counts the running Bundler; a switched run counts the
-          # switched-to bundler instead
-          if resolution.switched_bundler
-            gems_count += 1
-          elsif resolution.bridge_bundler_version.starts_with?("2.")
-            gems_count += 1
-          end
+          # `cli/install.rb` L59-64 as of 2.7.2/4.0.24: system gems report the
+          # `bundle info` hint, a custom path prints the base path relative to
+          # the working directory (no ruby scope). An explicitly empty `path`
+          # is configured, but prints `./.` instead of the system-gems hint.
+          path_mode = if empty_bundle_path?(definition)
+                        :empty
+                      elsif InstallPaths.use_system_gems?(config, bridge.ruby_environment.default_gem_dir)
+                        :system
+                      else
+                        :relative
+                      end
+          relative_path = if path_mode == :relative
+                            InstallPaths.base_path_relative_to_pwd(config, definition.project_root)
+                          else
+                            ""
+                          end
+          install_summary = InstallSummary.build(resolution.evaluation, installable.map(&.name),
+            hidden_plugins, skipped_groups, resolution.switched_bundler,
+            resolution.bridge_bundler_version, path_mode, relative_path)
           # `cli/install.rb:52-53`: the reference refreshes the app cache during
           # every install while `vendor/cache` exists, caching is enabled and
           # the bundle isn't frozen. It runs after the gems are installed and
@@ -962,32 +965,11 @@ module Celerite
           if refresh_cache && refresh_app_cache?(definition, config.frozen?, rest)
             refresh_app_cache(stdout, definition, install_root, specs.map { |spec| {spec.name, spec.full_name} }, resolution.generated_lockfile, cached_paths)
           end
-          stdout.puts "Bundle complete! #{deps_count} Gemfile dependenc#{deps_count == 1 ? "y" : "ies"}, #{gems_count} gem#{gems_count == 1 ? "" : "s"} now installed."
-          unless skipped_groups.empty?
-            label = if skipped_groups.size == 1
-                      "group '#{skipped_groups.first}'"
-                    else
-                      quoted = skipped_groups.map { |group| "'#{group}'" }
-                      "groups #{quoted[0...-1].join(", ")} and #{quoted.last}"
-                    end
-            stdout.puts "Gems in the #{label} were not installed."
+          stdout.puts InstallSummary.complete_line(install_summary)
+          if line = InstallSummary.skipped_groups_line(install_summary)
+            stdout.puts line
           end
-          # `cli/install.rb` L59-64 as of 2.7.2/4.0.24: system gems report the
-          # `bundle info` hint, a custom path prints the base path relative to
-          # the working directory (no ruby scope).
-          # `settings.rb:253-285`: an explicitly empty `path` is still a
-          # configured path, so `base_path_relative_to_pwd` yields `.` and the
-          # reference prints `./.` instead of the system-gems hint.
-          if empty_bundle_path?(definition)
-            stdout.puts "Bundled gems are installed into `./.`"
-          elsif InstallPaths.use_system_gems?(config, bridge.ruby_environment.default_gem_dir)
-            stdout.puts "Use `bundle info [gemname]` to see where a bundled gem is installed."
-          else
-            # `Pathname` renders with `/` even on Windows, and the reference
-            # prints it back with `./` for paths below the working directory.
-            relative = InstallPaths.base_path_relative_to_pwd(config, definition.project_root)
-            stdout.puts "Bundled gems are installed into `#{relative}`"
-          end
+          stdout.puts InstallSummary.path_line(install_summary)
           plugin_messages.each do |(plugin_name, message)|
             stdout.puts "Post-install message from #{plugin_name}:"
             stdout.puts message
