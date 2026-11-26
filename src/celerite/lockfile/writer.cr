@@ -44,7 +44,7 @@ module Celerite
       # Reference: `filesystem_access(file) { File.open(p, "wb") { ... } }`
       # maps EACCES/EPERM/ENOSPC/... to their Bundler error classes; ENOENT
       # and EEXIST keep bubbling unchanged.
-      mapped = FilesystemErrors.map(ex, :write)
+      mapped = FilesystemErrors.map(ex, :write, path)
       mapped ? raise mapped : raise ex
     end
   end

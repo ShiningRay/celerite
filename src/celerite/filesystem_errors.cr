@@ -10,8 +10,8 @@ module Celerite
   # errno table, so those two branches are compiled only on POSIX hosts;
   # Windows exposes the same conditions through WinError values below.
   module FilesystemErrors
-    def self.map(error : File::Error, action : Symbol = :write) : Celerite::Error?
-      path = (error.target || "").gsub('\\', "/")
+    def self.map(error : File::Error, action : Symbol = :write, path_override : String? = nil) : Celerite::Error?
+      path = (path_override || error.target || "").gsub('\\', "/")
 
       # Crystal's dedicated subclass already narrows the common case.
       return PermissionError.new(path, action) if error.is_a?(File::AccessDeniedError)
