@@ -3113,23 +3113,32 @@ module Celerite
       # existing path unchanged.
       fast_path_hit, fast_path_miss = LockFastPath.attempt(definition, rest)
       if hit = fast_path_hit
+        text = nil.as(String?)
+        rendered = nil.as(String?)
+        render_matches = false
         begin
           text = render_locked_lockfile(definition, hit.bundler_version)
           rendered = Lockfile.render(lockfile_write_path, text, preserve_crlf: preserve_lockfile_crlf?)
           # The trusted decision describes the bytes on disk. Rendering can still
           # retarget BUNDLED WITH or remove the 2.x bundler row; prove the exact
           # write payload is unchanged before printing `Writing lockfile`.
-          if File.file?(lockfile_write_path) && File.read(lockfile_write_path) == rendered
-            if LockFastPath.debug?
-              stderr.puts "fast-path: lock hit (digest=#{hit.digest[0, 12]})"
-            end
-            code = emit_locked_lockfile(lockfile_write_path, text, print_mode, stdout, stderr)
-            commit_lock_success(definition, lockfile_write_path, rendered) if code == 0 && !print_mode
-            return code
-          end
+          render_matches = File.file?(lockfile_write_path) && File.read(lockfile_write_path) == rendered
         rescue
           # A lock changed or became unreadable after the decision: re-evaluate
           # through the compatibility path instead of publishing stale bytes.
+          render_matches = false
+        end
+        if render_matches
+          if LockFastPath.debug?
+            stderr.puts "fast-path: lock hit (digest=#{hit.digest[0, 12]})"
+          end
+          # Keep the write outside the rendering rescue. A failed hot-path write
+          # is terminal for this command; falling back to Ruby would both spawn a
+          # process and risk replacing the bytes the zero-Ruby path just failed
+          # to preserve.
+          code = emit_locked_lockfile(lockfile_write_path, text.not_nil!, print_mode, stdout, stderr)
+          commit_lock_success(definition, lockfile_write_path, rendered.not_nil!) if code == 0 && !print_mode
+          return code
         end
         if LockFastPath.debug?
           stderr.puts "fast-path: lock miss (lock-render)"
