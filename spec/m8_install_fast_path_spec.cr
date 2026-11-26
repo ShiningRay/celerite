@@ -125,7 +125,8 @@ private def ifp_lines(errors : String, regex : Regex) : Array(String)
 end
 
 private def ifp_ready(project : String, profile : String = "4.0.24",
-                      overrides : Hash(String, String) = {} of String => String) : Nil
+                      overrides : Hash(String, String) = {} of String => String,
+                      require_install_certificate : Bool = true) : Nil
   pending!("no Ruby interpreter on PATH for the bridge") unless ruby_available?
   File.write(File.join(project, "Gemfile"), %(source "#{IFP_INDEX}"\n\neval_gemfile "extra.rb"\n))
   File.write(File.join(project, "extra.rb"), %(gem "json_pure"\n))
@@ -139,7 +140,7 @@ private def ifp_ready(project : String, profile : String = "4.0.24",
     status, output, errors = ifp_run(project, ["install"])
     fail "cold install failed (#{status}): #{output} #{errors}" unless status == 0
     ifp_stats(errors)[0].should be >= 1
-    ifp_assert_install_certificate(project)
+    ifp_assert_install_certificate(project) if require_install_certificate
   end
 end
 
@@ -1513,15 +1514,16 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
 
   it "CI capability: expected_miss_after_lock_tamper" do
     with_project({} of String => String) do |project|
-      ifp_ready(project)
-      status, _output, errors, stats = ifp_hot(project)
+      overrides = {"BUNDLE_PLUGINS" => "false"}
+      ifp_ready(project, overrides: overrides, require_install_certificate: false)
+      status, _output, errors, stats = ifp_hot(project, ["install"], overrides)
       status.should eq(0)
       stats.should eq({0, 0, 0, 0})
       ifp_lines(errors, IFP_HIT).size.should eq(1)
 
       lock_path = File.join(project, "Gemfile.lock")
       File.open(lock_path, "ab") { |file| file.write("\n# task-275 old-binary capability gate\n") }
-      status, _output, errors, stats = ifp_hot(project)
+      status, _output, errors, stats = ifp_hot(project, ["install"], overrides)
       status.should eq(0)
       fail "expected_miss_after_lock_tamper: stats=#{stats}" unless stats[0] >= 1
       ifp_lines(errors, IFP_HIT).should be_empty

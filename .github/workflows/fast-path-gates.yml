@@ -116,7 +116,7 @@ jobs:
             echo "old binary unexpectedly passed expected_miss_after_lock_tamper" >&2
             exit 1
           fi
-          grep -F "expected_miss_after_lock_tamper" old-binary-capability.log
+          grep -F "expected_miss_after_lock_tamper: stats=" old-binary-capability.log
           echo "old binary failed the capability gate as required (exit=$status)"
 
       - name: Remove old worktree
