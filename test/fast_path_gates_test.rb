@@ -59,6 +59,8 @@ end
 
 check("file URLs and output normalization are path portable") do
   ["C:\\Temp\\celerite index", "C:/Temp/celerite index"].each do |path|
+    assert(FastPathGates.normalized_path(path) == "C:/Temp/celerite index",
+           "Windows drive path was expanded on the host platform")
     url = FastPathGates.file_source_url(path)
     assert(url == "file://C:/Temp/celerite%20index", "unexpected Windows file URL: #{url}")
   end
@@ -82,6 +84,7 @@ check("file source URLs expand Unix absolute and relative paths") do
 
   relative = "relative path/index"
   expanded = File.expand_path(relative).tr("\\", "/")
+  assert(FastPathGates.normalized_path(relative) == expanded, "relative path was not expanded")
   escaped = URI::DEFAULT_PARSER.escape(expanded, %r{[^A-Za-z0-9._~:/-]})
   assert(FastPathGates.file_source_url(relative) == "file://#{escaped}",
          "relative path was not expanded")

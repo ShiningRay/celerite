@@ -46,19 +46,21 @@ module FastPathGates
     [File.expand_path(binary), *arguments]
   end
 
+  def self.normalized_path(path)
+    if path.match?(%r{\A[A-Za-z]:[\\/]})
+      path.tr("\\", "/")
+    else
+      File.expand_path(path).tr("\\", "/")
+    end
+  end
+
   def self.file_source_url(path)
-    normalized = if path.match?(%r{\A[A-Za-z]:[\\/]})
-                   path.tr("\\", "/")
-                 else
-                   File.expand_path(path).tr("\\", "/")
-                 end
-    escaped = URI::DEFAULT_PARSER.escape(normalized, %r{[^A-Za-z0-9._~:/-]})
+    escaped = URI::DEFAULT_PARSER.escape(normalized_path(path), %r{[^A-Za-z0-9._~:/-]})
     "file://#{escaped}"
   end
 
   def self.normalize_output(text, project)
-    forward = File.expand_path(project).tr("\\", "/")
-    text.tr("\\", "/").gsub(forward, "{PROJECT}").gsub("\r\n", "\n")
+    text.tr("\\", "/").gsub(normalized_path(project), "{PROJECT}").gsub("\r\n", "\n")
   end
 
   def self.bundler_lib(profile)
