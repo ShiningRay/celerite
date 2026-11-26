@@ -362,7 +362,9 @@ module Celerite
                       facts : RuntimeFacts::Facts?,
                       record : RuntimeRecord?,
                       state : EvalFingerprint::State?,
-                      fresh_identity : CacheIdentity::RubyIdentity? = nil) : Verdict
+                      fresh_identity : CacheIdentity::RubyIdentity? = nil,
+                      expected_command : String? = nil,
+                      current_lock : CacheIdentity::LockIdentity? = nil) : Verdict
       return Verdict.unknown if facts.nil?
       return Verdict.unknown if state.nil?
 
@@ -394,8 +396,11 @@ module Celerite
       # certificates all land here; an evaluation alone is never success proof.
       return Verdict.requires_ruby("lock-unbound") if certificate.nil?
       cert = certificate.not_nil!
-      return Verdict.requires_ruby("certificate-command") unless %w[lock install].includes?(cert.command)
+      return Verdict.requires_ruby("certificate-command") unless expected_command && cert.command == expected_command
+      return Verdict.requires_ruby("certificate-profile") unless cert.profile == Profile.bundler_version
       return Verdict.requires_ruby("certificate-ruby-identity") unless cert.ruby_identity == identity.identity_digest
+      return Verdict.requires_ruby("lock-unbound") if current_lock.nil?
+      return Verdict.requires_ruby("certificate-lock") unless cert.lock.same?(current_lock.not_nil!)
 
       pairs = {
         {name: "ruby_version", local: facts.ruby_version, recorded: rec.ruby_version},

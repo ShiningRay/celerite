@@ -6,6 +6,7 @@ require "./definition"
 require "./eval_cache_store"
 require "./eval_fingerprint"
 require "./fast_path_store"
+require "./profile"
 require "./resolution"
 require "./runtime_facts"
 
@@ -94,6 +95,13 @@ module Celerite
       File.dirname(File.expand_path(definition.gemfile_path))
     end
 
+    def self.detect_lock_identity(definition : Definition,
+                                  path : String = definition.lockfile_path) : CacheIdentity::LockIdentity?
+      CacheIdentity::LockIdentity.detect(path, project_root: project_root(definition))
+    rescue
+      nil
+    end
+
     # `Bundler::Plugin.root` = `<app_config>/plugin`. Missing or empty means no
     # plugin can be loaded, which is the state the cached evaluation was proven
     # in. Anything else -- including a root we cannot read -- sends the command
@@ -121,12 +129,16 @@ module Celerite
     # on and the command's argument shape is already known to be safe. Both
     # `lock` and `install` call this one gate; command-specific checks stay in
     # their own modules so they cannot drift from the shared trust decision.
-    def self.trusted_attempt(definition : Definition) : {Hit?, String?}
+    def self.trusted_attempt(definition : Definition,
+                             expected_command : String = "lock") : {Hit?, String?}
       return {nil, "no-lockfile"} unless definition.lockfile_exists?
       # The Ruby path computes this with `rest.includes?("--local")`; a bare
       # `lock` has no `--local`, so a missing or empty CHECKSUMS entry forces
       # its re-resolution and must do the same here.
       return {nil, "checksums"} unless definition.checksums_need_refresh?(false).nil?
+
+      lock_identity = detect_lock_identity(definition)
+      return {nil, "lock-format"} if lock_identity.nil?
 
       lockfile = definition.lockfile!
       local_platform = Gem::Platform.local.to_s
@@ -170,7 +182,8 @@ module Celerite
       return {nil, "engine"} if completed.nil?
 
       verdict = FastPathStore.decision(project_root(definition), entry.not_nil!.digest,
-        completed, record, EvalFingerprint::State::Deterministic)
+        completed, record, EvalFingerprint::State::Deterministic,
+        expected_command: expected_command, current_lock: lock_identity)
       return {nil, "verdict:#{verdict.reason}"} unless verdict.allowed?
 
       lock_digest = begin
@@ -210,13 +223,46 @@ module Celerite
       # must never change a `lock` result.
     end
 
-    # Convenience for the command layer: `Definition.build` runs inside this
-    # method's rescue so an exotic config can never turn a completed `lock` into
-    # an error just because the record could not be written.
-    def self.remember_after_lock : Nil
+    # A successful lock commits a command certificate before its RuntimeRecord.
+    # The caller supplies the exact rendered SHA/size; the actual target is read
+    # back only after the writer closed it. Any mismatch, exception, failed
+    # certificate write, or failed record write leaves the prior nonce intact.
+    # `lock --print` never calls this method.
+    def self.remember_after_lock(definition : Definition, write_path : String,
+                                 expected_sha256 : String,
+                                 expected_byte_size : Int64) : Nil
       return unless enabled?
-      remember(Definition.build)
+      actual = File.read(write_path)
+      return unless Digest::SHA256.hexdigest(actual) == expected_sha256
+      return unless actual.bytesize.to_i64 == expected_byte_size
+      lock_identity = detect_lock_identity(definition, write_path)
+      return if lock_identity.nil?
+
+      facts = RuntimeFacts.detect
+      return if facts.nil?
+      ruby_identity = CacheIdentity::RubyIdentity.detect(facts.ruby_exe)
+      return unless ruby_identity.known?
+
+      entry, document = find_entry(definition.gemfile_path, nil)
+      return if entry.nil? || document.nil?
+      doc = document.not_nil!
+      runtime = runtime_from_document(doc)
+      return if runtime.nil?
+      abi = abi_from_document(doc)
+      return if abi.nil?
+
+      nonce = CacheIdentity.nonce
+      certificate = CacheIdentity::SuccessCertificate.new(
+        CacheIdentity::CERTIFICATE, "lock", Profile.bundler_version,
+        ruby_identity.identity_digest.not_nil!, lock_identity.not_nil!)
+      return unless EvalCacheStore.put_certificate(entry.not_nil!.digest, nonce, certificate)
+
+      record = FastPathStore.record_from(project_root(definition), facts, runtime, abi,
+        Time.utc, ruby_identity, entry.not_nil!.digest, nonce)
+      return if record.nil?
+      FastPathStore.store(record)
     rescue
+      # Persistence is best-effort and must never change command output/status.
     end
 
     # Install writes its runtime record only after a successful Ruby-path

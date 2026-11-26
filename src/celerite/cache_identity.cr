@@ -13,6 +13,10 @@ module Celerite
     UNKNOWN     = "unknown"
     CERTIFICATE = "celerite-success-certificate/1"
 
+    # Identity schema revision, independent of the raw lock bytes. Bump it when
+    # parsing or canonical CHECKSUMS projection changes.
+    LOCK_PARSER_REVISION = "celerite-lockfile/1"
+
     def parse_error(message : String) : JSON::ParseException
       JSON::ParseException.new(message, 0, 0)
     end
@@ -85,6 +89,71 @@ module Celerite
                      @parser_revision, @bundled_with, @checksums_sha256, @platforms)
       end
 
+      # The slot distinguishes the default lock from an explicitly configured
+      # one without persisting an absolute path. Relative locators survive a
+      # project-root move; the default remains `default` at every root.
+      def self.slot_for(path : String, project_root : String? = nil) : String
+        normalized_path = File.expand_path(path)
+        relative = if root = project_root
+                     expanded_root = File.expand_path(root).gsub('\\', "/").rstrip('/')
+                     normalized_path.gsub('\\', "/").sub(/\A#{Regex.escape(expanded_root)}\//, "")
+                   else
+                     File.basename(normalized_path)
+                   end
+        relative == "Gemfile.lock" ? "default" : "configured:#{CacheIdentity.sha256(relative)}"
+      end
+
+      # Detect the identity from the exact bytes on disk. The raw SHA-256 is the
+      # authority; parsed fields make format/profile edits independently visible.
+      def self.detect(path : String, slot : String? = nil,
+                      project_root : String? = nil,
+                      parser_revision : String = LOCK_PARSER_REVISION) : self
+        raw = File.read(path)
+        normalized = raw.gsub("\r\n", "\n")
+        sections = {} of String => Array(String)
+        current = nil.as(String?)
+        normalized.each_line(chomp: true) do |line|
+          if line.matches?(/\A[A-Z][A-Z0-9 ]*\z/)
+            current = line
+            sections[current] ||= [] of String
+          elsif section = current
+            sections[section] << line
+          end
+        end
+        bundled_with = sections["BUNDLED WITH"]?.try(&.first?.try(&.strip)) || ""
+        platforms = (sections["PLATFORMS"]? || [] of String).compact_map do |line|
+          value = line.strip
+          value unless value.empty?
+        end
+        checksums = (sections["CHECKSUMS"]? || [] of String).compact_map do |line|
+          value = line.strip
+          value unless value.empty?
+        end.sort
+        # Fixed canonical projection: CHECKSUMS entries are line-ending
+        # normalized, trimmed, sorted, and joined with LF plus a final LF.
+        # The empty section hashes the empty string.
+        checksum_projection = checksums.empty? ? "" : checksums.join("\n") + "\n"
+        line_ending = if raw.includes?("\r\n") && raw.gsub("\r\n", "").includes?("\n")
+                        "mixed"
+                      elsif raw.includes?("\r\n")
+                        "crlf"
+                      else
+                        "lf"
+                      end
+        identity = new(
+          slot || slot_for(path, project_root),
+          CacheIdentity.sha256(raw),
+          raw.bytesize.to_i64,
+          line_ending,
+          parser_revision,
+          bundled_with,
+          CacheIdentity.sha256(checksum_projection),
+          platforms,
+        )
+        identity.validate
+        identity
+      end
+
       def self.parse(object : JSON::Any) : self
         raise CacheIdentity.parse_error("lock identity has unknown fields") unless CacheIdentity.exact_keys?(object, KEYS)
         identity = new(
@@ -93,7 +162,7 @@ module Celerite
           (object["byte_size"].as_i64? || raise CacheIdentity.parse_error("byte_size must be an integer")),
           CacheIdentity.string(object, "line_ending"),
           CacheIdentity.string(object, "parser_revision"),
-          CacheIdentity.string(object, "bundled_with"),
+          CacheIdentity.string(object, "bundled_with", nonempty: false),
           CacheIdentity.sha256_field(object, "checksums_sha256"),
           Array(String).from_json(object["platforms"].to_json),
         )
@@ -111,7 +180,14 @@ module Celerite
         raise CacheIdentity.parse_error("byte_size must be non-negative") if byte_size < 0
         raise CacheIdentity.parse_error("platforms must not be empty") if platforms.empty?
         raise CacheIdentity.parse_error("platforms must be non-empty strings") unless platforms.all? { |p| !p.strip.empty? }
-        raise CacheIdentity.parse_error("line_ending must be lf or crlf") unless %w[lf crlf].includes?(line_ending)
+        raise CacheIdentity.parse_error("line_ending must be lf, crlf, or mixed") unless %w[lf crlf mixed].includes?(line_ending)
+      end
+
+      def same?(other : self) : Bool
+        slot == other.slot && sha256 == other.sha256 && byte_size == other.byte_size &&
+          line_ending == other.line_ending && parser_revision == other.parser_revision &&
+          bundled_with == other.bundled_with && checksums_sha256 == other.checksums_sha256 &&
+          platforms == other.platforms
       end
     end
 
