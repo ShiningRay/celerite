@@ -47,7 +47,11 @@ module FastPathGates
   end
 
   def self.file_source_url(path)
-    normalized = File.expand_path(path).tr("\\", "/")
+    normalized = if path.match?(%r{\A[A-Za-z]:[\\/]})
+                   path.tr("\\", "/")
+                 else
+                   File.expand_path(path).tr("\\", "/")
+                 end
     escaped = URI::DEFAULT_PARSER.escape(normalized, %r{[^A-Za-z0-9._~:/-]})
     "file://#{escaped}"
   end

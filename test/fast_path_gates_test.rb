@@ -58,12 +58,33 @@ check("command construction selects native executable suffixes") do
 end
 
 check("file URLs and output normalization are path portable") do
-  url = FastPathGates.file_source_url("C:\\Temp\\celerite index")
-  assert(url == "file://C:/Temp/celerite%20index", "unexpected Windows file URL: #{url}")
+  ["C:\\Temp\\celerite index", "C:/Temp/celerite index"].each do |path|
+    url = FastPathGates.file_source_url(path)
+    assert(url == "file://C:/Temp/celerite%20index", "unexpected Windows file URL: #{url}")
+  end
   project = "C:\\Temp\\celerite project"
   text = "Writing lockfile to C:/Temp/celerite project/Gemfile.lock\nC:\\Temp\\celerite project\\bundle\n"
   assert(FastPathGates.normalize_output(text, project) ==
          "Writing lockfile to {PROJECT}/Gemfile.lock\n{PROJECT}/bundle\n", "path normalization mismatch")
+end
+
+check("file source URLs expand Unix absolute and relative paths") do
+  absolute = "/tmp/celerite index"
+  if Gem.win_platform?
+    expanded = File.expand_path(absolute).tr("\\", "/")
+    escaped = URI::DEFAULT_PARSER.escape(expanded, %r{[^A-Za-z0-9._~:/-]})
+    assert(FastPathGates.file_source_url(absolute) == "file://#{escaped}",
+           "Windows absolute path was not expanded")
+  else
+    assert(FastPathGates.file_source_url(absolute) == "file:///tmp/celerite%20index",
+           "Unix absolute path did not keep its root")
+  end
+
+  relative = "relative path/index"
+  expanded = File.expand_path(relative).tr("\\", "/")
+  escaped = URI::DEFAULT_PARSER.escape(expanded, %r{[^A-Za-z0-9._~:/-]})
+  assert(FastPathGates.file_source_url(relative) == "file://#{escaped}",
+         "relative path was not expanded")
 end
 
 check("environment fixes switches once and isolates Bundler state") do
