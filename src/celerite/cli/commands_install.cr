@@ -280,14 +280,6 @@ module Celerite
       # the verified evaluation before any Ruby process starts. The compatible
       # path's ProcessLock is still acquired around the emitted transcript.
       trusted_result = LockFastPath.enabled? ? LockFastPath.trusted_attempt(definition) : {nil, nil}
-      # Plan hydration needs the proven evaluation and lockfile, not an intact
-      # installed tree. The installer still verifies every file after hydration;
-      # FastPathStore's whole-tree verdict remains mandatory for the no-Ruby hit.
-      plan_trusted_result = if LockFastPath.enabled? && PlanCache.enabled?
-                              LockFastPath.trusted_attempt(definition, require_install_verdict: false)
-                            else
-                              {nil, nil}
-                            end
       fast_path_result = InstallFastPath.attempt(definition, config, rest, summary,
         show_resolving, no_reuse, no_install, cli_arguments, refresh_cache,
         trusted_result: trusted_result)
@@ -320,10 +312,10 @@ module Celerite
         begin
           batch = GemfileEvaluator.fetch(definition.gemfile_path, client: bridge)
           evaluation = if trusted = trusted_result[0]
-                          trusted.evaluation
-                        else
-                          batch.evaluation
-                        end
+                         trusted.evaluation
+                       else
+                         batch.evaluation
+                       end
           fingerprint = batch.fingerprint
           gemfile_dependencies = evaluation.dependencies
           gemfile_sources = evaluation.sources
@@ -345,13 +337,6 @@ module Celerite
 
         resolution = if trusted = trusted_result[0]
                        Resolution.from_evaluation(definition, trusted.evaluation, bridge)
-                     elsif plan_trusted = plan_trusted_result[0]
-                       # The locked-plan lookup only needs a provisional view of
-                       # the already-proven evaluation. Paying the authoritative
-                       # Bundler cache RPC here would make a later plan hit too
-                       # late to avoid it; the ordinary constructor below restores
-                       # the miss/disabled path with the candidate-aware policy.
-                       Resolution.from_evaluation(definition, plan_trusted.evaluation, bridge)
                      else
                        Resolution.new(definition, false, bridge)
                      end
@@ -457,11 +442,14 @@ module Celerite
         # `empty_checksums_actionable?`.
         checksum_refresh = reuse ? definition.checksums_need_refresh?(rest.includes?("--local")) : nil
         reuse = false if checksum_refresh
+        # P3 shares IFP's complete evaluation+runtime+lock trust gate, including
+        # project/namespace/runtime/ABI validation. Only IFP's installed-tree
+        # completeness is a separate command-specific check.
         plan_hit : LockFastPath::Hit? = nil
         plan_candidate : NamedTuple(path: String?, sha256: String?, optimized: Bool)? = nil
         plan_components : JSON::Any? = nil
         plan_loaded = false
-        if reuse && (trusted = plan_trusted_result[0]) && plan_cache_context?(definition, config, rest,
+        if reuse && (trusted = trusted_result[0]) && plan_cache_context?(definition, config, rest,
              summary, show_resolving, no_reuse, no_install, cli_arguments, refresh_cache)
           plan_hit = trusted
           candidate = Resolution.bundler_cache_candidate(definition, trusted.evaluation, bridge, trusted.facts)
@@ -477,9 +465,9 @@ module Celerite
             PlanCache.debug_miss("provenance")
           end
         elsif PlanCache.enabled?
-          PlanCache.debug_miss(plan_trusted_result[0] ? "context" : "trusted:#{plan_trusted_result[1]}")
+          PlanCache.debug_miss(trusted_result[0] ? "context" : "trusted:#{trusted_result[1]}")
         end
-        if !plan_loaded && (trusted_result[0] || plan_trusted_result[0])
+        if !plan_loaded && trusted_result[0]
           # A custom candidate already paid the authoritative RPC. Reuse that
           # answer while the ordinary constructor re-evaluates the Gemfile;
           # default/miss/disabled paths keep the original cache lookup.

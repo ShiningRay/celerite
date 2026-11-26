@@ -888,6 +888,54 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
     end
   end
 
+  it "rejects a locked plan when the runtime record namespace or ABI is tampered" do
+    with_project({} of String => String) do |project|
+      ifp_ready_remote(project)
+      root = ifp_plan_cache_root(project)
+      record_path = Dir.glob(File.join(root, "fast-path", "v1", "*", "*.json").tr("\\", "/")).first
+      original_record = File.read(record_path)
+      entry_path = Dir.glob(File.join(root, "*", "v1", "*", "entry.json").tr("\\", "/")).first
+      original_entry = File.read(entry_path)
+      full_name = ifp_full_name(project)
+      env = {"CELERITE_PLAN_CACHE" => "1", "CELERITE_CACHE_DIR" => root}
+
+      [
+        {field: "credential_namespace", value: "ffffffffffffffff", reason: "namespace-mismatch"},
+        {field: "abi.ruby_api_version", value: "tampered", reason: "facts-mismatch:ruby_api_version"},
+      ].each do |test_case|
+        record = JSON.parse(original_record).as_h
+        if test_case[:field].starts_with?("abi.")
+          record["abi"].as_h[test_case[:field].split('.').last] = JSON::Any.new(test_case[:value])
+          # Keep the persisted fingerprint internally consistent so the miss is
+          # proved by FastPathStore.decision's ABI check, not by document.verify.
+          payload = JSON.parse(original_entry).as_h
+          fingerprint = payload["fingerprint"].as_h
+          key = "abi.#{test_case[:field].split('.').last}"
+          text = fingerprint["text"].as_s.gsub(/#{Regex.escape(key)}\t[^\r\n]+/, "#{key}\t#{test_case[:value]}")
+          digest = Digest::SHA256.hexdigest(text)
+          fingerprint["text"] = JSON::Any.new(text)
+          fingerprint["digest"] = JSON::Any.new(digest)
+          payload["digest"] = JSON::Any.new(digest)
+          old_dir = File.dirname(entry_path)
+          new_dir = File.join(File.dirname(old_dir), digest)
+          File.rename(old_dir, new_dir)
+          File.write(File.join(new_dir, "entry.json"), payload.to_json)
+        else
+          record[test_case[:field]] = JSON::Any.new(test_case[:value])
+        end
+        File.write(record_path, record.to_json)
+        FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
+
+        status, _output, errors, stats = ifp_hot(project, ["install"], env)
+        status.should eq(0)
+        stats[0].should eq(1)
+        errors.should contain("[plan-cache] status=miss reason=trusted:verdict:#{test_case[:reason]}")
+        errors.should_not contain("[plan-cache] operation=write status=written")
+        ifp_plan_entries(project).should be_empty
+      end
+    end
+  end
+
   it "keeps corrupt, mistyped, escaping and credential-bearing plan payloads on the compatible path" do
     with_project({} of String => String) do |project|
       ifp_ready_remote(project)
