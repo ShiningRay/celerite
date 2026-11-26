@@ -159,7 +159,8 @@ describe "M8 persistent evaluation cache (task-237)" do
         entries = m8_entries(project)
         entries.size.should eq(1)
         entry = JSON.parse(File.read(entries.first))
-        entry["format"].should eq("celerite-eval-cache/1")
+        entry["format"].should eq("celerite-eval-cache/2")
+        entry["certificates"].as_h.should be_empty
         File.basename(File.dirname(entries.first)).should eq(entry["digest"])
 
         second = run_cli(["lock"])
@@ -224,7 +225,7 @@ describe "M8 persistent evaluation cache (task-237)" do
           # The bad entry is gone and a fresh, self-consistent one replaced it.
           after = m8_entries(project)
           after.size.should eq(1)
-          JSON.parse(File.read(after.first))["format"].should eq("celerite-eval-cache/1")
+          JSON.parse(File.read(after.first))["format"].should eq("celerite-eval-cache/2")
         end
       end
     end

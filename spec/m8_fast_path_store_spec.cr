@@ -17,7 +17,7 @@ require "digest/sha256"
 #   * credentials reach the disk only as a namespace hash;
 #   * the whole module is pure file I/O: zero processes, zero RPCs.
 private M8_FP_ENV = %w[
-  HOME USERPROFILE CELERITE_CACHE_DIR CELERITE_FAST_PATH CELERITE_BRIDGE_STATS
+  HOME USERPROFILE CELERITE_RUBY CELERITE_CACHE_DIR CELERITE_FAST_PATH CELERITE_BRIDGE_STATS
   BUNDLE_GEMS__EXAMPLE__COM BUNDLE_GEMFILE BUNDLE_APP_CONFIG
 ]
 
@@ -33,6 +33,13 @@ private def m8_fp_with(switch : String? = "1", & : {String, String} ->) : Nil
     ENV.delete("BUNDLE_GEMFILE")
     ENV.delete("BUNDLE_APP_CONFIG")
     ENV.delete("CELERITE_BRIDGE_STATS")
+    fake_bin = File.join(project, ".ruby", "bin")
+    fake_rbconfig = File.join(project, ".ruby", "lib", "ruby", "9.9.0", "fake-arch")
+    Dir.mkdir_p(fake_bin)
+    Dir.mkdir_p(fake_rbconfig)
+    File.write(File.join(fake_bin, "ruby.exe"), "synthetic-ruby")
+    File.write(File.join(fake_rbconfig, "rbconfig.rb"), "# synthetic layout\n")
+    ENV["CELERITE_RUBY"] = File.join(fake_bin, "ruby.exe")
     if switch
       ENV["CELERITE_FAST_PATH"] = switch
     else
@@ -57,6 +64,10 @@ private def m8_fp_abi(ruby_api : String = "4.0.0", extension : String = "4.0.0",
   Celerite::FastPathStore::Abi.new(ruby_api, extension, rbconfig)
 end
 
+private def m8_fp_identity(project : String) : Celerite::CacheIdentity::RubyIdentity
+  Celerite::CacheIdentity::RubyIdentity.detect(File.join(project, ".ruby", "bin", "ruby.exe"))
+end
+
 private def m8_fp_record(project : String, *,
                          ruby_version : String = "4.0.6",
                          patchlevel : String = "0",
@@ -69,11 +80,26 @@ private def m8_fp_record(project : String, *,
                          format : String = Celerite::FastPathStore::FORMAT,
                          namespace : String = Celerite::EvalCacheStore.namespace,
                          written_at : String = "2026-11-24T05:00:00Z",
-                         project_digest : String? = nil) : Celerite::FastPathStore::RuntimeRecord
+                         project_digest : String? = nil,
+                         ruby_identity : Celerite::CacheIdentity::RubyIdentity = m8_fp_identity(project),
+                         eval_digest : String = m8_fp_digest(project),
+                         certificate_nonce : String = "11111111111111111111111111111111") : Celerite::FastPathStore::RuntimeRecord
   Celerite::FastPathStore::RuntimeRecord.new(format, written_at,
     project_digest || Celerite::FastPathStore.project_digest(project), namespace,
     ruby_version, patchlevel, engine, engine_version, platform,
-    rubygems_version, bundler_version, abi)
+    rubygems_version, bundler_version, abi, ruby_identity, eval_digest, certificate_nonce)
+end
+
+private def m8_fp_bind(_project : String, record : Celerite::FastPathStore::RuntimeRecord) : Nil
+  lock = Celerite::CacheIdentity::LockIdentity.new("Gemfile.lock", "a" * 64, 1_i64,
+    "lf", "parser-1", "bundler-4", "b" * 64, ["x64-mingw-ucrt"])
+  certificate = Celerite::CacheIdentity::SuccessCertificate.new(
+    Celerite::CacheIdentity::CERTIFICATE, "lock", "default",
+    record.ruby_identity.identity_digest.not_nil!, lock)
+  payload = %({"format":"celerite-eval-cache/2","digest":"#{record.eval_digest}","evaluation":{},"certificates":{}})
+  raise "failed to seed evaluation" unless Celerite::EvalCacheStore.write(record.eval_digest, payload)
+  raise "failed to seed certificate" unless Celerite::EvalCacheStore.put_certificate(
+                                              record.eval_digest, record.certificate_nonce, certificate)
 end
 
 private def m8_fp_field(value : String?) : Celerite::RuntimeFacts::Field
@@ -97,7 +123,7 @@ private def m8_fp_facts(*, ruby_version : String? = "4.0.6",
                         abi : String? = "4.0.0",
                         ruby_api_version : String? = "4.0.0",
                         extension_api_version : String? = "4.0.0") : Celerite::RuntimeFacts::Facts
-  Celerite::RuntimeFacts::Facts.new("C:/Ruby40-x64/bin/ruby.exe",
+  Celerite::RuntimeFacts::Facts.new(ENV["CELERITE_RUBY"]? || "C:/Ruby40-x64/bin/ruby.exe",
     m8_fp_field(ruby_version), m8_fp_field(patchlevel),
     m8_fp_field(engine), m8_fp_field(engine_version),
     m8_fp_field(rubygems_version), m8_fp_field(bundler_version),
@@ -134,6 +160,7 @@ describe Celerite::FastPathStore do
   it "round-trips a record field by field" do
     m8_fp_with do |project, _cache|
       record = m8_fp_record(project)
+      m8_fp_bind(project, record)
       path = Celerite::FastPathStore.default_path(project).not_nil!
       Celerite::FastPathStore.store(record).should be_true
       File.file?(path).should be_true
@@ -169,9 +196,10 @@ describe Celerite::FastPathStore do
   it "treats an unknown format version as a miss and deletes the record" do
     m8_fp_with do |project, _cache|
       record = m8_fp_record(project)
+      m8_fp_bind(project, record)
       path = Celerite::FastPathStore.default_path(project).not_nil!
       Dir.mkdir_p(File.dirname(path))
-      File.write(path, record.to_json.sub(Celerite::FastPathStore::FORMAT, "celerite-fast-path/2"))
+      File.write(path, record.to_json.sub(Celerite::FastPathStore::FORMAT, "celerite-fast-path/3"))
 
       Celerite::FastPathStore.load(path).should be_nil
       File.exists?(path).should be_false
@@ -181,6 +209,7 @@ describe Celerite::FastPathStore do
   it "treats a truncated or corrupt JSON body as a miss and deletes it" do
     m8_fp_with do |project, _cache|
       record = m8_fp_record(project)
+      m8_fp_bind(project, record)
       path = Celerite::FastPathStore.default_path(project).not_nil!
       Dir.mkdir_p(File.dirname(path))
 
@@ -193,7 +222,8 @@ describe Celerite::FastPathStore do
       File.exists?(path).should be_false
 
       # A structurally valid JSON with missing required fields is corrupt too.
-      File.write(path, %({"format":"celerite-fast-path/1"}\n))
+      File.write(path, %({"format":"celerite-fast-path/1"}
+))
       Celerite::FastPathStore.load(path).should be_nil
       File.exists?(path).should be_false
     end
@@ -232,6 +262,7 @@ describe Celerite::FastPathStore do
   it "allows the fast path only when record, facts and fingerprint all agree" do
     m8_fp_with do |project, _cache|
       record = m8_fp_record(project)
+      m8_fp_bind(project, record)
       verdict = Celerite::FastPathStore.decision(
         project, m8_fp_digest(project), m8_fp_facts, record, m8_fp_deterministic)
       verdict.allowed?.should be_true
@@ -254,6 +285,7 @@ describe Celerite::FastPathStore do
   it "requires Ruby for every non-deterministic fingerprint state" do
     m8_fp_with do |project, _cache|
       record = m8_fp_record(project)
+      m8_fp_bind(project, record)
       digest = m8_fp_digest(project)
 
       unknown = Celerite::FastPathStore.decision(
@@ -269,6 +301,7 @@ describe Celerite::FastPathStore do
   it "reports facts-unknown for a field only the bridge record can supply" do
     m8_fp_with do |project, _cache|
       record = m8_fp_record(project)
+      m8_fp_bind(project, record)
       facts = m8_fp_facts(engine: nil, engine_version: nil)
       verdict = Celerite::FastPathStore.decision(
         project, m8_fp_digest(project), facts, record, m8_fp_deterministic)
@@ -279,6 +312,7 @@ describe Celerite::FastPathStore do
   it "reports facts-mismatch for a field that disagrees with the record" do
     m8_fp_with do |project, _cache|
       record = m8_fp_record(project)
+      m8_fp_bind(project, record)
       verdict = Celerite::FastPathStore.decision(
         project, m8_fp_digest(project), m8_fp_facts(ruby_version: "4.0.5"),
         record, m8_fp_deterministic)
@@ -300,6 +334,7 @@ describe Celerite::FastPathStore do
     m8_fp_with do |project, _cache|
       digest = m8_fp_digest(project)
       record = m8_fp_record(project)
+      m8_fp_bind(project, record)
       variants = [
         {m8_fp_facts(ruby_api_version: nil), "facts-unknown:ruby_api_version"},
         {m8_fp_facts(extension_api_version: nil), "facts-unknown:extension_api_version"},
@@ -339,7 +374,7 @@ describe Celerite::FastPathStore do
       digest = m8_fp_digest(project)
       facts = m8_fp_facts
 
-      bad_format = m8_fp_record(project, format: "celerite-fast-path/2")
+      bad_format = m8_fp_record(project, format: "celerite-fast-path/1")
       Celerite::FastPathStore.decision(project, digest, facts, bad_format, m8_fp_deterministic)
         .reason.should eq("record-format")
 
@@ -361,6 +396,7 @@ describe Celerite::FastPathStore do
   it "returns Unknown, never Allowed, when a decision input is not supplied" do
     m8_fp_with do |project, _cache|
       record = m8_fp_record(project)
+      m8_fp_bind(project, record)
       digest = m8_fp_digest(project)
 
       Celerite::FastPathStore.decision(project, digest, nil, record, m8_fp_deterministic)
@@ -385,7 +421,8 @@ describe Celerite::FastPathStore do
 
       # Facts know five fields; engine/engine_version come from the bridge.
       record = Celerite::FastPathStore.record_from(project, m8_fp_facts(engine: nil,
-        engine_version: nil), bridge).not_nil!
+        engine_version: nil), bridge, ruby_identity: m8_fp_identity(project),
+        eval_digest: m8_fp_digest(project), certificate_nonce: "11111111111111111111111111111111").not_nil!
       record.engine.should eq("ruby")
       record.engine_version.should eq("4.0.6")
       record.ruby_version.should eq("4.0.6")
@@ -419,6 +456,7 @@ describe Celerite::FastPathStore do
     m8_fp_with do |project, _cache|
       ENV["BUNDLE_GEMS__EXAMPLE__COM"] = "alice:s3cret"
       record = m8_fp_record(project)
+      m8_fp_bind(project, record)
       record.credential_namespace.matches?(/\A[0-9a-f]{16}\z/).should be_true
       Celerite::FastPathStore.store(record).should be_true
 
@@ -442,6 +480,7 @@ describe Celerite::FastPathStore do
 
       record = Celerite::FastPathStore.record_from(project, m8_fp_facts) ||
                m8_fp_record(project)
+      m8_fp_bind(project, record)
       Celerite::FastPathStore.store(record).should be_true
       path = Celerite::FastPathStore.default_path(project).not_nil!
       Celerite::FastPathStore.load(path).should_not be_nil
