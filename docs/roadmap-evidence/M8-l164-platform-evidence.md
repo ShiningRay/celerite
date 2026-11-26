@@ -2,9 +2,9 @@
 
 ## 1. 结论
 
-- **L164 仍不可勾选。** 最低硬门是：GitHub Actions `windows-latest/ubuntu-latest × Bundler 4.0.24/2.7.2` 四格实际全绿，且固定旧 binary `d9009b14a0bf18da62b7a85cfc68b2442c4446de` 在四格都因 `expected_miss_after_lock_tamper` 断言失败。二者目前都未运行。首辅已在 task-275 合流后于本机 Windows 完成双 profile driver PASS 与旧 binary 定向负门，见 `docs/compat-evidence/2026-11-26.md` 的 task-275 节；这只关闭本机局部证据，不替代四格 CI。
+- **L164 仍不可勾选。** 最低硬门是：GitHub Actions `windows-latest/ubuntu-latest × Bundler 4.0.24/2.7.2` 四格实际全绿，且固定旧 binary `d9009b14a0bf18da62b7a85cfc68b2442c4446de` 在四格都因 `expected_miss_after_lock_tamper` 断言失败。首轮 run `45837915978` 已运行但仅 Windows/4.0.24 success；`7bcdf6f` 修复装具后四格复跑待观察。首辅已在 task-275 合流后于本机 Windows 完成双 profile driver PASS 与旧 binary 定向负门，见 `docs/compat-evidence/2026-11-26.md` 的 task-275 节；这只关闭本机局部证据，不替代四格 CI。
 - 本机 Windows 只有 task-269/272/273/274 的历史实证与当前基线内的测试面；**task-276 没有复跑任何 Crystal、build、spec、differential 或 Rails**，不能把历史结果改写成本轮实测。
-- Ubuntu 本机未验证；GitHub Actions 四格未运行。task-275 的 workflow/driver/focused capability 已由首辅在本机 Windows 完成真实双 profile 正门与固定 `d9009b1` 旧 binary 负门，但 **task-276 本身未复跑**，不能把首辅结果写成本轮实测，也不证明 CI 或产品跨平台门禁通过。
+- Ubuntu 本机未验证；GitHub Actions 首轮 run `45837915978` 仅 Windows/4.0.24 success，Windows/2.7.2 因 focused 缺 Bundler 4.0.24、Ubuntu 两格因盘符路径展开失败，`7bcdf6f` 已修装具并待四格复跑。task-275 的 workflow/driver/focused capability 已由首辅在本机 Windows 完成真实双 profile 正门与固定 `d9009b1` 旧 binary 负门，但 **task-276 本身未复跑**，不能把首辅结果写成本轮实测，也不证明 CI 或产品跨平台门禁通过。
 - 第二 ABI、JRuby/TruffleRuby/shim、真实 ACL、多进程并发、bridge idle-timeout、Windows rename/ACL/symlink/junction、大小写与路径边界、跨文件非原子、硬终止均未验证。
 - 本文只做证据审计与补证设计，不实现产品，不修改 roadmap 复选框、claims、CI 或任何 `src/spec` 文件。
 
