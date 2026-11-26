@@ -268,6 +268,21 @@
 - 生效：M8 期间
 - 取代：无
 
+## C-M8-1-026 可信 locked-plan 重水合与安装 RPC 削减（M8 L165 P3，task-267）
+
+- 状态：已实现
+- 参考行为（4.0.24）：参考 Bundler 没有跨命令 locked-plan 缓存；普通无变化 install 仍在当次 Ruby 进程内求值 Definition，并按需读取 Bundler 自身 cache 文件。本项只约束 celerite 的缓存增量不改变参考兼容面：stdout/stderr、退出码、锁文件与安装树保持一致；不把参考并不具备的 RPC 削减宣称为参考行为。
+- 我方行为：
+  - `src/celerite/lock_fast_path.cr` 的 `Hit` 保存当次锁文件 SHA-256；`src/celerite/install_fast_path.cr` 允许复用调用方已抽取的可信 Hit，避免 LockFastPath、InstallFastPath、P3 各自重跑信任门。
+  - `src/celerite/resolution.cr` 新增显式 `from_evaluation`/`from_plan` 构造入口；`from_plan` 使用当前 Definition、当前 evaluation、当前 bridge 与显式本地行/额外平台行，设置 `resolved=true`，不套用旧项目根。reuse 分支仍执行 incompatible/stale/heal 语义检查。
+  - `src/celerite/plan_cache.cr` 新增 `celerite-locked-plan/1` schema：只保存 root-independent 的远端 GEM 本地行、额外平台行与 provenance；provenance 追加 evaluation digest、锁 SHA-256、精确 Bundler 版本、默认 Bundler cache 版本/SHA。schema、类型、 provenance、当前锁行、大小、可移植性与凭据校验失败均静默 miss。
+  - `src/celerite/cli/commands_install.cr` 保持 LockFastPath/InstallFastPath 优先；P3 与普通 IFP 共用同一次完整 `LockFastPath.trusted_attempt`，其 `FastPathStore.decision` 同时校验 evaluation/runtime/ABI/lock 与 namespace。仅在 `CELERITE_PLAN_CACHE=1`、可信 Hit、IFP no-op miss、普通 install 最终锁定复用且语义锁未变时读取或写入 P3；writer 复用 candidate/components，位于成功写锁之后。默认 `plugins=true` 时复用 task-269 的空插件证书预检：只有预检已由可信证书跳过 Ruby 才允许 P3 上下文，否则保持兼容回落。
+  - `src/celerite/bridge/client.cr` 将 `CELERITE_PLAN_CACHE`/`CELERITE_PLAN_CACHE_DEBUG` 排除出 EvalCache 环境签名；二者只改变 celerite 的复用/诊断，Bundler 不可观察。默认布局在 Bundler 4.x、无 GEM_HOME/GEM_PATH、default_gem_dir/cache 文件存在且 SHA 可读时走本地 optimized candidate；锁文件没有显式 `bundler` spec 行也从 metadata source 自 checksum。warm EvalCache 时仅省一个 `bundler_cache_file` RPC，custom 布局保持一个 authoritative RPC；不宣称 cold EvalCache 省两。
+- 判据：`crystal tool format --check src spec`、`crystal build --no-codegen src/cli.cr`、`shards build`、`crystal build src/cli.cr -o bin/celerite.exe`、`git diff --check` 均 EXIT=0。`crystal spec spec/m8_install_fast_path_spec.cr spec/m8_plan_cache_spec.cr spec/m8_lock_fast_path_spec.cr spec/m8_runtime_facts_spec.cr spec/m8_fast_path_store_spec.cr spec/m8_eval_fingerprint_cache_spec.cr` = `151 examples, 0 failures, 0 errors, 0 pending`；namespace/ABI 篡改 focused（`spec/m8_install_fast_path_spec.cr:761`）、默认与 custom layout focused 各 `1 example, 0 failures`。首辅在独立树复跑同一组合为 `151/0/0/0`（8:38），在 main 合并 task-269 默认插件证书后复跑同一组合为 `151/0/0/0`（8:05）；`lock-noop`/`install-rerun`/`install-noop-summary` 在 Bundler 4.0.24 与 2.7.2 双 profile 各 `3 passed, 0 failed, 0 skipped`；完整 spec 未运行。
+- 边界：standalone 开关不授予信任；PATH/GIT/PLUGIN、warnings、checksum 缺失、runtime/EvalCache/fingerprint unknown、ABI/build/source/namespace/platform/版本/根依赖变化或会改变 resolution 语义的旗标均 miss。P3 不负责已安装树完整性，不抗同机恶意写者，不接 `solve_batch`，不改桥 op/Proto。writer 只读/损坏/超限/不可写时保持原命令结果。默认 `plugins=true` 仅在可信空插件证书允许跳过 Ruby 预检时进入 P3；任何插件声明、非空索引、证书缺失/损坏/变化均兼容回落。完整 spec 与全量 differential 未运行；仅 `lock-noop`/`install-rerun`/`install-noop-summary` 三夹具完成双 profile 验证。
+- 生效：M8 期间（task-267；目标门禁与首辅独立/main 集成门禁全绿）
+- 取代：无；扩展 C-M8-1-023 的 payload/writer 边界，不改变 P1/P2 旧三键 fixture 校验。
+
 ## C-M8-1-022 无 Ruby 快路径按三组 ABI 视图与严格凭据命名空间收口（M8 L164 S8e，task-261）
 
 - 状态：已实现
