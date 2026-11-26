@@ -104,13 +104,20 @@ module Celerite
 
     # `Bundler::Plugin.root` = `<app_config>/plugin`. Missing or empty means no
     # plugin can be loaded, which is the state the cached evaluation was proven
-    # in. Anything else -- including a root we cannot read -- sends the command
-    # back to Ruby: an unreadable directory is unknown, never "empty".
-    private def self.plugin_root_absent?(definition : Definition) : Bool
+    # in. Install additionally accepts the project-local marker file when it is
+    # a zero-byte ordinary `index`; `lock` retains the strict empty-root rule.
+    # Anything else -- including a root we cannot read -- sends the command back
+    # to Ruby: an unreadable directory is unknown, never "empty".
+    private def self.plugin_root_absent?(definition : Definition, allow_zero_byte_index : Bool = false) : Bool
       plugin_root = File.join(Config.app_config_path(project_root(definition)), "plugin")
       return true unless File.exists?(plugin_root)
       return false unless File.directory?(plugin_root)
-      Dir.children(plugin_root).empty?
+      children = Dir.children(plugin_root)
+      return true if children.empty?
+      return false unless allow_zero_byte_index && children.size == 1
+      index = File.join(plugin_root, "index")
+      return false unless File.join(plugin_root, children[0]) == index
+      File.file?(index) && !File.symlink?(index) && File.size(index) == 0
     rescue
       false
     end
@@ -151,7 +158,7 @@ module Celerite
       # Gemfile evaluates to (hooks, `plugin` sources, command registration), so
       # a populated root always means "this evaluation is stale" -- decided
       # locally, without starting Ruby.
-      return {nil, "plugin-index"} unless plugin_root_absent?(definition)
+      return {nil, "plugin-index"} unless plugin_root_absent?(definition, expected_command == "install")
 
       record = load_record(definition)
       return {nil, "record"} if record.nil?

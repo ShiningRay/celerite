@@ -158,11 +158,6 @@ module Celerite
       begin
         with_gemfile_overrides(rest) do
           code = run_install(stdout, stderr, rest, summary, show_resolving, no_reuse, no_install, cli_arguments, refresh_cache)
-          # Only a completed compatible install may leave a trusted runtime
-          # record for the next bare install. `remember` re-proves every input
-          # and swallows persistence errors, so an optimization never changes
-          # the command result.
-          LockFastPath.remember_after_install if code == 0
           code
         end
       rescue ex : GemfileNotFound
@@ -274,6 +269,8 @@ module Celerite
         unless plugin_precheck_skipped
           plugin_code, plugin_names = install_gemfile_plugins(Definition.find_gemfile, stdout, stderr)
           return plugin_code if plugin_code
+        else
+          plugin_names = [] of String
         end
       end
 
@@ -281,25 +278,46 @@ module Celerite
       # the complete installed tree can both be proved from the lockfile and
       # the verified evaluation before any Ruby process starts. The compatible
       # path's ProcessLock is still acquired around the emitted transcript.
-      trusted_result = LockFastPath.enabled? ? LockFastPath.trusted_attempt(definition) : {nil, nil}
+      trusted_result = LockFastPath.enabled? ? LockFastPath.trusted_attempt(definition, "install") : {nil, nil}
       fast_path_result = InstallFastPath.attempt(definition, config, rest, summary,
         show_resolving, no_reuse, no_install, cli_arguments, refresh_cache,
         trusted_result: trusted_result)
-      if LockFastPath.debug?
-        if fp = fast_path_result[0]
-          stderr.puts "fast-path: install hit (digest=#{fp.digest[0, 12]})"
-        elsif reason = fast_path_result[1]
+      InstallFastPath.run_after_attempt_hook(definition, config)
+      if LockFastPath.debug? && fast_path_result[0].nil?
+        if reason = fast_path_result[1]
           stderr.puts "fast-path: install miss (#{reason})"
         end
       end
       if fp = fast_path_result[0]
         process_lock = ProcessLock.lock(InstallPaths.install_path(config, fp.default_gem_dir), fp.install_root)
+        revalidated = false
         begin
-          InstallFastPath.emit(fp, stdout, definition, config)
+          revalidated = InstallFastPath.revalidate?(fp, definition, config)
+          if revalidated
+            if LockFastPath.debug?
+              stderr.puts "fast-path: install hit (digest=#{fp.digest[0, 12]})"
+            end
+            InstallFastPath.emit(fp, stdout, definition, config)
+            InstallFastPath.rotate(fp, definition, config)
+          end
         ensure
           process_lock.close
         end
-        return 0
+        return 0 if revalidated
+
+        # A failed revalidation invalidates everything derived from the old
+        # lock/evaluation, including the plugin precheck skip decision. Rebuild
+        # the definition and run the normal Ruby plugin/evaluation path.
+        trusted_result = {nil, nil}
+        definition = Definition.build
+        if LockFastPath.debug?
+          stderr.puts "fast-path: install miss (stale)"
+        end
+        if PluginGemfile.enabled?(config)
+          plugin_precheck_skipped = false
+          plugin_code, plugin_names = install_gemfile_plugins(Definition.find_gemfile, stdout, stderr)
+          return plugin_code if plugin_code
+        end
       end
 
       bridge = Bridge::Client.shared
@@ -1052,18 +1070,20 @@ module Celerite
           end
         end
 
-        # The normal compatible install has completed successfully. Only now
-        # bind an empty Plugin::DSL result to the deterministic fingerprint
-        # from the successful evaluation; errors and non-empty warnings/results
-        # never create a certificate.
-        PluginGemfileCache.remember(definition.gemfile_path, plugin_names, evaluation, fingerprint)
-
         # P3 publishes only after a successful locked reuse whose semantic lock
         # stayed unchanged. Cache failure is deliberately invisible to install.
         if reuse && (trusted = plan_hit) && resolution_can_reuse?(resolution) &&
            plan_candidate && (components = plan_components) &&
            Digest::SHA256.hexdigest(File.read(definition.lockfile_path)) == trusted.lockfile_sha256
           PlanCache.write_locked(resolution, trusted, components)
+        end
+
+        # All actions, hooks, lock writes, and summaries have succeeded. Publish
+        # install evidence under the existing ProcessLock; RuntimeRecord is the
+        # final commit marker and cache failures never change the exit status.
+        if fingerprint && evaluation
+          InstallFastPath.remember_after_install(definition, config, fingerprint.digest,
+            evaluation.not_nil!, fingerprint.not_nil!, plugin_names)
         end
 
         0
