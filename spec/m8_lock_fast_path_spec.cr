@@ -33,8 +33,8 @@ private LFP_SWITCHES = %w[
 private LFP_ISOLATED = %w[HOME USERPROFILE BUNDLE_PATH TMPDIR TMP TEMP]
 
 private def lfp_bin : String?
-  path = File.expand_path("../bin/celerite.exe", __DIR__)
-  File.exists?(path) ? path : nil
+  path = ENV["CELERITE_LFP_BIN"]? || File.expand_path("../bin/celerite.exe", __DIR__)
+  File.exists?(path) ? File.expand_path(path) : nil
 end
 
 private def lfp_pending!(project : String) : Nil
@@ -91,6 +91,13 @@ private def lfp_counters(errors : String) : {Int32, Int32}
   {match[1].to_i, match[2].to_i}
 end
 
+private def lfp_counter_quad(errors : String) : {Int32, Int32, Int32, Int32}
+  line = errors.lines.find(&.starts_with?("bridge: procs="))
+  fail "missing bridge stats line in #{errors.inspect}" unless line
+  match = line.match(LFP_STATS).not_nil!
+  {match[1].to_i, match[2].to_i, match[3].to_i, match[4].to_i}
+end
+
 private def lfp_hits(errors : String) : Array(String)
   errors.lines.compact_map(&.match(LFP_HIT)).map(&.[1])
 end
@@ -108,11 +115,19 @@ private def lfp_digest(project : String) : String
 end
 
 private def lfp_record_paths(project : String) : Array(String)
-  Dir.glob(File.join(project, ".celerite", "cache", "fast-path", "v1", "*", "*.json").tr("\\", "/"))
+  Dir.glob(File.join(project, ".celerite", "cache", "fast-path", "v2", "*", "*.json").tr("\\", "/"))
 end
 
 private def lfp_entry_paths(project : String) : Array(String)
-  Dir.glob(File.join(project, ".celerite", "cache", "eval", "*", "v1", "*", "entry.json").tr("\\", "/"))
+  Dir.glob(File.join(project, ".celerite", "cache", "eval", "*", "v2", "*", "entry.json").tr("\\", "/"))
+end
+
+private def lfp_record_nonce(project : String) : String
+  JSON.parse(File.read(lfp_record_paths(project).first))["certificate_nonce"].as_s
+end
+
+private def lfp_certificate_nonces(project : String) : Array(String)
+  JSON.parse(File.read(lfp_entry_paths(project).first))["certificates"].as_h.keys.sort
 end
 
 # The digest the debug line reports is the evaluation fingerprint digest stored
@@ -150,7 +165,7 @@ end
 # install -> a persisted evaluation (`CELERITE_EVAL_CACHE=1`) -> a runtime
 # record (the fast-path switch on, but no record yet, so the Ruby path runs and
 # `remember_after_lock` writes one). Returns the current lock digest.
-private def lfp_ready(project : String) : String
+private def lfp_ready(project : String, require_v2 : Bool = true) : String
   lfp_install(project)
 
   status, _out, errors, procs, _rpc = lfp_lock(project, lfp_env("CELERITE_EVAL_CACHE"))
@@ -164,7 +179,11 @@ private def lfp_ready(project : String) : String
   procs.should be >= 1
   lfp_fast_path_lines(errors).should be_empty
 
-  lfp_record_paths(project).size.should eq(1)
+  if require_v2
+    lfp_record_paths(project).size.should eq(1)
+    lfp_entry_paths(project).size.should eq(1)
+    lfp_certificate_nonces(project).should contain(lfp_record_nonce(project))
+  end
   lfp_digest(project)
 end
 
@@ -226,9 +245,11 @@ describe "lock takes the no-Ruby fast path on an unchanged project" do
       lfp_pending!(project)
       digest = lfp_ready(project)
       lock_before = File.read(File.join(project, "Gemfile.lock"))
+      old_nonce = lfp_record_nonce(project)
 
       status, output, errors, procs, rpc = lfp_lock(project, lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG"))
       status.should eq(0)
+      lfp_counter_quad(errors).should eq({0, 0, 0, 0})
       procs.should eq(0)
       rpc.should eq(0)
       lfp_hits(errors).size.should eq(1)
@@ -237,6 +258,10 @@ describe "lock takes the no-Ruby fast path on an unchanged project" do
       output.should eq("Writing lockfile to #{File.join(project, "Gemfile.lock").gsub('\\', "/")}\n")
       File.read(File.join(project, "Gemfile.lock")).should eq(lock_before)
       lfp_digest(project).should eq(digest)
+      new_nonce = lfp_record_nonce(project)
+      new_nonce.should_not eq(old_nonce)
+      lfp_certificate_nonces(project).should contain(new_nonce)
+      lfp_certificate_nonces(project).should contain(old_nonce)
     end
   end
 
@@ -695,6 +720,255 @@ describe "lock refuses the fast path once the plugin root is populated" do
       lfp_misses(errors).should be_empty
       lfp_hits(errors).size.should eq(1)
       procs.should eq(0)
+    end
+  end
+end
+
+private def lfp_assert_compat_miss(project : String, reason : String? = nil) : String
+  status, output, errors, procs, _rpc = lfp_lock(project,
+    lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG"))
+  status.should eq(0)
+  procs.should be >= 1
+  lfp_hits(errors).should be_empty
+  misses = lfp_misses(errors)
+  misses.size.should eq(1)
+  misses.first.should eq(reason) if reason
+  output
+end
+
+private def lfp_with_read_only(path : String, &)
+  {% if flag?(:windows) %}
+    attrib = "C:\\Windows\\System32\\attrib.exe"
+    set = Process.run(attrib, ["+R", path], output: Process::Redirect::Close, error: Process::Redirect::Close)
+    set.success?.should be_true
+    expect_raises(File::AccessDeniedError) { File.open(path, "w") { |io| io << "probe" } }
+    begin
+      yield
+    ensure
+      Process.run(attrib, ["-R", path], output: Process::Redirect::Close, error: Process::Redirect::Close).success?.should be_true
+    end
+  {% else %}
+    pending!("read-only file attribute is Windows-specific")
+  {% end %}
+end
+
+describe "task-273 lock byte gate and success certificate transaction" do
+  it "misses after one raw lock byte changes and restores the reference bytes" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      digest = lfp_ready(project)
+      path = File.join(project, "Gemfile.lock")
+      File.write(path, File.read(path) + "# tampered\n")
+      lfp_assert_compat_miss(project, "certificate-lock")
+      lfp_digest(project).should eq(digest)
+    end
+  end
+
+  it "misses after LF becomes CRLF" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      path = File.join(project, "Gemfile.lock")
+      lock = File.read(path)
+      lock.should_not contain("\r\n")
+      File.write(path, lock.gsub("\n", "\r\n"))
+      lfp_assert_compat_miss(project, "certificate-lock")
+      bytes = File.read(path)
+      bytes.should contain("\r\n")
+      bytes.gsub("\r\n", "").should_not contain('\n')
+    end
+  end
+
+  it "misses after BUNDLED WITH changes and rotates the nonce on success" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      digest = lfp_ready(project)
+      old_nonce = lfp_record_nonce(project)
+      path = File.join(project, "Gemfile.lock")
+      lock = File.read(path)
+      changed = lock.sub("    4.0.24", "    0.0.0")
+      changed.should_not eq(lock)
+      File.write(path, changed)
+      lfp_assert_compat_miss(project, "certificate-lock")
+      lfp_digest(project).should eq(digest)
+      lfp_record_nonce(project).should_not eq(old_nonce)
+    end
+  end
+
+  it "checks the rendered bytes before emitting the hit or Writing line" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      path = File.join(project, "Gemfile.lock")
+      lock = File.read(path)
+      changed = lock.sub("    4.0.24", "    0.0.0")
+      File.write(path, changed)
+      identity = Celerite::CacheIdentity::LockIdentity.detect(path, project_root: project)
+      entry_path = lfp_entry_paths(project).first
+      payload = JSON.parse(File.read(entry_path)).as_h
+      nonce = lfp_record_nonce(project)
+      certificates = payload["certificates"].as_h
+      certificate = certificates[nonce].as_h
+      certificate["lock"] = JSON.parse(identity.to_json)
+      File.write(entry_path, payload.to_json)
+      output = lfp_assert_compat_miss(project, "lock-render")
+      output.lines.count(&.starts_with?("Writing lockfile to ")).should eq(1)
+    end
+  end
+
+  it "misses after a CHECKSUMS digest changes" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      path = File.join(project, "Gemfile.lock")
+      lock = File.read(path)
+      changed = lock.sub(/sha256=[0-9a-f]{64}/) do |match|
+        match[0, 71] + (match[71] == '0' ? '1' : '0')
+      end
+      changed.should_not eq(lock)
+      File.write(path, changed)
+      lfp_assert_compat_miss(project, "certificate-lock")
+    end
+  end
+
+  it "misses after the PLATFORMS set changes" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      path = File.join(project, "Gemfile.lock")
+      changed = File.read(path).sub("  x64-mingw-ucrt\n", "  x64-mingw-ucrt\n  x86_64-linux\n")
+      File.write(path, changed)
+      lfp_assert_compat_miss(project, "platforms")
+    end
+  end
+
+  it "misses after the Bundler profile changes" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      env = lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG")
+      env["CELERITE_PROFILE_BUNDLER_VERSION"] = "4.0.23"
+      status, _output, errors, procs, _rpc = lfp_lock(project, env)
+      status.should eq(0)
+      procs.should be >= 1
+      lfp_hits(errors).should be_empty
+      lfp_misses(errors).size.should eq(1)
+    end
+  end
+
+  it "misses after the certificate parser revision changes" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      path = lfp_entry_paths(project).first
+      payload = JSON.parse(File.read(path)).as_h
+      nonce = lfp_record_nonce(project)
+      payload["certificates"].as_h[nonce].as_h["lock"].as_h["parser_revision"] = JSON::Any.new("celerite-lockfile/0")
+      File.write(path, payload.to_json)
+      lfp_assert_compat_miss(project, "certificate-lock")
+    end
+  end
+
+  it "misses for legacy /1 and v2 evaluation-only entries" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      path = lfp_entry_paths(project).first
+      original = File.read(path)
+      %w[legacy evaluation-only].each do |mode|
+        payload = JSON.parse(original).as_h
+        if mode == "legacy"
+          payload["format"] = JSON::Any.new("celerite-eval-cache/1")
+          payload.delete("certificates")
+        else
+          payload["certificates"] = JSON::Any.new({} of String => JSON::Any)
+        end
+        File.write(path, payload.to_json)
+        begin
+          lfp_assert_compat_miss(project, "entry")
+        ensure
+          File.write(path, original)
+        end
+      end
+    end
+  end
+
+  it "does not write a certificate for lock --print" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      entry = lfp_entry_paths(project).first
+      record = lfp_record_paths(project).first
+      entry_before = File.read(entry)
+      record_before = File.read(record)
+      lock_before = lfp_digest(project)
+      lfp_with_env(project, lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG")) do
+        status, output, errors = lfp_run(project, ["lock", "--print"])
+        status.should eq(0)
+        lfp_misses(errors).should eq(["switches"])
+      end
+      File.read(entry).should eq(entry_before)
+      File.read(record).should eq(record_before)
+      lfp_digest(project).should eq(lock_before)
+    end
+  end
+
+  it "preserves the old nonce and lock bytes when the hot-path write fails" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      path = File.join(project, "Gemfile.lock")
+      entry = lfp_entry_paths(project).first
+      record = lfp_record_paths(project).first
+      lock_before = File.read(path)
+      entry_before = File.read(entry)
+      record_before = File.read(record)
+      lfp_with_read_only(path) do
+        status, output, errors, procs, _rpc = lfp_lock(project,
+          lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG"))
+        status.should eq(23)
+        procs.should eq(0)
+        lfp_hits(errors).size.should eq(1)
+        output.should contain("Writing lockfile to")
+      end
+      File.read(path).should eq(lock_before)
+      File.read(entry).should eq(entry_before)
+      File.read(record).should eq(record_before)
+      Dir.glob(File.join(project, ".Gemfile.lock.*.tmp")).should be_empty
+    end
+  end
+
+  it "stays on the compatibility path after the final record write fails" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      record = lfp_record_paths(project).first
+      File.delete(record)
+      parent = File.join(project, ".celerite", "cache", "fast-path")
+      Dir.mkdir_p(parent)
+      blocker = File.join(parent, "v2")
+      File.write(blocker, "block record directory")
+      lfp_assert_compat_miss(project, "record")
+      lfp_assert_compat_miss(project, "record")
+      File.delete(blocker)
+      lfp_assert_compat_miss(project, "record")
+      lfp_record_paths(project).size.should eq(1)
+    end
+  end
+
+  it "is a behavioral anti-false-green for the base binary on lock tampering" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project, require_v2: false)
+      status, _out, errors, procs, _rpc = lfp_lock(project,
+        lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG"))
+      status.should eq(0)
+      procs.should eq(0)
+      lfp_hits(errors).size.should eq(1)
+      path = File.join(project, "Gemfile.lock")
+      lock = File.read(path)
+      File.write(path, lock.sub("    4.0.24", "    0.0.0"))
+      lfp_assert_compat_miss(project)
     end
   end
 end

@@ -237,8 +237,12 @@ describe "task-272 v2 certificate transactions" do
         Celerite::EvalFingerprint::State::Deterministic, Celerite::CacheIdentity::RubyIdentity.unknown)
         .reason.should eq("ruby-identity-unknown")
       t272_seed(project, record)
+      current_lock = t272_certificate(record.ruby_identity).lock
+      Celerite::EvalCacheStore.put_certificate(record.eval_digest, record.certificate_nonce,
+        Celerite::CacheIdentity::SuccessCertificate.new(Celerite::CacheIdentity::CERTIFICATE,
+          "lock", Celerite::Profile.bundler_version, identity.identity_digest.not_nil!, current_lock)).should be_true
       Celerite::FastPathStore.decision(project, record.eval_digest, facts, record,
-        Celerite::EvalFingerprint::State::Deterministic, identity).allowed?.should be_true
+        Celerite::EvalFingerprint::State::Deterministic, identity, "lock", current_lock).allowed?.should be_true
       record.to_json.should_not contain("\"lock\"")
       old = JSON.parse(record.to_json)
       old.as_h.delete("ruby_identity")
