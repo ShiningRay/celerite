@@ -34,8 +34,9 @@ private def t273_lock(body : String, project : String) : Celerite::CacheIdentity
   Celerite::CacheIdentity::LockIdentity.detect(path, project_root: project)
 end
 
-private def t273_with_lock(& : String -> Celerite::CacheIdentity::LockIdentity) : Nil
+private def t273_with_lock(&block) : Nil
   project = File.join(Dir.tempdir, "celerite-t273-lock-#{Process.pid}-#{Random.rand(1_000_000)}")
+  Dir.mkdir_p(project)
   begin
     yield project
   ensure
@@ -54,7 +55,7 @@ describe Celerite::CacheIdentity::LockIdentity do
       identity.parser_revision.should eq(Celerite::CacheIdentity::LOCK_PARSER_REVISION)
       identity.bundled_with.should eq("4.0.24")
       identity.platforms.should eq(["x64-mingw-ucrt", "x86_64-linux"])
-      canonical = "rack (3.0.0) sha256=#{'a' * 64}\nsmall (1.0.0) sha256=#{'b' * 64}\n"
+      canonical = "rack (3.0.0) sha256=#{"a" * 64}\nsmall (1.0.0) sha256=#{"b" * 64}\n"
       identity.checksums_sha256.should eq(Digest::SHA256.hexdigest(canonical))
     end
   end
@@ -63,8 +64,8 @@ describe Celerite::CacheIdentity::LockIdentity do
     t273_with_lock do |project|
       first = t273_lock(T273_LOCK, project)
       reversed = T273_LOCK.sub(
-        "  rack (3.0.0) sha256=#{'a' * 64}\n  small (1.0.0) sha256=#{'b' * 64}",
-        "  small (1.0.0) sha256=#{'b' * 64}\n  rack (3.0.0) sha256=#{'a' * 64}")
+        "  rack (3.0.0) sha256=#{"a" * 64}\n  small (1.0.0) sha256=#{"b" * 64}",
+        "  small (1.0.0) sha256=#{"b" * 64}\n  rack (3.0.0) sha256=#{"a" * 64}")
       t273_write(File.join(project, "Gemfile.lock"), reversed.gsub("\n", "\r\n"))
       second = Celerite::CacheIdentity::LockIdentity.detect(File.join(project, "Gemfile.lock"), project_root: project)
       second.checksums_sha256.should eq(first.checksums_sha256)
@@ -97,7 +98,7 @@ describe Celerite::CacheIdentity::LockIdentity do
         T273_LOCK + "# byte\n",
         T273_LOCK.gsub("\n", "\r\n"),
         T273_LOCK.sub("4.0.24", "4.0.23"),
-        T273_LOCK.sub('a' * 64, 'c' * 64),
+        T273_LOCK.sub("a" * 64, "c" * 64),
         T273_LOCK.sub("  x86_64-linux\n", ""),
       ]
       variants.each do |body|
@@ -120,12 +121,12 @@ describe Celerite::CacheIdentity::LockIdentity do
   end
 end
 
-describe Celerite::Lockfile::Writer do
+describe Celerite::Lockfile do
   it "replaces a pre-existing file atomically and preserves CRLF without temp files" do
     t273_with_lock do |project|
       path = File.join(project, "Gemfile.lock")
       File.write(path, "old bytes\r\n")
-      Celerite::Lockfile::Writer.write(path, "new one\r\nnew two\r\n", preserve_crlf: true)
+      Celerite::Lockfile.write(path, "new one\r\nnew two\r\n", preserve_crlf: true)
       File.read(path).should eq("new one\r\nnew two\r\n")
       Dir.children(project).any?(&.ends_with?(".tmp")).should be_false
     end
@@ -141,12 +142,12 @@ describe Celerite::Lockfile::Writer do
         begin
           expect_raises(File::AccessDeniedError) { File.open(path, "w") { |io| io << "probe" } }
           expect_raises(Celerite::PermissionError) do
-            Celerite::Lockfile::Writer.write(path, "new bytes\r\n", preserve_crlf: true)
+            Celerite::Lockfile.write(path, "new bytes\r\n", preserve_crlf: true)
           end
         ensure
           Process.run(attrib, ["-R", path], output: Process::Redirect::Close, error: Process::Redirect::Close).success?.should be_true
         end
-        File.read(path, mode: "rb").should eq("old bytes\r\n")
+        File.read(path).should eq("old bytes\r\n")
         Dir.children(project).any?(&.ends_with?(".tmp")).should be_false
       end
     {% else %}

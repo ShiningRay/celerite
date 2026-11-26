@@ -956,7 +956,7 @@ describe "task-273 lock byte gate and success certificate transaction" do
     end
   end
 
-  it "is a behavioral anti-false-green for the base binary on lock tampering" do
+  it "rejects lock tampering with compatibility parity" do
     with_project({} of String => String) do |project|
       lfp_pending!(project)
       lfp_ready(project, require_v2: false)
