@@ -1522,7 +1522,7 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
       ifp_lines(errors, IFP_HIT).size.should eq(1)
 
       lock_path = File.join(project, "Gemfile.lock")
-      File.open(lock_path, "ab") { |file| file.write("\n# task-275 old-binary capability gate\n") }
+      File.open(lock_path, "ab") { |file| file << "\n# task-275 old-binary capability gate\n" }
       status, _output, errors, stats = ifp_hot(project, ["install"], overrides)
       status.should eq(0)
       fail "expected_miss_after_lock_tamper: stats=#{stats}" unless stats[0] >= 1

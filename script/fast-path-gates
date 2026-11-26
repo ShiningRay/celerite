@@ -114,7 +114,7 @@ module FastPathGates
                        File.join(project, "user-home"), File.join(project, "global-plugin")])
     gemfile = File.read(File.join(fixture, "Gemfile"))
     gemfile = gemfile.sub("@INDEX_DIR@", File.expand_path(index).tr("\\", "/"))
-    File.write(File.join(project, "Gemfile"), gemfile)
+    File.binwrite(File.join(project, "Gemfile"), gemfile)
     project
   end
 
@@ -156,7 +156,13 @@ module FastPathGates
     entries = {}
     pattern = File.join(project, "**", "*")
     Dir.glob(pattern, File::FNM_DOTMATCH).sort.each do |path|
-      relative = path.delete_prefix(File.expand_path(project)).tr("\\", "/").sub(%r{\A/}, "")
+      normalized = path.tr("\\", "/")
+      prefix = File.expand_path(project).tr("\\", "/")
+      relative = if normalized[0, prefix.length].casecmp?(prefix)
+                   normalized[prefix.length..].sub(%r{\A/}, "")
+                 else
+                   normalized
+                 end
       next if ignored_tree_path?(relative)
 
       if File.symlink?(path)
@@ -334,6 +340,7 @@ module FastPathGates
       "profile" => profile,
       "reference_lib" => reference_lib,
       "platform" => RbConfig::CONFIG.fetch("host_os"),
+      "artifacts" => artifacts,
       "status" => "running"
     }
 
@@ -378,7 +385,7 @@ end
 if $PROGRAM_NAME == __FILE__
   begin
     result = FastPathGates.main(ARGV)
-    puts "fast-path-gates: PASS profile=#{result.fetch('profile')} artifacts=#{File.join(Dir.pwd, 'fast-path-gates-artifacts')}"
+    puts "fast-path-gates: PASS profile=#{result.fetch('profile')} artifacts=#{result.fetch('artifacts')}"
   rescue StandardError => error
     warn "fast-path-gates: FAIL: #{error.class}: #{error.message}"
     exit 1

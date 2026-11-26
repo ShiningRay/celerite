@@ -109,6 +109,9 @@ check("tree manifest ignores cache/log/temp but hashes installed content") do
              File.join(project, "bundle", "ruby", "4.0.0", "cache", "noise")]
     noise.each { |path| FileUtils.mkdir_p(File.dirname(path)); File.write(path, "ignored") }
     before = FastPathGates.tree_manifest(project)
+    manifest = JSON.parse(before)
+    assert(manifest.keys.none? { |key| key.match?(%r{\A(?:/|[A-Za-z]:/)}) },
+      "tree manifest keys must be project-relative on Windows and Unix")
     noise.each { |path| File.write(path, "changed") }
     assert(FastPathGates.tree_manifest(project) == before, "excluded cache/log/temp changed the manifest")
     File.write(installed, "tampered\n")
