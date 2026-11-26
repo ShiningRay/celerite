@@ -1511,6 +1511,24 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
     end
   end
 
+  it "CI capability: expected_miss_after_lock_tamper" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      status, _output, errors, stats = ifp_hot(project)
+      status.should eq(0)
+      stats.should eq({0, 0, 0, 0})
+      ifp_lines(errors, IFP_HIT).size.should eq(1)
+
+      lock_path = File.join(project, "Gemfile.lock")
+      File.open(lock_path, "ab") { |file| file.write("\n# task-275 old-binary capability gate\n") }
+      status, _output, errors, stats = ifp_hot(project)
+      status.should eq(0)
+      fail "expected_miss_after_lock_tamper: stats=#{stats}" unless stats[0] >= 1
+      ifp_lines(errors, IFP_HIT).should be_empty
+      ifp_lines(errors, IFP_MISS).should contain("verdict:certificate-lock")
+    end
+  end
+
   it "misses for semantic flags and falls back for Bundler 2.7.2" do
     with_project({} of String => String) do |project|
       ifp_ready(project)
