@@ -233,6 +233,10 @@ module Celerite
         CELERITE_FAST_PATH_DEBUG
         CELERITE_EVAL_DEBUG
         CELERITE_BRIDGE_STATS
+        # Plan-cache switches only change celerite's post-evaluation reuse and
+        # diagnostics; Bundler cannot observe them.
+        CELERITE_PLAN_CACHE
+        CELERITE_PLAN_CACHE_DEBUG
         # Transport selection only: changing the server script cannot change
         # the Gemfile evaluation or RuntimeFacts. Ignoring it also lets a
         # verified no-Ruby hit succeed when the server is unreachable.

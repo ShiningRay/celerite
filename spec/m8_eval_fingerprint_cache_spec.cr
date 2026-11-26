@@ -264,4 +264,26 @@ describe "M8 evaluation fingerprint cache (task-235)" do
       end
     end
   end
+
+  it "keeps the environment signature stable across plan-cache switches" do
+    saved = {"CELERITE_PLAN_CACHE"       => ENV["CELERITE_PLAN_CACHE"]?,
+             "CELERITE_PLAN_CACHE_DEBUG" => ENV["CELERITE_PLAN_CACHE_DEBUG"]?}
+    begin
+      ENV["CELERITE_PLAN_CACHE"] = "0"
+      ENV.delete("CELERITE_PLAN_CACHE_DEBUG")
+      disabled = Celerite::Bridge::EvaluationCache.environment_signature
+
+      ENV["CELERITE_PLAN_CACHE"] = "1"
+      ENV["CELERITE_PLAN_CACHE_DEBUG"] = "1"
+      Celerite::Bridge::EvaluationCache.environment_signature.should eq(disabled)
+    ensure
+      saved.each do |name, value|
+        if value
+          ENV[name] = value
+        else
+          ENV.delete(name)
+        end
+      end
+    end
+  end
 end

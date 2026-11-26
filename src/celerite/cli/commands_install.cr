@@ -280,6 +280,14 @@ module Celerite
       # the verified evaluation before any Ruby process starts. The compatible
       # path's ProcessLock is still acquired around the emitted transcript.
       trusted_result = LockFastPath.enabled? ? LockFastPath.trusted_attempt(definition) : {nil, nil}
+      # Plan hydration needs the proven evaluation and lockfile, not an intact
+      # installed tree. The installer still verifies every file after hydration;
+      # FastPathStore's whole-tree verdict remains mandatory for the no-Ruby hit.
+      plan_trusted_result = if LockFastPath.enabled? && PlanCache.enabled?
+                              LockFastPath.trusted_attempt(definition, require_install_verdict: false)
+                            else
+                              {nil, nil}
+                            end
       fast_path_result = InstallFastPath.attempt(definition, config, rest, summary,
         show_resolving, no_reuse, no_install, cli_arguments, refresh_cache,
         trusted_result: trusted_result)
@@ -337,6 +345,13 @@ module Celerite
 
         resolution = if trusted = trusted_result[0]
                        Resolution.from_evaluation(definition, trusted.evaluation, bridge)
+                     elsif plan_trusted = plan_trusted_result[0]
+                       # The locked-plan lookup only needs a provisional view of
+                       # the already-proven evaluation. Paying the authoritative
+                       # Bundler cache RPC here would make a later plan hit too
+                       # late to avoid it; the ordinary constructor below restores
+                       # the miss/disabled path with the candidate-aware policy.
+                       Resolution.from_evaluation(definition, plan_trusted.evaluation, bridge)
                      else
                        Resolution.new(definition, false, bridge)
                      end
@@ -443,37 +458,35 @@ module Celerite
         checksum_refresh = reuse ? definition.checksums_need_refresh?(rest.includes?("--local")) : nil
         reuse = false if checksum_refresh
         plan_hit : LockFastPath::Hit? = nil
-        cache_prepared = false
-        if reuse && (trusted = trusted_result[0]) && plan_cache_context?(definition, config, rest,
-            summary, show_resolving, no_reuse, no_install, cli_arguments, refresh_cache)
+        plan_candidate : NamedTuple(path: String?, sha256: String?, optimized: Bool)? = nil
+        plan_components : JSON::Any? = nil
+        plan_loaded = false
+        if reuse && (trusted = plan_trusted_result[0]) && plan_cache_context?(definition, config, rest,
+             summary, show_resolving, no_reuse, no_install, cli_arguments, refresh_cache)
           plan_hit = trusted
           candidate = Resolution.bundler_cache_candidate(definition, trusted.evaluation, bridge, trusted.facts)
+          plan_candidate = candidate
           if components = PlanCache.locked_components(resolution, trusted, candidate)
-            cache_prepared = true
+            plan_components = components
             if plan = PlanCache.read_locked(resolution, trusted, components)
               resolution = Resolution.from_plan(definition, trusted.evaluation, bridge,
-                plan.specs, plan.extras, candidate.path)
-            else
-              # A changed/missing default cache entry falls back to Ruby's
-              # authoritative path. Custom layouts already made that RPC above.
-              resolution.bundler_cache_path = if candidate.optimized
-                                                 begin
-                                                   bridge.bundler_cache_file(trusted.bundler_version)
-                                                 rescue Bridge::BridgeError
-                                                   nil
-                                                 end
-                                               else
-                                                 candidate.path
-                                               end
+                plan.specs, plan.extras, candidate[:path])
+              plan_loaded = true
             end
+          else
+            PlanCache.debug_miss("provenance")
           end
+        elsif PlanCache.enabled?
+          PlanCache.debug_miss(plan_trusted_result[0] ? "context" : "trusted:#{plan_trusted_result[1]}")
         end
-        if trusted_result[0] && !cache_prepared
-          begin
-            resolution.bundler_cache_path = bridge.bundler_cache_file(resolution.bridge_bundler_version)
-          rescue Bridge::BridgeError
-            resolution.bundler_cache_path = nil
-          end
+        if !plan_loaded && (trusted_result[0] || plan_trusted_result[0])
+          # A custom candidate already paid the authoritative RPC. Reuse that
+          # answer while the ordinary constructor re-evaluates the Gemfile;
+          # default/miss/disabled paths keep the original cache lookup.
+          custom_candidate = plan_candidate.try { |candidate| candidate[:optimized] ? nil : candidate }
+          resolution = Resolution.new(definition, false, bridge,
+            query_cache: Resolution.bundler_cache_query_needed?(custom_candidate))
+          resolution.bundler_cache_path = custom_candidate.try { |candidate| candidate[:path] } if custom_candidate
         end
         resolution.show_resolving = show_resolving
         # 4.0.24 only re-reads the index to fill an *empty* CHECKSUMS entry: it
@@ -1048,27 +1061,41 @@ module Celerite
           end
         end
 
-<<<<<<< HEAD
         # The normal compatible install has completed successfully. Only now
         # bind an empty Plugin::DSL result to the deterministic fingerprint
         # from the successful evaluation; errors and non-empty warnings/results
         # never create a certificate.
         PluginGemfileCache.remember(definition.gemfile_path, plugin_names, evaluation, fingerprint)
-||||||| parent of 0bce9b6 (fix: rehydrate trusted locked plans)
-=======
+
         # P3 publishes only after a successful locked reuse whose semantic lock
         # stayed unchanged. Cache failure is deliberately invisible to install.
         if reuse && (trusted = plan_hit) && resolution_can_reuse?(resolution) &&
-            Digest::SHA256.hexdigest(File.read(definition.lockfile_path)) == trusted.lockfile_sha256
-          candidate = Resolution.bundler_cache_candidate(definition, trusted.evaluation, bridge, trusted.facts)
-          if components = PlanCache.locked_components(resolution, trusted, candidate)
-            PlanCache.write_locked(resolution, trusted, components)
-          end
+           plan_candidate && (components = plan_components) &&
+           Digest::SHA256.hexdigest(File.read(definition.lockfile_path)) == trusted.lockfile_sha256
+          PlanCache.write_locked(resolution, trusted, components)
         end
->>>>>>> 0bce9b6 (fix: rehydrate trusted locked plans)
 
         0
+      ensure
+        lock.try(&.close)
         bridge.close
+      end
+    end
+
+    private def self.config_bool?(value) : Bool
+      case value
+      when Bool, Int32, String, Nil then Config.to_bool(value)
+      else                               false
+      end
+    end
+
+    private def self.group_configured?(config : Config) : Bool
+      ["with", "without", "only"].any? do |key|
+        case value = config[key]
+        when Array  then !value.empty?
+        when String then !value.split(':').reject(&.empty?).empty?
+        else             false
+        end
       end
     end
 

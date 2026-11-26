@@ -346,11 +346,16 @@ module Celerite
     end
 
     def initialize(@definition : Definition, @unlock : Bool | Array(String) = false,
-                   @bridge : Bridge::Client? = nil)
+                   @bridge : Bridge::Client? = nil, query_cache : Bool = true)
       @owned_bridge = @bridge.nil?
       @bridge = @bridge || Bridge::Client.shared
-      initialize_state(eval_gemfile)
-      @bundler_cache_path = query_bundler_cache_path
+      @evaluation = eval_gemfile
+      @sources = @evaluation.sources
+      @bridge_bundler_version = @evaluation.bundler_version
+      @current_base_requirements = {} of String => Gem::Requirement
+      @current_index = {} of String => Array(Resolver::IndexSpec)
+      @prerelease_available = Set(String).new
+      @bundler_cache_path = query_cache ? query_bundler_cache_path : nil
       @resolved_specs = [] of ResolvedSpec
       @lock_extra_specs = [] of ResolvedSpec
       @root_dependency_names = [] of String
@@ -361,7 +366,11 @@ module Celerite
                            @bridge : Bridge::Client,
                            @evaluation : Bridge::GemfileEvaluation)
       @owned_bridge = false
-      initialize_state(@evaluation)
+      @sources = @evaluation.sources
+      @bridge_bundler_version = @evaluation.bundler_version
+      @current_base_requirements = {} of String => Gem::Requirement
+      @current_index = {} of String => Array(Resolver::IndexSpec)
+      @prerelease_available = Set(String).new
       @bundler_cache_path = nil
       @resolved_specs = [] of ResolvedSpec
       @lock_extra_specs = [] of ResolvedSpec
@@ -376,19 +385,14 @@ module Celerite
                            @lock_extra_specs : Array(ResolvedSpec),
                            @bundler_cache_path : String?)
       @owned_bridge = false
-      initialize_state(@evaluation)
-      @root_dependency_names = @evaluation.dependencies.map(&.name)
-      @resolved = true
-      @plan_loaded = true
-    end
-
-    private def initialize_state(evaluation : Bridge::GemfileEvaluation) : Nil
-      @evaluation = evaluation
-      @sources = evaluation.sources
-      @bridge_bundler_version = evaluation.bundler_version
+      @sources = @evaluation.sources
+      @bridge_bundler_version = @evaluation.bundler_version
       @current_base_requirements = {} of String => Gem::Requirement
       @current_index = {} of String => Array(Resolver::IndexSpec)
       @prerelease_available = Set(String).new
+      @root_dependency_names = @evaluation.dependencies.map(&.name)
+      @resolved = true
+      @plan_loaded = true
     end
 
     # Set a cache path that was independently validated by the caller. This is
@@ -409,24 +413,34 @@ module Celerite
                                      bridge : Bridge::Client,
                                      facts : RuntimeFacts::Facts) : NamedTuple(path: String?, sha256: String?, optimized: Bool)
       version = evaluation.bundler_version
-      fallback = -> do
-        begin
-          {bridge.bundler_cache_file(version), nil, false}
-        rescue Bridge::BridgeError
-          {nil, nil, false}
-        end
+      begin
+        return bundler_cache_rpc_candidate(bridge, version) unless version.starts_with?("4.") && !version.starts_with?("2.")
+        # Bundler 4.0.24 computes its own checksum from metadata_source even
+        # when the lockfile has no explicit `bundler` spec row.
+        return bundler_cache_rpc_candidate(bridge, version) if ENV["GEM_HOME"]? || ENV["GEM_PATH"]?
+        default_dir = facts.default_gem_dir.value
+        return bundler_cache_rpc_candidate(bridge, version) if default_dir.nil? || default_dir.empty?
+        path = File.join(default_dir, "cache", "bundler-#{version}.gem")
+        return bundler_cache_rpc_candidate(bridge, version) unless File.file?(path)
+        sha256 = Digest::SHA256.hexdigest(File.read(path))
+        {path: path, sha256: sha256, optimized: true}
+      rescue
+        bundler_cache_rpc_candidate(bridge, version)
       end
-      return fallback.call unless version.starts_with?("4.") && !version.starts_with?("2.")
-      return fallback.call unless definition.lockfile!.specs.any? { |spec| spec.name == "bundler" }
-      return fallback.call if ENV["GEM_HOME"]? || ENV["GEM_PATH"]?
-      default_dir = facts.default_gem_dir.value
-      return fallback.call if default_dir.nil? || default_dir.empty?
-      path = File.join(default_dir, "cache", "bundler-#{version}.gem")
-      return fallback.call unless File.file?(path)
-      sha256 = Digest::SHA256.hexdigest(File.read(path))
-      {path, sha256, true}
-    rescue
-      fallback.call
+    end
+
+    private def self.bundler_cache_rpc_candidate(bridge : Bridge::Client, version : String) : NamedTuple(path: String?, sha256: String?, optimized: Bool)
+      begin
+        {path: bridge.bundler_cache_file(version), sha256: nil, optimized: false}
+      rescue Bridge::BridgeError
+        {path: nil, sha256: nil, optimized: false}
+      end
+    end
+
+    # A custom-layout candidate has already paid the authoritative RPC, even
+    # when Ruby reported no cache file. Never turn a nil path into a second query.
+    def self.bundler_cache_query_needed?(candidate : NamedTuple(path: String?, sha256: String?, optimized: Bool)?) : Bool
+      candidate.nil? || candidate[:optimized]
     end
 
     def close : Nil

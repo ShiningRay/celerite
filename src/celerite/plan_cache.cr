@@ -22,12 +22,12 @@ module Celerite::PlanCache
   MAX_ENTRIES  = 256
   MAX_BYTES    = 16_i64 * 1024 * 1024
 
-  DIGEST         = /\A[0-9a-f]{64}\z/
-  NAMESPACE      = /\A[0-9a-f]{16}\z/
-  REVISION       = /\A[0-9a-fA-F]{40}\z/
-  ENTRY_FILE     = /\A[0-9a-f]{64}\.json\z/
-  CREDENTIAL_URI = %r{://[^/"\\\s]+@}
-  SENSITIVE_KEY  = /\A(?:api[_-]?key|authorization|credential|credentials|password|passwd|secret|token)\z/i
+  DIGEST                = /\A[0-9a-f]{64}\z/
+  NAMESPACE             = /\A[0-9a-f]{16}\z/
+  REVISION              = /\A[0-9a-fA-F]{40}\z/
+  ENTRY_FILE            = /\A[0-9a-f]{64}\.json\z/
+  CREDENTIAL_URI        = %r{://[^/"\\\s]+@}
+  SENSITIVE_KEY         = /\A(?:api[_-]?key|authorization|credential|credentials|password|passwd|secret|token)\z/i
   PAYLOAD_KEYS          = %w[installed_snapshot plan specs]
   COMPONENT_KEYS        = %w[abi build checksums credential_namespace platform sources]
   LOCKED_COMPONENT_KEYS = %w[abi build bundler_cache bundler_version checksums credential_namespace evaluation_digest lockfile_sha256 platform sources]
@@ -109,6 +109,13 @@ module Celerite::PlanCache
 
   def self.debug? : Bool
     ENV[DEBUG_SWITCH]? == "1"
+  end
+
+  def self.debug_miss(reason : String) : Nil
+    if debug?
+      debug_io.puts debug_line(Status::Miss, reason)
+      debug_io.flush
+    end
   end
 
   def self.root : String?
@@ -515,9 +522,9 @@ module Celerite::PlanCache
   private def self.valid_payload?(value : JSON::Any) : Bool
     object = value.as_h?
     return true if object && object.keys.sort == PAYLOAD_KEYS &&
-      object["specs"].as_a?.is_a?(Array(JSON::Any)) &&
-      object["plan"].as_h?.is_a?(Hash(String, JSON::Any)) &&
-      object["installed_snapshot"].as_a?.is_a?(Array(JSON::Any))
+                   object["specs"].as_a?.is_a?(Array(JSON::Any)) &&
+                   object["plan"].as_h?.is_a?(Hash(String, JSON::Any)) &&
+                   object["installed_snapshot"].as_a?.is_a?(Array(JSON::Any))
     valid_locked_payload?(value)
   end
 
@@ -578,34 +585,48 @@ module Celerite::PlanCache
     end
   end
 
+  # P3 is deliberately narrower than the general P1/P2 source components:
+  # only ordinary remote GEM sources have a root-independent locked plan.
+  # Unknown source labels and every non-remote typed source are a miss, even if
+  # another gate would happen to accept them.
+  def self.gem_sources_only?(lock_sources : Array(String), evaluation_sources : Array(String)) : Bool
+    lock_sources.all? { |type| type == "GEM" || type == "Rubygems" } &&
+      evaluation_sources.all? { |type| type == "GEM" || type == "Rubygems" || type == "Metadata" }
+  end
+
   # P3 adds provenance to the existing six key components. The payload remains
   # root-independent: Bundler cache provenance records only version and digest,
   # never the absolute cache path.
   def self.locked_components(resolution : Resolution, hit : LockFastPath::Hit,
                              candidate : NamedTuple(path: String?, sha256: String?, optimized: Bool)) : JSON::Any?
     definition = resolution_definition(resolution)
-    return nil unless candidate.sha256.nil? || candidate.sha256.not_nil!.matches?(DIGEST)
-    return nil unless Digest::SHA256.hexdigest(File.read(definition.lockfile_path)) == hit.lockfile_sha256
-    return nil unless definition.lockfile!.bundler_version == hit.bundler_version
-    return nil unless hit.bundler_version == Celerite::Profile.bundler_version
-    return nil unless definition.checksums_need_refresh?(false).nil?
-    base = components_for(resolution.primary_remote, definition.lockfile!,
+    lockfile = definition.lockfile!
+    lock_source_types = lockfile.sources.map(&.type)
+    evaluation_source_types = hit.evaluation.sources.map(&.type)
+    return debug_miss("sources:#{lock_source_types.inspect}/#{evaluation_source_types.inspect}") unless gem_sources_only?(lock_source_types, evaluation_source_types)
+    cache_sha256 = candidate[:sha256]
+    return debug_miss("bundler-cache-digest") unless cache_sha256.nil? || cache_sha256.matches?(DIGEST)
+    return debug_miss("lockfile-changed") unless Digest::SHA256.hexdigest(File.read(definition.lockfile_path)) == hit.lockfile_sha256
+    return debug_miss("lock-bundler-version") unless lockfile.bundler_version == hit.bundler_version
+    return debug_miss("profile-bundler-version") unless hit.bundler_version == Celerite::Profile.bundler_version
+    return debug_miss("checksums") unless definition.checksums_need_refresh?(false).nil?
+    base = components_for(resolution.primary_remote, lockfile,
       File.dirname(File.expand_path(definition.gemfile_path)), Gem::Platform.local.to_s,
       hit.record.abi, definition.config)
-    return nil unless base
+    return debug_miss("components") unless base
     object = base.as_h.dup
     object["evaluation_digest"] = JSON::Any.new(hit.digest)
     object["lockfile_sha256"] = JSON::Any.new(hit.lockfile_sha256)
     object["bundler_version"] = JSON::Any.new(hit.bundler_version)
-    object["bundler_cache"] = if candidate.optimized && candidate.sha256
+    object["bundler_cache"] = if candidate[:optimized] && cache_sha256
                                 JSON::Any.new({"version" => JSON::Any.new(hit.bundler_version),
-                                  "sha256" => JSON::Any.new(candidate.sha256.not_nil!)})
+                                               "sha256"  => JSON::Any.new(cache_sha256.not_nil!)})
                               else
                                 JSON::Any.new(nil)
                               end
     JSON.parse(canonical_json(JSON::Any.new(object)))
   rescue
-    nil
+    debug_miss("invalid-provenance")
   end
 
   # Definition is intentionally not exposed by Resolution. This small bridge is
@@ -616,7 +637,8 @@ module Celerite::PlanCache
 
   def self.read_locked(resolution : Resolution, hit : LockFastPath::Hit,
                        components : JSON::Any) : LockedPlan?
-    result = read(key_for(components))
+    key = key_for(components)
+    result = read(key)
     return nil unless result.hit?
     payload = result.payload.not_nil!
     return nil unless valid_locked_payload?(payload)
@@ -634,12 +656,13 @@ module Celerite::PlanCache
                         components : JSON::Any) : WriteResult
     current, extras = resolution.locked_plan_rows
     payload = JSON::Any.new({
-      "schema" => JSON::Any.new(LOCKED_SCHEMA),
-      "provenance" => components,
-      "plan" => plan_json(current, extras),
+      "schema"        => JSON::Any.new(LOCKED_SCHEMA),
+      "provenance"    => components,
+      "plan"          => plan_json(current, extras),
       "bundler_cache" => components.as_h["bundler_cache"],
     })
-    write(key_for(components).not_nil!, components, payload)
+    key = key_for(components).not_nil!
+    write(key, components, payload)
   rescue
     write_result(WriteStatus::InvalidPayload, "locked_plan_invalid")
   end
@@ -647,36 +670,36 @@ module Celerite::PlanCache
   private def self.plan_json(specs : Array(Resolution::ResolvedSpec),
                              extras : Array(Resolution::ResolvedSpec)) : JSON::Any
     JSON::Any.new({
-      "specs" => JSON::Any.new(specs.map { |spec| spec_json(spec) }),
+      "specs"                => JSON::Any.new(specs.map { |spec| spec_json(spec) }),
       "extra_platform_specs" => JSON::Any.new(extras.map { |spec| spec_json(spec) }),
     })
   end
 
   private def self.spec_json(spec : Resolution::ResolvedSpec) : JSON::Any
     JSON::Any.new({
-      "name" => JSON::Any.new(spec.name),
-      "version" => JSON::Any.new(spec.version.to_s),
-      "platform" => nullable(spec.platform),
+      "name"         => JSON::Any.new(spec.name),
+      "version"      => JSON::Any.new(spec.version.to_s),
+      "platform"     => nullable(spec.platform),
       "dependencies" => JSON::Any.new(spec.dependencies.map do |dep|
-        JSON::Any.new({"name" => JSON::Any.new(dep.name),
-          "requirements" => nullable(dep.requirements.try(&.map { |value| JSON::Any.new(value) }))})
+        JSON::Any.new({"name"         => JSON::Any.new(dep.name),
+                       "requirements" => nullable(dep.requirements.try(&.map { |value| JSON::Any.new(value) }))})
       end),
-      "checksum" => nullable(spec.checksum),
-      "source_index" => JSON::Any.new(spec.source_index),
-      "source_type" => JSON::Any.new(spec.source_type),
-      "source_info" => nullable(spec.source_info.try(&.to_json)),
-      "source_remote" => nullable(spec.source_remote),
-      "source_declared" => nullable(spec.source_declared),
-      "required_ruby_version" => nullable(spec.required_ruby_version.try(&.to_s)),
+      "checksum"                  => nullable(spec.checksum),
+      "source_index"              => JSON::Any.new(spec.source_index),
+      "source_type"               => JSON::Any.new(spec.source_type),
+      "source_info"               => nullable(spec.source_info.try(&.to_json)),
+      "source_remote"             => nullable(spec.source_remote),
+      "source_declared"           => nullable(spec.source_declared),
+      "required_ruby_version"     => nullable(spec.required_ruby_version.try(&.to_s)),
       "required_rubygems_version" => nullable(spec.required_rubygems_version.try(&.to_s)),
-      "default_gem" => JSON::Any.new(spec.default_gem),
+      "default_gem"               => JSON::Any.new(spec.default_gem),
     })
   end
 
   private def self.spec_from_json(value : JSON::Any) : Resolution::ResolvedSpec
     row = value.as_h
     info = row["source_info"]
-    source_info = info.raw.nil? ? nil : Resolution::ResolvedSpec::SourceInfo.from_json(info.to_json)
+    source_info = info.raw.nil? ? nil : Resolution::SourceInfo.from_json(info.to_json)
     deps = row["dependencies"].as_a.map do |dep|
       item = dep.as_h
       requirements = item["requirements"].raw.nil? ? nil : item["requirements"].as_a.map(&.as_s)
@@ -687,7 +710,7 @@ module Celerite::PlanCache
     Resolution::ResolvedSpec.new(row["name"].as_s, Gem::Version.new(row["version"].as_s),
       nullable_string(row["platform"]), deps, nullable_string(row["checksum"]),
       row["source_index"].as_i, row["source_type"].as_s, source_info,
-      nullable_string(row["source_remote"]), ruby, rubygems, row["default_gem"].as_b).tap do |spec|
+      nullable_string(row["source_remote"]), ruby, rubygems, row["default_gem"].as_bool).tap do |spec|
       spec.source_declared = nullable_string(row["source_declared"])
     end
   end
@@ -720,7 +743,8 @@ module Celerite::PlanCache
     cache = object["bundler_cache"]
     return true if cache.raw.nil?
     item = cache.as_h?
-    item != nil && item.keys.sort == %w[sha256 version] &&
+    return false unless item
+    item.keys.sort == %w[sha256 version] &&
       item["version"].as_s?.is_a?(String) && item["sha256"].as_s?.try(&.matches?(DIGEST)) == true
   end
 

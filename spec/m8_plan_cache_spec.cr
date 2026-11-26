@@ -715,6 +715,16 @@ describe Celerite::PlanCache do
     end
   end
 
+  it "accepts only remote GEM source spellings in locked-plan provenance" do
+    Celerite::PlanCache.gem_sources_only?(["GEM"], ["GEM"]).should be_true
+    Celerite::PlanCache.gem_sources_only?(["GEM"], ["Rubygems", "Metadata"]).should be_true
+    Celerite::PlanCache.gem_sources_only?(["Rubygems"], ["Rubygems"]).should be_true
+    ["PATH", "GIT", "PLUGIN", "Plugin", "METADATA", "Unknown", ""].each do |type|
+      Celerite::PlanCache.gem_sources_only?([type], ["GEM"]).should be_false
+      Celerite::PlanCache.gem_sources_only?(["GEM"], [type]).should be_false
+    end
+  end
+
   it "starts no Ruby with empty PATH" do
     in_cache do |root|
       saved = ENV["PATH"]?; saved_stats = ENV["CELERITE_BRIDGE_STATS"]?; ENV["PATH"] = File.join(root, "empty"); Dir.mkdir_p(ENV["PATH"]); ENV["CELERITE_BRIDGE_STATS"] = "1"

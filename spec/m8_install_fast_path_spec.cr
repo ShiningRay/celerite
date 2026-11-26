@@ -17,7 +17,7 @@ private IFP_SWITCHES = %w[
   CELERITE_REFERENCE_BUNDLER_LIB CELERITE_VERBOSE
   CELERITE_PLAN_CACHE CELERITE_PLAN_CACHE_DEBUG
 ]
-private IFP_ISOLATED = %w[HOME USERPROFILE BUNDLE_PATH BUNDLE_WITHOUT BUNDLE_APP_CONFIG BUNDLE_USER_HOME BUNDLE_USER_PLUGIN TMPDIR TMP TEMP]
+private IFP_ISOLATED = %w[HOME USERPROFILE GEM_HOME GEM_PATH BUNDLE_PATH BUNDLE_WITHOUT BUNDLE_APP_CONFIG BUNDLE_USER_HOME BUNDLE_USER_PLUGIN TMPDIR TMP TEMP]
 
 private def ifp_bin : String
   path = ENV["CELERITE_TEST_BINARY"]? || File.expand_path("../bin/celerite.exe", __DIR__)
@@ -139,6 +139,60 @@ private def ifp_ready(project : String, profile : String = "4.0.24",
   end
 end
 
+private def ifp_plan_cache_root(project : String) : String
+  File.join(File.dirname(project), "#{File.basename(project)}-plan-cache")
+end
+
+private def ifp_plan_entries(project : String, root : String = ifp_plan_cache_root(project)) : Array(String)
+  layout = File.join(root, "plan", "v1")
+  Celerite::Glob.paths(layout, "*").flat_map do |namespace|
+    Celerite::Glob.paths(namespace, "*.json")
+  end
+end
+
+private def ifp_wait_for_plan_entry(project : String, root : String = ifp_plan_cache_root(project)) : String
+  200.times do
+    if entry = ifp_plan_entries(project, root).first?
+      return entry
+    end
+    sleep 10.milliseconds
+  end
+  fail "locked-plan cache entry was not published for #{project}"
+end
+
+private def ifp_ready_remote(project : String, profile : String = "4.0.24",
+                             overrides : Hash(String, String) = {} of String => String) : Nil
+  ifp_ready(project, profile, overrides)
+  remote = "https://example.invalid/"
+  File.write(File.join(project, "Gemfile"), %(source "#{remote}"\n\neval_gemfile "extra.rb"\n))
+  lockfile = File.join(project, "Gemfile.lock")
+  File.write(lockfile, File.read(lockfile).gsub(IFP_INDEX, remote))
+  cache = File.join(project, "vendor", "cache")
+  Dir.mkdir_p(cache)
+  Celerite::Glob.paths(File.expand_path("../fixtures/gem-index/gems", __DIR__), "*.gem").each do |gem|
+    FileUtils.cp(gem, File.join(cache, File.basename(gem)))
+  end
+  FileUtils.rm_rf(File.join(project, ".celerite"))
+  env = ifp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG")
+  env["CELERITE_PLAN_CACHE"] = "0"
+  env["CELERITE_CACHE_DIR"] = ifp_plan_cache_root(project)
+  env.merge!(ifp_profile_env(profile))
+  env.merge!(overrides)
+  ifp_with_env(project, env) do
+    status, output, errors = ifp_run(project, ["install", "--local"])
+    fail "remote cold install failed (#{status}): #{output} #{errors}" unless status == 0
+    ifp_stats(errors)[0].should be >= 1
+    # trusted_attempt itself requires a persistent EvalCache entry. The cold
+    # --local install creates it; a no-op install makes the fixture genuinely
+    # warm before any P3 hit/miss assertion.
+    status, output, errors = ifp_run(project, ["install"])
+    fail "remote warm install failed (#{status}): #{output} #{errors}" unless status == 0
+    status, output, errors = ifp_run(project, ["install"])
+    fail "remote trusted warm install failed (#{status}): #{output} #{errors}" unless status == 0
+    errors.should_not contain("fast-path: install miss (entry)")
+  end
+end
+
 private def ifp_matrix_parity(project : String, args : Array(String) = ["install"]) : Nil
   archive = File.join(Dir.tempdir, "celerite-m8-install-matrix-#{Process.pid}-#{Random.rand(1_000_000)}")
   m8_matrix_snapshot(project, archive)
@@ -174,6 +228,7 @@ end
 private def ifp_hot(project : String, args = ["install"], overrides = {} of String => String,
                     profile : String = "4.0.24") : {Int32, String, String, Tuple(Int32, Int32, Int32, Int32)}
   env = ifp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG")
+  env["CELERITE_PLAN_CACHE_DEBUG"] = "1" if overrides["CELERITE_PLAN_CACHE"]? == "1"
   env.merge!(ifp_profile_env(profile))
   env.merge!(overrides)
   result = {0, "", "", {0, 0, 0, 0}}
@@ -811,16 +866,19 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
 
   it "rehydrates a trusted locked plan after an install no-op miss" do
     with_project({} of String => String) do |project|
-      ifp_ready(project)
+      ifp_ready_remote(project)
       full_name = ifp_full_name(project)
-      env = {"CELERITE_PLAN_CACHE" => "1", "CELERITE_PLAN_CACHE_DEBUG" => "1"}
+      env = {"CELERITE_PLAN_CACHE" => "1",
+             "CELERITE_CACHE_DIR"  => ifp_plan_cache_root(project)}
       FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
       status, output, errors, stats = ifp_hot(project, ["install"], env)
       status.should eq(0)
       stats[0].should eq(1)
       errors.should contain("[plan-cache] status=miss")
+      errors.should contain("[plan-cache] operation=write status=written")
       output.should contain("Bundle complete!")
 
+      ifp_wait_for_plan_entry(project)
       FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
       status, hit_output, hit_errors, hit_stats = ifp_hot(project, ["install"], env)
       status.should eq(0)
@@ -832,12 +890,17 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
 
   it "keeps corrupt, mistyped, escaping and credential-bearing plan payloads on the compatible path" do
     with_project({} of String => String) do |project|
-      ifp_ready(project)
+      ifp_ready_remote(project)
       full_name = ifp_full_name(project)
-      env = {"CELERITE_PLAN_CACHE" => "1", "CELERITE_PLAN_CACHE_DEBUG" => "1"}
+      env = {"CELERITE_PLAN_CACHE" => "1",
+             "CELERITE_CACHE_DIR"  => ifp_plan_cache_root(project)}
       FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
-      ifp_hot(project, ["install"], env)
-      entry = Dir.glob(File.join(project, ".celerite", "cache", "plan", "*", "*.json").tr("\\", "/")).first
+      miss_status, _miss_output, miss_errors, _miss_stats = ifp_hot(project, ["install"], env)
+      miss_status.should eq(0)
+      miss_errors.should contain("[plan-cache] status=miss")
+      ifp_wait_for_plan_entry(project)
+      miss_errors.should contain("[plan-cache] operation=write status=written")
+      entry = ifp_wait_for_plan_entry(project)
       original = File.read(entry)
       ["not json", "[]", %({"schema":"celerite-locked-plan/1","plan":{"specs":"../escape"}})].each do |broken|
         File.write(entry, broken)
@@ -851,10 +914,110 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
     end
   end
 
+  it "uses zero Bundler cache RPCs for the optimized default layout without double-counting a warm EvalCache" do
+    with_project({} of String => String) do |project|
+      ifp_ready_remote(project)
+      # Bundler 4.0.24 can self-checksum from metadata_source without a
+      # explicit `bundler` spec row; this fixture proves the local optimized
+      # candidate does not depend on that row.
+      Celerite::Definition.build.lockfile!.specs.map(&.name).should_not contain("bundler")
+      full_name = ifp_full_name(project)
+      eval_env = {"CELERITE_CACHE_DIR" => ifp_plan_cache_root(project)}
+      plan_env = eval_env.merge({"CELERITE_PLAN_CACHE" => "1"})
+
+      FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
+      miss_status, _miss_output, miss_errors, _miss_stats = ifp_hot(project, ["install"], plan_env)
+      miss_status.should eq(0)
+      miss_errors.should contain("[plan-cache] status=miss")
+      ifp_wait_for_plan_entry(project)
+
+      FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
+      warm_status, _warm_output, warm_errors, _warm_stats = ifp_hot(project, ["install"], plan_env)
+      warm_status.should eq(0)
+      warm_errors.should contain("[plan-cache] status=hit reason=ok")
+
+      # The persistent EvalCache is warm in all three runs, so evaluate_batch is
+      # already zero-RPC. The only honest default-layout delta is the eliminated
+      # authoritative bundler_cache_file request; do not claim it twice.
+      FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
+      base_status, _base_output, _base_errors, base_stats = ifp_hot(project, ["install"], eval_env.merge({"CELERITE_PLAN_CACHE" => "0"}))
+      base_status.should eq(0)
+      FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
+      hit_status, _hit_output, hit_errors, hit_stats = ifp_hot(project, ["install"], plan_env)
+      hit_status.should eq(0)
+      hit_errors.should contain("[plan-cache] status=hit reason=ok")
+      base_stats[0].should eq(1)
+      hit_stats[0].should eq(1)
+      (base_stats[1] - hit_stats[1]).should eq(1)
+    end
+  end
+
+  it "keeps exactly the authoritative Bundler cache RPC for a custom layout" do
+    with_project({} of String => String) do |project|
+      custom_home = File.join(project, "custom-gem-home")
+      Dir.mkdir_p(custom_home)
+      layout = {"GEM_HOME" => custom_home, "GEM_PATH" => custom_home}
+      ifp_ready_remote(project, "4.0.24", layout)
+      full_name = ifp_full_name(project)
+      eval_env = {"CELERITE_CACHE_DIR" => ifp_plan_cache_root(project)}.merge(layout)
+      plan_env = eval_env.merge({"CELERITE_PLAN_CACHE" => "1"})
+
+      FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
+      miss_status, _miss_output, miss_errors, _miss_stats = ifp_hot(project, ["install"], plan_env)
+      miss_status.should eq(0)
+      miss_errors.should contain("[plan-cache] status=miss")
+      ifp_wait_for_plan_entry(project)
+      FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
+      warm_status, _warm_output, warm_errors, _warm_stats = ifp_hot(project, ["install"], plan_env)
+      warm_status.should eq(0)
+      warm_errors.should contain("[plan-cache] status=hit reason=ok")
+
+      FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
+      base_status, _base_output, _base_errors, base_stats = ifp_hot(project, ["install"], eval_env.merge({"CELERITE_PLAN_CACHE" => "0"}))
+      base_status.should eq(0)
+      FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
+      hit_status, _hit_output, hit_errors, hit_stats = ifp_hot(project, ["install"], plan_env)
+      hit_status.should eq(0)
+      hit_errors.should contain("[plan-cache] status=hit reason=ok")
+      base_stats[0].should eq(1)
+      hit_stats[0].should eq(1)
+      hit_stats[1].should eq(base_stats[1])
+    end
+  end
+
+  it "never re-queries a custom Bundler cache candidate whose path is nil" do
+    Celerite::Resolution.bundler_cache_query_needed?(nil).should be_true
+    Celerite::Resolution.bundler_cache_query_needed?(
+      {path: "/custom/bundler-4.0.24.gem", sha256: nil, optimized: false}).should be_false
+    Celerite::Resolution.bundler_cache_query_needed?(
+      {path: nil, sha256: nil, optimized: false}).should be_false
+    Celerite::Resolution.bundler_cache_query_needed?(
+      {path: "/default/bundler-4.0.24.gem", sha256: Digest::SHA256.hexdigest("cache"), optimized: true}).should be_true
+  end
+
+  it "charges evaluate_batch to ordinary construction but not trusted evaluation hydration" do
+    pending!("no Ruby interpreter on PATH for the bridge") unless ruby_available?
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      ifp_with_env(project, ifp_env("CELERITE_BRIDGE_STATS")) do
+        Celerite::Bridge::BridgeStats.begin_run
+        with_client do |client|
+          definition = Celerite::Definition.build
+          evaluation = Celerite::GemfileEvaluator.evaluation(definition.gemfile_path, client)
+          before = Celerite::Bridge::BridgeStats.evaluations
+          _ordinary = Celerite::Resolution.new(definition, false, client)
+          Celerite::Bridge::BridgeStats.evaluations.should eq(before + 1)
+          _hydrated = Celerite::Resolution.from_evaluation(definition, evaluation, client)
+          Celerite::Bridge::BridgeStats.evaluations.should eq(before + 1)
+        end
+      end
+    end
+  end
+
   it "misses for semantic flags and falls back for Bundler 2.7.2" do
     with_project({} of String => String) do |project|
       ifp_ready(project)
-      env = {"CELERITE_PLAN_CACHE" => "1", "CELERITE_PLAN_CACHE_DEBUG" => "1"}
+      env = {"CELERITE_PLAN_CACHE" => "1"}
       status, _output, errors, stats = ifp_hot(project, ["install", "--local"], env)
       status.should eq(0)
       stats[0].should be >= 1
@@ -864,7 +1027,8 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
     with_project({} of String => String) do |project|
       ifp_ready(project, "2.7.2")
       full_name = ifp_full_name(project)
-      env = {"CELERITE_PLAN_CACHE" => "1", "CELERITE_PLAN_CACHE_DEBUG" => "1"}
+      env = {"CELERITE_PLAN_CACHE" => "1",
+             "CELERITE_CACHE_DIR"  => ifp_plan_cache_root(project)}
       FileUtils.rm_rf(ifp_installed_file(project, "gems", full_name))
       status, _output, errors, stats = ifp_hot(project, ["install"], env, "2.7.2")
       status.should eq(0)

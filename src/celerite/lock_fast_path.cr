@@ -121,7 +121,8 @@ module Celerite
     # on and the command's argument shape is already known to be safe. Both
     # `lock` and `install` call this one gate; command-specific checks stay in
     # their own modules so they cannot drift from the shared trust decision.
-    def self.trusted_attempt(definition : Definition) : {Hit?, String?}
+    def self.trusted_attempt(definition : Definition,
+                             require_install_verdict : Bool = true) : {Hit?, String?}
       return {nil, "no-lockfile"} unless definition.lockfile_exists?
       # The Ruby path computes this with `rest.includes?("--local")`; a bare
       # `lock` has no `--local`, so a missing or empty CHECKSUMS entry forces
@@ -169,9 +170,11 @@ module Celerite
       completed = complete_facts(facts.not_nil!, record.not_nil!)
       return {nil, "engine"} if completed.nil?
 
-      verdict = FastPathStore.decision(project_root(definition), entry.not_nil!.digest,
-        completed, record, EvalFingerprint::State::Deterministic)
-      return {nil, "verdict:#{verdict.reason}"} unless verdict.allowed?
+      if require_install_verdict
+        verdict = FastPathStore.decision(project_root(definition), entry.not_nil!.digest,
+          completed, record, EvalFingerprint::State::Deterministic)
+        return {nil, "verdict:#{verdict.reason}"} unless verdict.allowed?
+      end
 
       lock_digest = begin
         Digest::SHA256.hexdigest(File.read(definition.lockfile_path))
