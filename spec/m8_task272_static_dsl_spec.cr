@@ -4,9 +4,10 @@ require "json"
 
 private T272_SERVER = File.expand_path("../assets/bridge/server.rb", __DIR__)
 private T272_INDEX  = file_source_url(File.expand_path("../fixtures/gem-index", __DIR__))
-private T272_TMP    = File.expand_path("../.tmp", __DIR__)
+private T272_TMP    = File.join(Dir.tempdir, "celerite-m8-task272-#{Process.pid}")
 
 private def t272_run_ruby(script : String, server : String, payload : String)
+  Dir.mkdir_p(T272_TMP)
   suffix = Process.pid.to_s
   script_path = File.join(T272_TMP, "task272-static-#{suffix}.rb")
   output_path = File.join(T272_TMP, "task272-static-#{suffix}.out")

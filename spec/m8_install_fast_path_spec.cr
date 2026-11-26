@@ -26,7 +26,10 @@ private def ifp_bin : String
 end
 
 private def ifp_env(*switches : String) : Hash(String, String)
-  env = {"CELERITE_BRIDGE_STATS" => "1"}
+  env = {
+    "CELERITE_BRIDGE_STATS"  => "1",
+    "CELERITE_BRIDGE_SERVER" => File.expand_path("../assets/bridge/server.rb", __DIR__),
+  }
   switches.each { |name| env[name] = "1" }
   env
 end
@@ -136,7 +139,32 @@ private def ifp_ready(project : String, profile : String = "4.0.24",
     status, output, errors = ifp_run(project, ["install"])
     fail "cold install failed (#{status}): #{output} #{errors}" unless status == 0
     ifp_stats(errors)[0].should be >= 1
+    ifp_assert_install_certificate(project)
   end
+end
+
+private def ifp_assert_install_certificate(project : String) : Nil
+  record_path = ifp_record_path(project)
+  fail "cold install did not publish a v2 RuntimeRecord" unless record_path
+  record = JSON.parse(File.read(record_path)).as_h
+  nonce = record["certificate_nonce"].as_s
+  nonce.should match(/\A[0-9a-f]{32}\z/)
+
+  entry_path = ifp_entry_path(project, record["eval_digest"].as_s)
+  fail "cold install did not publish a v2 eval entry" unless entry_path
+  entry = JSON.parse(File.read(entry_path)).as_h
+  certificate = entry["certificates"].as_h[nonce]?.not_nil!
+  certificate["command"].as_s.should eq("install")
+  certificate.as_h.keys.should_not contain("plan_digest")
+  certificate["install"].as_h["plan_digest"].as_s.should match(/\A[0-9a-f]{64}\z/)
+  certificate["plugin"].as_h["certificate_nonce"].as_s.should eq(nonce)
+
+  plugin_path = ifp_plugin_path(project, entry["digest"].as_s)
+  fail "cold install did not publish a v2 plugin certificate" unless plugin_path
+  plugin = JSON.parse(File.read(plugin_path)).as_h
+  plugin["format"].as_s.should eq("celerite-plugin-gemfile-cache/2")
+  plugin["digest"].as_s.should eq(entry["digest"].as_s)
+  plugin["certificate_nonce"].as_s.should eq(nonce)
 end
 
 private def ifp_plan_cache_root(project : String) : String
@@ -260,10 +288,9 @@ private def ifp_full_name(project : String) : String
   "json_pure-#{version}"
 end
 
-private def ifp_cache_entries(project : String) : Array(String)
-  base = File.join(project, ".celerite", "cache", "eval")
-  Celerite::Glob.paths(base, "*").flat_map do |namespace|
-    Celerite::Glob.paths(File.join(namespace, "v1"), "*").compact_map do |digest|
+private def ifp_cache_entries(project : String, root : String = File.join(project, ".celerite", "cache", "eval")) : Array(String)
+  Celerite::Glob.paths(root, "*").flat_map do |namespace|
+    Celerite::Glob.paths(File.join(namespace, "v2"), "*").compact_map do |digest|
       path = File.join(digest, "entry.json")
       path if File.file?(path)
     end
@@ -271,8 +298,124 @@ private def ifp_cache_entries(project : String) : Array(String)
 end
 
 private def ifp_plugin_certificates(project : String) : Array(String)
-  base = File.join(project, ".celerite", "cache", "plugin-gemfile", "v1")
+  base = File.join(project, ".celerite", "cache", "plugin-gemfile", "v2")
   Celerite::Glob.paths(base, "*").map { |digest| File.join(digest, "certificate.json") }
+end
+
+private def ifp_entry_path(project : String, digest : String? = nil) : String
+  digest ||= JSON.parse(File.read(ifp_record_path(project)))["eval_digest"].as_s
+  path = ifp_cache_entries(project).find { |entry| File.basename(File.dirname(entry)) == digest }
+  fail "missing v2 eval entry #{digest} for #{project}" unless path
+  path.not_nil!
+end
+
+private def ifp_plugin_path(project : String, digest : String? = nil) : String
+  digest ||= JSON.parse(File.read(ifp_record_path(project)))["eval_digest"].as_s
+  path = ifp_plugin_certificates(project).find { |entry| File.basename(File.dirname(entry)) == digest }
+  fail "missing v2 plugin certificate #{digest} for #{project}" unless path
+  path.not_nil!
+end
+
+private def ifp_plugin_trusted?(project : String, digest : String, nonce : String) : Bool
+  env = ifp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH")
+    .merge(ifp_profile_env("4.0.24"))
+  trusted = false
+  ifp_with_env(project, env) do
+    trusted = Celerite::PluginGemfileCache.trusted?(digest, nonce)
+  end
+  trusted
+end
+
+private def ifp_record_path(project : String, root : String = File.join(project, ".celerite", "cache")) : String
+  layout = File.join(root, "fast-path", "v2")
+  Celerite::Glob.paths(layout, "*").flat_map do |namespace|
+    Celerite::Glob.paths(namespace, "*.json")
+  end.first? || fail("missing v2 RuntimeRecord for #{project}")
+end
+
+private def ifp_record_nonce(project : String, root : String = File.join(project, ".celerite", "cache")) : String
+  JSON.parse(File.read(ifp_record_path(project, root)))["certificate_nonce"].as_s
+end
+
+private def ifp_trusted_install_result(project : String) : {Celerite::LockFastPath::Hit?, String?}
+  env = ifp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH")
+    .merge(ifp_profile_env("4.0.24"))
+  hit : Celerite::LockFastPath::Hit? = nil
+  reason : String? = nil
+  ifp_with_env(project, env) do
+    hit, reason = Celerite::LockFastPath.trusted_attempt(Celerite::Definition.build, "install")
+  end
+  {hit, reason}
+end
+
+private def ifp_trusted_install(project : String) : Celerite::LockFastPath::Hit?
+  hit, _reason = ifp_trusted_install_result(project)
+  hit
+end
+
+private def ifp_assert_trusted_install(project : String, nonce : String) : Celerite::LockFastPath::Hit
+  hit, reason = ifp_trusted_install_result(project)
+  fail "old nonce #{nonce} is not trusted: #{reason.inspect}" unless hit
+  hit.not_nil!.record.certificate_nonce.should eq(nonce)
+  hit.not_nil!
+end
+
+private def ifp_plan_digest(project : String) : String
+  nonce = ifp_record_nonce(project)
+  entry = JSON.parse(File.read(ifp_entry_path(project)))
+  entry["certificates"].as_h[nonce].as_h["install"].as_h["plan_digest"].as_s
+end
+
+private def ifp_computed_plan_digest(project : String) : String
+  lock = Celerite::Lockfile::Parser.parse(File.read(File.join(project, "Gemfile.lock")))
+  install_root = File.join(project, "bundle", "ruby", ifp_abi)
+  Celerite::InstallFastPath.plan_digest(lock, install_root, ifp_abi).not_nil!
+end
+
+private def ifp_ruby_files(root : String) : Array(String)
+  Celerite::Glob.paths(root, "*").flat_map do |path|
+    if File.symlink?(path)
+      [] of String
+    elsif File.directory?(path)
+      ifp_ruby_files(path)
+    elsif File.file?(path) && path.ends_with?(".rb")
+      [path]
+    else
+      [] of String
+    end
+  end.sort
+end
+
+private def ifp_mutate_installed_content(project : String) : {String, String}
+  full_name = ifp_full_name(project)
+  gem_dir = ifp_installed_file(project, "gems", full_name)
+  path = ifp_ruby_files(gem_dir).first? || fail("missing installed Ruby content")
+  original = File.read(path)
+  File.write(path, original + "\n# task-274 plan digest mutation\n")
+  {path, original}
+end
+
+private def ifp_failing_hook(project : String) : Nil
+  plugin_root = File.join(project, "failing-plugin")
+  Dir.mkdir_p(File.join(plugin_root, "lib"))
+  File.write(File.join(plugin_root, "plugins.rb"), "require \"failing_plugin\"\n")
+  File.write(File.join(plugin_root, "lib", "failing_plugin.rb"),
+    %(Bundler::Plugin.add_hook("after-install") { |_ctx| raise "task-274 hook failure" }\n))
+  index = File.join(project, ".bundle", "plugin", "index")
+  Dir.mkdir_p(File.dirname(index))
+  File.write(index, <<-YAML)
+  ---
+  commands:
+  hooks:
+    after-install:
+    - "failing_plugin"
+  load_paths:
+    failing_plugin:
+    - "#{File.join(plugin_root, "lib").gsub('\\', "/")}"
+  plugin_paths:
+    failing_plugin: "#{plugin_root.gsub('\\', "/")}"
+  sources:
+  YAML
 end
 
 private def ifp_rename_indexed_spec(project : String, full_name : String,
@@ -281,18 +424,6 @@ private def ifp_rename_indexed_spec(project : String, full_name : String,
     ifp_installed_file(project, "specifications", "#{renamed}.gemspec"))
   File.rename(ifp_installed_file(project, "gems", full_name),
     ifp_installed_file(project, "gems", renamed))
-  lock_path = File.join(project, "Gemfile.lock")
-  lock = File.read(lock_path)
-    .gsub("  json_pure\n", "  #{renamed_name}\n")
-    .gsub("  json_pure (", "  #{renamed_name} (")
-  File.write(lock_path, lock)
-  ifp_cache_entries(project).each do |path|
-    json = JSON.parse(File.read(path))
-    json["evaluation"].as_h["dependencies"].as_a.each do |dep|
-      dep.as_h["name"] = JSON::Any.new(renamed_name) if dep["name"].as_s? == "json_pure"
-    end
-    File.write(path, json.to_json)
-  end
 end
 
 private def ifp_mark_native_complete(project : String, full_name : String) : Nil
@@ -373,6 +504,292 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
       stats.should eq({0, 0, 0, 0})
       ifp_lines(errors, IFP_HIT).size.should eq(1)
       output.should contain("Bundle complete! 1 Gemfile dependency, 1 gem now installed.")
+    end
+  end
+
+  it "rotates the install and plugin nonce on a hot hit while retaining the old eval certificate" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      old_nonce = ifp_record_nonce(project)
+      entry_path = ifp_entry_path(project)
+      status, _output, errors, stats = ifp_hot(project)
+      status.should eq(0)
+      stats.should eq({0, 0, 0, 0})
+      new_nonce = ifp_record_nonce(project)
+      new_nonce.should_not eq(old_nonce)
+
+      entry = JSON.parse(File.read(entry_path))
+      entry["certificates"].as_h.keys.should contain(old_nonce)
+      entry["certificates"].as_h.keys.should contain(new_nonce)
+      plugin = JSON.parse(File.read(ifp_plugin_certificates(project).first))
+      plugin["certificate_nonce"].as_s.should eq(new_nonce)
+    end
+  end
+
+  it "misses when only RuntimeRecord is deleted even if both certificates remain" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      entry_path = ifp_entry_path(project)
+      plugin_path = ifp_plugin_path(project)
+      File.delete(ifp_record_path(project))
+      File.file?(entry_path).should be_true
+      File.file?(plugin_path).should be_true
+      ifp_trusted_install(project).should be_nil
+
+      status, _output, errors, stats = ifp_hot(project)
+      status.should eq(0)
+      stats[0].should be >= 1
+      ifp_lines(errors, IFP_HIT).should be_empty
+      ifp_lines(errors, IFP_MISS).should contain("record")
+    end
+  end
+
+  it "does not accept a lock command certificate for install" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      nonce = ifp_record_nonce(project)
+      entry_path = ifp_entry_path(project)
+      payload = JSON.parse(File.read(entry_path)).as_h
+      certificate = payload["certificates"].as_h[nonce].as_h
+      certificate["command"] = JSON::Any.new("lock")
+      certificate.delete("plugin")
+      certificate.delete("install")
+      payload["certificates"].as_h[nonce] = JSON::Any.new(certificate)
+      File.write(entry_path, payload.to_json)
+
+      status, _output, errors, stats = ifp_hot(project)
+      status.should eq(0)
+      stats[0].should be >= 1
+      ifp_lines(errors, IFP_HIT).should be_empty
+      ifp_lines(errors, IFP_MISS).should contain("verdict:certificate-command")
+    end
+  end
+
+  it "revalidates the installed tree under ProcessLock before emitting a hot hit" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      mutated_path : String? = nil
+      original : String? = nil
+      env = ifp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG")
+        .merge(ifp_profile_env("4.0.24"))
+      begin
+        Celerite::InstallFastPath.after_attempt =
+          ->(_definition : Celerite::Definition, _config : Celerite::Config) do
+            path, bytes = ifp_mutate_installed_content(project)
+            mutated_path = path
+            original = bytes
+            nil
+          end
+        code, output, errors = ifp_with_env(project, env) do
+          Dir.cd(project) { run_cli(["install"]) }
+        end
+        fail "stale compatibility fallback failed: #{output}\n#{errors}" unless code == 0
+        code.should eq(0)
+        ifp_stats(errors)[0].should be >= 1
+        ifp_lines(errors, IFP_HIT).should be_empty
+        ifp_lines(errors, IFP_MISS).should contain("stale")
+        output.scan("Bundle complete!").size.should eq(1)
+      ensure
+        Celerite::InstallFastPath.after_attempt = nil
+        if path = mutated_path
+          File.write(path, original.not_nil!)
+        end
+      end
+    end
+  end
+
+  it "revalidates raw lock identity under ProcessLock and discards the stale trusted result" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      lock_path = File.join(project, "Gemfile.lock")
+      original = File.read(lock_path)
+      env = ifp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG")
+        .merge(ifp_profile_env("4.0.24"))
+      begin
+        Celerite::InstallFastPath.after_attempt =
+          ->(_definition : Celerite::Definition, _config : Celerite::Config) do
+            File.write(lock_path, original + "\n# task-274 attempt-to-lock mutation\n")
+            nil
+          end
+        code, output, errors = ifp_with_env(project, env) do
+          Dir.cd(project) { run_cli(["install"]) }
+        end
+        fail "stale compatibility fallback failed: #{output}\n#{errors}" unless code == 0
+        code.should eq(0)
+        ifp_stats(errors)[0].should be >= 1
+        ifp_lines(errors, IFP_HIT).should be_empty
+        ifp_lines(errors, IFP_MISS).should contain("stale")
+        output.scan("Bundle complete!").size.should eq(1)
+      ensure
+        Celerite::InstallFastPath.after_attempt = nil
+        File.write(lock_path, original)
+      end
+    end
+  end
+
+  it "hashes installed plan content deterministically and ignores cache, vendor/cache and unrelated platforms" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      old_digest = ifp_computed_plan_digest(project)
+      ifp_plan_digest(project).should eq(old_digest)
+      FileUtils.mkdir_p(File.join(project, ".celerite", "cache", "noise"))
+      File.write(File.join(project, ".celerite", "cache", "noise", "payload"), "ignored")
+      FileUtils.mkdir_p(File.join(project, "vendor", "cache"))
+      File.write(File.join(project, "vendor", "cache", "payload"), "ignored")
+      extra = "#{ifp_full_name(project)}-x86_64-unknown"
+      File.write(ifp_installed_file(project, "specifications", "#{extra}.gemspec"), "ignored")
+      FileUtils.mkdir_p(ifp_installed_file(project, "gems", extra))
+      ifp_computed_plan_digest(project).should eq(old_digest)
+      FileUtils.rm_rf(File.join(project, ".celerite", "cache", "noise"))
+      FileUtils.rm_rf(File.join(project, "vendor", "cache"))
+
+      path, original = ifp_mutate_installed_content(project)
+      begin
+        ifp_computed_plan_digest(project).should_not eq(old_digest)
+        status, _output, errors, stats = ifp_hot(project)
+        status.should eq(0)
+        stats[0].should be >= 1
+        ifp_lines(errors, IFP_HIT).should be_empty
+        ifp_lines(errors, IFP_MISS).should contain("plan-digest")
+        ifp_plan_digest(project).should_not eq(old_digest)
+
+        status, _output, errors, stats = ifp_hot(project)
+        status.should eq(0)
+        stats.should eq({0, 0, 0, 0})
+        ifp_lines(errors, IFP_HIT).size.should eq(1)
+      ensure
+        File.write(path, original)
+      end
+    end
+  end
+
+  it "preserves the old nonce and all commit markers when an after-install hook fails" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      old_nonce = ifp_record_nonce(project)
+      record_path = ifp_record_path(project)
+      record_before = File.read(record_path)
+      plugin_path = ifp_plugin_path(project)
+      plugin_before = File.read(plugin_path)
+      ifp_failing_hook(project)
+
+      status, _output, _errors, stats = ifp_hot(project)
+      status.should_not eq(0)
+      stats[0].should be >= 1
+      ifp_record_nonce(project).should eq(old_nonce)
+      File.read(record_path).should eq(record_before)
+      File.read(plugin_path).should eq(plugin_before)
+    end
+  end
+
+  it "rolls back the replaced plugin certificate when the final RuntimeRecord write fails" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      old_nonce = ifp_record_nonce(project)
+      record_path = ifp_record_path(project)
+      record_before = File.read(record_path)
+      lock_path = File.join(project, "Gemfile.lock")
+      lock_before = File.read(lock_path)
+      entry_path = ifp_entry_path(project)
+      entry_before = File.read(entry_path)
+      plugin_path = ifp_plugin_path(project)
+      plugin_before = File.read(plugin_path)
+      path, original = ifp_mutate_installed_content(project)
+      File.delete(record_path)
+      Dir.mkdir_p(record_path)
+      begin
+        status, _output, errors, stats = ifp_hot(project)
+        status.should eq(0)
+        stats[0].should be >= 1
+        ifp_lines(errors, IFP_HIT).should be_empty
+        File.read(entry_path).should eq(entry_before)
+        File.read(plugin_path).should eq(plugin_before)
+        Dir.exists?(record_path).should be_true
+        ifp_trusted_install(project).should be_nil
+      ensure
+        FileUtils.rm_rf(record_path)
+        File.write(record_path, record_before)
+        File.write(lock_path, lock_before)
+        File.write(path, original)
+      end
+
+      trusted = ifp_assert_trusted_install(project, old_nonce)
+      trusted.record.certificate_nonce.should eq(old_nonce)
+      ifp_plugin_trusted?(project, trusted.digest, old_nonce).should be_true
+    end
+  end
+
+  it "keeps the old RuntimeRecord and restores old-nonce usability when the plugin certificate write fails" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      old_nonce = ifp_record_nonce(project)
+      record_path = ifp_record_path(project)
+      record_before = File.read(record_path)
+      lock_path = File.join(project, "Gemfile.lock")
+      lock_before = File.read(lock_path)
+      entry_path = ifp_entry_path(project)
+      entry_before = File.read(entry_path)
+      plugin_path = ifp_plugin_path(project)
+      plugin_before = File.read(plugin_path)
+      path, original = ifp_mutate_installed_content(project)
+      File.delete(plugin_path)
+      Dir.mkdir_p(plugin_path)
+      begin
+        status, _output, errors, stats = ifp_hot(project)
+        status.should eq(0)
+        stats[0].should be >= 1
+        ifp_lines(errors, IFP_HIT).should be_empty
+        File.read(entry_path).should eq(entry_before)
+        ifp_record_nonce(project).should eq(old_nonce)
+        File.read(record_path).should eq(record_before)
+        trusted = ifp_trusted_install(project)
+        trusted.should_not be_nil
+        trusted.not_nil!.record.certificate_nonce.should eq(old_nonce)
+        ifp_plugin_trusted?(project, trusted.not_nil!.digest, old_nonce).should be_false
+      ensure
+        FileUtils.rm_rf(plugin_path)
+        File.write(plugin_path, plugin_before)
+        File.write(lock_path, lock_before)
+        File.write(path, original)
+      end
+
+      trusted = ifp_assert_trusted_install(project, old_nonce)
+      trusted.record.certificate_nonce.should eq(old_nonce)
+      ifp_plugin_trusted?(project, trusted.digest, old_nonce).should be_true
+    end
+  end
+
+  it "never false-hits from the old record while the eval entry cannot be written" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      old_nonce = ifp_record_nonce(project)
+      record_path = ifp_record_path(project)
+      record_before = File.read(record_path)
+      lock_path = File.join(project, "Gemfile.lock")
+      lock_before = File.read(lock_path)
+      entry_path = ifp_entry_path(project)
+      entry_before = File.read(entry_path)
+      plugin_path = ifp_plugin_path(project)
+      plugin_before = File.read(plugin_path)
+      File.delete(entry_path)
+      Dir.mkdir_p(entry_path)
+      begin
+        status, _output, errors, stats = ifp_hot(project)
+        status.should eq(0)
+        stats[0].should be >= 1
+        ifp_lines(errors, IFP_HIT).should be_empty
+        ifp_record_nonce(project).should eq(old_nonce)
+        File.read(record_path).should eq(record_before)
+        File.read(plugin_path).should eq(plugin_before)
+        ifp_trusted_install(project).should be_nil
+      ensure
+        FileUtils.rm_rf(entry_path)
+        File.write(entry_path, entry_before)
+        File.write(lock_path, lock_before)
+      end
+
+      trusted = ifp_assert_trusted_install(project, old_nonce)
+      trusted.record.certificate_nonce.should eq(old_nonce)
     end
   end
 
@@ -497,14 +914,20 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
       _status, _output, errors, stats = ifp_hot(project)
       stats[0].should be >= 1
       ifp_lines(errors, IFP_HIT).should be_empty
-      ifp_lines(errors, IFP_MISS).should contain("install-index:#{renamed}")
+      ifp_lines(errors, IFP_MISS).should contain("install-index:#{full_name}")
     end
   end
 
-  it "still hits when a native extension marker is complete and indexed" do
+  it "invalidates native marker content and re-mints only after a compatible install" do
     with_project({} of String => String) do |project|
       ifp_ready(project)
       ifp_mark_native_complete(project, ifp_full_name(project))
+      status, _output, errors, stats = ifp_hot(project)
+      status.should eq(0)
+      stats[0].should be >= 1
+      ifp_lines(errors, IFP_HIT).should be_empty
+      ifp_lines(errors, IFP_MISS).should contain("plan-digest")
+
       status, _output, errors, stats = ifp_hot(project)
       status.should eq(0)
       stats.should eq({0, 0, 0, 0})
@@ -555,13 +978,16 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
     end
   end
 
-  it "still hits with empty local and global plugin trees" do
+  it "still hits with zero-byte local and global plugin indexes" do
     with_project({} of String => String) do |project|
-      FileUtils.mkdir_p(File.join(project, ".bundle", "plugin"))
+      local_root = File.join(project, ".bundle", "plugin")
       global_root = File.join(project, "global-plugin")
-      FileUtils.mkdir_p(global_root)
       override = {"BUNDLE_USER_PLUGIN" => global_root}
       ifp_ready(project, "4.0.24", override)
+      FileUtils.mkdir_p(local_root)
+      FileUtils.mkdir_p(global_root)
+      File.write(File.join(local_root, "index"), "")
+      File.write(File.join(global_root, "index"), "")
       status, _output, errors, stats = ifp_hot(project, ["install"], override)
       status.should eq(0)
       stats.should eq({0, 0, 0, 0})
@@ -574,9 +1000,10 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
       ifp_ready(project)
       certificate = ifp_plugin_certificates(project).first
       payload = JSON.parse(File.read(certificate))
-      payload["format"].as_s.should eq("celerite-plugin-gemfile-cache/1")
+      payload["format"].as_s.should eq("celerite-plugin-gemfile-cache/2")
       payload["plugin_names"].as_a.should be_empty
-      payload.as_h.keys.sort.should eq(["digest", "format", "plugin_names"])
+      payload["certificate_nonce"].as_s.should match(/\A[0-9a-f]{32}\z/)
+      payload.as_h.keys.sort.should eq(["certificate_nonce", "digest", "format", "plugin_names"])
 
       File.delete(certificate)
       _status, _output, errors, stats = ifp_hot(project)
@@ -587,6 +1014,21 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
       certificate = ifp_plugin_certificates(project).first
       File.write(certificate, "{not-json")
       _status, _output, errors, stats = ifp_hot(project)
+      stats[0].should be >= 1
+      ifp_lines(errors, IFP_HIT).should be_empty
+      ifp_lines(errors, IFP_MISS).should contain("hooks")
+    end
+  end
+
+  it "falls back when the plugin certificate nonce does not match the RuntimeRecord" do
+    with_project({} of String => String) do |project|
+      ifp_ready(project)
+      certificate = ifp_plugin_certificates(project).first
+      payload = JSON.parse(File.read(certificate)).as_h
+      payload["certificate_nonce"] = JSON::Any.new("f" * 32)
+      File.write(certificate, payload.to_json)
+      status, _output, errors, stats = ifp_hot(project)
+      status.should eq(0)
       stats[0].should be >= 1
       ifp_lines(errors, IFP_HIT).should be_empty
       ifp_lines(errors, IFP_MISS).should contain("hooks")
@@ -708,27 +1150,33 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
   it "conservatively falls back for output-affecting Bundler settings" do
     with_project({} of String => String) do |project|
       ifp_ready(project)
-      lock_before_settings = File.read(File.join(project, "Gemfile.lock"))
-      variants = [
-        {"BUNDLE_FROZEN", "frozen"},
-        {"BUNDLE_DEPLOYMENT", "frozen"},
-        {"BUNDLE_DISABLE_SHARED_GEMS", "shared-gems"},
-        {"BUNDLE_FORCE_RUBY_PLATFORM", "force-ruby-platform"},
-      ]
-      variants.each do |(key, reason)|
-        File.write(File.join(project, ".bundle", "config"), %(BUNDLE_PLUGINS: "false"\n#{key}: "true"\n))
+      warm = File.join(Dir.tempdir, "celerite-m8-install-settings-#{Process.pid}-#{Random.rand(1_000_000)}")
+      m8_matrix_snapshot(project, warm)
+      begin
+        variants = [
+          {"BUNDLE_FROZEN", "frozen"},
+          {"BUNDLE_DEPLOYMENT", "frozen"},
+          {"BUNDLE_DISABLE_SHARED_GEMS", "shared-gems"},
+          {"BUNDLE_FORCE_RUBY_PLATFORM", "force-ruby-platform"},
+        ]
+        variants.each do |(key, reason)|
+          m8_matrix_restore(project, warm)
+          File.write(File.join(project, ".bundle", "config"), %(BUNDLE_PLUGINS: "false"\n#{key}: "true"\n))
+          _status, _output, errors, stats = ifp_hot(project)
+          stats[0].should be >= 1
+          ifp_lines(errors, IFP_HIT).should be_empty
+          ifp_lines(errors, IFP_MISS).should contain(reason)
+        end
+        m8_matrix_restore(project, warm)
+        Dir.mkdir_p(File.join(project, "custom-cache"))
+        File.write(File.join(project, ".bundle", "config"), %(BUNDLE_PLUGINS: "false"\nBUNDLE_CACHE_PATH: "custom-cache"\n))
         _status, _output, errors, stats = ifp_hot(project)
         stats[0].should be >= 1
         ifp_lines(errors, IFP_HIT).should be_empty
-        ifp_lines(errors, IFP_MISS).should contain(reason)
+        ifp_lines(errors, IFP_MISS).should contain("app-cache")
+      ensure
+        FileUtils.rm_rf(warm)
       end
-      File.write(File.join(project, "Gemfile.lock"), lock_before_settings)
-      Dir.mkdir_p(File.join(project, "custom-cache"))
-      File.write(File.join(project, ".bundle", "config"), %(BUNDLE_PLUGINS: "false"\nBUNDLE_CACHE_PATH: "custom-cache"\n))
-      _status, _output, errors, stats = ifp_hot(project)
-      stats[0].should be >= 1
-      ifp_lines(errors, IFP_HIT).should be_empty
-      ifp_lines(errors, IFP_MISS).should contain("app-cache")
     end
   end
 
@@ -797,7 +1245,7 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
       ifp_matrix_parity(project)
 
       File.write(entry, original_entry)
-      record_path = Dir.glob(File.join(project, ".celerite", "cache", "fast-path", "v1", "*", "*.json").tr("\\", "/")).first
+      record_path = ifp_record_path(project)
       original_record = File.read(record_path)
       record = JSON.parse(original_record).as_h
       record["engine"] = JSON::Any.new("jruby")
@@ -892,9 +1340,9 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
     with_project({} of String => String) do |project|
       ifp_ready_remote(project)
       root = ifp_plan_cache_root(project)
-      record_path = Dir.glob(File.join(root, "fast-path", "v1", "*", "*.json").tr("\\", "/")).first
+      record_path = ifp_record_path(project, root)
       original_record = File.read(record_path)
-      entry_path = Dir.glob(File.join(root, "*", "v1", "*", "entry.json").tr("\\", "/")).first
+      entry_path = ifp_cache_entries(project, root).first
       original_entry = File.read(entry_path)
       full_name = ifp_full_name(project)
       env = {"CELERITE_PLAN_CACHE" => "1", "CELERITE_CACHE_DIR" => root}
@@ -916,6 +1364,7 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
           fingerprint["text"] = JSON::Any.new(text)
           fingerprint["digest"] = JSON::Any.new(digest)
           payload["digest"] = JSON::Any.new(digest)
+          record["eval_digest"] = JSON::Any.new(digest)
           old_dir = File.dirname(entry_path)
           new_dir = File.join(File.dirname(old_dir), digest)
           File.rename(old_dir, new_dir)

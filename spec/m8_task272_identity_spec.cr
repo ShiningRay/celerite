@@ -35,9 +35,9 @@ private def t272_with(& : String ->) : Nil
   end
 end
 
-private def t272_ruby(project : String, bytes : String = "ruby-bytes") : String
-  bin = File.join(project, ".ruby", "bin")
-  rbconfig = File.join(project, ".ruby", "lib", "ruby", "9.9.0", "fake-arch")
+private def t272_ruby(project : String, bytes : String = "ruby-bytes", root : String = ".ruby") : String
+  bin = File.join(project, root, "bin")
+  rbconfig = File.join(project, root, "lib", "ruby", "9.9.0", "fake-arch")
   Dir.mkdir_p(bin)
   Dir.mkdir_p(rbconfig)
   exe = File.join(bin, "ruby.exe")
@@ -120,6 +120,20 @@ describe Celerite::CacheIdentity::RubyIdentity do
       identity.relative_locator.should be_nil
       identity.identity_digest.should be_nil
       Celerite::CacheIdentity::RubyIdentity.detect("").state.should eq("unknown")
+
+      batch = File.join(project, "batch-shims")
+      Dir.mkdir_p(batch)
+      File.write(File.join(batch, "ruby.bat"), "@echo off\r\n")
+      File.write(File.join(batch, "ruby.cmd"), "@echo off\r\n")
+      ENV["PATH"] = batch
+      Celerite::CacheIdentity::RubyIdentity.detect.state.should eq("unknown")
+
+      separator = {% if flag?(:win32) %} ";" {% else %} ":" {% end %}
+      wrong_separator = {% if flag?(:win32) %} ":" {% else %} ";" {% end %}
+      ENV["PATH"] = "#{batch}#{separator}#{File.dirname(exe)}"
+      Celerite::CacheIdentity::RubyIdentity.detect.selection_kind.should eq("path")
+      ENV["PATH"] = "#{batch}#{wrong_separator}#{File.dirname(exe)}"
+      Celerite::CacheIdentity::RubyIdentity.detect.state.should eq("unknown")
     end
   end
 
@@ -134,7 +148,25 @@ describe Celerite::CacheIdentity::RubyIdentity do
       end
       next pending "symlink creation is unavailable in this environment" unless created
       Celerite::CacheIdentity::RubyIdentity.detect(broken).state.should eq("unknown")
-      t272_ruby(project)
+
+      exe = t272_ruby(project)
+      other_exe = t272_ruby(project, "other-ruby-bytes", ".ruby-other")
+      original = Celerite::CacheIdentity::RubyIdentity.detect(exe)
+      other = Celerite::CacheIdentity::RubyIdentity.detect(other_exe)
+      other.known?.should be_true
+      other.identity_digest.should_not eq(original.identity_digest)
+      linked = File.join(project, "linked-ruby.exe")
+      File.symlink(other_exe, linked)
+      Celerite::CacheIdentity::RubyIdentity.detect(linked).identity_digest.should eq(other.identity_digest)
+
+      cycle_a = File.join(project, "cycle-a", "ruby.exe")
+      cycle_b = File.join(project, "cycle-b", "ruby.exe")
+      Dir.mkdir_p(File.dirname(cycle_a))
+      Dir.mkdir_p(File.dirname(cycle_b))
+      File.symlink(cycle_b, cycle_a)
+      File.symlink(cycle_a, cycle_b)
+      Celerite::CacheIdentity::RubyIdentity.detect(cycle_a).state.should eq("unknown")
+
       File.delete(File.join(project, ".ruby", "lib", "ruby", "9.9.0", "fake-arch", "rbconfig.rb"))
       Celerite::CacheIdentity::RubyIdentity.detect(File.join(project, ".ruby", "bin", "ruby.exe")).state.should eq("unknown")
       Dir.mkdir_p(File.join(project, "wrong-bin"))

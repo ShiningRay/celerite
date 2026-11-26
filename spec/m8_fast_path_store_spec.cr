@@ -90,16 +90,29 @@ private def m8_fp_record(project : String, *,
     rubygems_version, bundler_version, abi, ruby_identity, eval_digest, certificate_nonce)
 end
 
-private def m8_fp_bind(_project : String, record : Celerite::FastPathStore::RuntimeRecord) : Nil
-  lock = Celerite::CacheIdentity::LockIdentity.new("Gemfile.lock", "a" * 64, 1_i64,
+private def m8_fp_lock(record : Celerite::FastPathStore::RuntimeRecord) : Celerite::CacheIdentity::LockIdentity
+  Celerite::CacheIdentity::LockIdentity.new("Gemfile.lock", "a" * 64, 1_i64,
     "lf", "parser-1", "bundler-4", "b" * 64, ["x64-mingw-ucrt"])
+end
+
+private def m8_fp_bind(_project : String, record : Celerite::FastPathStore::RuntimeRecord) : Nil
+  lock = m8_fp_lock(record)
   certificate = Celerite::CacheIdentity::SuccessCertificate.new(
-    Celerite::CacheIdentity::CERTIFICATE, "lock", "default",
+    Celerite::CacheIdentity::CERTIFICATE, "lock", Celerite::Profile.bundler_version,
     record.ruby_identity.identity_digest.not_nil!, lock)
   payload = %({"format":"celerite-eval-cache/2","digest":"#{record.eval_digest}","evaluation":{},"certificates":{}})
   raise "failed to seed evaluation" unless Celerite::EvalCacheStore.write(record.eval_digest, payload)
   raise "failed to seed certificate" unless Celerite::EvalCacheStore.put_certificate(
                                               record.eval_digest, record.certificate_nonce, certificate)
+end
+
+private def m8_fp_decision(project : String, digest : String,
+                           facts : Celerite::RuntimeFacts::Facts?,
+                           record : Celerite::FastPathStore::RuntimeRecord?,
+                           state : Celerite::EvalFingerprint::State?) : Celerite::FastPathStore::Verdict
+  lock = record.try { |value| m8_fp_lock(value) }
+  Celerite::FastPathStore.decision(project, digest, facts, record, state,
+    expected_command: "lock", current_lock: lock)
 end
 
 private def m8_fp_field(value : String?) : Celerite::RuntimeFacts::Field
@@ -263,7 +276,7 @@ describe Celerite::FastPathStore do
     m8_fp_with do |project, _cache|
       record = m8_fp_record(project)
       m8_fp_bind(project, record)
-      verdict = Celerite::FastPathStore.decision(
+      verdict = m8_fp_decision(
         project, m8_fp_digest(project), m8_fp_facts, record, m8_fp_deterministic)
       verdict.allowed?.should be_true
       verdict.to_s.should eq("Allowed")
@@ -274,7 +287,7 @@ describe Celerite::FastPathStore do
     m8_fp_with do |project, _cache|
       # The signature case from S8a: Facts cannot supply engine/engine_version.
       facts = m8_fp_facts(engine: nil, engine_version: nil)
-      verdict = Celerite::FastPathStore.decision(
+      verdict = m8_fp_decision(
         project, m8_fp_digest(project), facts, nil, m8_fp_deterministic)
       verdict.requires_ruby?.should be_true
       verdict.reason.should eq("record-missing")
@@ -288,11 +301,11 @@ describe Celerite::FastPathStore do
       m8_fp_bind(project, record)
       digest = m8_fp_digest(project)
 
-      unknown = Celerite::FastPathStore.decision(
+      unknown = m8_fp_decision(
         project, digest, m8_fp_facts, record, Celerite::EvalFingerprint::State::Unknown)
       unknown.reason.should eq("fingerprint-unknown")
 
-      broken = Celerite::FastPathStore.decision(
+      broken = m8_fp_decision(
         project, digest, m8_fp_facts, record, Celerite::EvalFingerprint::State::Broken)
       broken.reason.should eq("fingerprint-broken")
     end
@@ -303,7 +316,7 @@ describe Celerite::FastPathStore do
       record = m8_fp_record(project)
       m8_fp_bind(project, record)
       facts = m8_fp_facts(engine: nil, engine_version: nil)
-      verdict = Celerite::FastPathStore.decision(
+      verdict = m8_fp_decision(
         project, m8_fp_digest(project), facts, record, m8_fp_deterministic)
       verdict.reason.should eq("facts-unknown:engine")
     end
@@ -313,17 +326,17 @@ describe Celerite::FastPathStore do
     m8_fp_with do |project, _cache|
       record = m8_fp_record(project)
       m8_fp_bind(project, record)
-      verdict = Celerite::FastPathStore.decision(
+      verdict = m8_fp_decision(
         project, m8_fp_digest(project), m8_fp_facts(ruby_version: "4.0.5"),
         record, m8_fp_deterministic)
       verdict.reason.should eq("facts-mismatch:ruby_version")
 
-      verdict = Celerite::FastPathStore.decision(
+      verdict = m8_fp_decision(
         project, m8_fp_digest(project), m8_fp_facts(platform: "x86_64-linux"),
         record, m8_fp_deterministic)
       verdict.reason.should eq("facts-mismatch:platform")
 
-      verdict = Celerite::FastPathStore.decision(
+      verdict = m8_fp_decision(
         project, m8_fp_digest(project), m8_fp_facts(abi: "4.0.1"),
         record, m8_fp_deterministic)
       verdict.reason.should eq("facts-mismatch:rbconfig_ruby_version")
@@ -344,15 +357,15 @@ describe Celerite::FastPathStore do
         {m8_fp_facts(abi: "4.0.1"), "facts-mismatch:rbconfig_ruby_version"},
       ]
       variants.each do |(facts, reason)|
-        Celerite::FastPathStore.decision(project, digest, facts, record, m8_fp_deterministic)
+        m8_fp_decision(project, digest, facts, record, m8_fp_deterministic)
           .reason.should eq(reason)
       end
 
       changed = m8_fp_record(project, abi: m8_fp_abi("4.0.1", "4.0.0", "4.0.0"))
-      Celerite::FastPathStore.decision(project, digest, m8_fp_facts, changed, m8_fp_deterministic)
+      m8_fp_decision(project, digest, m8_fp_facts, changed, m8_fp_deterministic)
         .reason.should eq("facts-mismatch:ruby_api_version")
       changed = m8_fp_record(project, abi: m8_fp_abi("4.0.0", "4.0.0-static", "4.0.0"))
-      Celerite::FastPathStore.decision(project, digest, m8_fp_facts, changed, m8_fp_deterministic)
+      m8_fp_decision(project, digest, m8_fp_facts, changed, m8_fp_deterministic)
         .reason.should eq("facts-mismatch:extension_api_version")
     end
   end
@@ -363,7 +376,7 @@ describe Celerite::FastPathStore do
       ["", "not-a-namespace", "0123456789abcdeZ"].each do |namespace|
         record = m8_fp_record(project, namespace: namespace)
         record.complete?.should be_false
-        Celerite::FastPathStore.decision(project, digest, m8_fp_facts, record, m8_fp_deterministic)
+        m8_fp_decision(project, digest, m8_fp_facts, record, m8_fp_deterministic)
           .reason.should eq("record-incomplete")
       end
     end
@@ -375,20 +388,20 @@ describe Celerite::FastPathStore do
       facts = m8_fp_facts
 
       bad_format = m8_fp_record(project, format: "celerite-fast-path/1")
-      Celerite::FastPathStore.decision(project, digest, facts, bad_format, m8_fp_deterministic)
+      m8_fp_decision(project, digest, facts, bad_format, m8_fp_deterministic)
         .reason.should eq("record-format")
 
       incomplete = m8_fp_record(project, engine: "")
-      Celerite::FastPathStore.decision(project, digest, facts, incomplete, m8_fp_deterministic)
+      m8_fp_decision(project, digest, facts, incomplete, m8_fp_deterministic)
         .reason.should eq("record-incomplete")
 
       other_project = m8_fp_record(project,
         project_digest: Celerite::FastPathStore.project_digest("/some/other/project"))
-      Celerite::FastPathStore.decision(project, digest, facts, other_project, m8_fp_deterministic)
+      m8_fp_decision(project, digest, facts, other_project, m8_fp_deterministic)
         .reason.should eq("project-mismatch")
 
       other_namespace = m8_fp_record(project, namespace: "0123456789abcdef")
-      Celerite::FastPathStore.decision(project, digest, facts, other_namespace, m8_fp_deterministic)
+      m8_fp_decision(project, digest, facts, other_namespace, m8_fp_deterministic)
         .reason.should eq("namespace-mismatch")
     end
   end
@@ -399,16 +412,16 @@ describe Celerite::FastPathStore do
       m8_fp_bind(project, record)
       digest = m8_fp_digest(project)
 
-      Celerite::FastPathStore.decision(project, digest, nil, record, m8_fp_deterministic)
+      m8_fp_decision(project, digest, nil, record, m8_fp_deterministic)
         .unknown?.should be_true
-      Celerite::FastPathStore.decision(project, digest, m8_fp_facts, record, nil)
+      m8_fp_decision(project, digest, m8_fp_facts, record, nil)
         .unknown?.should be_true
-      Celerite::FastPathStore.decision(project, digest, m8_fp_facts, record, nil)
+      m8_fp_decision(project, digest, m8_fp_facts, record, nil)
         .allowed?.should be_false
 
-      Celerite::FastPathStore.decision(project, "not-a-digest", m8_fp_facts, record,
+      m8_fp_decision(project, "not-a-digest", m8_fp_facts, record,
         m8_fp_deterministic).reason.should eq("digest-invalid")
-      Celerite::FastPathStore.decision("", digest, m8_fp_facts, record,
+      m8_fp_decision("", digest, m8_fp_facts, record,
         m8_fp_deterministic).reason.should eq("project-invalid")
     end
   end
@@ -467,7 +480,7 @@ describe Celerite::FastPathStore do
 
       # The same record under a different credential context is not trusted.
       ENV["BUNDLE_GEMS__EXAMPLE__COM"] = "bob:other"
-      verdict = Celerite::FastPathStore.decision(
+      verdict = m8_fp_decision(
         project, m8_fp_digest(project), m8_fp_facts, record, m8_fp_deterministic)
       verdict.reason.should eq("namespace-mismatch")
     end
@@ -484,7 +497,7 @@ describe Celerite::FastPathStore do
       Celerite::FastPathStore.store(record).should be_true
       path = Celerite::FastPathStore.default_path(project).not_nil!
       Celerite::FastPathStore.load(path).should_not be_nil
-      Celerite::FastPathStore.decision(
+      m8_fp_decision(
         project, m8_fp_digest(project), m8_fp_facts, record, m8_fp_deterministic)
         .allowed?.should be_true
 

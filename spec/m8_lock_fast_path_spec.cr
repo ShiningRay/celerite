@@ -722,6 +722,24 @@ describe "lock refuses the fast path once the plugin root is populated" do
       procs.should eq(0)
     end
   end
+
+  it "still falls back when lock sees a zero-byte plugin index" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_ready(project)
+      plugin_root = File.join(project, ".bundle", "plugin")
+      Dir.mkdir_p(plugin_root)
+      File.write(File.join(plugin_root, "index"), "")
+
+      status, output, errors, procs, _rpc = lfp_lock(project,
+        lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG"))
+      status.should eq(0)
+      lfp_hits(errors).should be_empty
+      lfp_misses(errors).should eq(["plugin-index"])
+      procs.should be >= 1
+      output.should contain("Writing lockfile to")
+    end
+  end
 end
 
 private def lfp_assert_compat_miss(project : String, reason : String? = nil) : String
