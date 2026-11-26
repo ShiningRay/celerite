@@ -116,10 +116,20 @@ describe "filesystem permission errors" do
               "grant write permissions for\n" \
               "that path.\n"
             )
+            File.read(lock_path).should eq(permission_lockfile)
           end
         end
       end
     end
+  end
+
+  it "uses an explicit final path without changing the default target" do
+    error = File::Error.from_os_error("boom", Errno::EACCES, file: "C:\\temp\\.Gemfile.lock.1.abc.tmp")
+    mapped = Celerite::FilesystemErrors.map(error, :write, "C:\\temp\\Gemfile.lock").not_nil!
+    mapped.should be_a(Celerite::PermissionError)
+    mapped.message.not_nil!.should contain("C:/temp/Gemfile.lock")
+    mapped.message.not_nil!.should_not contain(".tmp")
+    Celerite::FilesystemErrors.map(error, :write).not_nil!.message.not_nil!.should contain("C:/temp/.Gemfile.lock.1.abc.tmp")
   end
 
   it "names the parent folder for :create" do

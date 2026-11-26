@@ -141,9 +141,10 @@ describe Celerite::Lockfile do
         Process.run(attrib, ["+R", path], output: Process::Redirect::Close, error: Process::Redirect::Close).success?.should be_true
         begin
           expect_raises(File::AccessDeniedError) { File.open(path, "w") { |io| io << "probe" } }
-          expect_raises(Celerite::PermissionError) do
+          error = expect_raises(Celerite::PermissionError) do
             Celerite::Lockfile.write(path, "new bytes\r\n", preserve_crlf: true)
           end
+          error.not_nil!.message.not_nil!.should contain(File.expand_path(path).gsub('\\', "/"))
         ensure
           Process.run(attrib, ["-R", path], output: Process::Redirect::Close, error: Process::Redirect::Close).success?.should be_true
         end
