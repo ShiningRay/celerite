@@ -70,6 +70,12 @@ module Celerite
         end
       end
 
+      # Only a positive, syntax-aware static proof can authorize a success
+      # certificate.  Unknown and Broken evaluations remain replayable only.
+      def success_certificate_allowed? : Bool
+        self == Deterministic
+      end
+
       def wire : String
         case self
         in Deterministic then "deterministic"

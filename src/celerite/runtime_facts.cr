@@ -1,3 +1,4 @@
+require "./cache_identity"
 require "./glob"
 require "./eval_fingerprint"
 require "./profile"
@@ -76,6 +77,7 @@ module Celerite
     # The facts `detect` could reconstruct for one Ruby installation.
     struct Facts
       getter ruby_exe : String
+      getter ruby_identity : CacheIdentity::RubyIdentity
       getter ruby_version : Field
       getter patchlevel : Field
       getter engine : Field
@@ -100,7 +102,8 @@ module Celerite
                      @bundler_version : Field, @platform : Field,
                      @default_gem_dir : Field, @abi : Field,
                      @ruby_api_version : Field, @extension_api_version : Field,
-                     @prefix : Field, @libdir : Field)
+                     @prefix : Field, @libdir : Field,
+                     @ruby_identity : CacheIdentity::RubyIdentity = CacheIdentity::RubyIdentity.unknown)
       end
 
       # Whether this installation still matches a runtime record. Every one of
@@ -140,12 +143,14 @@ module Celerite
     # compatibility path.
     def self.detect(ruby_exe : String? = nil) : Facts?
       exe = resolve_exe(ruby_exe)
-      return nil if exe.nil?
-      return nil unless File.file?(exe)
+      return nil if exe.nil? || !File.file?(exe)
 
-      root = ruby_root(exe)
+      # General runtime detection remains useful for wrappers and executables
+      # inside an install tree. Only the fast-path certificate requires the
+      # stricter canonical <root>/bin/ruby identity.
+      identity = CacheIdentity::RubyIdentity.detect(exe)
+      root = ruby_root(exe) || ruby_root_from_layout(exe)
       return nil if root.nil?
-
       rbconfig = find_rbconfig(root)
       return nil if rbconfig.nil?
 
@@ -160,7 +165,7 @@ module Celerite
       config = parse_config(text)
       return nil if config.empty?
 
-      build_facts(exe, rbconfig, topdir, config)
+      build_facts(exe, rbconfig, topdir, config, identity)
     end
 
     # Explicit path wins; then `CELERITE_RUBY`; then PATH. An explicit but
@@ -200,6 +205,20 @@ module Celerite
       root = File.dirname(dir)
       return nil if root.empty? || root == "."
       root
+    end
+
+    # A wrapper may live anywhere below its Ruby install (for example
+    # <root>/tools/ruby-wrapper.exe). Find the nearest ancestor carrying a
+    # readable rbconfig layout without executing the wrapper.
+    private def self.ruby_root_from_layout(ruby_exe : String) : String?
+      dir = File.dirname(File.expand_path(ruby_exe).gsub('\\', "/"))
+      loop do
+        return dir unless find_rbconfig(dir).nil?
+        parent = File.dirname(dir)
+        break if parent == dir
+        dir = parent
+      end
+      nil
     end
 
     # First `<root>/lib/ruby/*/<arch>/rbconfig.rb` in sorted order. Templates
@@ -266,7 +285,8 @@ module Celerite
 
     private def self.build_facts(exe : String, rbconfig_path : String,
                                  topdir : String,
-                                 config : Hash(String, String)) : Facts?
+                                 config : Hash(String, String),
+                                 identity : CacheIdentity::RubyIdentity) : Facts?
       with_prefix = config.dup
       # `CONFIG["prefix"]` is the expression `(TOPDIR || DESTDIR + "/.")`,
       # which the literal parser correctly refuses; TOPDIR is known here.
@@ -295,7 +315,7 @@ module Celerite
       Facts.new(exe, version_field, patchlevel,
         Field.new(nil, Source::Unknown), Field.new(nil, Source::Unknown),
         rubygems, bundler, platform, default_gem_dir, abi,
-        ruby_api_version, extension_api_version, prefix, libdir)
+        ruby_api_version, extension_api_version, prefix, libdir, identity)
     end
 
     # RubyGems derives `ruby_api_version` from `target_rbconfig["ruby_version"]`

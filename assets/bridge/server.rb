@@ -23,6 +23,7 @@
 # by the caller via $LOAD_PATH (CELERITE_REFERENCE_BUNDLER_LIB).
 
 require "json"
+require "ripper"
 require "stringio"
 require "digest"
 require "rbconfig"
@@ -565,6 +566,206 @@ def bridge_fingerprint_dynamic_reason(text, main)
   nil
 end
 
+# Positive, syntax-aware proof.  The token scan above is diagnostic only: a
+# missing token is never evidence of determinism.  Ripper's complete AST must
+# consist exclusively of the static DSL nodes below.  Anything else (including
+# aliases, interpolation, reflection, arbitrary blocks and dynamic constants)
+# fails closed.
+BRIDGE_STATIC_DSL_CALLS = %w[
+  source gem ruby eval_gemfile gemspec group platforms install_if path git
+].freeze
+BRIDGE_STATIC_GEMSPEC_METHODS = %w[
+  name version authors summary description homepage email files require_paths
+  bindir executables licenses metadata add_dependency add_runtime_dependency
+  add_development_dependency
+].freeze
+BRIDGE_STATIC_DSL_KEYWORDS = %w[
+  version require group platforms source path git branch tag ref glob
+  type installing development runtime optional
+].freeze
+
+def bridge_static_sexp(node)
+  return node unless node.is_a?(Array)
+  return node unless node[0].is_a?(Symbol) && node[1].is_a?(Integer) && node[2].is_a?(Integer)
+
+  node.drop(2)
+end
+
+def bridge_static_constant(node)
+  node = bridge_static_sexp(node)
+  return nil unless node.is_a?(Array)
+  case node[0]
+  when :const, :@const
+    node[1].to_s
+  when :const_path_ref, :const_path_field, :top_const_ref, :top_const_field
+    base = bridge_static_constant(node[1])
+    name = bridge_static_sexp(node[2])
+    base == "Gem" && name.is_a?(Array) && name[1] == "Specification" ? "Gem::Specification" : nil
+  when :var_ref
+    bridge_static_constant(node[1])
+  else
+    nil
+  end
+end
+
+def bridge_static_method_name(node)
+  node = bridge_static_sexp(node)
+  node.is_a?(Array) && %i[@ident @const @op @kw].include?(node[0]) ? node[1] : node
+end
+
+def bridge_static_dsl_receiver?(receiver)
+  receiver.nil? || bridge_static_constant(receiver) == "Gem::Specification" ||
+    (bridge_static_sexp(receiver).is_a?(Array) && %i[vcall var_ref].include?(bridge_static_sexp(receiver)[0]) && bridge_static_sexp(receiver[1]).is_a?(Array) && bridge_static_sexp(receiver[1])[1] == "spec")
+end
+
+def bridge_static_method_allowed?(method_name, receiver, arguments)
+  method_name = method_name.to_s
+  return true if BRIDGE_STATIC_DSL_CALLS.include?(method_name) && bridge_static_dsl_receiver?(receiver)
+  return true if BRIDGE_STATIC_GEMSPEC_METHODS.include?(method_name) && bridge_static_dsl_receiver?(receiver)
+  return true if method_name == "new" && bridge_static_constant(receiver) == "Gem::Specification" && arguments.empty?
+
+  false
+end
+
+def bridge_static_keyword_arguments?(arguments)
+  arguments.all? do |argument|
+    node = bridge_static_sexp(argument)
+    next true unless node.is_a?(Array) && node[0] == :bare_assoc_hash
+    node[1].all? do |pair|
+      pair = bridge_static_sexp(pair)
+      next false unless pair.is_a?(Array) && pair[0] == :assoc_new
+      key = bridge_static_sexp(pair[1])
+      key = key[1] if key.is_a?(Array) && key[0] == :@label
+      BRIDGE_STATIC_DSL_KEYWORDS.include?(key.to_s)
+    end
+  end
+end
+
+def bridge_static_node?(node, in_block = false)
+  node = bridge_static_sexp(node)
+  return true if node.nil?
+  return true if node == false
+  return node.is_a?(Symbol) || node.is_a?(String) || node.is_a?(Integer) || node.is_a?(Float) if !node.is_a?(Array)
+  # Ripper wraps statement/argument lists in one additional untagged Array.
+  return node.all? { |child| bridge_static_node?(child, in_block) } if node[0].is_a?(Array)
+
+  case node[0]
+  when :program, :void_stmt, :bodystmt, :string_content, :regex_content, :symbol
+    node.drop(1).all? { |child| bridge_static_node?(child, in_block) }
+  when :string_literal, :symbol_literal, :regex_literal
+    node.drop(1).all? { |child| bridge_static_node?(child, in_block) }
+  when :string_concat, :xstring_literal, :backtick, :heredoc
+    false
+  when :string_embexpr, :dyna_symbol, :splat, :block_pass, :untyped_block
+    false
+  when :const, :var_ref, :var_field
+    child = bridge_static_sexp(node[1])
+    if child.is_a?(Array)
+      return true if child[0] == :var_ref
+      if child[0] == :@kw
+        return %w[true false nil self].include?(child[1])
+      end
+      if child[0] == :@ident
+        return in_block && child[1] == "spec"
+      end
+      constant = bridge_static_constant(child)
+      return constant == "Gem::Specification"
+    end
+    child.is_a?(Symbol)
+  when :top_const_ref, :top_const_field, :const_ref, :const_path_ref, :const_path_field
+    constant = bridge_static_constant(node)
+    constant == "Gem::Specification"
+  when :@ident, :@const, :@op, :@label, :@period, :@kw, :@tstring_content, :@int, :@float, :@rational, :@CHAR, :@backref
+    true
+  when :int, :float, :rational, :nil, :true, :false, :self, :arg_paren, :args_add_block, :args_add, :array, :hsh, :bare_assoc_hash
+    node.drop(1).all? { |child| bridge_static_node?(child, in_block) }
+  when :assoc_new
+    node.drop(1).all? { |child| bridge_static_node?(child, in_block) }
+  when :dot2, :dot3
+    node.drop(1).all? { |child| bridge_static_node?(child, in_block) }
+  when :unary
+    %w[- + ! ~].include?(node[1].to_s) && bridge_static_node?(node[2], in_block)
+  when :binary
+    %w[+ * / - ** == != < <= > >= && ||].include?(node[1].to_s) && bridge_static_node?(node[2], in_block) && bridge_static_node?(node[3], in_block)
+  when :if, :elsif
+    return false if node[0] == :elsif
+    bridge_static_node?(node[1], in_block) && bridge_static_node?(node[2], in_block) && bridge_static_node?(node[3], in_block)
+  when :if_mod, :unless_mod
+    bridge_static_node?(node[1], in_block) && bridge_static_node?(node[2], in_block)
+  when :vcall
+    BRIDGE_STATIC_DSL_CALLS.include?(bridge_static_method_name(node[1]).to_s)
+  when :fcall
+    BRIDGE_STATIC_DSL_CALLS.include?(bridge_static_method_name(node[1]).to_s)
+  when :command
+    call = bridge_static_sexp(node[1])
+    args = bridge_static_sexp(node[2])
+    return false unless call.is_a?(Array) && (call[0] == :fcall || call[0] == :@ident) && args.is_a?(Array)
+    return false unless BRIDGE_STATIC_DSL_CALLS.include?(call[1].to_s)
+    args.drop(1).all? { |argument| bridge_static_node?(argument, in_block) } && bridge_static_keyword_arguments?(args.drop(1))
+  when :command_call
+    receiver = bridge_static_sexp(node[1])
+    arguments = bridge_static_sexp(node[4])
+    return false unless bridge_static_node?(receiver, in_block)
+    return false unless arguments.is_a?(Array) && arguments[0] == :args_add_block
+    args = arguments.drop(1).all? { |argument| bridge_static_node?(argument, in_block) }
+    args && bridge_static_keyword_arguments?(arguments.drop(1)) && bridge_static_method_allowed?(bridge_static_method_name(node[3]), receiver, arguments.drop(1))
+  when :call
+    bridge_static_node?(node[1], in_block) && bridge_static_method_allowed?(bridge_static_method_name(node[3]), node[1], [])
+  when :method_add_arg
+    call = bridge_static_sexp(node[1])
+    return false unless call.is_a?(Array) && call[0] == :call
+    arguments = bridge_static_sexp(node[2])
+    return false unless arguments.is_a?(Array) && arguments[0] == :arg_paren
+    args = arguments.drop(1).all? { |argument| bridge_static_node?(argument, in_block) }
+    args && bridge_static_keyword_arguments?(arguments.drop(1)) && bridge_static_method_allowed?(bridge_static_method_name(call[3]), call[1], arguments.drop(1))
+  when :method_add_block
+    call = bridge_static_sexp(node[1])
+    block = bridge_static_sexp(node[2])
+    return false unless block.is_a?(Array) && (block[0] == :do_block || block[0] == :brace_block)
+    return false unless bridge_static_node?(call, in_block)
+    block_variable = bridge_static_sexp(block[1])
+    params = block_variable.nil? ? nil : bridge_static_sexp(block_variable[1])
+    if params
+      return false unless params.is_a?(Array) && params[0] == :params
+      return false unless params.drop(2).compact.all? { |part| part == false || part == nil }
+      return false unless params[1].is_a?(Array) && params[1].size == 1
+      parameter = bridge_static_sexp(params[1][0])
+      return false unless parameter.is_a?(Array) && parameter[0] == :@ident && parameter[1] == "spec"
+    end
+    # Only declaration blocks (group/platforms/gemspec) are allowed.  Iteration,
+    # hooks, class_eval and every other arbitrary Ruby block are rejected.
+    receiver = call.is_a?(Array) && call[0] == :method_add_arg ? bridge_static_sexp(call[1]) : call
+    receiver = bridge_static_sexp(receiver[1]) if receiver.is_a?(Array) && %i[fcall command].include?(receiver[0])
+    gemspec = receiver.is_a?(Array) && receiver[0] == :call && bridge_static_constant(receiver[1]) == "Gem::Specification" && bridge_static_method_name(receiver[3]) == "new"
+    allowed = gemspec
+    allowed ||= receiver.is_a?(Array) && %i[fcall command @ident].include?(receiver[0]) && %w[group platforms].include?(receiver[1].to_s)
+    allowed && (params.nil? || gemspec) && bridge_static_node?(block[2], true)
+  when :assign
+    target = bridge_static_sexp(node[1])
+    return false unless target.is_a?(Array) && target[0] == :field
+    field_receiver = bridge_static_sexp(target[1])
+    return false unless in_block && field_receiver.is_a?(Array) && field_receiver[0] == :var_ref
+    receiver_name = bridge_static_sexp(field_receiver[1])
+    return false unless receiver_name.is_a?(Array) && receiver_name[0] == :@ident && receiver_name[1] == "spec"
+    BRIDGE_STATIC_GEMSPEC_METHODS.include?(bridge_static_method_name(target[3]).to_s) && bridge_static_node?(node[2], in_block)
+  when :params, :var_field
+    node.drop(1).all? { |child| bridge_static_node?(child, in_block) }
+  else
+    false
+  end
+end
+
+def bridge_fingerprint_static_proof(text)
+  return "unknown:unproven-static" if text.include?("\#{")
+  return "unknown:unproven-static" if Ripper.lex(text).any? { |_position, type, _state, _token| %i[on_heredoc_beg on_heredoc_end on_embexpr_beg on_embexpr_end].include?(type) }
+  tree = Ripper.sexp(text)
+  return "unknown:unproven-static" unless tree && bridge_static_node?(tree)
+
+  nil
+rescue StandardError
+  "unknown:unproven-static"
+end
+
 # `Bundler.app_config_path/plugin` holds the plugin index and the installed
 # plugins (`Bundler::Plugin::Index`). Presence alone is enough to withhold the
 # cache: F1 does not hash the index contents, and "exists but unreadable" must
@@ -592,6 +793,8 @@ def bridge_fingerprint_state(gemfile, contents, chain, gemspecs)
     return ["broken", "unreadable:#{role}"] if text.nil?
 
     reason = bridge_fingerprint_dynamic_reason(text, role == "gemfile")
+    proof_reason = bridge_fingerprint_static_proof(text)
+    reason ||= proof_reason
     return ["unknown", reason] if reason
   end
 

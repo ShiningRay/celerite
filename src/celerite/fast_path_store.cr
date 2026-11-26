@@ -40,12 +40,13 @@ module Celerite
   # `BUNDLE_*` pairs; no plaintext credential, and no `://user:pass@` string, is
   # ever written.
   module FastPathStore
-    FORMAT    = "celerite-fast-path/1"
-    SWITCH    = "CELERITE_FAST_PATH"
-    ROOT_ENV  = "CELERITE_CACHE_DIR"
-    LAYOUT    = "fast-path/v1"
-    DIRECTORY = ".celerite"
-    SUFFIX    = ".json"
+    FORMAT        = "celerite-fast-path/2"
+    LEGACY_FORMAT = "celerite-fast-path/1"
+    SWITCH        = "CELERITE_FAST_PATH"
+    ROOT_ENV      = "CELERITE_CACHE_DIR"
+    LAYOUT        = "fast-path/v2"
+    DIRECTORY     = ".celerite"
+    SUFFIX        = ".json"
 
     DIGEST    = /\A[0-9a-f]{64}\z/
     NAMESPACE = /\A[0-9a-f]{16}\z/
@@ -103,13 +104,34 @@ module Celerite
       getter rubygems_version : String
       getter bundler_version : String
       getter abi : Abi
+      getter ruby_identity : CacheIdentity::RubyIdentity
+      getter eval_digest : String
+      getter certificate_nonce : String
+
+      KEYS = %w[format written_at project_digest credential_namespace ruby_version patchlevel engine engine_version platform rubygems_version bundler_version abi ruby_identity eval_digest certificate_nonce]
 
       def initialize(@format : String, @written_at : String,
                      @project_digest : String, @credential_namespace : String,
                      @ruby_version : String, @patchlevel : String,
                      @engine : String, @engine_version : String,
                      @platform : String, @rubygems_version : String,
-                     @bundler_version : String, @abi : Abi)
+                     @bundler_version : String, @abi : Abi,
+                     @ruby_identity : CacheIdentity::RubyIdentity,
+                     @eval_digest : String, @certificate_nonce : String)
+      end
+
+      def self.from_json(string : String) : self
+        object = JSON.parse(string)
+        raise CacheIdentity.parse_error("runtime record has unknown fields") unless CacheIdentity.exact_keys?(object, KEYS)
+        raise CacheIdentity.parse_error("runtime record is missing fields") unless CacheIdentity.required_keys?(object, KEYS)
+        new(CacheIdentity.string(object, "format"), CacheIdentity.string(object, "written_at"),
+          CacheIdentity.string(object, "project_digest"), CacheIdentity.string(object, "credential_namespace"),
+          CacheIdentity.string(object, "ruby_version"), CacheIdentity.string(object, "patchlevel"),
+          CacheIdentity.string(object, "engine"), CacheIdentity.string(object, "engine_version"),
+          CacheIdentity.string(object, "platform"), CacheIdentity.string(object, "rubygems_version"),
+          CacheIdentity.string(object, "bundler_version"), Abi.from_json(object["abi"].to_json),
+          CacheIdentity::RubyIdentity.parse(object["ruby_identity"]),
+          CacheIdentity.string(object, "eval_digest"), CacheIdentity.string(object, "certificate_nonce"))
       end
 
       def complete? : Bool
@@ -119,7 +141,9 @@ module Celerite
           !@ruby_version.empty? && !@patchlevel.empty? &&
           !@engine.empty? && !@engine_version.empty? &&
           !@platform.empty? && !@rubygems_version.empty? &&
-          !@bundler_version.empty? && @abi.complete?
+          !@bundler_version.empty? && @abi.complete? &&
+          @ruby_identity.known? && @eval_digest.matches?(DIGEST) &&
+          CacheIdentity.valid_nonce?(@certificate_nonce)
       end
     end
 
@@ -252,7 +276,23 @@ module Celerite
                          facts : RuntimeFacts::Facts?,
                          bridge : EvalFingerprint::Runtime? = nil,
                          abi : EvalFingerprint::Abi? = nil,
-                         written_at : Time = Time.utc) : RuntimeRecord?
+                         written_at : Time = Time.utc,
+                         ruby_identity : CacheIdentity::RubyIdentity? = nil,
+                         eval_digest : String? = nil,
+                         certificate_nonce : String? = nil) : RuntimeRecord?
+      # Facts carry their own conservative identity. An explicit identity may
+      # be supplied by a trusted caller, but it must describe the same Ruby.
+      identity = ruby_identity || facts.try(&.ruby_identity)
+      if facts_identity = facts.try(&.ruby_identity)
+        return nil if facts_identity.known? && identity.try(&.identity_digest) != facts_identity.identity_digest
+      end
+      # Old callers cannot mint a v2 success proof. Until task-273 supplies the
+      # certificate nonce, preserve the source API but never write an unbound
+      # record.
+      return nil if identity.nil? || eval_digest.nil? || certificate_nonce.nil?
+      return nil unless identity.known?
+      return nil unless eval_digest.matches?(DIGEST)
+      return nil unless CacheIdentity.valid_nonce?(certificate_nonce)
       return nil if project_root.empty?
       real_abi = abi || bridge.try(&.abi)
       return nil if real_abi.nil?
@@ -296,7 +336,8 @@ module Celerite
         values["platform"], values["rubygems_version"],
         values["bundler_version"],
         Abi.new(real_abi.ruby_api_version, real_abi.extension_api_version,
-          real_abi.rbconfig_ruby_version))
+          real_abi.rbconfig_ruby_version), identity.not_nil!, eval_digest.not_nil!,
+        certificate_nonce.not_nil!)
     end
 
     # The structural verdict (see `Verdict`). Checks run in a fixed order, so
@@ -320,7 +361,8 @@ module Celerite
                       digest : String,
                       facts : RuntimeFacts::Facts?,
                       record : RuntimeRecord?,
-                      state : EvalFingerprint::State?) : Verdict
+                      state : EvalFingerprint::State?,
+                      fresh_identity : CacheIdentity::RubyIdentity? = nil) : Verdict
       return Verdict.unknown if facts.nil?
       return Verdict.unknown if state.nil?
 
@@ -342,6 +384,18 @@ module Celerite
       unless rec.credential_namespace == namespace
         return Verdict.requires_ruby("namespace-mismatch")
       end
+
+      return Verdict.requires_ruby("eval-digest-mismatch") unless rec.eval_digest == digest
+      identity = fresh_identity || CacheIdentity::RubyIdentity.detect(facts.ruby_exe)
+      return Verdict.requires_ruby("ruby-identity-unknown") unless identity.known?
+      return Verdict.requires_ruby("ruby-identity-mismatch") unless identity.identity_digest == rec.ruby_identity.identity_digest
+      certificate = EvalCacheStore.certificate(digest, rec.certificate_nonce)
+      # Legacy /1 evaluations, v2 entries without this nonce, and malformed
+      # certificates all land here; an evaluation alone is never success proof.
+      return Verdict.requires_ruby("lock-unbound") if certificate.nil?
+      cert = certificate.not_nil!
+      return Verdict.requires_ruby("certificate-command") unless %w[lock install].includes?(cert.command)
+      return Verdict.requires_ruby("certificate-ruby-identity") unless cert.ruby_identity == identity.identity_digest
 
       pairs = {
         {name: "ruby_version", local: facts.ruby_version, recorded: rec.ruby_version},
@@ -406,9 +460,8 @@ module Celerite
           rescue
           end
         end
-        # Same-directory temp + rename (Windows cannot rename over an existing
-        # file, and every writer of one digest writes equivalent bytes).
-        File.delete(target) if File.exists?(target)
+        # Windows MoveFileExW uses REPLACE_EXISTING here.  The old record stays
+        # visible until the complete replacement is atomically installed.
         File.rename(temp, target)
         true
       rescue
