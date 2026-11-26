@@ -95,6 +95,19 @@ jobs:
           git worktree add --detach "$old_dir" "$OLD_COMMIT"
           (
             cd "$old_dir"
+            if [[ "$RUNNER_OS" == "Linux" ]]; then
+              # Build-only portability shim for the fixed $OLD_COMMIT baseline:
+              # newer Crystal/Linux uses EOPNOTSUPP for this errno. This does not
+              # alter lock fast-path capability semantics; the fixed old commit
+              # and lock-tamper negative gate below remain unchanged.
+              source_file="src/celerite/filesystem_errors.cr"
+              matches="$(grep -o 'os == Errno::ENOTSUP' "$source_file" | wc -l || true)"
+              if [[ "$matches" -ne 1 ]]; then
+                echo "expected exactly one os == Errno::ENOTSUP in $source_file, found $matches" >&2
+                exit 1
+              fi
+              sed -i 's/os == Errno::ENOTSUP/os == Errno::EOPNOTSUPP/' "$source_file"
+            fi
             shards build
           )
           if [[ "$RUNNER_OS" == "Windows" ]]; then
