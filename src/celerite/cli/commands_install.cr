@@ -268,8 +268,10 @@ module Celerite
       # deterministic empty-plugin certificate may skip that preflight; every
       # other state keeps the reference-compatible Ruby path.
       plugin_names : Array(String)? = nil
+      plugin_precheck_skipped = false
       if PluginGemfile.enabled?(Config.new(File.dirname(Definition.find_gemfile)))
-        unless InstallFastPath.plugin_precheck_skippable?(definition, config)
+        plugin_precheck_skipped = InstallFastPath.plugin_precheck_skippable?(definition, config)
+        unless plugin_precheck_skipped
           plugin_code, plugin_names = install_gemfile_plugins(Definition.find_gemfile, stdout, stderr)
           return plugin_code if plugin_code
         end
@@ -450,7 +452,8 @@ module Celerite
         plan_components : JSON::Any? = nil
         plan_loaded = false
         if reuse && (trusted = trusted_result[0]) && plan_cache_context?(definition, config, rest,
-             summary, show_resolving, no_reuse, no_install, cli_arguments, refresh_cache)
+             summary, show_resolving, no_reuse, no_install, cli_arguments, refresh_cache,
+             plugin_precheck_skipped)
           plan_hit = trusted
           candidate = Resolution.bundler_cache_candidate(definition, trusted.evaluation, bridge, trusted.facts)
           plan_candidate = candidate
@@ -1091,11 +1094,13 @@ module Celerite
                                          rest : Array(String), summary : Bool,
                                          show_resolving : Bool, no_reuse : Bool,
                                          no_install : Bool, cli_arguments : Bool,
-                                         refresh_cache : Bool) : Bool
+                                         refresh_cache : Bool,
+                                         plugin_precheck_skipped : Bool) : Bool
       return false unless PlanCache.enabled?
       return false unless rest.empty? && summary && show_resolving && !no_reuse &&
                           !no_install && cli_arguments && refresh_cache
-      return false if ENV["CELERITE_VERBOSE"]? == "1" || PluginHooks.enabled?(config)
+      return false if ENV["CELERITE_VERBOSE"]? == "1" ||
+                      (PluginHooks.enabled?(config) && !plugin_precheck_skipped)
       return false if group_configured?(config) || config.frozen? || config_bool?(config["deployment"])
       return false if config_bool?(config["disable_shared_gems"]) || config_bool?(config["force_ruby_platform"])
       return false if config_bool?(config["clean"]) || !config["cooldown"].nil?
