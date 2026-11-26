@@ -241,6 +241,8 @@ module Celerite
         update_level = "patch" if update_level.nil? && definition.config["prefer_patch"] == true
         resolution.version_promotion = update_level || "major"
         resolution.version_promotion_strict = rest.includes?("--strict")
+        resolution.prerelease = rest.includes?("--pre")
+        resolution.conservative_update = rest.includes?("--conservative")
 
         # BUNDLED WITH semantics: update does not auto-switch -it records
         # the running bundler version in the rewritten lockfile (pinned

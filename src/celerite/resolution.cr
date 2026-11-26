@@ -269,6 +269,7 @@ module Celerite
 
     getter definition : Definition
     getter evaluation : Bridge::GemfileEvaluation
+    getter evaluation_fingerprint : Bridge::EvalFingerprint?
     getter resolved_specs : Array(ResolvedSpec)
     getter sources : Array(Bridge::EvaluatedSource)
     getter bridge_bundler_version : String
@@ -304,7 +305,7 @@ module Celerite
     @locked_specs : Array(LockedSpec)?
     @locked_by_name : Hash(String, Array(LockedSpec))?
     @compact_index_client : CompactIndex::Client?
-    @index_specs_cache : Hash(String, Array(Resolver::IndexSpec))?
+    @index_specs_cache : Hash(Tuple(String, String), Array(Resolver::IndexSpec))?
     @plugin_specs_cache : Hash(String, Array(Resolver::IndexSpec))?
     @default_gem_specs_cache : Hash(String, Resolver::IndexSpec?)?
     # Cooldown exclusions (name, version, created_at unix seconds) recorded
@@ -318,6 +319,8 @@ module Celerite
     # Version promotion: :patch/:minor/:major ceiling for updates.
     property version_promotion : String?
     property version_promotion_strict : Bool = false
+    property prerelease : Bool = false
+    property conservative_update : Bool = false
     # --ruby: rewrite the RUBY VERSION section to the running environment.
     property ruby_update : Bool = false
 
@@ -329,8 +332,9 @@ module Celerite
     # The caller still owns the ordinary reuse, compatibility and lock checks.
     def self.from_evaluation(definition : Definition,
                              evaluation : Bridge::GemfileEvaluation,
-                             bridge : Bridge::Client) : Resolution
-      new(definition, false, bridge, evaluation)
+                             bridge : Bridge::Client,
+                             fingerprint : Bridge::EvalFingerprint? = nil) : Resolution
+      new(definition, false, bridge, evaluation, fingerprint)
     end
 
     # Explicit locked-plan hydration. No allocation followed by scattered
@@ -349,7 +353,9 @@ module Celerite
                    @bridge : Bridge::Client? = nil, query_cache : Bool = true)
       @owned_bridge = @bridge.nil?
       @bridge = @bridge || Bridge::Client.shared
-      @evaluation = eval_gemfile
+      batch = GemfileEvaluator.fetch(@definition.gemfile_path, client: @bridge)
+      @evaluation = batch.evaluation
+      @evaluation_fingerprint = batch.fingerprint
       @sources = @evaluation.sources
       @bridge_bundler_version = @evaluation.bundler_version
       @current_base_requirements = {} of String => Gem::Requirement
@@ -364,7 +370,8 @@ module Celerite
 
     private def initialize(@definition : Definition, @unlock : Bool | Array(String),
                            @bridge : Bridge::Client,
-                           @evaluation : Bridge::GemfileEvaluation)
+                           @evaluation : Bridge::GemfileEvaluation,
+                           @evaluation_fingerprint : Bridge::EvalFingerprint? = nil)
       @owned_bridge = false
       @sources = @evaluation.sources
       @bridge_bundler_version = @evaluation.bundler_version
@@ -383,7 +390,8 @@ module Celerite
                            @evaluation : Bridge::GemfileEvaluation,
                            @resolved_specs : Array(ResolvedSpec),
                            @lock_extra_specs : Array(ResolvedSpec),
-                           @bundler_cache_path : String?)
+                           @bundler_cache_path : String?,
+                           @evaluation_fingerprint : Bridge::EvalFingerprint? = nil)
       @owned_bridge = false
       @sources = @evaluation.sources
       @bridge_bundler_version = @evaluation.bundler_version
@@ -480,10 +488,6 @@ module Celerite
         end
         @install_checksums["#{spec.name}-#{spec.version}"] = "sha256=#{Digest::SHA256.hexdigest(File.read(cached))}"
       end
-    end
-
-    private def eval_gemfile : Bridge::GemfileEvaluation
-      GemfileEvaluator.evaluation(@definition.gemfile_path, @bridge)
     end
 
     private def query_bundler_cache_path : String?
@@ -1122,10 +1126,11 @@ module Celerite
     end
 
     # Build candidate specs for one gem from the compact index.
-    private def index_specs_from_remote(name : String) : Array(Resolver::IndexSpec)
-      remote = remote_for(name)
-      cache = @index_specs_cache ||= {} of String => Array(Resolver::IndexSpec)
-      cache[name] ||= begin
+    private def index_specs_from_remote(name : String, requested_remote : String? = nil) : Array(Resolver::IndexSpec)
+      remote = requested_remote || remote_for(name)
+      key = {name, remote}
+      cache = @index_specs_cache ||= {} of Tuple(String, String) => Array(Resolver::IndexSpec)
+      cache[key] ||= begin
         client = remote == primary_remote ? compact_index_client : compact_index_client_for(remote)
         entries = client.info(name)
         log_fetch_for(remote)
@@ -1151,7 +1156,7 @@ module Celerite
           # Parity: the reference only records per-gem checksums from remote
           # API sources; file:// indexes install without them.
           checksum = remote.starts_with?("file:") ? nil : entry.checksum
-          Resolver::IndexSpec.new(name, version, platform, deps, ruby_req, rubygems_req, checksum)
+          Resolver::IndexSpec.new(name, version, platform, deps, ruby_req, rubygems_req, checksum, nil, entry.created_at)
         end
       rescue ex : CompactIndex::Error
         raise ex
@@ -1196,6 +1201,514 @@ module Celerite
         run += 1
         return if File.file?(local_path)
       end
+    end
+
+    # ------------------------------------------------------------------
+    # Batch solver integration (M8 L161 S3b)
+    # ------------------------------------------------------------------
+
+    # The command-level fast paths decide first. Once Resolution is entered,
+    # this probe deliberately precedes frozen/reuse/stale checks: eligibility
+    # must not require the very index probes the batch path is meant to avoid.
+    private def try_solve_batch(deps : Array(Resolver::DepSpec)) : Bool
+      request = build_solve_batch_request(deps)
+      return false unless request
+
+      response = @bridge.not_nil!.solve_batch(request)
+      chosen_versions = {} of String => String
+      response.chosen.each do |candidate|
+        if version = chosen_versions[candidate.name]?
+          return false unless version == candidate.version
+        else
+          chosen_versions[candidate.name] = candidate.version
+        end
+      end
+      if failure = response.failure
+        case failure.category
+        when "requirements_conflict", "ruby_incompatible"
+          raise SolveFailureError.new(failure.message)
+        when "platform_unavailable"
+          raise GemNotFoundError.new(failure.message)
+        else
+          # UnknownOp/timeout/limit/schema/identity/closure/internal failures are
+          # compatibility misses. Keep the legacy path and its diagnostics.
+          return false
+        end
+      end
+
+      apply_solve_batch_response(response, request, deps)
+      true
+    rescue ex : Bridge::BridgeError | SolveBatch::Error | CompactIndex::Error
+      # A bridge/protocol/transport failure must not change user-visible output.
+      # The old resolver remains the compatibility implementation.
+      false
+    end
+
+    private def build_solve_batch_request(deps : Array(Resolver::DepSpec)) : SolveBatch::Request?
+      return false_nil unless @bridge_bundler_version == SolveBatch::BUNDLER_VERSION
+      return false_nil unless @evaluation_fingerprint.try(&.state) == EvalFingerprint::State::Deterministic
+      return false_nil if @local_only || @prefer_local || @autoheal_locked_edges
+      return false_nil if @definition.config["frozen"] == true
+      return false_nil if @evaluation.sources.empty?
+      return false_nil unless @evaluation.sources.all? { |source| source.type == "Rubygems" }
+      return false_nil if @unlock.is_a?(Array(String)) && !@unlock.as_a.empty?
+
+      source_payloads = solve_batch_sources
+      return false_nil unless source_payloads
+      fingerprint_payload = solve_batch_fingerprint
+      return false_nil unless fingerprint_payload
+      constraints = solve_batch_constraints
+      return false_nil unless constraints
+      promotion = solve_batch_promotion
+      return false_nil unless promotion
+      unless SolveBatch::Eligibility.eligible?(constraints, fingerprint_payload, source_payloads, promotion)
+        return false_nil
+      end
+
+      requirements = solve_batch_requirements(source_payloads)
+      return false_nil unless requirements
+      source_ids = source_payloads.map { |source| source["source_id"].as_s }
+      changed_names = if @definition.lockfile_exists?
+                        @definition.changed_dependency_sources(@evaluation.dependencies, @evaluation.sources).to_set
+                      else
+                        Set(String).new
+                      end
+      return false_nil unless changed_names.empty?
+      locked_rows = solve_batch_locked_rows(source_payloads, source_ids, changed_names)
+      return false_nil unless locked_rows
+
+      candidates = solve_batch_candidate_closure(deps, locked_rows, source_payloads)
+      return false_nil unless candidates
+      return false_nil unless apply_locked_checksums(candidates, locked_rows)
+      parsed_candidates = SolveBatch::Digest.candidates_by_source(JSON::Any.new(candidates), source_ids)
+      candidate_count = parsed_candidates.values.sum(&.size)
+      return false_nil if candidate_count > SolveBatch::MAX_CANDIDATES
+      name_count = parsed_candidates.values.flat_map(&.map(&.["name"].as_s)).uniq.size
+      return false_nil if name_count > SolveBatch::MAX_NAMES
+
+      locked_specs = locked_rows.map do |row|
+        spec, source_id = row
+        candidate = parsed_candidates[source_id].find do |value|
+          value["name"].as_s == spec.name && value["version"].as_s == spec.version.to_s &&
+            value["platform"].as_s == (spec.platform_ruby? ? "ruby" : spec.platform)
+        end
+        return false_nil unless candidate
+        checksum = candidate["checksum"]
+        return false_nil if checksum.raw.nil?
+        dependencies = spec.dependencies.map do |dependency|
+          JSON::Any.new({
+            "name"         => JSON::Any.new(dependency.name),
+            "requirements" => JSON::Any.new((dependency.requirements || [] of String).map { |item| JSON::Any.new(item) }),
+          })
+        end
+        JSON::Any.new({
+          "name"         => JSON::Any.new(spec.name),
+          "version"      => JSON::Any.new(spec.version.to_s),
+          "platform"     => spec.platform_ruby? ? JSON::Any.new("ruby") : JSON::Any.new(spec.platform),
+          "source_id"    => JSON::Any.new(source_id),
+          "dependencies" => JSON::Any.new(dependencies),
+          "checksum"     => checksum,
+        })
+      end
+      locked_digest = SolveBatch::Digest.locked_digest(locked_specs)
+      locked_base = JSON::Any.new({"sha256" => JSON::Any.new(locked_digest), "specs" => JSON::Any.new(locked_specs)})
+
+      groups = {} of String => JSON::Any
+      %w[with without optional all].each do |key|
+        values = @definition.config[key]?.try(&.as?(Array(String))) || [] of String
+        groups[key] = JSON::Any.new(values.map { |value| JSON::Any.new(value) })
+      end
+      evaluation = JSON::Any.new({
+        "gemfile" => JSON::Any.new({
+          "path_sha256" => JSON::Any.new(Digest::SHA256.hexdigest(File.expand_path(@definition.gemfile_path))),
+          "sha256"      => JSON::Any.new(@evaluation.gemfile_sha256),
+        }),
+        "fingerprint" => fingerprint_payload,
+        "sources"     => JSON::Any.new(source_payloads),
+        "plugins"     => JSON::Any.new([] of JSON::Any),
+        "groups"      => JSON::Any.new(groups),
+      })
+      closure = JSON::Any.new({
+        "complete"        => JSON::Any.new(true),
+        "digest"          => JSON::Any.new(SolveBatch::Digest.candidate_digest(parsed_candidates)),
+        "name_count"      => JSON::Any.new(name_count.to_i64),
+        "candidate_count" => JSON::Any.new(candidate_count.to_i64),
+      })
+      limits = JSON::Any.new({"timeout_ms" => JSON::Any.new(SolveBatch::MAX_TIMEOUT_MS.to_i64)})
+      SolveBatch::Request.build(evaluation, requirements, parsed_candidates, locked_base,
+        promotion, constraints, closure, limits)
+    rescue ex : SolveBatch::IneligibleError
+      false_nil
+    end
+
+    private def false_nil : Nil?
+      nil
+    end
+
+    private def solve_batch_sources : Array(JSON::Any)?
+      remotes_by_index = @evaluation.sources.map do |source|
+        values = solve_batch_redacted_remotes(source)
+        return nil if values.empty?
+        values
+      end
+      return nil if remotes_by_index.any?(&.empty?)
+
+      raw_sources = @evaluation.sources.map_with_index do |source, index|
+        remote = source.remote || source.remotes.try(&.first?)
+        return nil unless remote
+        lock_options = if options = source.lock_options
+                         JSON.parse(options.to_json)
+                       else
+                         JSON::Any.new({} of String => JSON::Any)
+                       end
+        JSON::Any.new({
+          "source_id"       => JSON::Any.new((@evaluation.sources.size == 1 || source.name.nil?) ? "default" : "source-#{index.to_s.rjust(4, '0')}"),
+          "type"            => JSON::Any.new("Rubygems"),
+          "name"            => source.name ? JSON::Any.new(source.name.not_nil!) : JSON::Any.new(nil),
+          "identity_sha256" => JSON::Any.new("0" * 64),
+          "uri_redacted"    => JSON::Any.new(solve_batch_redact_uri(remote)),
+          "remotes"         => JSON::Any.new(remotes_by_index[index].map { |value| JSON::Any.new(value) }),
+          "path"            => JSON::Any.new(nil),
+          "revision"        => JSON::Any.new(nil),
+          "ref"             => JSON::Any.new(nil),
+          "branch"          => JSON::Any.new(nil),
+          "tag"             => JSON::Any.new(nil),
+          "glob"            => JSON::Any.new(nil),
+          "submodules"      => JSON::Any.new(nil),
+          "plugin_type"     => JSON::Any.new(nil),
+          "lock_options"    => lock_options,
+          "materialization" => JSON::Any.new("pure_data"),
+        })
+      end
+      SolveBatch::SourceRegistry.assign(raw_sources)
+    end
+
+    private def solve_batch_redacted_remotes(source : Bridge::EvaluatedSource) : Array(String)
+      values = source.remotes
+      if remote = source.remote
+        values = [remote] if values.nil? || values.empty?
+      end
+      (values || [] of String).map { |value| solve_batch_redact_uri(value) }
+    end
+
+    private def solve_batch_redact_uri(value : String) : String
+      if match = /\A([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\/?#]*)([^?#]*)/.match(value)
+        authority = match[2]
+        if at = authority.rindex('@')
+          authority = authority[(at + 1)..]
+        end
+        "#{match[1]}#{authority}#{match[3]}"
+      else
+        value.split(/[?#]/, 2).first
+      end
+    end
+
+    private def solve_batch_original_source(payload : JSON::Any) : Bridge::EvaluatedSource?
+      matches = @evaluation.sources.select { |source| solve_batch_source_match?(source, payload) }
+      matches.size == 1 ? matches.first : nil
+    end
+
+    private def solve_batch_source_match?(source : Bridge::EvaluatedSource, payload : JSON::Any) : Bool
+      expected = payload["remotes"].as_a.map(&.as_s).sort
+      source.name == payload["name"].as_s? && solve_batch_redacted_remotes(source).sort == expected
+    end
+
+    private def solve_batch_fingerprint : JSON::Any?
+      fingerprint = @evaluation_fingerprint
+      return nil unless fingerprint
+      document = EvalFingerprint::Document.parse(fingerprint.text, fingerprint.digest, fingerprint.verify)
+      return nil unless document
+      return nil unless document.integrity_reason.nil?
+      runtime = {} of String => JSON::Any
+      config = {} of String => JSON::Any
+      document.records.each do |key, value|
+        if key.starts_with?("config.")
+          config[key] = JSON::Any.new(value)
+        else
+          runtime[key] = JSON::Any.new(value)
+        end
+      end
+      files = document.files.map do |file|
+        JSON::Any.new({
+          "role"   => JSON::Any.new(file.role),
+          "path"   => JSON::Any.new(file.path),
+          "sha256" => JSON::Any.new(file.sha256),
+        })
+      end
+      JSON::Any.new({
+        "format"       => JSON::Any.new(EvalFingerprint::MAGIC),
+        "digest"       => JSON::Any.new(fingerprint.digest),
+        "state"        => JSON::Any.new(fingerprint.state.wire),
+        "state_reason" => JSON::Any.new(fingerprint.state_reason),
+        "verify_files" => JSON::Any.new(files),
+        "runtime"      => JSON::Any.new(runtime),
+        "config"       => JSON::Any.new(config),
+      })
+    end
+
+    private def solve_batch_promotion : JSON::Any?
+      level = @version_promotion || (@version_promotion_strict ? "patch" : "major")
+      return nil unless %w[patch minor major].includes?(level)
+      unlock = case value = @unlock
+               when Bool then value
+               when Array(String)
+                 return nil unless value.empty?
+                 false
+               else
+                 return nil
+               end
+      JSON::Any.new({
+        "level"        => JSON::Any.new(level),
+        "strict"       => JSON::Any.new(@version_promotion_strict),
+        "pre"          => JSON::Any.new(@prerelease),
+        "unlock"       => JSON::Any.new(unlock),
+        "conservative" => JSON::Any.new(@conservative_update),
+        "prefer_local" => JSON::Any.new(false),
+        "local_only"   => JSON::Any.new(false),
+      })
+    end
+
+    private def solve_batch_constraints : JSON::Any?
+      environment = @bridge.not_nil!.ruby_environment
+      platforms = resolution_platforms.map(&.to_s).uniq
+      return nil if platforms.empty? || platforms.size > 100
+      return nil unless environment.loaded_bundler_version == SolveBatch::BUNDLER_VERSION
+      return nil if environment.engine_version.empty?
+      patchlevel = environment.patchlevel.try(&.to_i?)
+      JSON::Any.new({
+        "ruby_version"        => JSON::Any.new(environment.ruby_version),
+        "ruby_patchlevel"     => patchlevel ? JSON::Any.new(patchlevel) : JSON::Any.new(nil),
+        "ruby_engine"         => JSON::Any.new(environment.engine),
+        "ruby_engine_version" => JSON::Any.new(environment.engine_version),
+        "rubygems_version"    => JSON::Any.new(environment.rubygems_version),
+        "bundler_version"     => JSON::Any.new(SolveBatch::BUNDLER_VERSION),
+        "platforms"           => JSON::Any.new(platforms.map { |platform| JSON::Any.new(platform) }),
+        "added_platforms"     => JSON::Any.new(@added_platforms.map { |platform| JSON::Any.new(platform) }),
+        "removed_platforms"   => JSON::Any.new(@removed_platforms.map { |platform| JSON::Any.new(platform) }),
+        "force_ruby_platform" => JSON::Any.new(force_ruby_platform?),
+      })
+    end
+
+    private def solve_batch_requirements(sources : Array(JSON::Any)) : Array(JSON::Any)?
+      requirements = [] of JSON::Any
+      @evaluation.dependencies.each do |dependency|
+        next if dependency.gemspec_dev_dep
+        source_id = if source = dependency.source
+                      payload = sources.find { |candidate| solve_batch_source_match?(source, candidate) }
+                      return nil unless payload
+                      payload["source_id"].as_s
+                    end
+        autorequire = dependency.autorequire.try { |values| values.map { |value| JSON::Any.new(value) } } || [] of JSON::Any
+        requirements << JSON::Any.new({
+          "name"                => JSON::Any.new(dependency.name),
+          "requirements"        => JSON::Any.new(dependency.requirements.map { |value| JSON::Any.new(value) }),
+          "source_id"           => JSON::Any.new(source_id),
+          "groups"              => JSON::Any.new(dependency.groups.map { |value| JSON::Any.new(value) }),
+          "platforms"           => JSON::Any.new(dependency.platforms.map { |value| JSON::Any.new(value) }),
+          "autorequire"         => JSON::Any.new(autorequire),
+          "force_ruby_platform" => JSON::Any.new(dependency.force_ruby_platform || false),
+          "gemspec_dev_dep"     => JSON::Any.new(false),
+          "direct"              => JSON::Any.new(true),
+        })
+      end
+      requirements
+    end
+
+    # Returns {lock spec, source_id}; source changes and every non-GEM lock
+    # source are excluded rather than silently converted into pure data.
+    private def solve_batch_locked_rows(sources : Array(JSON::Any), source_ids : Array(String),
+                                        changed_names : Set(String)) : Array(Tuple(Lockfile::Spec, String))?
+      return [] of Tuple(Lockfile::Spec, String) unless @definition.lockfile_exists?
+      rows = [] of Tuple(Lockfile::Spec, String)
+      @definition.lockfile!.sources.each do |lock_source|
+        return nil unless lock_source.type == "GEM"
+        lock_remotes = lock_source.remotes
+        if lock_remotes.empty?
+          if remote = lock_source.remote
+            lock_remotes = [remote]
+          end
+        end
+        candidates = sources.select do |source|
+          remotes = source["remotes"].as_a.map(&.as_s)
+          lock_remotes.empty? || remotes.any? { |remote| lock_remotes.any? { |locked| solve_batch_redact_uri(locked) == remote } }
+        end
+        if lock_remotes.empty? && sources.size == 1
+          candidates = sources
+        end
+        return nil unless candidates.size == 1
+        source_id = candidates.first["source_id"].as_s
+        return nil unless source_ids.includes?(source_id)
+        lock_source.specs.each do |spec|
+          rows << {spec, source_id} unless changed_names.includes?(spec.name)
+        end
+      end
+      rows
+    end
+
+    private def solve_batch_candidate_closure(deps : Array(Resolver::DepSpec),
+                                              locked_rows : Array(Tuple(Lockfile::Spec, String)),
+                                              sources : Array(JSON::Any)) : Hash(String, Array(JSON::Any))?
+      candidates = {} of String => Array(JSON::Any)
+      seen = {} of String => Hash(Tuple(String, String, String), String)
+      sources.each do |source|
+        source_id = source["source_id"].as_s
+        candidates[source_id] = [] of JSON::Any
+        seen[source_id] = {} of Tuple(String, String, String) => String
+      end
+      names = Set(String).new
+      deps.each { |dependency| names << dependency.name }
+      locked_rows.each { |row| names << row[0].name }
+      return nil if names.size > SolveBatch::MAX_NAMES
+      queue = names.to_a.sort
+      cursor = 0
+      candidate_count = 0
+      while cursor < queue.size
+        name = queue[cursor]
+        cursor += 1
+        sources.each do |source|
+          source_id = source["source_id"].as_s
+          source["remotes"].as_a.map(&.as_s).each do |remote|
+            index_specs_from_remote(name, remote).each do |spec|
+              raw = SolveBatch::Candidate.from_index_spec(spec).payload
+              key = {name, spec.version.to_s, spec.platform_ruby? ? "ruby" : spec.platform.to_s}
+              canonical = SolveBatch::Canonical.json(raw)
+              if previous = seen[source_id][key]?
+                return nil unless previous == canonical
+                next
+              end
+              seen[source_id][key] = canonical
+              candidates[source_id] << raw
+              candidate_count += 1
+              return nil if candidate_count > SolveBatch::MAX_CANDIDATES
+              spec.dependencies.each do |dependency|
+                next unless names.add?(dependency.name)
+                return nil if names.size > SolveBatch::MAX_NAMES
+                queue << dependency.name
+              end
+            end
+          end
+        end
+      end
+      candidates
+    end
+
+    private def apply_locked_checksums(candidates : Hash(String, Array(JSON::Any)),
+                                       locked_rows : Array(Tuple(Lockfile::Spec, String))) : Bool
+      return true unless @definition.lockfile_exists?
+      lookup = {} of Tuple(String, String, String, String) => JSON::Any
+      candidates.each do |source_id, values|
+        values.each do |candidate|
+          lookup[{source_id, candidate["name"].as_s, candidate["version"].as_s, candidate["platform"].as_s}] = candidate
+        end
+      end
+      locked_rows.each do |row|
+        spec, source_id = row
+        platform = spec.platform_ruby? ? nil : spec.platform
+        entry = @definition.lockfile!.checksums.find do |candidate|
+          candidate.name == spec.name && candidate.version == spec.version.to_s && candidate.platform == platform
+        end
+        next unless entry
+        checksum = solve_batch_checksum(entry.checksums)
+        return false unless checksum
+        key = {source_id, spec.name, spec.version.to_s, spec.platform_ruby? ? "ruby" : spec.platform.not_nil!}
+        candidate = lookup[key]?
+        return false unless candidate
+        current = candidate["checksum"].as_h?.try { |value| value["value"]?.try(&.as_s?) }
+        return false if current && current != checksum
+        candidate["checksum"] = JSON::Any.new({"algorithm" => JSON::Any.new("sha256"), "value" => JSON::Any.new(checksum)})
+      end
+      true
+    end
+
+    private def solve_batch_checksum(values : Array(String)) : String?
+      normalized = values.compact_map do |value|
+        hex = value.starts_with?("sha256=") ? value[7..] : value
+        hex.downcase if hex.matches?(/\A[0-9a-fA-F]{64}\z/)
+      end.uniq
+      normalized.size == 1 ? normalized.first : nil
+    end
+
+    private def apply_solve_batch_response(response : SolveBatch::Response, request : SolveBatch::Request,
+                                           deps : Array(Resolver::DepSpec)) : Nil
+      sources = {} of String => JSON::Any
+      request.payload["evaluation"]["sources"].as_a.each { |source| sources[source["source_id"].as_s] = source }
+      selected = [] of ResolvedSpec
+      extras = [] of ResolvedSpec
+      response.chosen.group_by { |candidate| {candidate.name, candidate.version} }.each_value do |group|
+        group_specs = group.map { |candidate| solve_batch_candidate_to_index(candidate) }
+        variant_specs = [] of Resolver::IndexSpec
+        # `variants` is already schema/closure checked by Response.parse. Use it
+        # explicitly when rebuilding the platform rows rather than consulting
+        # the compact index a second time.
+        response.variants.each do |key, platforms|
+          next unless group.any? { |candidate| candidate.output_key == key }
+          platforms.each do |platform|
+            variant = group.find { |candidate| candidate.platform == platform }
+            variant_specs << solve_batch_candidate_to_index(variant.not_nil!) if variant
+          end
+        end
+        same_version = (group_specs + variant_specs).uniq(&.full_name)
+        best = best_match_variants(same_version, resolution_platforms)
+        next if best.empty?
+        current = best.first
+        current_candidate = group.find do |candidate|
+          candidate.name == current.name && candidate.version == current.version.to_s && candidate.platform == current.platform.to_s
+        end
+        next unless current_candidate
+        source_id = current_candidate.payload["source_id"].as_s
+        selected << solve_batch_resolved_spec(current, sources[source_id])
+        best.skip(1).each do |variant|
+          candidate = group.find do |item|
+            item.name == variant.name && item.version == variant.version.to_s && item.platform == variant.platform.to_s
+          end
+          next unless candidate
+          extras << solve_batch_resolved_spec(variant, sources[candidate.payload["source_id"].as_s])
+        end
+      end
+
+      @resolved_specs = selected.uniq(&.full_name).sort_by!(&.full_name)
+      @lock_extra_specs = extras.uniq(&.full_name).sort_by!(&.full_name)
+      @root_dependency_names = deps.map(&.name)
+      @current_base_requirements = build_base_requirements(Set(String).new)
+      @current_index = {} of String => Array(Resolver::IndexSpec)
+      request.payload["candidates_by_source"].as_h.each_value do |values|
+        values.as_a.each do |value|
+          spec = solve_batch_candidate_to_index(SolveBatch::Candidate.new(value))
+          (@current_index[spec.name] ||= [] of Resolver::IndexSpec) << spec
+        end
+      end
+    end
+
+    private def solve_batch_candidate_to_index(candidate : SolveBatch::Candidate) : Resolver::IndexSpec
+      dependencies = candidate.payload["dependencies"].as_a.map do |value|
+        Resolver::DepSpec.new(value["name"].as_s, value["requirements"].as_a.map(&.as_s))
+      end
+      ruby_requirement = candidate.payload["required_ruby_version"].as_s?
+      rubygems_requirement = candidate.payload["required_rubygems_version"].as_s?
+      checksum = candidate.payload["checksum"].as_h?.try { |value| value["value"].as_s }
+      created_at = candidate.payload["created_at"].as_s?.try { |value| Time.parse_rfc3339(value).to_unix }
+      Resolver::IndexSpec.new(candidate.name, Gem::Version.new(candidate.version),
+        candidate.platform == "ruby" ? Gem::Platform::RUBY : Gem::Platform.new(candidate.platform),
+        dependencies,
+        ruby_requirement ? Gem::Requirement.new(ruby_requirement) : Gem::Requirement.new,
+        rubygems_requirement ? Gem::Requirement.new(rubygems_requirement) : Gem::Requirement.new,
+        checksum: checksum, created_at: created_at)
+    end
+
+    private def solve_batch_resolved_spec(spec : Resolver::IndexSpec,
+                                          source_payload : JSON::Any) : ResolvedSpec
+      original = solve_batch_original_source(source_payload)
+      remote = if original
+                 original.remote || original.remotes.try(&.first?) || ""
+               else
+                 ""
+               end
+      dependencies = spec.dependencies.map do |dependency|
+        Lockfile::SpecDependency.new(dependency.name, dependency.requirement.to_lock_requirements)
+      end
+      ResolvedSpec.new(spec.name, spec.version, spec.platform_ruby? ? nil : spec.platform.to_s,
+        dependencies, spec.checksum.try { |value| "sha256=#{value}" }, 0, "GEM", nil, remote,
+        spec.required_ruby_version, spec.required_rubygems_version)
     end
 
     # ------------------------------------------------------------------
@@ -1246,6 +1759,8 @@ module Celerite
         @progress.puts "Resolving dependencies..." if @show_resolving && (healed || (available && !platform_ready))
         return @resolved_specs
       end
+
+      return @resolved_specs if try_solve_batch(deps)
 
       # `source/git.rb:76-81`: a source change makes the locked spec ineligible;
       # drop it from the locked index so the solver would otherwise keep the
@@ -1399,7 +1914,7 @@ module Celerite
           # The probe cached these names, so the real resolution would reuse
           # them silently; drop them and let it fetch and announce the index
           # itself, keeping the original line order.
-          probed.each { |name| @index_specs_cache.try &.delete(name) }
+          probed.each { |name| @index_specs_cache.try &.delete_if { |key, _| key[0] == name } }
         end
       end
       stale

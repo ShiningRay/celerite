@@ -356,7 +356,9 @@ module Celerite
         end
 
         resolution = if trusted = trusted_result[0]
-                       Resolution.from_evaluation(definition, trusted.evaluation, bridge)
+                       Resolution.from_evaluation(definition, trusted.evaluation, bridge, fingerprint)
+                     elsif evaluation
+                       Resolution.from_evaluation(definition, evaluation.not_nil!, bridge, fingerprint)
                      else
                        Resolution.new(definition, false, bridge)
                      end
@@ -489,12 +491,10 @@ module Celerite
           PlanCache.debug_miss(trusted_result[0] ? "context" : "trusted:#{trusted_result[1]}")
         end
         if !plan_loaded && trusted_result[0]
-          # A custom candidate already paid the authoritative RPC. Reuse that
-          # answer while the ordinary constructor re-evaluates the Gemfile;
-          # default/miss/disabled paths keep the original cache lookup.
+          # The custom candidate already paid the authoritative RPC. The
+          # Resolution created above reuses the same evaluation/fingerprint;
+          # only its independently validated cache path is updated here.
           custom_candidate = plan_candidate.try { |candidate| candidate[:optimized] ? nil : candidate }
-          resolution = Resolution.new(definition, false, bridge,
-            query_cache: Resolution.bundler_cache_query_needed?(custom_candidate))
           resolution.bundler_cache_path = custom_candidate.try { |candidate| candidate[:path] } if custom_candidate
         end
         resolution.show_resolving = show_resolving

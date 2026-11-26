@@ -3173,6 +3173,8 @@ module Celerite
         # `prefer_patch` (which selects the level instead).
         resolution.version_promotion_strict = rest.includes?("--strict")
       end
+      resolution.prerelease = rest.includes?("--pre")
+      resolution.conservative_update = rest.includes?("--conservative")
       # Nothing to unlock and `DEPENDENCIES` already matches the Gemfile: the
       # reference resolves nothing, so plain `lock` prints only "Writing
       # lockfile to ..." and `lock --print` prints only the lock body (measured
