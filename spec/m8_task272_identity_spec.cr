@@ -146,8 +146,9 @@ describe Celerite::CacheIdentity::RubyIdentity do
       rescue File::Error
         false
       end
-      next pending "symlink creation is unavailable in this environment" unless created
-      Celerite::CacheIdentity::RubyIdentity.detect(broken).state.should eq("unknown")
+      if created
+        Celerite::CacheIdentity::RubyIdentity.detect(broken).state.should eq("unknown")
+      end
 
       exe = t272_ruby(project)
       other_exe = t272_ruby(project, "other-ruby-bytes", ".ruby-other")
@@ -155,17 +156,20 @@ describe Celerite::CacheIdentity::RubyIdentity do
       other = Celerite::CacheIdentity::RubyIdentity.detect(other_exe)
       other.known?.should be_true
       other.identity_digest.should_not eq(original.identity_digest)
-      linked = File.join(project, "linked-ruby.exe")
-      File.symlink(other_exe, linked)
-      Celerite::CacheIdentity::RubyIdentity.detect(linked).identity_digest.should eq(other.identity_digest)
 
-      cycle_a = File.join(project, "cycle-a", "ruby.exe")
-      cycle_b = File.join(project, "cycle-b", "ruby.exe")
-      Dir.mkdir_p(File.dirname(cycle_a))
-      Dir.mkdir_p(File.dirname(cycle_b))
-      File.symlink(cycle_b, cycle_a)
-      File.symlink(cycle_a, cycle_b)
-      Celerite::CacheIdentity::RubyIdentity.detect(cycle_a).state.should eq("unknown")
+      if created
+        linked = File.join(project, "linked-ruby.exe")
+        File.symlink(other_exe, linked)
+        Celerite::CacheIdentity::RubyIdentity.detect(linked).identity_digest.should eq(other.identity_digest)
+
+        cycle_a = File.join(project, "cycle-a", "ruby.exe")
+        cycle_b = File.join(project, "cycle-b", "ruby.exe")
+        Dir.mkdir_p(File.dirname(cycle_a))
+        Dir.mkdir_p(File.dirname(cycle_b))
+        File.symlink(cycle_b, cycle_a)
+        File.symlink(cycle_a, cycle_b)
+        Celerite::CacheIdentity::RubyIdentity.detect(cycle_a).state.should eq("unknown")
+      end
 
       File.delete(File.join(project, ".ruby", "lib", "ruby", "9.9.0", "fake-arch", "rbconfig.rb"))
       Celerite::CacheIdentity::RubyIdentity.detect(File.join(project, ".ruby", "bin", "ruby.exe")).state.should eq("unknown")
