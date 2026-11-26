@@ -1,0 +1,386 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# CI gate for the M8 L164 lock/install fast paths (task-275).
+#
+# This driver intentionally uses only Ruby's standard library and the checked-in
+# file:// gem index. It never installs gems from the network. Product builds and
+# the focused old-binary capability spec live in .github/workflows/fast-path-gates.yml.
+
+require "digest"
+require "fileutils"
+require "json"
+require "open3"
+require "rbconfig"
+require "rubygems"
+require "time"
+require "tmpdir"
+require "uri"
+
+module FastPathGates
+  STATS_RE = /^bridge: procs=(\d+) rpc=(\d+) req_bytes=(\d+) resp_bytes=(\d+)\r?$/
+  ZERO_STATS = [0, 0, 0, 0].freeze
+  Result = Struct.new(:stdout, :stderr, :status, :stats, keyword_init: true)
+
+  class GateFailure < StandardError; end
+
+  def self.parse_stats(stderr)
+    bridge_lines = stderr.each_line.select { |line| line.start_with?("bridge:") }
+    matches = bridge_lines.map { |line| STATS_RE.match(line.chomp) }.compact
+    unless bridge_lines.length == 1 && matches.length == 1
+      raise GateFailure, "expected exactly one bridge stats line, got #{bridge_lines.inspect}"
+    end
+
+    matches.first.captures.map(&:to_i)
+  end
+
+  def self.strip_stats(stderr)
+    stderr.each_line.reject { |line| STATS_RE.match?(line.chomp) }.join
+  end
+
+  def self.default_binary(root, windows: RbConfig::CONFIG.fetch("host_os").match?(/mswin|mingw/))
+    File.join(root, "bin", windows ? "celerite.exe" : "celerite")
+  end
+
+  def self.command(binary, arguments)
+    [File.expand_path(binary), *arguments]
+  end
+
+  def self.file_source_url(path)
+    normalized = File.expand_path(path).tr("\\", "/")
+    escaped = URI::DEFAULT_PARSER.escape(normalized, %r{[^A-Za-z0-9._~:/-]})
+    "file://#{escaped}"
+  end
+
+  def self.normalize_output(text, project)
+    forward = File.expand_path(project).tr("\\", "/")
+    text.tr("\\", "/").gsub(forward, "{PROJECT}").gsub("\r\n", "\n")
+  end
+
+  def self.bundler_lib(profile)
+    unless profile.match?(/\A\d+\.\d+\.\d+\z/)
+      raise GateFailure, "invalid Bundler profile: #{profile.inspect}"
+    end
+
+    specification = Gem::Specification.find_all_by_name("bundler", profile).max_by(&:version)
+    raise GateFailure, "Bundler #{profile} is not installed" unless specification
+
+    File.expand_path(File.join(specification.full_gem_path, "lib"))
+  end
+
+  def self.environment(project:, root:, profile:, reference_lib:, fast_path:, stats: ENV["CELERITE_GATE_FORCE_STATS_OFF"] == "1" ? "0" : "1", overrides: {})
+    env = {}
+    ENV.each_key do |key|
+      upper = key.upcase
+      env[key] = nil if upper.start_with?("BUNDLE_", "CELERITE_")
+    end
+    env.merge!(
+      "PATH" => ENV["PATH"] || ENV["Path"] || "",
+      "PATHEXT" => ENV["PATHEXT"],
+      "SystemRoot" => ENV["SystemRoot"] || ENV["SYSTEMROOT"],
+      "COMSPEC" => ENV["COMSPEC"],
+      "RUBYOPT" => nil,
+      "RUBYLIB" => nil,
+      "GEM_HOME" => nil,
+      "GEM_PATH" => nil,
+      "HOME" => project,
+      "USERPROFILE" => project,
+      "APPDATA" => File.join(project, "appdata"),
+      "LOCALAPPDATA" => File.join(project, "localappdata"),
+      "TMPDIR" => File.join(project, "tmp"),
+      "TMP" => File.join(project, "tmp"),
+      "TEMP" => File.join(project, "tmp"),
+      "BUNDLE_APP_CONFIG" => File.join(project, ".bundle"),
+      "BUNDLE_USER_HOME" => File.join(project, "user-home"),
+      "BUNDLE_USER_PLUGIN" => File.join(project, "global-plugin"),
+      "BUNDLE_PATH" => File.join(project, "bundle"),
+      "CELERITE_BRIDGE_SERVER" => File.join(root, "assets", "bridge", "server.rb"),
+      "CELERITE_REFERENCE_BUNDLER_LIB" => reference_lib,
+      "CELERITE_PROFILE_BUNDLER_VERSION" => profile,
+      "CELERITE_REFERENCE_BUNDLER_VERSION" => profile,
+      "CELERITE_CACHE_DIR" => File.join(project, ".celerite"),
+      "CELERITE_FAST_PATH" => fast_path ? "1" : "0",
+      "CELERITE_EVAL_CACHE" => "1",
+      "CELERITE_BRIDGE_STATS" => stats
+    )
+    env.merge!(overrides)
+    env
+  end
+
+  def self.prepare_project(workspace, fixture, name, index)
+    project = File.join(workspace, name)
+    FileUtils.mkdir_p([project, File.join(project, ".bundle"), File.join(project, "tmp"),
+                       File.join(project, "appdata"), File.join(project, "localappdata"),
+                       File.join(project, "user-home"), File.join(project, "global-plugin")])
+    gemfile = File.read(File.join(fixture, "Gemfile"))
+    gemfile = gemfile.sub("@INDEX_DIR@", File.expand_path(index).tr("\\", "/"))
+    File.write(File.join(project, "Gemfile"), gemfile)
+    project
+  end
+
+  def self.capture(binary, project, arguments, env)
+    stdout, stderr, status = Open3.capture3(env, *command(binary, arguments), chdir: project)
+    Result.new(stdout: stdout, stderr: stderr, status: status, stats: nil)
+  end
+
+  def self.run(binary, project, arguments, env)
+    result = capture(binary, project, arguments, env)
+    result.stats = parse_stats(result.stderr)
+    result
+  end
+
+  def self.checked(result, label, zero: false, fallback: false)
+    unless result.status.success?
+      raise GateFailure, "#{label} exited #{result.status.exitstatus || result.status.termsig}\n" \
+                         "stdout:\n#{result.stdout}\nstderr:\n#{result.stderr}"
+    end
+    if zero && result.stats != ZERO_STATS
+      raise GateFailure, "#{label}: expected #{ZERO_STATS.inspect}, got #{result.stats.inspect}\n#{result.stderr}"
+    end
+    if fallback && result.stats.first < 1
+      raise GateFailure, "#{label}: expected a real Ruby fallback (procs>=1), got #{result.stats.inspect}\n#{result.stderr}"
+    end
+    result
+  end
+
+  def self.ignored_tree_path?(relative)
+    parts = relative.split("/")
+    return true if parts.first == ".celerite" || parts.first == "tmp" || parts.first == "log"
+    return true if relative == "vendor/cache" || relative.start_with?("vendor/cache/")
+    return true if parts.include?("cache") && relative.match?(%r{\A(?:bundle|vendor|\.bundle)/})
+
+    false
+  end
+
+  def self.tree_manifest(project)
+    entries = {}
+    pattern = File.join(project, "**", "*")
+    Dir.glob(pattern, File::FNM_DOTMATCH).sort.each do |path|
+      relative = path.delete_prefix(File.expand_path(project)).tr("\\", "/").sub(%r{\A/}, "")
+      next if ignored_tree_path?(relative)
+
+      if File.symlink?(path)
+        entries[relative] = ["symlink", File.readlink(path).tr("\\", "/")]
+      elsif File.file?(path)
+        entries[relative] = ["file", Digest::SHA256.file(path).hexdigest]
+      end
+    end
+    JSON.generate(entries)
+  end
+
+  def self.save_result(artifacts, name, result)
+    File.write(File.join(artifacts, "#{name}.stdout"), result.stdout)
+    File.write(File.join(artifacts, "#{name}.stderr"), result.stderr)
+    {
+      "exit" => result.status.exitstatus || result.status.termsig,
+      "stats" => result.stats,
+      "stdout_sha256" => Digest::SHA256.hexdigest(result.stdout),
+      "stderr_sha256" => Digest::SHA256.hexdigest(result.stderr)
+    }
+  end
+
+  def self.assert_parity(label, fast:, compat:, fast_project:, compat_project:, artifacts:)
+    comparisons = {
+      "exit" => [fast.status.exitstatus || fast.status.termsig, compat.status.exitstatus || compat.status.termsig],
+      "stdout" => [normalize_output(fast.stdout, fast_project), normalize_output(compat.stdout, compat_project)],
+      "stderr_without_stats" => [normalize_output(strip_stats(fast.stderr), fast_project),
+                                 normalize_output(strip_stats(compat.stderr), compat_project)],
+      "lock_bytes" => [File.binread(File.join(fast_project, "Gemfile.lock")),
+                      File.binread(File.join(compat_project, "Gemfile.lock"))],
+      "tree" => [tree_manifest(fast_project), tree_manifest(compat_project)]
+    }
+    comparisons.each do |field, (left, right)|
+      next if left == right
+
+      File.write(File.join(artifacts, "#{label}-#{field}-fast.txt"), left.to_s)
+      File.write(File.join(artifacts, "#{label}-#{field}-compat.txt"), right.to_s)
+      raise GateFailure, "#{label}: #{field} differs between fast and compatibility paths"
+    end
+    File.write(File.join(artifacts, "#{label}-fast-tree.json"), comparisons.fetch("tree").first)
+    File.write(File.join(artifacts, "#{label}-compat-tree.json"), comparisons.fetch("tree").last)
+    comparisons.keys
+  end
+
+  def self.operation_case(workspace:, root:, fixture:, index:, binary:, profile:, reference_lib:,
+                          artifacts:, label:, arguments:)
+    fast_project = prepare_project(workspace, fixture, "#{label}-fast", index)
+    compat_project = prepare_project(workspace, fixture, "#{label}-compat", index)
+    fast_env = ->(fast_path: true) do
+      environment(project: fast_project, root: root, profile: profile, reference_lib: reference_lib,
+                  fast_path: fast_path)
+    end
+    compat_env = -> do
+      environment(project: compat_project, root: root, profile: profile, reference_lib: reference_lib,
+                  fast_path: false)
+    end
+
+    fast_setup = checked(run(binary, fast_project, ["install"], fast_env.call),
+                         "#{label} fast setup", fallback: true)
+    compat_setup = checked(run(binary, compat_project, ["install"], compat_env.call),
+                           "#{label} compatibility setup", fallback: true)
+    fast_warm = checked(run(binary, fast_project, arguments, fast_env.call), "#{label} fast warm")
+    compat_warm = checked(run(binary, compat_project, arguments, compat_env.call),
+                          "#{label} compatibility warm", fallback: true)
+    lock_before = File.binread(File.join(fast_project, "Gemfile.lock"))
+    fast_hot = checked(run(binary, fast_project, arguments, fast_env.call), "#{label} fast hot", zero: true)
+    compat_hot = checked(run(binary, compat_project, arguments, compat_env.call),
+                         "#{label} compatibility hot", fallback: true)
+    unless File.binread(File.join(fast_project, "Gemfile.lock")) == lock_before
+      raise GateFailure, "#{label}: hot fast-path lock bytes changed"
+    end
+
+    parity = assert_parity(label, fast: fast_hot, compat: compat_hot,
+                           fast_project: fast_project, compat_project: compat_project, artifacts: artifacts)
+    {
+      "arguments" => arguments,
+      "setup_stats" => save_result(artifacts, "#{label}-fast-setup", fast_setup),
+      "compat_setup_stats" => save_result(artifacts, "#{label}-compat-setup", compat_setup),
+      "warm_stats" => save_result(artifacts, "#{label}-fast-warm", fast_warm),
+      "compat_warm_stats" => save_result(artifacts, "#{label}-compat-warm", compat_warm),
+      "hot_stats" => save_result(artifacts, "#{label}-fast-hot", fast_hot),
+      "compat_hot_stats" => save_result(artifacts, "#{label}-compat-hot", compat_hot),
+      "lock_sha256" => Digest::SHA256.file(File.join(fast_project, "Gemfile.lock")).hexdigest,
+      "parity" => parity
+    }
+  end
+
+  def self.mutate_lock_bytes(project)
+    path = File.join(project, "Gemfile.lock")
+    raw = File.binread(path)
+    changed = raw.include?("\r\n") ? raw.sub("\r\n", "\n") : raw.sub("\n", "\r\n")
+    raise GateFailure, "lock byte mutation did not change the file" if changed == raw
+
+    File.binwrite(path, changed)
+  end
+
+  def self.mutate_lock_comment(project)
+    path = File.join(project, "Gemfile.lock")
+    File.open(path, "ab") { |file| file.write("\n# task-275 lock comment tamper\n") }
+  end
+
+  def self.mutate_install_tree(project)
+    gem_dir = Dir.glob(File.join(project, "bundle", "**", "gems", "json_pure-*")).find { |path| File.directory?(path) }
+    raise GateFailure, "installed json_pure tree not found" unless gem_dir
+
+    path = Dir.glob(File.join(gem_dir, "lib", "**", "*")).find { |candidate| File.file?(candidate) }
+    path ||= File.join(gem_dir, "task-275-installed-tree-marker")
+    File.open(path, "ab") { |file| file.write("\n# task-275 installed tree tamper\n") }
+    path.delete_prefix(File.expand_path(project)).tr("\\", "/")
+  end
+
+  def self.mutate_plugin_index(project)
+    root = File.join(project, ".bundle", "plugin")
+    FileUtils.mkdir_p(root)
+    # Nonempty bytes with no declared plugin: the compatibility path remains a
+    # valid no-op, while the fast path must refuse the populated index.
+    File.write(File.join(root, "index"), "---\nplugins: []\n")
+  end
+
+  def self.negative_case(workspace:, root:, fixture:, index:, binary:, profile:, reference_lib:,
+                         artifacts:, label:, arguments:, mutation:)
+    project = prepare_project(workspace, fixture, label, index)
+    env = environment(project: project, root: root, profile: profile, reference_lib: reference_lib,
+                      fast_path: true)
+    checked(run(binary, project, ["install"], env), "#{label} setup", fallback: true)
+    checked(run(binary, project, arguments, env), "#{label} warm")
+    checked(run(binary, project, arguments, env), "#{label} hot", zero: true)
+    mutation.call(project)
+    result = checked(run(binary, project, arguments, env), "#{label} fallback", fallback: true)
+    {
+      "mutation" => mutation.name,
+      "result" => save_result(artifacts, label, result)
+    }
+  end
+
+  def self.stats_off_guard(workspace:, root:, fixture:, index:, binary:, profile:, reference_lib:, artifacts:)
+    project = prepare_project(workspace, fixture, "stats-off", index)
+    env = environment(project: project, root: root, profile: profile, reference_lib: reference_lib,
+                      fast_path: true)
+    checked(run(binary, project, ["install"], env), "stats-off setup", fallback: true)
+    checked(run(binary, project, ["install"], env), "stats-off warm")
+    disabled_env = environment(project: project, root: root, profile: profile, reference_lib: reference_lib,
+                               fast_path: true, stats: "0")
+    result = capture(binary, project, ["install"], disabled_env)
+    checked(result, "stats-off command")
+    if result.stderr.match?(/^bridge:/)
+      raise GateFailure, "CELERITE_BRIDGE_STATS=0 still emitted bridge stats"
+    end
+    begin
+      parse_stats(result.stderr)
+    rescue GateFailure
+      # Expected: a disabled observer cannot satisfy the zero-counter gate.
+    else
+      raise GateFailure, "stats parser accepted a run with CELERITE_BRIDGE_STATS=0"
+    end
+    save_result(artifacts, "stats-off", result).merge("parser_rejected" => true)
+  end
+
+  def self.main(_arguments = [])
+    root = File.expand_path("..", __dir__)
+    binary = File.expand_path(ENV["CELERITE_TEST_BINARY"] || default_binary(root), root)
+    raise GateFailure, "test binary is not built: #{binary}" unless File.file?(binary)
+
+    profile = ENV["BUNDLER_REF_VERSION"] || ENV["CELERITE_PROFILE_BUNDLER_VERSION"] || "4.0.24"
+    reference_lib = bundler_lib(profile)
+    artifacts = File.expand_path(ENV["CELERITE_GATE_ARTIFACTS"] || File.join(root, "fast-path-gates-artifacts"), root)
+    FileUtils.rm_rf(artifacts)
+    FileUtils.mkdir_p(artifacts)
+    fixture_root = File.join(root, "fixtures", "differential")
+    index = File.join(root, "fixtures", "gem-index")
+    summary = {
+      "schema" => "celerite-fast-path-gates/1",
+      "started_at" => Time.now.utc.iso8601,
+      "binary" => binary,
+      "profile" => profile,
+      "reference_lib" => reference_lib,
+      "platform" => RbConfig::CONFIG.fetch("host_os"),
+      "status" => "running"
+    }
+
+    begin
+      Dir.mktmpdir("celerite-fast-path-gates") do |workspace|
+        summary["lock"] = operation_case(workspace: workspace, root: root,
+          fixture: File.join(fixture_root, "lock-noop"), index: index, binary: binary,
+          profile: profile, reference_lib: reference_lib, artifacts: artifacts,
+          label: "lock", arguments: ["lock"])
+        summary["install"] = operation_case(workspace: workspace, root: root,
+          fixture: File.join(fixture_root, "install-rerun"), index: index, binary: binary,
+          profile: profile, reference_lib: reference_lib, artifacts: artifacts,
+          label: "install", arguments: ["install"])
+        common = { workspace: workspace, root: root, index: index, binary: binary,
+                   profile: profile, reference_lib: reference_lib, artifacts: artifacts }
+        summary["negatives"] = [
+          negative_case(**common, fixture: File.join(fixture_root, "lock-noop"),
+                        label: "negative-lock-byte", arguments: ["lock"], mutation: method(:mutate_lock_bytes)),
+          negative_case(**common, fixture: File.join(fixture_root, "lock-noop"),
+                        label: "negative-lock-comment", arguments: ["lock"], mutation: method(:mutate_lock_comment)),
+          negative_case(**common, fixture: File.join(fixture_root, "install-rerun"),
+                        label: "negative-install-tree", arguments: ["install"], mutation: method(:mutate_install_tree)),
+          negative_case(**common, fixture: File.join(fixture_root, "install-rerun"),
+                        label: "negative-plugin-index", arguments: ["install"], mutation: method(:mutate_plugin_index))
+        ]
+        summary["stats_off"] = stats_off_guard(**common, fixture: File.join(fixture_root, "install-rerun"))
+      end
+      summary["status"] = "passed"
+      summary["finished_at"] = Time.now.utc.iso8601
+      summary
+    rescue StandardError => error
+      summary["status"] = "failed"
+      summary["finished_at"] = Time.now.utc.iso8601
+      summary["error"] = "#{error.class}: #{error.message}"
+      raise
+    ensure
+      File.write(File.join(artifacts, "summary.json"), JSON.pretty_generate(summary))
+    end
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  begin
+    result = FastPathGates.main(ARGV)
+    puts "fast-path-gates: PASS profile=#{result.fetch('profile')} artifacts=#{File.join(Dir.pwd, 'fast-path-gates-artifacts')}"
+  rescue StandardError => error
+    warn "fast-path-gates: FAIL: #{error.class}: #{error.message}"
+    exit 1
+  end
+end

@@ -1,0 +1,138 @@
+name: Fast path gates
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  OLD_COMMIT: d9009b14a0bf18da62b7a85cfc68b2442c4446de
+
+jobs:
+  gates:
+    name: ${{ matrix.os }} / Bundler ${{ matrix.bundler_ref }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        bundler_ref: ["4.0.24", "2.7.2"]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: "latest"
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+
+      - name: Install reference Bundler
+        run: gem install bundler -v ${{ matrix.bundler_ref }}
+
+      - name: Lightweight driver checks
+        run: |
+          ruby -c script/fast-path-gates
+          ruby -c test/fast_path_gates_test.rb
+          ruby test/fast_path_gates_test.rb
+
+      - name: Build current binary
+        run: |
+          shards build
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            binary="$GITHUB_WORKSPACE/bin/celerite.exe"
+          else
+            binary="$GITHUB_WORKSPACE/bin/celerite"
+          fi
+          test -f "$binary"
+          echo "CELERITE_TEST_BINARY=$binary" >> "$GITHUB_ENV"
+
+      - name: Run fast-path CI gates
+        env:
+          BUNDLER_REF_VERSION: ${{ matrix.bundler_ref }}
+          CELERITE_GATE_ARTIFACTS: ${{ github.workspace }}/fast-path-gates-artifacts
+        run: ruby script/fast-path-gates
+
+      - name: Require stats-off gate run to fail
+        env:
+          BUNDLER_REF_VERSION: ${{ matrix.bundler_ref }}
+        run: |
+          set +e
+          CELERITE_GATE_FORCE_STATS_OFF=1 \
+            CELERITE_GATE_ARTIFACTS="$GITHUB_WORKSPACE/fast-path-stats-off-artifacts" \
+            ruby script/fast-path-gates > stats-off-gate.log 2>&1
+          status=$?
+          set -e
+          cat stats-off-gate.log
+          if [[ "$status" -eq 0 ]]; then
+            echo "fast-path gate unexpectedly passed with bridge stats disabled" >&2
+            exit 1
+          fi
+          grep -F "expected exactly one bridge stats line" stats-off-gate.log
+          echo "stats-off gate failed closed as required (exit=$status)"
+
+      - name: Verify current capability example
+        run: |
+          crystal spec spec/m8_install_fast_path_spec.cr -e "CI capability: expected_miss_after_lock_tamper"
+
+      - name: Verify fixed old commit is available
+        run: git cat-file -e "$OLD_COMMIT^{commit}"
+
+      - name: Build old binary in detached worktree
+        run: |
+          old_dir="$RUNNER_TEMP/celerite-$OLD_COMMIT"
+          git worktree add --detach "$old_dir" "$OLD_COMMIT"
+          (
+            cd "$old_dir"
+            shards build
+          )
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            old_binary="$old_dir/bin/celerite.exe"
+          else
+            old_binary="$old_dir/bin/celerite"
+          fi
+          test -f "$old_binary"
+          echo "CELERITE_OLD_BINARY=$old_binary" >> "$GITHUB_ENV"
+          echo "CELERITE_OLD_WORKTREE=$old_dir" >> "$GITHUB_ENV"
+
+      - name: Require old binary to fail the capability example
+        run: |
+          set +e
+          CELERITE_TEST_BINARY="$CELERITE_OLD_BINARY" crystal spec spec/m8_install_fast_path_spec.cr \
+            -e "CI capability: expected_miss_after_lock_tamper" > old-binary-capability.log 2>&1
+          status=$?
+          set -e
+          cat old-binary-capability.log
+          if [[ "$status" -eq 0 ]]; then
+            echo "old binary unexpectedly passed expected_miss_after_lock_tamper" >&2
+            exit 1
+          fi
+          grep -F "expected_miss_after_lock_tamper" old-binary-capability.log
+          echo "old binary failed the capability gate as required (exit=$status)"
+
+      - name: Remove old worktree
+        if: always()
+        run: |
+          if [[ -n "${CELERITE_OLD_WORKTREE:-}" ]]; then
+            git worktree remove --force "$CELERITE_OLD_WORKTREE"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fast-path-${{ matrix.os }}-bundler-${{ matrix.bundler_ref }}
+          path: |
+            fast-path-gates-artifacts/
+            fast-path-stats-off-artifacts/
+            old-binary-capability.log
+            stats-off-gate.log
+          if-no-files-found: warn
