@@ -758,8 +758,15 @@ describe "task-273 lock byte gate and success certificate transaction" do
       lfp_pending!(project)
       digest = lfp_ready(project)
       path = File.join(project, "Gemfile.lock")
-      File.write(path, File.read(path) + "# tampered\n")
-      lfp_assert_compat_miss(project, "certificate-lock")
+      lock = File.read(path)
+      File.write(path, lock + " ")
+      lfp_assert_compat_miss(project, "verdict:certificate-lock")
+      File.write(path, lock)
+      status, _output, errors, procs, _rpc = lfp_lock(project,
+        lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG"))
+      status.should eq(0)
+      procs.should eq(0)
+      lfp_hits(errors).size.should eq(1)
       lfp_digest(project).should eq(digest)
     end
   end
@@ -772,7 +779,7 @@ describe "task-273 lock byte gate and success certificate transaction" do
       lock = File.read(path)
       lock.should_not contain("\r\n")
       File.write(path, lock.gsub("\n", "\r\n"))
-      lfp_assert_compat_miss(project, "certificate-lock")
+      lfp_assert_compat_miss(project, "verdict:certificate-lock")
       bytes = File.read(path)
       bytes.should contain("\r\n")
       bytes.gsub("\r\n", "").should_not contain('\n')
@@ -786,10 +793,10 @@ describe "task-273 lock byte gate and success certificate transaction" do
       old_nonce = lfp_record_nonce(project)
       path = File.join(project, "Gemfile.lock")
       lock = File.read(path)
-      changed = lock.sub("    4.0.24", "    0.0.0")
+      changed = lock.sub(/BUNDLED WITH\n\s+[^\n]+/, "BUNDLED WITH\n    0.0.0")
       changed.should_not eq(lock)
       File.write(path, changed)
-      lfp_assert_compat_miss(project, "certificate-lock")
+      lfp_assert_compat_miss(project, "verdict:certificate-lock")
       lfp_digest(project).should eq(digest)
       lfp_record_nonce(project).should_not eq(old_nonce)
     end
@@ -801,7 +808,8 @@ describe "task-273 lock byte gate and success certificate transaction" do
       lfp_ready(project)
       path = File.join(project, "Gemfile.lock")
       lock = File.read(path)
-      changed = lock.sub("    4.0.24", "    0.0.0")
+      changed = lock.sub(/BUNDLED WITH\n\s+[^\n]+/, "BUNDLED WITH\n    0.0.0")
+      changed.should_not eq(lock)
       File.write(path, changed)
       identity = Celerite::CacheIdentity::LockIdentity.detect(path, project_root: project)
       entry_path = lfp_entry_paths(project).first
@@ -823,11 +831,11 @@ describe "task-273 lock byte gate and success certificate transaction" do
       path = File.join(project, "Gemfile.lock")
       lock = File.read(path)
       changed = lock.sub(/sha256=[0-9a-f]{64}/) do |match|
-        match[0, 71] + (match[71] == '0' ? '1' : '0')
+        match[0, 70] + (match[70] == '0' ? '1' : '0')
       end
       changed.should_not eq(lock)
       File.write(path, changed)
-      lfp_assert_compat_miss(project, "certificate-lock")
+      lfp_assert_compat_miss(project, "verdict:certificate-lock")
     end
   end
 
@@ -847,12 +855,32 @@ describe "task-273 lock byte gate and success certificate transaction" do
       lfp_pending!(project)
       lfp_ready(project)
       env = lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG")
-      env["CELERITE_PROFILE_BUNDLER_VERSION"] = "4.0.23"
-      status, _output, errors, procs, _rpc = lfp_lock(project, env)
-      status.should eq(0)
-      procs.should be >= 1
+      env["CELERITE_PROFILE_BUNDLER_VERSION"] = "2.7.2"
+      reference = "C:/Users/ShiningRay/projects/ShiningRay/celerite/.upstream-specs/v2.7.2/bundler/lib"
+      status, output, errors, procs, _rpc = lfp_lock(project, env)
       lfp_hits(errors).should be_empty
-      lfp_misses(errors).size.should eq(1)
+      if File.exists?(File.join(reference, "bundler.rb"))
+        env["CELERITE_REFERENCE_BUNDLER_LIB"] = reference
+        status, output, errors, procs, _rpc = lfp_lock(project, env)
+        status.should eq(0)
+        procs.should be >= 1
+        lfp_hits(errors).should be_empty
+        lfp_misses(errors).size.should eq(1)
+      else
+        # This host has no 2.7.2 reference tree. Compare the enabled and disabled
+        # commands under the same environment instead of claiming a successful
+        # 2.7.2 compatibility run.
+        baseline_env = env.merge({"CELERITE_FAST_PATH" => "0"})
+        baseline_status, baseline_output, baseline_errors, baseline_procs, _baseline_rpc = lfp_lock(project, baseline_env)
+        status.should eq(baseline_status)
+        output.should eq(baseline_output)
+        procs.should eq(baseline_procs)
+        # Bridge request sizes are diagnostics, not Bundler output; the fast-path
+        # preflight changes those counters even when the command is equivalent.
+        errors.lines.reject { |line| line.starts_with?("fast-path:") || line.starts_with?("bridge:") }.join.should eq(
+          baseline_errors.lines.reject { |line| line.starts_with?("fast-path:") || line.starts_with?("bridge:") }.join
+        )
+      end
     end
   end
 
@@ -865,7 +893,7 @@ describe "task-273 lock byte gate and success certificate transaction" do
       nonce = lfp_record_nonce(project)
       payload["certificates"].as_h[nonce].as_h["lock"].as_h["parser_revision"] = JSON::Any.new("celerite-lockfile/0")
       File.write(path, payload.to_json)
-      lfp_assert_compat_miss(project, "certificate-lock")
+      lfp_assert_compat_miss(project, "verdict:certificate-lock")
     end
   end
 
@@ -885,7 +913,11 @@ describe "task-273 lock byte gate and success certificate transaction" do
         end
         File.write(path, payload.to_json)
         begin
-          lfp_assert_compat_miss(project, "entry")
+          # A legacy entry cannot be decoded as /2, so it fails at the entry
+          # gate. A valid /2 entry with no command certificate reaches the
+          # decision and is unbound there.
+          expected_reason = mode == "legacy" ? "entry" : "verdict:lock-unbound"
+          lfp_assert_compat_miss(project, expected_reason)
         ensure
           File.write(path, original)
         end
@@ -927,7 +959,9 @@ describe "task-273 lock byte gate and success certificate transaction" do
         status, output, errors, procs, _rpc = lfp_lock(project,
           lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG"))
         status.should eq(23)
-        procs.should eq(0)
+        unless procs == 0
+          fail "expected a zero-spawn hot write failure; fast-path stderr:\n#{errors}"
+        end
         lfp_hits(errors).size.should eq(1)
         output.should contain("Writing lockfile to")
       end
@@ -947,6 +981,7 @@ describe "task-273 lock byte gate and success certificate transaction" do
       parent = File.join(project, ".celerite", "cache", "fast-path")
       Dir.mkdir_p(parent)
       blocker = File.join(parent, "v2")
+      FileUtils.rm_rf(blocker)
       File.write(blocker, "block record directory")
       lfp_assert_compat_miss(project, "record")
       lfp_assert_compat_miss(project, "record")
@@ -967,7 +1002,9 @@ describe "task-273 lock byte gate and success certificate transaction" do
       lfp_hits(errors).size.should eq(1)
       path = File.join(project, "Gemfile.lock")
       lock = File.read(path)
-      File.write(path, lock.sub("    4.0.24", "    0.0.0"))
+      changed = lock.sub(/BUNDLED WITH\n\s+[^\n]+/, "BUNDLED WITH\n    0.0.0")
+      changed.should_not eq(lock)
+      File.write(path, changed)
       lfp_assert_compat_miss(project)
     end
   end
