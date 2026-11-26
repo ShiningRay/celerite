@@ -374,3 +374,13 @@
 - 边界：不抗同机恶意并发写者，不承诺跨文件原子提交或 rollback 失败时旧缓存仍可用；RuntimeRecord 缺失/旧 nonce 始终是 fail-closed 提交门。动态/随机 Plugin::DSL 的未识别残余、Linux/macOS、第二 ABI、真实 ACL/多进程争用、kill/断电、Rails 与全量 differential 未验证；合流后首辅完整 `crystal spec` = **1393 examples, 0 failures, 0 errors, 0 pending**（28:37，全新隔离 HOME）。缓存写失败只损失优化，不改变兼容命令结果。
 - 生效：M8 期间（task-274；首辅独立门禁与完整 spec 已完成，四格 CI/平台证据仍待 task-275/276）
 - 取代：无；细化 C-M8-1-027 的默认插件空证书边界，并取代 task-273 遗留的 install 默认 lock 信任。
+
+## C-M8-1-032 L164 快路径 CI 正门与旧二进制负向能力门（task-275）
+
+- 状态：已实现
+- 参考行为：Bundler 兼容路径不承诺零 Ruby；它保留 lock/install 的 stdout、可观测 stderr、退出码、锁原始字节与用户项目/安装树。CI 正门必须以该兼容路径作为 oracle，而不是只检查快路径自己的摘要。
+- 我方行为：新增 Ruby 跨平台驱动 `script/fast-path-gates` 与独立 workflow。驱动用本地 `fixtures/gem-index` warm lock/install，要求第二次 `procs/rpc/req_bytes/resp_bytes` 全 0，并与 `CELERITE_FAST_PATH=0` 比较 stdout、去 stats stderr、退出码、锁字节和去缓存树；锁字节/注释、安装树内容、插件索引非空均要求真实 `procs>=1`。workflow 覆盖 Windows/Ubuntu × Bundler 4.0.24/2.7.2，另以固定 `d9009b1` 旧 binary 跑 focused capability 例并要求日志带 `expected_miss_after_lock_tamper: stats=` 的非零失败。该例用 `BUNDLE_PLUGINS=false` 的 legacy explicit-false 热路径，并在 `ifp_ready` 跳过 v2 install certificate 断言，先证明旧 binary 可达到 hot0，再执行锁篡改断言。
+- 判据：`crystal spec spec/m8_install_fast_path_spec.cr -e "CI capability"` 当前 binary **1/0**；首辅在短路径独立树构建当前 binary，修正 Ruby `File.write` 在 Windows 写 CRLF 导致 bridge/Crystal Gemfile 指纹不一致，以及树 manifest 大小写敏感前缀导致缓存未排除两处装具问题后，`script/fast-path-gates` 在 Bundler 4.0.24 与 2.7.2 均 **PASS / EXIT=0**：lock/install warm→hot 四计数全 0，FAST_PATH=0 的输出/去 stats stderr/退出码/锁字节/去缓存树一致，锁换行、锁注释、安装树内容、非空插件索引四类负向均真实 `procs>=1`，stats-off fail closed。固定旧 `d9009b1` binary 同例 **1 failure / EXIT=1**，精确失败 `expected_miss_after_lock_tamper: stats={0, 0, 0, 0}`，证明到达锁篡改断言。Ruby driver **10 checks, 0 failures**；主仓 format/no-codegen/build/diff 均 0。GitHub Actions 四格尚未运行。
+- 边界：只测本地 fixture 与显式能力例；不把本机单平台 Ruby 结果冒充 CI matrix。stats-off 必须使脚本非零；旧 binary 任意环境错误不算负门通过。旧 binary 不作为当前产品构建。动态 DSL、硬终止、Ubuntu、第二 ABI、真实 ACL/并发及 GitHub Actions 四格未实跑，L164 不据此勾选。
+- 生效：task-275（fix `c84b90d`；test `95c945c`；反假绿 follow-up test `810f161`；docs follow-up 本提交）
+- 取代：无
