@@ -51,8 +51,8 @@ describe "M7(5) filesystem error mapping" do
   end
 
   {% unless flag?(:win32) %}
-    it "maps ENOTSUP to OperationNotSupportedError (28)" do
-      mapped = map_errno(Errno::ENOTSUP)
+    it "maps EOPNOTSUPP to OperationNotSupportedError (28)" do
+      mapped = map_errno(Errno::EOPNOTSUPP)
       mapped.should be_a(Celerite::OperationNotSupportedError)
       error = mapped.not_nil!
       error.status_code.should eq(28)

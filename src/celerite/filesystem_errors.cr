@@ -6,7 +6,7 @@ module Celerite
   # (bundler-4.0.24/lib/bundler/shared_helpers.rb:105-127): map the OS error to
   # the matching Bundler error class, leaving EEXIST/ENOENT untouched.
   #
-  # `Errno::EPROTO` / `Errno::ENOTSUP` do not exist in Crystal's Windows
+  # `Errno::EPROTO` / `Errno::EOPNOTSUPP` do not exist in Crystal's Windows
   # errno table, so those two branches are compiled only on POSIX hosts;
   # Windows exposes the same conditions through WinError values below.
   module FilesystemErrors
@@ -27,7 +27,7 @@ module Celerite
         return ReadOnlyFileSystemError.new(path, action) if os == Errno::EROFS
         {% unless flag?(:win32) %}
           return VirtualProtocolError.new if os == Errno::EPROTO
-          return OperationNotSupportedError.new(path, action) if os == Errno::ENOTSUP
+          return OperationNotSupportedError.new(path, action) if os == Errno::EOPNOTSUPP
         {% end %}
       end
 
