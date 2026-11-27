@@ -66,31 +66,7 @@ module BenchM8
           diagnostics = self_test_diagnostics(collector.last_result, stderr, "#{stdout}.time")
           raise CollectionError, "self-test collector raised #{error.class}: #{error.message}\n#{diagnostics}"
         end
-        errors = []
-        errors << "self-test command failed" unless result[:exit_status] == 0 && !result[:timed_out]
-        errors << "self-test collector incomplete: #{result[:missing_metrics].join(', ')}" unless result[:collector_complete]
-        if [result[:root_cpu_user_s], result[:root_cpu_system_s],
-            result[:tree_cpu_user_s], result[:tree_cpu_system_s]].any?(&:nil?)
-          errors << "self-test CPU metrics missing"
-        else
-          root_cpu = result[:root_cpu_user_s] + result[:root_cpu_system_s]
-          tree_cpu = result[:tree_cpu_user_s] + result[:tree_cpu_system_s]
-          errors << "tree CPU #{tree_cpu} did not exceed root CPU #{root_cpu}" unless tree_cpu > root_cpu
-        end
-        if result[:root_rss_peak_kb].nil? || result[:tree_rss_peak_kb].nil?
-          errors << "self-test RSS metrics missing"
-        else
-          errors << "tree RSS did not exceed root RSS" unless result[:tree_rss_peak_kb] > result[:root_rss_peak_kb]
-        end
-        %i[rchar wchar syscr syscw].each do |key|
-          root_io = result.dig(:root_io, key)
-          tree_io = result.dig(:tree_io, key)
-          errors << "missing #{key} IO" if root_io.nil? || tree_io.nil?
-          errors << "tree #{key} IO did not exceed root" if root_io && tree_io && tree_io <= root_io
-        end
-        %i[read_bytes write_bytes].each do |key|
-          errors << "missing #{key} IO" if result.dig(:root_io, key).nil? || result.dig(:tree_io, key).nil?
-        end
+        errors = self_test_errors(result)
         unless errors.empty?
           diagnostics = self_test_diagnostics(collector.last_result, stderr, "#{stdout}.time")
           raise CollectionError, "#{errors.join('; ')}\n#{diagnostics}"
@@ -101,6 +77,36 @@ module BenchM8
           :collector_complete, :missing_metrics, :exit_status, :timed_out)
       end
     end
+
+    def self.self_test_errors(result)
+      errors = []
+      errors << "self-test command failed" unless result[:exit_status] == 0 && !result[:timed_out]
+      errors << "self-test collector incomplete: #{result[:missing_metrics].join(', ')}" unless result[:collector_complete]
+      if [result[:root_cpu_user_s], result[:root_cpu_system_s],
+          result[:tree_cpu_user_s], result[:tree_cpu_system_s]].any?(&:nil?)
+        errors << "self-test CPU metrics missing"
+      else
+        root_cpu = result[:root_cpu_user_s] + result[:root_cpu_system_s]
+        tree_cpu = result[:tree_cpu_user_s] + result[:tree_cpu_system_s]
+        errors << "tree CPU #{tree_cpu} below root CPU #{root_cpu}" unless tree_cpu >= root_cpu
+      end
+      if result[:root_rss_peak_kb].nil? || result[:tree_rss_peak_kb].nil?
+        errors << "self-test RSS metrics missing"
+      else
+        errors << "tree RSS did not exceed root RSS" unless result[:tree_rss_peak_kb] > result[:root_rss_peak_kb]
+      end
+      %i[rchar wchar syscr syscw].each do |key|
+        root_io = result.dig(:root_io, key)
+        tree_io = result.dig(:tree_io, key)
+        errors << "missing #{key} IO" if root_io.nil? || tree_io.nil?
+        errors << "tree #{key} IO did not exceed root" if root_io && tree_io && tree_io <= root_io
+      end
+      %i[read_bytes write_bytes].each do |key|
+        errors << "missing #{key} IO" if result.dig(:root_io, key).nil? || result.dig(:tree_io, key).nil?
+      end
+      errors
+    end
+    private_class_method :self_test_errors
 
     def self.self_test_diagnostics(result, stderr_path, time_path)
       "collector.last_result=#{JSON.pretty_generate(result || {})}\n" \
@@ -184,16 +190,14 @@ module BenchM8
       ended = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       root_values = parse_time_file(time_path)
       status = $?
+      tree_metrics = normalize_tree_metrics(sampler, root_values)
       result = {
         wall_s: ended - started,
         root_cpu_user_s: root_values[:user],
         root_cpu_system_s: root_values[:system],
         root_rss_peak_kb: root_values[:rss_kb],
-        tree_cpu_user_s: sampler.tree_cpu_user,
-        tree_cpu_system_s: sampler.tree_cpu_system,
-        tree_rss_peak_kb: sampler.tree_rss_peak_kb,
+        **tree_metrics,
         root_io: sampler.root_io,
-        tree_io: sampler.tree_io,
         exit_status: status&.exitstatus,
         signal: status&.termsig,
         timed_out: timed_out,
@@ -203,7 +207,7 @@ module BenchM8
         observed_process_count: sampler.observed_count,
         poll_ms: @poll_ms,
         collector: "linux-proc-tree+gnu-time",
-        coverage: "sampled descendants; short-lived processes may be missed"
+        coverage: "sampled descendants + root lower-bound normalization; short-lived processes may be missed"
       }
       result[:missing_metrics] = missing_metrics(result)
       result[:missing_metrics] << "process_tree" unless sampler.complete?
@@ -223,6 +227,30 @@ module BenchM8
 
     def complete_io?(io)
       io.is_a?(Hash) && IO_KEYS.all? { |key| io[key].is_a?(Numeric) }
+    end
+
+    # Sampling can miss a root's active interval. GNU time's wait4 CPU/RSS and
+    # sampled root IO are conservative aggregate lower bounds, not child CPU.
+    def normalize_tree_metrics(sampler, root_values)
+      sampled_io = sampler.tree_io
+      root_io = sampler.root_io
+      normalized_io = if complete_io?(sampled_io) && complete_io?(root_io)
+        IO_KEYS.each_with_object({}) do |key, io|
+          io[key] = lower_bound(sampled_io.fetch(key), root_io.fetch(key))
+        end
+      end
+      {
+        tree_cpu_user_s: lower_bound(sampler.tree_cpu_user, root_values[:user]),
+        tree_cpu_system_s: lower_bound(sampler.tree_cpu_system, root_values[:system]),
+        tree_rss_peak_kb: lower_bound(sampler.tree_rss_peak_kb, root_values[:rss_kb]),
+        tree_io: normalized_io
+      }
+    end
+
+    def lower_bound(sampled, root)
+      return unless sampled.is_a?(Numeric) && root.is_a?(Numeric)
+
+      [sampled, root].max
     end
 
     def parse_time_file(path)

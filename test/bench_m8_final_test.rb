@@ -285,6 +285,42 @@ check("tree sampler sums identities and marks missing child IO incomplete") do
   assert(incomplete.tree_io.nil?, "missing child IO was silently replaced with root-only IO")
   assert(!incomplete.complete?, "missing child IO was marked complete")
 
+  root_io = fixture_io
+  sampled_io = root_io.transform_values { 0 }
+  sampler_type = Struct.new(:tree_cpu_user, :tree_cpu_system, :tree_rss_peak_kb, :root_io, :tree_io)
+  synthetic_sampler = sampler_type.new(0.01, 0.02, 50, root_io, sampled_io)
+  collector = BenchM8::LinuxCollector.allocate
+  normalized = collector.send(:normalize_tree_metrics, synthetic_sampler,
+    { user: 0.04, system: 0.03, rss_kb: 100 })
+  assert(normalized[:tree_cpu_user_s] == 0.04, "tree user CPU fell below GNU time root lower bound")
+  assert(normalized[:tree_cpu_system_s] == 0.03, "tree system CPU fell below GNU time root lower bound")
+  assert(normalized[:tree_rss_peak_kb] == 100, "tree RSS fell below GNU time root lower bound")
+  assert(normalized[:tree_io] == root_io, "tree IO fell below sampled root lower bound")
+  missing_sampler = sampler_type.new(nil, nil, nil, root_io, sampled_io)
+  missing = collector.send(:normalize_tree_metrics, missing_sampler,
+    { user: 0.04, system: 0.03, rss_kb: 100 })
+  assert(missing.values_at(:tree_cpu_user_s, :tree_cpu_system_s, :tree_rss_peak_kb).all?(&:nil?),
+    "root lower bounds fabricated missing sampled metrics")
+
+  self_test_result = {
+    exit_status: 0, timed_out: false, collector_complete: true, missing_metrics: [],
+    root_cpu_user_s: 0.03, root_cpu_system_s: 0.05,
+    tree_cpu_user_s: 0.03, tree_cpu_system_s: 0.05,
+    root_rss_peak_kb: 100, tree_rss_peak_kb: 101,
+    root_io: root_io, tree_io: fixture_io(2)
+  }
+  assert(BenchM8::LinuxCollector.send(:self_test_errors, self_test_result).empty?,
+    "equal tree/root CPU should satisfy the self-test lower bound")
+  rss_equal = BenchM8::LinuxCollector.send(:self_test_errors,
+    self_test_result.merge(tree_rss_peak_kb: 100))
+  assert(rss_equal.any? { |error| error.include?("RSS did not exceed") }, "equal RSS passed self-test")
+  io_equal = BenchM8::LinuxCollector.send(:self_test_errors,
+    self_test_result.merge(tree_io: root_io))
+  assert(io_equal.any? { |error| error.include?("IO did not exceed") }, "equal IO passed self-test")
+  process_tree_missing = BenchM8::LinuxCollector.send(:self_test_errors,
+    self_test_result.merge(collector_complete: false, missing_metrics: ["process_tree"]))
+  assert(process_tree_missing.any? { |error| error.include?("process_tree") }, "missing process_tree passed self-test")
+
   collector_source = File.read(File.join(ROOT, "script/bench_m8_collector.rb"))
   assert(collector_source.include?("sleep 0.35"), "self-test observation window is too short")
   selected_ruby = File.join(Dir.tmpdir, "Ruby With Space", "ruby")
