@@ -118,6 +118,31 @@ module Celerite
       end
     end
 
+    it "falls back atomically when a later chosen group spans multiple sources" do
+      dependency = %(gem "alpha", ">= 0"\ngem "beta", ">= 0")
+      with_resolution_batch_project(dependency: dependency, beta: true) do |_dir, definition, batch|
+        raw = JSON.parse(batch.evaluation.to_json)
+        raw["dependencies"].as_a.each { |dependency| dependency.as_h["source"] = JSON::Any.new(nil) }
+        first = raw["sources"].as_a.find { |source| source["type"].as_s == "Rubygems" }.not_nil!
+        first.as_h["name"] = JSON::Any.new(nil)
+        second = JSON.parse(first.to_json)
+        second.as_h["name"] = JSON::Any.new("secondary")
+        raw.as_h["sources"] = JSON::Any.new([first, second])
+        evaluation = Celerite::Bridge::GemfileEvaluation.from_json(raw.to_json)
+        with_resolution_batch_server("cross_source") do |client, log|
+          resolution = Resolution.from_evaluation(definition, evaluation, client, batch.fingerprint)
+          specs = resolution.resolve!
+
+          specs.map(&.name).should eq(["alpha", "beta"])
+          resolution.resolved_specs.map(&.name).should eq(["alpha", "beta"])
+          resolution.build_base_requirements(Set(String).new).keys.sort.should eq(["alpha", "beta"])
+          entries = resolution_batch_log(log)
+          entries.count { |entry| entry["op"] == "solve_batch" }.should eq(1)
+          entries.count { |entry| entry["op"] == "evaluate_batch" }.should eq(0)
+        end
+      end
+    end
+
     it "does not fall back for semantic requirements, Ruby or platform failures" do
       %w[requirements_conflict ruby_incompatible platform_unavailable].each do |category|
         with_resolution_batch_project do |_dir, definition, batch|
@@ -216,15 +241,20 @@ private def resolution_batch_evaluation(evaluation : Celerite::Bridge::GemfileEv
   Celerite::Bridge::GemfileEvaluation.from_json(raw.to_json)
 end
 
-private def with_resolution_batch_project(locked : Bool = false, dependency : String = %(gem "alpha", ">= 0"), & : String, Celerite::Definition, Celerite::Bridge::BatchGemfileEvaluation -> Nil) : Nil
+private def with_resolution_batch_project(locked : Bool = false, dependency : String = %(gem "alpha", ">= 0"), beta : Bool = false, & : String, Celerite::Definition, Celerite::Bridge::BatchGemfileEvaluation -> Nil) : Nil
   pending! "ruby not available" unless ruby_available?
   platform = Celerite::Gem::Platform.local.to_s
-  with_project({
+  files = {
     "Gemfile"            => "",
     "index/specs.4.8.gz" => "",
     "index/versions"     => "created_at: 2026-11-01T00:00:00Z\r\n---\r\nalpha 1.0.0-#{platform},1.0.0 info\r\n",
     "index/info/alpha"   => "---\n1.0.0-#{platform} |ruby:< 4,checksum:#{resolution_batch_local_checksum}\n1.0.0 |ruby:< 4,checksum:#{resolution_batch_ruby_checksum}\n",
-  }) do |dir|
+  }
+  if beta
+    files["index/versions"] = "#{files["index/versions"]}beta 1.0.0-#{platform},1.0.0 info\r\n"
+    files["index/info/beta"] = "---\n1.0.0-#{platform} |ruby:< 4,checksum:#{resolution_batch_local_checksum}\n1.0.0 |ruby:< 4,checksum:#{resolution_batch_ruby_checksum}\n"
+  end
+  with_project(files) do |dir|
     index = File.join(dir, "index").gsub(/\\/, "/")
     remote = file_source_url(index)
     gemfile = File.join(dir, "Gemfile")
@@ -309,7 +339,7 @@ private def with_resolution_batch_server(mode : String, & : Celerite::Bridge::Cl
         chosen = []
         payload["requirements"].each do |requirement|
           pool = candidates.select { |candidate| candidate["name"] == requirement["name"] }
-          if requirement["source_id"]
+          if requirement["source_id"] && !(mode == "cross_source" && requirement["name"] == "beta")
             pool = pool.select { |candidate| candidate["source_id"] == requirement["source_id"] }
           end
           requirement_obj = Gem::Requirement.new(requirement["requirements"].join(", "))
@@ -317,8 +347,15 @@ private def with_resolution_batch_server(mode : String, & : Celerite::Bridge::Cl
           next if pool.empty?
           version = pool.map { |candidate| Gem::Version.new(candidate["version"]) }.max
           matches = pool.select { |candidate| Gem::Version.new(candidate["version"]) == version }
-          matches = matches.select { |candidate| candidate["platform"] == "ruby" } if mode != "variants" && matches.any? { |candidate| candidate["platform"] == "ruby" }
-          chosen.concat(mode == "variants" ? matches : matches.first(1))
+          if mode == "cross_source" && requirement["name"] == "beta"
+            chosen.concat([
+              matches.find { |candidate| candidate["platform"] == "ruby" && candidate["source_id"] == "default" },
+              matches.find { |candidate| candidate["platform"] != "ruby" && candidate["source_id"] != "default" },
+            ].compact)
+          else
+            matches = matches.select { |candidate| candidate["platform"] == "ruby" } if mode != "variants" && matches.any? { |candidate| candidate["platform"] == "ruby" }
+            chosen.concat(mode == "variants" ? matches : matches.first(1))
+          end
         end
         chosen.uniq! { |candidate| [candidate["name"], candidate["version"], candidate["platform"], candidate["source_id"]] }
         chosen_values = chosen.map { |candidate| chosen_output.call(candidate) }

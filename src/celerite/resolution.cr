@@ -1670,11 +1670,15 @@ module Celerite
                                            deps : Array(Resolver::DepSpec)) : Bool
       sources = {} of String => JSON::Any
       request.payload["evaluation"]["sources"].as_a.each { |source| sources[source["source_id"].as_s] = source }
-      selected = [] of ResolvedSpec
-      extras = [] of ResolvedSpec
-      response.chosen.group_by { |candidate| {candidate.name, candidate.version} }.each_value do |group|
+      groups = response.chosen.group_by { |candidate| {candidate.name, candidate.version} }
+      groups.each_value do |group|
         source_ids = group.map { |candidate| candidate.payload["source_id"].as_s }.uniq
         return false if source_ids.size != 1
+      end
+
+      selected = [] of ResolvedSpec
+      extras = [] of ResolvedSpec
+      groups.each_value do |group|
         group_specs = group.map { |candidate| solve_batch_candidate_to_index(candidate) }
         variant_specs = [] of Resolver::IndexSpec
         # `variants` is already schema/closure checked by Response.parse. Use it
@@ -1706,17 +1710,21 @@ module Celerite
         end
       end
 
-      @resolved_specs = selected.uniq(&.full_name).sort_by!(&.full_name)
-      @lock_extra_specs = extras.uniq(&.full_name).sort_by!(&.full_name)
-      @root_dependency_names = deps.map(&.name)
-      @current_base_requirements = build_base_requirements(Set(String).new)
-      @current_index = {} of String => Array(Resolver::IndexSpec)
+      current_index = {} of String => Array(Resolver::IndexSpec)
       request.payload["candidates_by_source"].as_h.each_value do |values|
         values.as_a.each do |value|
           spec = solve_batch_candidate_to_index(SolveBatch::Candidate.new(value))
-          (@current_index[spec.name] ||= [] of Resolver::IndexSpec) << spec
+          (current_index[spec.name] ||= [] of Resolver::IndexSpec) << spec
         end
       end
+      base_requirements = build_base_requirements(Set(String).new)
+      root_dependency_names = deps.map(&.name)
+
+      @resolved_specs = selected.uniq(&.full_name).sort_by!(&.full_name)
+      @lock_extra_specs = extras.uniq(&.full_name).sort_by!(&.full_name)
+      @root_dependency_names = root_dependency_names
+      @current_base_requirements = base_requirements
+      @current_index = current_index
       true
     end
 
