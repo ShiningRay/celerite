@@ -144,6 +144,8 @@ private def ifp_ready(project : String, profile : String = "4.0.24",
     if single_platform && ifp_single_platform_lock!(project)
       status, output, errors = ifp_run(project, ["lock"])
       fail "single-platform lock re-sign failed (#{status}): #{output} #{errors}" unless status == 0
+      status, output, errors = ifp_run(project, ["install"])
+      fail "single-platform install certificate re-sign failed (#{status}): #{output} #{errors}" unless status == 0
     end
     ifp_assert_install_certificate(project) if require_install_certificate
   end
