@@ -184,7 +184,47 @@ check("options accept every required explicit path and per-tier timeout") do
   assert(options.ruby_modes == %w[off on], "ruby modes lost")
   assert(options.jobs == 2 && options.runs == 5 && options.warmup == 1, "matrix overrides lost")
   driver = BenchM8::Driver.new(options)
-  assert(driver.send(:command_for, "bundle", "hot")[2] == "_4.0.24_", "sample Bundler version is not pinned")
+  bundle_command = driver.send(:command_for, "bundle", "hot")
+  assert(bundle_command == [options.bundle_exe, "_4.0.24_", "check"], "sample Bundler argv is not direct and pinned")
+  assert(driver.send(:bundler_version_ok?, "4.0.24\n"), "bare Bundler version output rejected")
+  assert(driver.send(:bundler_version_ok?, "Bundler version 4.0.24\n"), "labelled Bundler version output rejected")
+  ["4.0.23\n", "Bundler version 4.0.24.1\n", "4.0.24 extra\n", ""].each do |output|
+    assert(!driver.send(:bundler_version_ok?, output), "invalid Bundler version accepted: #{output.inspect}")
+  end
+
+  Dir.mktmpdir("m8-reference-argv") do |directory|
+    reference_options = BenchM8::Options.parse([
+      "--ruby", "/ruby/bin/ruby", "--bundle-exe", "/ruby/bin/bundle",
+      "--scratch", File.join(directory, "scratch"), "--out", File.join(directory, "out")
+    ])
+    reference_driver = BenchM8::Driver.new(reference_options)
+    FileUtils.mkdir_p(File.join(reference_options.out, "logs"))
+    captured = nil
+    success_status = Object.new
+    def success_status.success?
+      true
+    end
+    original_capture3 = Open3.method(:capture3)
+    Open3.define_singleton_method(:capture3) do |env, *command, **kwargs|
+      captured = [env, command, kwargs]
+      gemfile = command.fetch(command.index("--gemfile") + 1)
+      File.binwrite(File.join(File.dirname(gemfile), "Gemfile.lock"), "GEM\n")
+      ["", "", success_status]
+    end
+    begin
+      reference_driver.send(:prepare_reference!)
+    ensure
+      Open3.define_singleton_method(:capture3, original_capture3)
+    end
+    assert(captured[1].first(3) == [reference_options.bundle_exe, "_4.0.24_", "lock"],
+      "reference lock argv is not direct and pinned")
+    assert(!captured[1].include?(reference_options.ruby), "reference lock argv contains Ruby prefix")
+    assert(captured[0]["RUBYOPT"] == "" && captured[0]["RUBY_YJIT_ENABLE"] == "0",
+      "reference lock environment lost RUBYOPT/YJIT isolation")
+    logged = File.read(File.join(reference_options.out, "commands.txt"))
+    assert(logged.include?("reference lock: #{Shellwords.join(captured[1])}"),
+      "reference lock command log differs from actual argv")
+  end
 end
 
 check("options enforce mode-specific matrix and required values") do

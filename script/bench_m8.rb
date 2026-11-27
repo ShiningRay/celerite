@@ -380,7 +380,7 @@ module BenchM8
       bundler_out, bundler_err, bundler_status = Open3.capture3(
         { "RUBYOPT" => "" }, @options.ruby, @options.bundle_exe, "_4.0.24_", "--version"
       )
-      unless bundler_status.success? && bundler_out.match?(/Bundler version 4\.0\.24/)
+      unless bundler_status.success? && bundler_version_ok?(bundler_out)
         raise Error, "Bundler must be exactly 4.0.24: #{bundler_out} #{bundler_err}"
       end
 
@@ -391,6 +391,10 @@ module BenchM8
       raise Error, "final matrix requires Ubuntu 24.04" unless ubuntu_2404?
       raise Error, "celerite binary is missing: #{@options.celerite}" unless File.file?(@options.celerite)
       raise Error, "reference Bundler executable is missing: #{@options.bundle_exe}" unless command_exists?(@options.bundle_exe) || File.file?(@options.bundle_exe)
+    end
+
+    def bundler_version_ok?(output)
+      ["4.0.24", "Bundler version 4.0.24"].include?(output.strip)
     end
 
     def ubuntu_2404?
@@ -429,11 +433,11 @@ module BenchM8
         FileUtils.cp(@options.reference_lock, lock)
       else
         env = reference_environment(reference_dir)
-        stdout, stderr, status = Open3.capture3(env, @options.ruby, @options.bundle_exe,
-          "_4.0.24_", "lock", "--gemfile", gemfile, chdir: reference_dir)
+        command = [@options.bundle_exe, "_4.0.24_", "lock", "--gemfile", gemfile]
+        stdout, stderr, status = Open3.capture3(env, *command, chdir: reference_dir)
         File.binwrite(File.join(@out, "logs", "reference-lock.stdout.txt"), stdout)
         File.binwrite(File.join(@out, "logs", "reference-lock.stderr.txt"), stderr)
-        append_command("reference lock", [@options.ruby, @options.bundle_exe, "_4.0.24_", "lock", "--gemfile", gemfile])
+        append_command("reference lock", command)
         raise Error, "reference lock generation failed: #{stderr}" unless status.success?
       end
       raise Error, "reference lock was not created" unless File.file?(lock)
@@ -715,7 +719,7 @@ module BenchM8
       else raise Error, "unknown tier: #{tier}"
       end
       if side == "bundle"
-        [@options.ruby, @options.bundle_exe, "_4.0.24_", *arguments]
+        [@options.bundle_exe, "_4.0.24_", *arguments]
       else
         [@options.celerite, *arguments]
       end
