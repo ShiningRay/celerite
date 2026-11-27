@@ -239,6 +239,24 @@ private def lfp_tamper_abi(project : String, field : String, value : String) : N
   File.write(File.join(new_dir, "entry.json"), payload.to_json)
 end
 
+describe "lock platform gate" do
+  it "accepts only the local row or the canonical generic-ruby pair" do
+    Celerite::LockFastPath.platforms_supported?(["x64-mingw-ucrt"], "x64-mingw-ucrt", false).should be_true
+    Celerite::LockFastPath.platforms_supported?(["x86_64-linux"], "x86_64-linux", true).should be_true
+    Celerite::LockFastPath.platforms_supported?(["ruby", "x86_64-linux"], "x86_64-linux", true).should be_true
+    Celerite::LockFastPath.platforms_supported?(["aarch64-linux", "ruby"], "aarch64-linux", true).should be_true
+  end
+
+  it "rejects Windows/Java extras, wrong order, duplicates, and third platforms" do
+    Celerite::LockFastPath.platforms_supported?(["ruby", "x64-mingw-ucrt"], "x64-mingw-ucrt", true).should be_false
+    Celerite::LockFastPath.platforms_supported?(["java", "ruby"], "java", true).should be_false
+    Celerite::LockFastPath.platforms_supported?(["ruby", "aarch64-linux"], "aarch64-linux", true).should be_false
+    Celerite::LockFastPath.platforms_supported?(["x86_64-linux", "x86_64-linux"], "x86_64-linux", true).should be_false
+    Celerite::LockFastPath.platforms_supported?(["ruby", "x86_64-linux", "arm64-darwin-24"], "x86_64-linux", true).should be_false
+    Celerite::LockFastPath.platforms_supported?(["ruby"], "ruby", true).should be_true
+  end
+end
+
 describe "lock takes the no-Ruby fast path on an unchanged project" do
   it "rewrites the locked bytes with procs=0 when the switches are on and both caches are warm" do
     with_project({} of String => String) do |project|
@@ -483,6 +501,24 @@ describe "lock takes the no-Ruby fast path on an unchanged project" do
         candidate.rpc.should eq(0)
         candidate.req_bytes.should eq(0)
         candidate.resp_bytes.should eq(0)
+      end
+    end
+  end
+
+  it "hits a fresh generic-ruby lock with the canonical local/ruby platform pair" do
+    with_project({} of String => String) do |project|
+      lfp_pending!(project)
+      lfp_with_env(project, {"CELERITE_LOCAL_PLATFORM" => "x86_64-linux"}) do
+        lfp_ready(project)
+        platforms = Celerite::Lockfile::Parser.parse(File.read(File.join(project, "Gemfile.lock"))).platforms
+        platforms.should eq(["ruby", "x86_64-linux"])
+
+        status, _output, errors, procs, rpc = lfp_lock(project,
+          lfp_env("CELERITE_EVAL_CACHE", "CELERITE_FAST_PATH", "CELERITE_FAST_PATH_DEBUG", "CELERITE_BRIDGE_STATS"))
+        status.should eq(0)
+        procs.should eq(0)
+        rpc.should eq(0)
+        lfp_hits(errors).size.should eq(1)
       end
     end
   end
@@ -862,7 +898,9 @@ describe "task-273 lock byte gate and success certificate transaction" do
       lfp_pending!(project)
       lfp_ready(project)
       path = File.join(project, "Gemfile.lock")
-      changed = File.read(path).sub("  x64-mingw-ucrt\n", "  x64-mingw-ucrt\n  x86_64-linux\n")
+      local_platform = Celerite::Gem::Platform.local.to_s
+      changed = File.read(path).sub("  #{local_platform}\n", "  #{local_platform}\n  arm64-darwin-24\n")
+      changed.should_not eq(File.read(path))
       File.write(path, changed)
       lfp_assert_compat_miss(project, "platforms")
     end
