@@ -29,8 +29,8 @@ jobs:
       run:
         shell: bash
     env:
-      ARTIFACT_DIR: ${{ runner.temp }}/m8-rails-final-artifacts
-      SCRATCH_DIR: ${{ runner.temp }}/m8-rails-final-scratch-${{ github.run_id }}-${{ github.run_attempt }}
+      ARTIFACT_DIR: /tmp/m8-rails-final-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+      SCRATCH_DIR: /tmp/m8-rails-final-scratch-${{ github.run_id }}-${{ github.run_attempt }}
       BASELINE_SHA: ${{ inputs.baseline_sha }}
       MATRIX_MODE: ${{ inputs.mode }}
     steps:
