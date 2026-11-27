@@ -132,6 +132,20 @@ module Celerite
       trusted_attempt(definition)
     end
 
+    # A fresh lock on a generic-ruby host records the local platform and the
+    # generic `ruby` platform. `Resolution#lock` sorts that pair, so compare the
+    # exact canonical order rather than accepting an arbitrary platform set.
+    # Windows/Java never get the generic extra row here; task-261's exact-set
+    # boundary remains in force for every other shape.
+    def self.platforms_supported?(platforms : Array(String), local_platform : String,
+                                  generic_local_ruby : Bool) : Bool
+      return true if platforms == [local_platform]
+      return false if local_platform =~ /mingw|mswin|java/
+      return false unless generic_local_ruby && local_platform != "ruby"
+
+      platforms == [local_platform, "ruby"].sort
+    end
+
     # The command-independent part of `attempt`: it assumes the switches are
     # on and the command's argument shape is already known to be safe. Both
     # `lock` and `install` call this one gate; command-specific checks stay in
@@ -149,7 +163,8 @@ module Celerite
 
       lockfile = definition.lockfile!
       local_platform = Gem::Platform.local.to_s
-      return {nil, "platforms"} unless lockfile.platforms == [local_platform]
+      generic_local_ruby = !(local_platform =~ /mingw|mswin|java/)
+      return {nil, "platforms"} unless platforms_supported?(lockfile.platforms, local_platform, generic_local_ruby)
 
       # Nothing in the persisted entry records what is installed under the
       # plugin root: `verify.files` digests the Gemfile chain and the gemspecs,
