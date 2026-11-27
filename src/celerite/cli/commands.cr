@@ -1621,13 +1621,20 @@ module Celerite
       # still filter through requested_groups_for.
       requested_groups = requested_groups_for(config, all_groups, [] of String, [] of String)
       locked_specs = bridge_available? ? filter_locked_specs_by_groups(definition, lockfile, lockfile.specs.sort_by(&.full_name), requested_groups) : lockfile.specs.sort_by(&.full_name)
+      # Match the current platform before dependency closure: each name/version
+      # contributes only its best installable locked variant, while ruby remains the
+      # fallback when no local native variant exists.
+      locked_specs = best_match_locked_specs(locked_specs, Gem::Platform.local)
       # `definition.rb:249-251,261-264` + `spec_set.rb:241-266`: `missing_specs`
       # materializes only the specs reachable from the requested Gemfile
       # dependencies, so a locked row no dependency edge reaches (e.g. a spec
       # row nobody references) is never reported missing. Keep the unlocked
       # behavior when the group filter selected everything, and when the bridge
       # (and therefore the Gemfile evaluation) is unavailable.
-      if (closure_evaluation = check_evaluation) && !requested_groups.empty?
+      # A non-frozen default-only check keeps its legacy treatment of unreferenced
+      # locked rows; Gemfile groups only narrow closure when switches selected a subset.
+      group_filter_selected_subset = requested_groups.sort != all_groups.sort
+      if (closure_evaluation = check_evaluation || (group_filter_selected_subset ? gemfile_evaluation : nil)) && !requested_groups.empty?
         closure_dep_names = closure_evaluation.dependencies.select do |dep|
           groups = dep.groups.empty? ? ["default"] : dep.groups
           !(groups & requested_groups).empty?

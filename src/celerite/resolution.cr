@@ -775,7 +775,7 @@ module Celerite
 
     @fetch_replayed = false
 
-    # install asks for the eresolve_without heal of stale lockfile edges
+    # install asks for the eresolve_without heal of stale lockfile edges
     # (definition.rb:699-708); lock deliberately keeps the edges as written.
     property autoheal_locked_edges : Bool = false
 
@@ -1214,6 +1214,36 @@ module Celerite
     # this probe deliberately precedes frozen/reuse/stale checks: eligibility
     # must not require the very index probes the batch path is meant to avoid.
     private def try_solve_batch(deps : Array(Resolver::DepSpec)) : Bool
+      # Candidate discovery can fetch a cold index before the legacy resolver is
+      # entered. Buffer that progress so a successful batch solve can announce
+      # resolution first, matching Bundler's output order without changing batch
+      # eligibility, cache behavior, or the chosen solver path.
+      progress : IO = @progress
+      captured : IO::Memory = IO::Memory.new
+      begin
+        @progress = captured
+        solved = solve_batch_candidate(deps)
+        progress.puts "Resolving dependencies..." if solved && @show_resolving && !@local_only
+        progress << captured.to_s
+        solved
+      rescue ex : SolveFailureError | GemNotFoundError
+        progress.puts "Resolving dependencies..." if @show_resolving && !@local_only
+        progress << captured.to_s
+        raise ex
+      rescue ex : Bridge::BridgeError | SolveBatch::Error | CompactIndex::Error
+        # A bridge/protocol/transport failure must not change user-visible output.
+        # The old resolver remains the compatibility implementation.
+        progress << captured.to_s
+        false
+      rescue ex
+        progress << captured.to_s
+        raise ex
+      ensure
+        @progress = progress
+      end
+    end
+
+    private def solve_batch_candidate(deps : Array(Resolver::DepSpec)) : Bool
       request = build_solve_batch_request(deps)
       return false unless request
 
@@ -1240,10 +1270,6 @@ module Celerite
       end
 
       apply_solve_batch_response(response, request, deps)
-    rescue ex : Bridge::BridgeError | SolveBatch::Error | CompactIndex::Error
-      # A bridge/protocol/transport failure must not change user-visible output.
-      # The old resolver remains the compatibility implementation.
-      false
     end
 
     # Bundler's SourceList always exposes an anonymous Metadata source for the
@@ -2563,14 +2589,19 @@ module Celerite
       unlocked = Set(String).new
       prerelease_exceptions = Set(String).new
 
+      # Announce before index construction: a cold root-gem index fetch logs
+      # "Fetching source index..." from build_index, and the reference reports
+      # the resolve announcement first. Local-only resolution still announces
+      # only after a successful solve below.
+      announce_resolution = @show_resolving && !@local_only
+      @progress.puts "Resolving dependencies..." if announce_resolution
+
       base_requirements = build_base_requirements(unlocked)
       index = build_index(deps)
       locked_index = build_locked_index
       remember_relaxation_state(base_requirements, index)
 
-      # GEM specs fetch lazily from the compact index during resolution
-      # (pinned: the index fetch lands relative to "Resolving dependencies..."
-      # depending on whether root deps need it).
+      # GEM specs fetch lazily from the compact index during resolution.
       fetcher = Proc(String, Array(Resolver::IndexSpec)).new do |name|
         index_specs_for(name)
       end
@@ -2585,13 +2616,9 @@ module Celerite
         # and do not print it (pinned oracle behavior).
         # `--local` never announces a resolve: the reference materializes from the
         # installed specs only (`sources.local_only!`) and reports not-found.
-        @progress.puts "Resolving dependencies..." if @show_resolving && !@local_only
+        @progress.puts "Resolving dependencies..." if @show_resolving && !@local_only && !announce_resolution
         raise ex
       end
-      # `--local` announces the resolve only once it actually succeeded: the
-      # reference materializes from the installed specs only
-      # (`sources.local_only!`) and a not-found error therefore prints nothing.
-      @progress.puts "Resolving dependencies..." if @show_resolving && !@local_only
       decisions = solve_with_relaxation(source, deps, prerelease_exceptions, unlocked, orchestrator)
       specs = decisions_to_specs(decisions, index, locked_index)
       @progress.puts "Resolving dependencies..." if @show_resolving && @local_only

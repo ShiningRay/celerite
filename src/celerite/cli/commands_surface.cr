@@ -1667,6 +1667,31 @@ module Celerite
       File.write(definition.lockfile_path, lockfile.to_lock)
     end
 
+    # Selects one installable locked variant per name/version for the current
+    # platform. Native matches use the same specificity ordering as
+    # `Resolution.best_match_variants`; the virtual ruby platform is considered
+    # only when no matching native variant exists. The original lock objects are
+    # returned so source lookup and installed-spec discovery retain their identity.
+    # If a group has neither a matching native variant nor ruby, preserve its
+    # rows rather than silently treating an unsatisfied lock as satisfied.
+    def self.best_match_locked_specs(specs : Array(Lockfile::Spec), platform : Gem::Platform) : Array(Lockfile::Spec)
+      specs.group_by { |spec| {spec.name, spec.version} }.values.flat_map do |variants|
+        native = variants.select do |spec|
+          !spec.platform_ruby? && Gem::Platform.new(spec.platform.not_nil!).match?(platform)
+        end
+        candidates = native.empty? ? variants.select(&.platform_ruby?) : native
+
+        if candidates.empty?
+          variants
+        else
+          [candidates.min_by do |spec|
+            spec_platform = spec.platform_ruby? ? Gem::Platform::RUBY : Gem::Platform.new(spec.platform.not_nil!)
+            Gem::Platform.platform_specificity_match(spec_platform, platform)
+          end]
+        end
+      end.sort_by(&.full_name)
+    end
+
     # Returns true when the locked spec is installed/available for read-only commands.
     def self.installed_spec_dir?(definition : Definition, spec : Lockfile::Spec, lockfile : Lockfile::Data? = nil) : Bool
       !installed_gem_dir(definition, spec, lockfile).nil?
