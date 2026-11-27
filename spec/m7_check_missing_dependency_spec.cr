@@ -62,6 +62,8 @@ describe "M7 task-67 check with an unlocked Gemfile dependency" do
       code.should eq(1), "stdout=#{out}\nstderr=#{err}"
       out.should contain("Fetching source index from")
       out.should contain("Resolving dependencies...")
+      out.scan("Resolving dependencies...").size.should eq(1)
+      out.index("Resolving dependencies...").not_nil!.should be < out.index("Fetching source index from").not_nil!
       err.should eq(CHECK_MISSING_THREE_LINES)
       File.read("Gemfile.lock").should eq(before)
       File.read("Gemfile.lock").should_not contain("thor")
