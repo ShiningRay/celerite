@@ -31,6 +31,45 @@ module Celerite
       end
     end
 
+    it "prints Resolving dependencies exactly once after an accepted batch response" do
+      with_resolution_batch_project do |_dir, definition, batch|
+        with_resolution_batch_server("success") do |client, log|
+          resolution = Resolution.from_evaluation(definition, batch.evaluation, client, batch.fingerprint)
+          resolution.resolve!
+          output = resolution.progress.as(IO::Memory).to_s
+          output.lines.count { |line| line.chomp == "Resolving dependencies..." }.should eq(1)
+          output.index("Resolving dependencies...").not_nil!.should be < output.index("Fetching source index from").not_nil!
+          resolution_batch_log(log).count { |entry| entry["op"] == "solve_batch" }.should eq(1)
+        end
+      end
+    end
+
+    it "prints no batch resolving line before falling back to the legacy resolver" do
+      with_resolution_batch_project do |_dir, definition, batch|
+        with_resolution_batch_server("unknown_op") do |client, log|
+          resolution = Resolution.from_evaluation(definition, batch.evaluation, client, batch.fingerprint)
+          resolution.resolve!.map(&.name).should eq(["alpha"])
+          output = resolution.progress.as(IO::Memory).to_s
+          output.lines.count { |line| line.chomp == "Resolving dependencies..." }.should eq(1)
+          output.index("Fetching source index from").not_nil!.should be < output.index("Resolving dependencies...").not_nil!
+          resolution_batch_log(log).count { |entry| entry["op"] == "solve_batch" }.should eq(1)
+        end
+      end
+    end
+
+    it "keeps the accepted batch path silent when show_resolving is false" do
+      with_resolution_batch_project do |_dir, definition, batch|
+        with_resolution_batch_server("success") do |client, log|
+          resolution = Resolution.from_evaluation(definition, batch.evaluation, client, batch.fingerprint)
+          resolution.show_resolving = false
+          resolution.resolve!.map(&.name).should eq(["alpha"])
+          output = resolution.progress.as(IO::Memory).to_s
+          output.lines.count { |line| line.chomp == "Resolving dependencies..." }.should eq(0)
+          resolution_batch_log(log).count { |entry| entry["op"] == "solve_batch" }.should eq(1)
+        end
+      end
+    end
+
     it "keeps Bundler 2.7.2 on the legacy path with zero solve_batch calls" do
       with_resolution_batch_project do |_dir, definition, batch|
         with_resolution_batch_server("success") do |client, log|
@@ -153,6 +192,9 @@ module Celerite
             else
               expect_raises(SolveFailureError) { resolution.resolve! }
             end
+            output = resolution.progress.as(IO::Memory).to_s
+            output.lines.count { |line| line.chomp == "Resolving dependencies..." }.should eq(1)
+            output.index("Resolving dependencies...").not_nil!.should be < output.index("Fetching source index from").not_nil!
             entries = resolution_batch_log(log)
             entries.count { |entry| entry["op"] == "solve_batch" }.should eq(1)
             entries.count { |entry| entry["op"] == "evaluate_batch" }.should eq(0)
