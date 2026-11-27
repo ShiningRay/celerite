@@ -415,6 +415,16 @@
 - 生效：M8 期间（task-284）
 - 取代：无；收窄 task-261 的 exact-set 边界，只补 generic-ruby 的规范两平台形状，不放宽任意附加平台。
 
+## C-M8-1-036 P3 锁内新求值一致性与计划缓存只读信任校验（M8 L165，task-285）
+
+- 状态：已实现
+- 参考行为（4.0.24）：`Definition#resolve_with_cache!` 与 `resolve_remotely!` 都在当前 Definition 上按本地/远程 source 模式调用 `resolve`；参考没有跨命令持久计划缓存，也不会用锁前候选替代当前 Gemfile/gemspec/evalchain 求值。见 `vendor/reference/v4.0.24/definition.rb:205-220`。
+- 我方行为：`src/celerite/cli/commands_install.cr:323-419` 在兼容 install 路径先取得 `ProcessLock`，再取 fresh batch；旧 Hit 必须通过 deterministic fingerprint digest、fresh evaluation 全等及 fingerprint Document 对 Gemfile/gemspec/evalchain/runtime/ABI 的复验。失效立即清 trusted/plan 状态，重建 Definition/config；若 BUNDLE_PATH/install_root 变化则关闭旧锁、重取新锁并重建布局，再按需重跑 plugin preflight 和 fresh fetch。Resolution/P3 candidate/from_plan 始终使用 fresh evaluation，writer 前再次复验 evaluation/fingerprint、锁 SHA 与 materialized plan rows。P3 采用两阶段发布：首轮稳定锁不发布，第二轮稳定锁才发布；仅 default optimized candidate 可启用 P3 并本地 hash，不增 RPC。`plan_cache_context?` 在任何 candidate/RPC 前拒绝 GEM_HOME/GEM_PATH custom layout，走普通兼容路径。`src/celerite/plan_cache.cr:338-377,397-436,535-539,594-614` 的通用 reader/writer 共用 payload 形状、portable、credential-key 校验；环境凭据值只递归扫描 JSON 字符串值，环境敏感键收窄为 TOKEN/PASSWORD/PASSWD/SECRET/CREDENTIAL/AUTHORIZATION/API_KEY 或 URI userinfo，不再把 `BUNDLE_GEM__TEST=true` 误判为凭据。reader 失败即 Corrupt 并删除；P3 `read_locked` 的 schema/provenance/current-plan 全等检查未放宽。
+- 判据：迁移到 main `4a55b42` 后，本机 Windows 执行 `crystal tool format --check src spec`、`shards build`、`crystal spec spec/m8_plan_cache_spec.cr spec/m8_install_fast_path_spec.cr`、`ruby script/compat-claims-index --check`、`git diff --check` 均退出 0；目标 spec 为 **118 examples, 0 failures, 0 errors, 0 pending**，仅两条既存 `File.executable?` deprecation。首辅最终独立标准环境门禁复验 format、no-codegen、binary build、claims、diff 均退出 0，完整目标 spec 为 **118 examples, 0 failures, 0 errors, 0 pending（11:10）**。新增反例覆盖锁前 Gemfile/BUNDLE_PATH 突变、合法 canonical digest 的 root-dependent/credential-bearing payload、宽 namespace 下普通配置值、真实 checksum 修改、两阶段 P3 发布，以及 custom layout 的 `bundler_cache_file` 精确调用计数为 0。完整结果见 `docs/compat-evidence/2026-11-27.md` 的 task-285 节。
+- 边界：未运行完整 spec、differential、Rails 与四格 CI；未验证 Linux/macOS、第二 ABI、真实并发/崩溃/ACL、性能与完整 CI。namespace/ABI/checksum 与 IFP 四计数零由目标 spec 覆盖；P3 仅支持 default optimized layout，RPC 差额为 0；custom layout 明确 compat fallback、不发布计划且无额外 RPC，不宣称 RPC 节省。G3/G4 及 L165 其它阻断不因本项自动闭合。
+- 生效：M8 期间（task-285；最终 fix/test/docs 三笔基于 `4a55b42`，不 push）
+- 取代：无；落实 task-278 审计 S1/S2，并收窄 task-277 合流后的锁稳定与 RPC 口径，不放宽 P3 strict locked-plan 全等边界。
+
 ## C-M8-1-037 Linux binstub chmod 参数顺序与跨平台桥测试（M8 L164，task-286）
 
 - 状态：已实现

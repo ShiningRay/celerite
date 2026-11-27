@@ -175,6 +175,31 @@ Celerite does not emulate that argv-level expansion, so `cmd.exe` invocations of
 `celerite add --glob *.gemspec` differ from the reference, while
 `script/differential` expands in bash first and both sides agree.
 
+### M8 install plan trust
+
+`CELERITE_PLAN_CACHE=1` is opt-in. Under `ProcessLock`, install compares the
+current batch evaluation and deterministic fingerprint with any pre-lock trusted
+Hit before reuse or locked-plan loading; a Gemfile/gemspec/evalchain mismatch
+drops the Hit and uses the fresh compatibility path. If refreshed configuration
+changes the bundle path, install closes the old lock and reacquires it for the
+new layout before continuing. Generic `PlanCache.read` repeats the writer's
+payload-shape, portability and credential checks, deleting corrupt entries
+instead of returning a Hit. Environment credential values are scanned only in
+JSON string values, and ordinary settings such as `BUNDLE_GEM__TEST=true` are
+not treated as secrets. P3 locked plans retain strict schema, provenance and
+current-plan equality checks, and publish only after the lock reaches a stable
+second pass. P3 is limited to the optimized default Bundler cache layout;
+GEM_HOME/GEM_PATH custom layouts stay on the compatibility path before any
+candidate or cache RPC and do not publish a plan.
+
+task-285 adds regressions for both boundaries, including an exact zero-call check
+for `bundler_cache_file` on a custom layout. The rebased task worktree passed
+Crystal format/build and the two M8 spec files (118 examples); differential,
+Rails and the full CI matrix remain unrun. The lead's independent standard-environment
+gate passed format, no-codegen, binary build, claims, diff, and the 118-example target
+suite (11:10), so claim [C-M8-1-036](docs/compat-claims/M8-batch-bridge.md) is implemented.
+See the [2026-11-27 evidence](docs/compat-evidence/2026-11-27.md).
+
 ### M8 Rails final benchmark
 
 The final Rails benchmark is Linux-only and manual. Use the committed full SHA as

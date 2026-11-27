@@ -391,6 +391,7 @@
 | C-M8-1-033 | solve_batch 接入 Resolution 的候选闭包与回填（M8 L161 S3b，task-277） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `2026-11-27 首辅在 'C:\Temp\celerite-t277' 独立标准环境复验：format/shards/no-codeg…` |
 | C-M8-1-034 | M8 Rails 最终矩阵的固定基线与 fail-closed 证据链（task-282） | 未验证 | [M8-batch-bridge.md](M8-batch-bridge.md) | `最终命令为 'ruby script/bench-m8' 的 smoke/full 运行及其 validator；legacy 'ruby …` |
 | C-M8-1-035 | generic-ruby 新锁的规范 local/ruby 平台集（M8 L164，task-284） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `run '45957802760' Ubuntu artifact '15179078945' 的 'lock-fast-hot-debug…` |
+| C-M8-1-036 | P3 锁内新求值一致性与计划缓存只读信任校验（M8 L165，task-285） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `迁移到 main '4a55b42' 后，本机 Windows 执行 'crystal tool format --check src sp…` |
 | C-M8-1-037 | Linux binstub chmod 参数顺序与跨平台桥测试（M8 L164，task-286） | 已实现 | [M8-batch-bridge.md](M8-batch-bridge.md) | `2026-11-27 首辅在 'C:\Temp\celerite-t286' 独立标准环境复验：format、no-codegen、bina…` |
 | C-cross-001 | `bundle exec` 的子进程在 Unix 上随父进程收到 SIGINT/SIGTERM 而终止，Windows 上共享控制台 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'crystal spec spec/m7_exec_spec.cr'` |
 | C-cross-002 | 可直接加载的 Ruby 脚本走 `Kernel.load` 运行时适配器，`disable_exec_load` 可绕过 | 已声明差异 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential exec-loader exec-loader-disabled exec-thor-v…` |
@@ -407,5 +408,5 @@
 | C-cross-013 | 连续 `Installing` 行的行序在参考侧由并行安装线程决定，差分归一化把 `Fetching` 与 `Installing` 连续行一并排序 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential pristine-named binstubs-shebang'` |
 | C-cross-014 | `GemfileNotFound` 消息按统一的 `word_wrap` 折行：短路径单行、超列宽折行，与参考三形态逐字一致 | 已实现 | [cross-cutting.md](cross-cutting.md) | `'bash script/differential check-gemfile-missing'；'crystal spec spec/m7…` |
 
-合计 295 条断言（已实现 247 · 已声明差异 35 · 未实现 4 · 未验证 4 · 已取代 5）。
+合计 296 条断言（已实现 248 · 已声明差异 35 · 未实现 4 · 未验证 4 · 已取代 5）。
 <!-- END GENERATED INDEX -->
