@@ -126,7 +126,8 @@ end
 
 private def ifp_ready(project : String, profile : String = "4.0.24",
                       overrides : Hash(String, String) = {} of String => String,
-                      require_install_certificate : Bool = true) : Nil
+                      require_install_certificate : Bool = true,
+                      single_platform : Bool = false) : Nil
   pending!("no Ruby interpreter on PATH for the bridge") unless ruby_available?
   File.write(File.join(project, "Gemfile"), %(source "#{IFP_INDEX}"\n\neval_gemfile "extra.rb"\n))
   File.write(File.join(project, "extra.rb"), %(gem "json_pure"\n))
@@ -140,8 +141,31 @@ private def ifp_ready(project : String, profile : String = "4.0.24",
     status, output, errors = ifp_run(project, ["install"])
     fail "cold install failed (#{status}): #{output} #{errors}" unless status == 0
     ifp_stats(errors)[0].should be >= 1
+    if single_platform && ifp_single_platform_lock!(project)
+      status, output, errors = ifp_run(project, ["install"])
+      fail "single-platform re-warm install failed (#{status}): #{output} #{errors}" unless status == 0
+      ifp_stats(errors)[0].should be >= 1
+    end
     ifp_assert_install_certificate(project) if require_install_certificate
   end
+end
+
+private def ifp_single_platform_lock!(project : String) : Bool
+  path = File.join(project, "Gemfile.lock")
+  lock = File.read(path)
+  section = lock.match(/^PLATFORMS\r?\n((?:  [^\r\n]+\r?\n)+)/m)
+  return false unless section
+
+  rows = section[1].lines.map(&.strip)
+  local_platform = Celerite::Gem::Platform.local.to_s
+  return false unless rows.includes?(local_platform) && rows.includes?("ruby")
+  return false unless rows.sort == [local_platform, "ruby"].sort
+
+  newline = section[0].includes?("\r\n") ? "\r\n" : "\n"
+  replacement = "PLATFORMS#{newline}  #{local_platform}#{newline}"
+  updated = lock.sub(section[0], replacement)
+  File.open(path, "wb") { |file| file << updated }
+  true
 end
 
 private def ifp_assert_install_certificate(project : String) : Nil
@@ -1512,10 +1536,22 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
     end
   end
 
+  it "normalizes a generic-ruby lock only when the legacy capability fixture needs it" do
+    with_project({} of String => String) do |project|
+      path = File.join(project, "Gemfile.lock")
+      local_platform = Celerite::Gem::Platform.local.to_s
+      original = "GEM\n  specs:\n\nPLATFORMS\n  ruby\n  #{local_platform}\n\nDEPENDENCIES\n"
+      File.write(path, original)
+      ifp_single_platform_lock!(project).should be_true
+      File.read(path).should eq("GEM\n  specs:\n\nPLATFORMS\n  #{local_platform}\n\nDEPENDENCIES\n")
+      ifp_single_platform_lock!(project).should be_false
+    end
+  end
+
   it "CI capability: expected_miss_after_lock_tamper" do
     with_project({} of String => String) do |project|
       overrides = {"BUNDLE_PLUGINS" => "false"}
-      ifp_ready(project, overrides: overrides, require_install_certificate: false)
+      ifp_ready(project, overrides: overrides, require_install_certificate: false, single_platform: true)
       status, _output, errors, stats = ifp_hot(project, ["install"], overrides)
       status.should eq(0)
       stats.should eq({0, 0, 0, 0})
