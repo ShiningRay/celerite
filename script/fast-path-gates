@@ -191,6 +191,35 @@ module FastPathGates
     }
   end
 
+  def self.snapshot_project(project, snapshot)
+    FileUtils.rm_rf(snapshot)
+    FileUtils.mkdir_p(snapshot)
+    Dir.children(project).sort.each do |name|
+      FileUtils.cp_r(File.join(project, name), File.join(snapshot, name))
+    end
+  end
+
+  def self.restore_project(project, snapshot)
+    FileUtils.rm_rf(project)
+    FileUtils.mkdir_p(project)
+    Dir.children(snapshot).sort.each do |name|
+      FileUtils.cp_r(File.join(snapshot, name), File.join(project, name))
+    end
+  end
+
+  def self.checked_hot(artifacts:, label:, binary:, project:, arguments:, env:, snapshot:)
+    result = run(binary, project, arguments, env.call)
+    save_result(artifacts, "#{label}-fast-hot", result)
+    checked(result, "#{label} fast hot", zero: true)
+  rescue GateFailure => error
+    restore_project(project, snapshot)
+    File.write(File.join(artifacts, "#{label}-fast-hot-tree.json"), JSON.pretty_generate(tree_manifest(project)))
+    debug_env = env.call.merge("CELERITE_FAST_PATH_DEBUG" => "1")
+    debug = run(binary, project, arguments, debug_env)
+    save_result(artifacts, "#{label}-fast-hot-debug", debug)
+    raise GateFailure, "#{error.message}\nfast-path debug rerun: stats=#{debug.stats.inspect}\n#{debug.stderr}"
+  end
+
   def self.assert_parity(label, fast:, compat:, fast_project:, compat_project:, artifacts:)
     comparisons = {
       "exit" => [fast.status.exitstatus || fast.status.termsig, compat.status.exitstatus || compat.status.termsig],
@@ -234,7 +263,10 @@ module FastPathGates
     compat_warm = checked(run(binary, compat_project, arguments, compat_env.call),
                           "#{label} compatibility warm", fallback: true)
     lock_before = File.binread(File.join(fast_project, "Gemfile.lock"))
-    fast_hot = checked(run(binary, fast_project, arguments, fast_env.call), "#{label} fast hot", zero: true)
+    snapshot = File.join(workspace, "#{label}-fast-hot-snapshot")
+    snapshot_project(fast_project, snapshot)
+    fast_hot = checked_hot(artifacts: artifacts, label: label, binary: binary, project: fast_project,
+                           arguments: arguments, env: fast_env, snapshot: snapshot)
     compat_hot = checked(run(binary, compat_project, arguments, compat_env.call),
                          "#{label} compatibility hot", fallback: true)
     unless File.binread(File.join(fast_project, "Gemfile.lock")) == lock_before
