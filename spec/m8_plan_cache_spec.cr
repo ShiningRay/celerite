@@ -296,6 +296,71 @@ describe Celerite::PlanCache do
     end
   end
 
+  it "rejects reader fixtures with a valid digest but untrusted payload content" do
+    in_cache do
+      value = cache_components
+      key = cache_key(value)
+      root_payload = cache_payload("C:/work/gem")
+      path = fixture(key, value, root_payload)
+      # fixture recomputes the canonical digest, so only semantic trust checks
+      # can reject this entry; format/key/namespace/checksum all remain valid.
+      Celerite::PlanCache.read(key).corrupt?.should be_true
+      File.exists?(path).should be_false
+
+      credential_payload = cache_payload
+      credential_payload["plan"].as_h["token"] = JSON::Any.new("secret-marker-285")
+      path = fixture(key, value, credential_payload)
+      Celerite::PlanCache.read(key).corrupt?.should be_true
+      File.exists?(path).should be_false
+
+      invalid_payload = JSON.parse(%({"specs":[],"installed_snapshot":[]}))
+      path = fixture(key, value, invalid_payload)
+      Celerite::PlanCache.read(key).corrupt?.should be_true
+      File.exists?(path).should be_false
+
+      portable_payload = cache_payload("gems/foo..bar")
+      path = fixture(key, value, portable_payload)
+      result = Celerite::PlanCache.read(key)
+      result.hit?.should be_true
+      result.payload.should eq(portable_payload)
+      File.exists?(path).should be_true
+    end
+  end
+
+  it "rejects a reader fixture containing an active credential value under an innocuous key" do
+    in_cache do
+      ENV["BUNDLE_TOKEN__READ"] = "credential-marker-285"
+      value = cache_components
+      key = cache_key(value)
+      path = fixture(key, value, cache_payload("credential-marker-285"))
+      Celerite::PlanCache.read(key).corrupt?.should be_true
+      File.exists?(path).should be_false
+    ensure
+      ENV.delete("BUNDLE_TOKEN__READ")
+    end
+  end
+
+  it "does not treat BUNDLE_GEM__TEST string values as credentials on read or write" do
+    in_cache do
+      previous = ENV["BUNDLE_GEM__TEST"]?
+      ENV["BUNDLE_GEM__TEST"] = "true"
+      value = cache_components
+      key = cache_key(value)
+      payload = cache_payload("true")
+      path = fixture(key, value, payload)
+      Celerite::PlanCache.read(key).hit?.should be_true
+      File.exists?(path).should be_true
+      Celerite::PlanCache.write(key, value, payload).written?.should be_true
+      Celerite::PlanCache.read(key).hit?.should be_true
+    ensure
+      if previous
+        ENV["BUNDLE_GEM__TEST"] = previous
+      else
+        ENV.delete("BUNDLE_GEM__TEST")
+      end
+    end
+  end
+
   it "keeps credentials out of files and debug diagnostics" do
     in_cache do |root|
       ENV["BUNDLE_TOKEN__PRIVATE"] = "credential-marker-259"; ENV["CELERITE_PLAN_CACHE_DEBUG"] = "1"
