@@ -713,9 +713,8 @@ module BenchM8
 
     def command_for(side, tier)
       arguments = case tier
-      when "cold" then ["install"]
+      when "cold", "noop", "install" then ["install"]
       when "hot" then ["check"]
-      when "noop" then ["install"]
       else raise Error, "unknown tier: #{tier}"
       end
       if side == "bundle"

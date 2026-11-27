@@ -186,6 +186,14 @@ check("options accept every required explicit path and per-tier timeout") do
   driver = BenchM8::Driver.new(options)
   bundle_command = driver.send(:command_for, "bundle", "hot")
   assert(bundle_command == [options.bundle_exe, "_4.0.24_", "check"], "sample Bundler argv is not direct and pinned")
+  assert(driver.send(:command_for, "bundle", "install") == [options.bundle_exe, "_4.0.24_", "install"],
+    "bundle seed install argv is not direct")
+  assert(driver.send(:command_for, "celerite", "install") == [options.celerite, "install"],
+    "celerite seed install argv is not direct")
+  assert(driver.send(:command_for, "bundle", "noop") == [options.bundle_exe, "_4.0.24_", "install"],
+    "bundle noop no longer installs")
+  assert(driver.send(:command_for, "celerite", "cold") == [options.celerite, "install"],
+    "celerite cold no longer installs")
   assert(driver.send(:bundler_version_ok?, "4.0.24\n"), "bare Bundler version output rejected")
   assert(driver.send(:bundler_version_ok?, "Bundler version 4.0.24\n"), "labelled Bundler version output rejected")
   ["4.0.23\n", "Bundler version 4.0.24.1\n", "4.0.24 extra\n", ""].each do |output|
