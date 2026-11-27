@@ -43,8 +43,11 @@ jobs:
 
       - name: Lightweight driver checks
         run: |
+          ruby -c assets/bridge/server.rb
           ruby -c script/fast-path-gates
+          ruby -c test/bin_stubs_test.rb
           ruby -c test/fast_path_gates_test.rb
+          ruby test/bin_stubs_test.rb
           ruby test/fast_path_gates_test.rb
 
       - name: Build current binary
