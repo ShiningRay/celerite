@@ -94,6 +94,17 @@ jobs:
             --out "$ARTIFACT_DIR" --scratch "$SCRATCH_DIR" \
             > "$ARTIFACT_DIR/logs/yjit-probe-step.log" 2>&1
 
+      - name: Prove GNU time availability and format support
+        run: |
+          set -euo pipefail
+          if [[ ! -x /usr/bin/time ]] || ! /usr/bin/time --version 2>&1 | grep -q "GNU time"; then
+            sudo apt-get update
+            sudo apt-get install -y time
+          fi
+          /usr/bin/time --version 2>&1 | tee "$ARTIFACT_DIR/logs/gnu-time-version.txt"
+          /usr/bin/time -f "%e %U %S %M %x" -o "$ARTIFACT_DIR/logs/gnu-time-format.txt" /bin/true
+          test "$(wc -w < "$ARTIFACT_DIR/logs/gnu-time-format.txt")" -eq 5
+
       - name: Run Linux collector self-test
         env:
           BASELINE_SHA: ${{ inputs.baseline_sha }}

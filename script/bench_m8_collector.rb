@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "etc"
+require "json"
 require "tmpdir"
 
 module BenchM8
@@ -42,30 +43,45 @@ module BenchM8
           sum = 0
           300_000.times { |i| sum += i % 97 }
           raise "impossible" unless sum.positive?
+          sleep 0.35
         RUBY
         parent = <<~RUBY
           child = #{child.dump}
           pid = Process.spawn(#{ruby.dump}, "-e", child, ARGV.fetch(0))
-          sleep 0.05
+          sleep 0.35
           Process.wait(pid)
         RUBY
         stdout = File.join(dir, "stdout.txt")
         stderr = File.join(dir, "stderr.txt")
-        result = collector.run(
-          [ruby.dump, "-e", parent, io_path],
-          env: { "RUBYOPT" => "", "LC_ALL" => "C" },
-          chdir: dir,
-          stdout_path: stdout,
-          stderr_path: stderr,
-          timeout_s: 15
-        )
+        begin
+          result = collector.run(
+            [ruby.dump, "-e", parent, io_path],
+            env: { "RUBYOPT" => "", "LC_ALL" => "C" },
+            chdir: dir,
+            stdout_path: stdout,
+            stderr_path: stderr,
+            timeout_s: 15
+          )
+        rescue StandardError => error
+          diagnostics = self_test_diagnostics(collector.last_result, stderr, "#{stdout}.time")
+          raise CollectionError, "self-test collector raised #{error.class}: #{error.message}\n#{diagnostics}"
+        end
         errors = []
         errors << "self-test command failed" unless result[:exit_status] == 0 && !result[:timed_out]
         errors << "self-test collector incomplete: #{result[:missing_metrics].join(', ')}" unless result[:collector_complete]
-        root_cpu = result[:root_cpu_user_s].to_f + result[:root_cpu_system_s].to_f
-        tree_cpu = result[:tree_cpu_user_s].to_f + result[:tree_cpu_system_s].to_f
-        errors << "tree CPU #{tree_cpu} did not exceed root CPU #{root_cpu}" unless tree_cpu > root_cpu
-        errors << "tree RSS did not exceed root RSS" unless result[:tree_rss_peak_kb].to_i > result[:root_rss_peak_kb].to_i
+        if [result[:root_cpu_user_s], result[:root_cpu_system_s],
+            result[:tree_cpu_user_s], result[:tree_cpu_system_s]].any?(&:nil?)
+          errors << "self-test CPU metrics missing"
+        else
+          root_cpu = result[:root_cpu_user_s] + result[:root_cpu_system_s]
+          tree_cpu = result[:tree_cpu_user_s] + result[:tree_cpu_system_s]
+          errors << "tree CPU #{tree_cpu} did not exceed root CPU #{root_cpu}" unless tree_cpu > root_cpu
+        end
+        if result[:root_rss_peak_kb].nil? || result[:tree_rss_peak_kb].nil?
+          errors << "self-test RSS metrics missing"
+        else
+          errors << "tree RSS did not exceed root RSS" unless result[:tree_rss_peak_kb] > result[:root_rss_peak_kb]
+        end
         %i[rchar wchar syscr syscw].each do |key|
           root_io = result.dig(:root_io, key)
           tree_io = result.dig(:tree_io, key)
@@ -75,13 +91,31 @@ module BenchM8
         %i[read_bytes write_bytes].each do |key|
           errors << "missing #{key} IO" if result.dig(:root_io, key).nil? || result.dig(:tree_io, key).nil?
         end
-        raise CollectionError, errors.join("; ") unless errors.empty?
+        unless errors.empty?
+          diagnostics = self_test_diagnostics(collector.last_result, stderr, "#{stdout}.time")
+          raise CollectionError, "#{errors.join('; ')}\n#{diagnostics}"
+        end
 
         result.slice(:wall_s, :root_cpu_user_s, :root_cpu_system_s, :tree_cpu_user_s,
           :tree_cpu_system_s, :root_rss_peak_kb, :tree_rss_peak_kb, :root_io, :tree_io,
           :collector_complete, :missing_metrics, :exit_status, :timed_out)
       end
     end
+
+    def self.self_test_diagnostics(result, stderr_path, time_path)
+      "collector.last_result=#{JSON.pretty_generate(result || {})}\n" \
+        "gnu_time_stderr=#{diagnostic_file(stderr_path)}\n" \
+        "gnu_time_output=#{diagnostic_file(time_path)}"
+    end
+    private_class_method :self_test_diagnostics
+
+    def self.diagnostic_file(path)
+      return "<missing: #{path}>" unless File.file?(path)
+
+      bytes = File.binread(path)
+      bytes.empty? ? "<empty: #{path}>" : bytes.inspect
+    end
+    private_class_method :diagnostic_file
 
     def run(command, env:, chdir:, stdout_path:, stderr_path:, timeout_s:)
       time_path = "#{stdout_path}.time"

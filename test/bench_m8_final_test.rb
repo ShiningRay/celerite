@@ -284,6 +284,20 @@ check("tree sampler sums identities and marks missing child IO incomplete") do
   incomplete.sample(stat(pid: 1, starttime: 100, utime: 10, stime: 2, rss_pages: 10))
   assert(incomplete.tree_io.nil?, "missing child IO was silently replaced with root-only IO")
   assert(!incomplete.complete?, "missing child IO was marked complete")
+
+  collector_source = File.read(File.join(ROOT, "script/bench_m8_collector.rb"))
+  assert(collector_source.include?("sleep 0.35"), "self-test observation window is too short")
+  Dir.mktmpdir("m8-collector-diagnostics") do |directory|
+    stderr_path = File.join(directory, "stderr.txt")
+    time_path = File.join(directory, "stdout.txt.time")
+    File.binwrite(stderr_path, "gnu-time failed\n")
+    File.binwrite(time_path, "0.00 0.01 0.02 3 0\n")
+    diagnostics = BenchM8::LinuxCollector.send(:self_test_diagnostics,
+      { "root_cpu_user_s" => nil, "tree_io" => nil }, stderr_path, time_path)
+    assert(diagnostics.include?('"root_cpu_user_s": null'), "failure diagnostics omit last_result JSON")
+    assert(diagnostics.include?("gnu-time failed"), "failure diagnostics omit GNU time stderr")
+    assert(diagnostics.include?("0.00 0.01 0.02 3 0"), "failure diagnostics omit time output")
+  end
 end
 
 check("manual workflow is dispatch-only, pinned, fail-closed and secret-free") do
@@ -309,7 +323,15 @@ check("manual workflow is dispatch-only, pinned, fail-closed and secret-free") d
   end
   driver_source = File.read(File.join(ROOT, "script/bench_m8.rb"))
   assert(run_text.include?("--probe-only") && driver_source.include?("RubyVM::YJIT.enabled? == false"), "YJIT fail-closed probe missing")
+  gnu_time_step = steps.find { |step| step["name"] == "Prove GNU time availability and format support" }
+  self_test_step = steps.find { |step| step["run"]&.include?("--self-test") }
+  assert(gnu_time_step, "GNU time preflight missing")
+  assert(gnu_time_step["run"].include?("/usr/bin/time --version"), "GNU time version proof missing")
+  assert(gnu_time_step["run"].include?("sudo apt-get install -y time"), "GNU time install fallback missing")
+  assert(gnu_time_step["run"].include?('-f "%e %U %S %M %x"'), "GNU time format proof missing")
+  assert(gnu_time_step["run"].include?("gnu-time-format.txt"), "GNU time format evidence missing")
   assert(run_text.include?("--self-test"), "collector self-test missing")
+  assert(self_test_step && steps.index(gnu_time_step) < steps.index(self_test_step), "GNU time preflight is after self-test")
   assert(run_text.include?("--mode") && driver_source.include?("Validator.new") && driver_source.include?("validator.generate_summary if ok"), "validator gate missing")
   assert(run_text.include?("--jobs 4"), "parallel Bundler job setting differs from matrix contract")
   assert(!run_text.include?("secrets.") && !run_text.include?("GITHUB_TOKEN"), "workflow references secrets")
