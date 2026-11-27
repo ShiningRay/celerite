@@ -384,3 +384,13 @@
 - 边界：只测本地 fixture 与显式能力例；不把本机单平台 Ruby 结果冒充 CI matrix。stats-off 必须使脚本非零；旧 binary 任意环境错误不算负门通过。旧 binary 不作为当前产品构建。动态 DSL、硬终止、Ubuntu 产品门、第二 ABI、真实 ACL/并发及修复后的 GitHub Actions 四格复跑未验证，L164 不据此勾选。
 - 生效：task-275（fix `c84b90d`；test `95c945c`；反假绿 follow-up test `810f161`；docs follow-up 本提交）
 - 取代：无
+
+## C-M8-1-034 M8 Rails 最终矩阵的固定基线与 fail-closed 证据链（task-282）
+
+- 状态：未验证
+- 参考行为：Bundler 在固定锁文件与独立 cold 环境中产生可比较的 stdout/stderr、退出码与 gemspec 树；性能结论不得来自旧样本、移动分支或缺失指标。
+- 我方行为：新增仅手动触发的 Ubuntu 24.04 workflow，固定 Crystal 1.22.1/Ruby 4.0.6/Bundler 4.0.24；要求完整 baseline SHA 精确等于 HEAD。Linux driver 实现 cold/hot/noop × YJIT off/on 的串行交错矩阵、cold-yjit、独立 HOME/BUNDLE_PATH/APP_CONFIG/TMP、固定参考锁、pid+starttime 进程树 CPU/RSS/IO、进程组 timeout、原始样本与 validator；YJIT 与 collector 均 fail closed。完整矩阵 warmup=1、n=5；smoke 仅 hot/noop、n=1。
+- 判据：最终命令为 `ruby script/bench-m8` 的 smoke/full 运行及其 validator；legacy `ruby script/benchmark` 是旧 M6 入口，不得代替 M8 最终判据。本机 `ruby test/bench_m8_final_test.rb` 为 9 checks/0 failures，Ruby `-c`、Git Bash `bash -n`、workflow YAML 解析和 `git diff --check` 均通过；真实 CI validator 尚待执行。
+- 边界：待 CI。本机未执行 Crystal/build/spec、Rails、differential、真实 Linux collector self-test 或 YJIT；没有最终 12 单元样本、性能数值或 validated summary。task-255 样本、历史 Windows 结果及移动 main 均不得充当 baseline。
+- 生效：task-282（待 Ubuntu CI 验证）
+- 取代：无；不取代既有性能证据，只建立最终矩阵的证据门。

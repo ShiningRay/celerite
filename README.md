@@ -175,6 +175,34 @@ Celerite does not emulate that argv-level expansion, so `cmd.exe` invocations of
 `celerite add --glob *.gemspec` differ from the reference, while
 `script/differential` expands in bash first and both sides agree.
 
+### M8 Rails final benchmark
+
+The final Rails benchmark is Linux-only and manual. Use the committed full SHA as
+`baseline_sha`; the driver rejects a dirty worktree or any other HEAD. It requires
+Crystal 1.22.1, Ruby 4.0.6 and Bundler 4.0.24, probes YJIT off/on without fallback,
+and runs the collector self-test before a smoke run:
+
+```console
+script/bench-m8 --mode smoke --baseline-sha "$(git rev-parse HEAD)" \
+  --celerite "$PWD/bin/celerite" --ruby "$(command -v ruby)" \
+  --bundle-exe "$(command -v bundle)" --scratch "$PWD/.tmp-scratch/m8" \
+  --out "$PWD/.tmp-scratch/m8-artifacts" --self-test
+
+script/bench-m8 --mode smoke --baseline-sha "$(git rev-parse HEAD)" \
+  --celerite "$PWD/bin/celerite" --ruby "$(command -v ruby)" \
+  --bundle-exe "$(command -v bundle)" --scratch "$PWD/.tmp-scratch/m8" \
+  --out "$PWD/.tmp-scratch/m8-artifacts" --jobs 4
+```
+
+Omit `--mode smoke` for the final matrix: cold/hot/noop × YJIT off/on, warmup=1
+and n=5. Only a validated summary is a performance result; missing metrics,
+timeouts, nonzero exits or parity failures produce no summary. Artifacts include
+raw samples, logs, manifests, validator output and checksums under the current
+run/attempt/baseline SHA. The `M8 Rails final benchmark` workflow is
+`workflow_dispatch`-only and does not run on push. Its final CI result and Linux
+Rails/YJIT measurements are not yet verified in this checkout; historical Windows
+samples and task-255 artifacts are not a substitute.
+
 ## License
 
 MIT. Celerite is an independent project and is not affiliated with the Bundler
