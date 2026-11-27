@@ -1225,7 +1225,7 @@ def op_generate_bin_stubs(payload)
   spec.executables.each do |executable|
     script_path = File.join(destination, installer.send(:formatted_program_filename, executable))
     File.binwrite(script_path, installer.send(:app_script_text, executable))
-    File.chmod(script_path, 0o755) unless Gem.win_platform?
+    File.chmod(0o755, script_path) unless Gem.win_platform?
     if Gem.win_platform?
       bat_path = "#{script_path}.bat"
       # RubyGems writes the stub in text mode (`installer.rb:427-437`:
