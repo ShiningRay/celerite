@@ -400,7 +400,7 @@
 - 状态：未验证
 - 参考行为：Bundler 在固定锁文件与独立 cold 环境中产生可比较的 stdout/stderr、退出码与 gemspec 树；性能结论不得来自旧样本、移动分支或缺失指标。
 - 我方行为：新增仅手动触发的 Ubuntu 24.04 workflow，固定 Crystal 1.22.1/Ruby 4.0.6/Bundler 4.0.24；要求完整 baseline SHA 精确等于 HEAD。Linux driver 实现 cold/hot/noop × YJIT off/on 的串行交错矩阵、cold-yjit、独立 HOME/BUNDLE_PATH/APP_CONFIG/TMP、固定参考锁、pid+starttime 进程树 CPU/RSS/IO、进程组 timeout、原始样本与 validator；YJIT 与 collector 均 fail closed。完整矩阵 warmup=1、n=5；smoke 仅 hot/noop、n=1。
-- 判据：最终命令为 `ruby script/bench-m8` 的 smoke/full 运行及其 validator；legacy `ruby script/benchmark` 是旧 M6 入口，不得代替 M8 最终判据。本机 `ruby test/bench_m8_final_test.rb` 为 9 checks/0 failures，Ruby `-c`、Git Bash `bash -n`、workflow YAML 解析和 `git diff --check` 均通过；真实 CI validator 尚待执行。
+- 判据：最终命令为 `ruby script/bench-m8` 的 smoke/full 运行及其 validator；legacy `ruby script/benchmark` 是旧 M6 入口，不得代替 M8 最终判据。本机 `ruby test/bench_m8_final_test.rb` 为 9 checks/0 failures，Ruby `-c`、Git Bash `bash -n`、workflow YAML 解析和 `git diff --check` 均通过；真实 CI validator 尚待执行。 2026-11-27 run `45964573226` 的真实 collector self-test 失败 artifact 显示 GNU time 无法执行带字面引号的 Ruby 路径；根因是 self-test 外层 argv 误用 `ruby.dump`。followup `a108a72` 改为原始 `ruby` 路径并新增含空格/无引号回归，首辅复跑 9 checks/0；真实 smoke 仍待重派。
 - 边界：待 CI。本机未执行 Crystal/build/spec、Rails、differential、真实 Linux collector self-test 或 YJIT；没有最终 12 单元样本、性能数值或 validated summary。task-255 样本、历史 Windows 结果及移动 main 均不得充当 baseline。
 - 生效：task-282（待 Ubuntu CI 验证）
 - 取代：无；不取代既有性能证据，只建立最终矩阵的证据门。
