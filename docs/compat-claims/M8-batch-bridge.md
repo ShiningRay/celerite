@@ -385,6 +385,16 @@
 - 生效：task-275（fix `c84b90d`；test `95c945c`；反假绿 follow-up test `810f161`；docs follow-up 本提交）
 - 取代：无
 
+## C-M8-1-033 solve_batch 接入 Resolution 的候选闭包与回填（M8 L161 S3b，task-277）
+
+- 状态：已实现
+- 参考行为（4.0.24）：参考 Bundler 的 `Definition#resolve` 在同一 Ruby 进程内由 resolver 消费完整 source index、当前锁与 requirements，产出的版本/平台/依赖/checksum/source 信息用于后续锁文件与安装；它没有 `solve_batch` 桥操作。本项只声明 Crystal 侧在满足严格门禁后以一次 batch solve 重建相同 `Resolution` 状态，不声明参考侧存在该接口；参考侧继续约束命令 stdout/stderr、退出码与锁文件内容。
+- 我方行为：`src/celerite/resolution.cr` 在普通构造中保留同一次 S2 `GemfileEvaluator.fetch` 的 evaluation/fingerprint；`src/celerite/cli/commands_install.cr` 复用已求值结果与 fingerprint，删除可信 custom-candidate 分支的第二次 `Resolution.new`。`resolve!` 在命令级 LockFastPath/InstallFastPath 之后、frozen/reuse/stale/fetch 探测之前先尝试 S3b：仅 Bundler `4.0.24`、deterministic fingerprint、全部 `Rubygems/pure_data` source、非 local-only/frozen/autoheal 且 promotion/constraints 可无损映射时启用。候选闭包以根依赖与当前锁名字为种子，对每个 source 的每个 remote 获取全部可参与解析的版本/平台（沿用 promotion/cooldown 过滤），BFS 依赖并检查数量、重复冲突、checksum 与 source identity；`locked_base` 直读当前锁。合格请求只发一次 `@bridge.solve_batch`，不二次 `evaluate_batch`，不以 solve 结果写 EvalCache/FastPathStore/PlanCache。成功响应显式回填 chosen、platform variants、`@lock_extra_specs`、`@current_index`、根依赖与 base requirements，并按 source ID 还原真实 remote；协议/schema/identity/closure/digest/checksum/超时/超限/UnknownOp 静默回旧解析，`requirements_conflict`/`ruby_incompatible`/`platform_unavailable` 按既有退出码报错且不回落。成功响应完整回填后才按 `show_resolving` 输出一次 `Resolving dependencies...`；请求、取数、校验或回退阶段均不提前输出，`show_resolving=false` 时 resolving 行为保持静默（source-index fetching 行不属于该开关）。
+- 判据：2026-11-27 首辅在 `C:\Temp\celerite-t277` 独立标准环境复验：format/shards/no-codegen/binary build/claims/diff 全 0；`crystal spec spec/m8_resolution_solve_batch_spec.cr spec/m8_solve_batch_client_spec.cr spec/m7_ruby_runtime_enforcement_spec.cr spec/m7_resolve_reason_spec.cr spec/m7_resolver_version_union_intersect_spec.cr spec/m7_resolver_ruby_constraints_spec.cr` = **62 examples, 0 failures, 0 errors, 0 pending（43.77s）**；`ruby test/solve_batch_harness_test.rb` = **35 checks, 0 failures**。真实远程差分 `install-fresh lock-file-pin lock-file-update lock-file-unlock update-conservative platform-variant-fail ruby-api` 在 Bundler 4.0.24 与 2.7.2 下各 **7 passed / 0 failed / 0 skipped**，逐项断言 exit/stdout/stderr/项目树/锁文件。覆盖 eligible 一次 solve、ineligible/2.7/unknown/broken/unlock 零 solve、空 requirements、chosen/edges/variants/extras、locked_base、协议/schema/identity/closure/digest 回落、三类语义失败不回落、跨 source 原子回落、resolving 成功恰一次/回退不重复/false 静音与 `evaluate_batch == 0`。未跑完整 spec/differential、Rails、Linux/macOS、第二 ABI、性能/超时/断网/并发与破坏性故障注入。 主仓四笔代码并入后的同一六文件集成门禁为 **59 examples, 0 failures, 0 errors, 0 pending（35.57s）**，harness 35/0，format/shards/no-codegen/build/claims/diff 全 0；计数差异来自主仓当前测试集合，不是失败或跳过。
+- 边界：只接线 `Resolution`，不改 `assets/bridge/server.rb` 或 Ruby `solve_batch.rb`，不碰 fast_path/plan_cache/install/lock_fast_path/cache_identity/runtime_facts/eval_cache/fast_path_store；不勾 roadmap。已完成构建与定向 spec 验证；未验证 Linux/macOS、第二 ABI、真实 Rails/全量差分、命令级 parity、性能阈值、超时/断网/并发与破坏性故障注入。
+- 生效：M8 期间（task-277）
+- 取代：无
+
 ## C-M8-1-034 M8 Rails 最终矩阵的固定基线与 fail-closed 证据链（task-282）
 
 - 状态：未验证
