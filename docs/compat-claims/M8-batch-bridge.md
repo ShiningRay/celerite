@@ -394,3 +394,13 @@
 - 边界：待 CI。本机未执行 Crystal/build/spec、Rails、differential、真实 Linux collector self-test 或 YJIT；没有最终 12 单元样本、性能数值或 validated summary。task-255 样本、历史 Windows 结果及移动 main 均不得充当 baseline。
 - 生效：task-282（待 Ubuntu CI 验证）
 - 取代：无；不取代既有性能证据，只建立最终矩阵的证据门。
+
+## C-M8-1-035 generic-ruby 新锁的规范 local/ruby 平台集（M8 L164，task-284）
+
+- 状态：已实现
+- 参考行为：Bundler 的 generic-ruby Definition 会同时记录本地平台与通用 `ruby` 平台，并在写锁前排序；快路径只能复用与兼容路径一致的锁身份和平台集合，不能因新增平台而误命中。
+- 我方行为：`src/celerite/lock_fast_path.cr` 新增纯函数 `platforms_supported?`，接受精确 `[local_platform]`；仅当本地平台非 mingw/mswin/java、非 `ruby` 且 generic-local 判定为真时，额外接受精确规范排序的 `[local_platform, "ruby"]`。第三平台、重复平台、错误顺序及 Windows/Java 的 generic extra 仍 miss。其它 plugin、锁 identity/SHA、record、certificate 与 evaluation 门不变。
+- 判据：run `45957802760` Ubuntu artifact `15179078945` 的 `lock-fast-hot-debug.stderr:1` 实测 `fast-path: lock miss (platforms)`，bridge `{1,2,156,1825}`。`crystal spec spec/m8_lock_fast_path_spec.cr` 最终 `41 examples, 0 failures, 0 errors, 0 pending`；`crystal tool format --check src spec`、`crystal build src/cli.cr --no-codegen`、`shards build`、`git diff --check` 均 EXIT=0。首辅在独立标准环境（完整 PATH、树内 TMP/HOME/CACHE、CELERITE_RUBY、无 CC/shim）复跑 format/no-codegen/binary build 与同一 41 例均 EXIT=0（2:22），claims/diff check 亦为 0。
+- 边界：本机 Windows 通过 `CELERITE_LOCAL_PLATFORM=x86_64-linux` 覆盖 generic-ruby 锁形状，但没有在真实 Ubuntu runner 执行新 binary；不声称四格 CI 已绿。全量 spec、differential、Rails、第二 ABI 未验证，L164 不据此单独勾选。
+- 生效：M8 期间（task-284）
+- 取代：无；收窄 task-261 的 exact-set 边界，只补 generic-ruby 的规范两平台形状，不放宽任意附加平台。
