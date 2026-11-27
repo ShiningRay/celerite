@@ -177,6 +177,8 @@ module Celerite
   # -> PubGrub resolution -> lockfile generation (pinned contracts:
   # `Bundler::Definition` + `Bundler::Resolver`).
   class Resolution
+    alias SolveBatch = Bridge::SolveBatch
+
     # The compact-index `checksum` requirement may be raw hex (rubygems.org
     # /info), raw base64 or `sha256=<hex>`; lockfiles render `sha256=<hex>`
     # (reference `Checksum::API_SHA256_HEX`). Shared normalization lives in
@@ -321,6 +323,7 @@ module Celerite
     property version_promotion_strict : Bool = false
     property prerelease : Bool = false
     property conservative_update : Bool = false
+    setter unlock : Bool | Array(String)
     # --ruby: rewrite the RUBY VERSION section to the running environment.
     property ruby_update : Bool = false
 
@@ -1237,11 +1240,24 @@ module Celerite
       end
 
       apply_solve_batch_response(response, request, deps)
-      true
     rescue ex : Bridge::BridgeError | SolveBatch::Error | CompactIndex::Error
       # A bridge/protocol/transport failure must not change user-visible output.
       # The old resolver remains the compatibility implementation.
       false
+    end
+
+    # Bundler's SourceList always exposes an anonymous Metadata source for the
+    # synthetic Ruby/RubyGems nodes. It has no remote and participates in no gem
+    # dependency. S1 creates that node itself, so omit only this internal entry;
+    # every real Metadata/unknown source remains a compatibility miss.
+    private def solve_batch_gem_sources : Array(Bridge::EvaluatedSource)?
+      sources = @evaluation.sources.reject do |source|
+        source.type == "Metadata" && source.name.nil? && source.remotes.nil? && source.remote.nil?
+      end
+      return nil if sources.empty?
+      return nil unless sources.all? { |source| source.type == "Rubygems" }
+      return nil if @evaluation.dependencies.any? { |dependency| dependency.source.try(&.type) == "Metadata" }
+      sources
     end
 
     private def build_solve_batch_request(deps : Array(Resolver::DepSpec)) : SolveBatch::Request?
@@ -1249,9 +1265,12 @@ module Celerite
       return false_nil unless @evaluation_fingerprint.try(&.state) == EvalFingerprint::State::Deterministic
       return false_nil if @local_only || @prefer_local || @autoheal_locked_edges
       return false_nil if @definition.config["frozen"] == true
-      return false_nil if @evaluation.sources.empty?
-      return false_nil unless @evaluation.sources.all? { |source| source.type == "Rubygems" }
-      return false_nil if @unlock.is_a?(Array(String)) && !@unlock.as_a.empty?
+      return false_nil if @unlock == true
+      gem_sources = solve_batch_gem_sources
+      return false_nil unless gem_sources
+      if unlock = @unlock.as?(Array(String))
+        return false_nil unless unlock.empty?
+      end
 
       source_payloads = solve_batch_sources
       return false_nil unless source_payloads
@@ -1280,7 +1299,7 @@ module Celerite
       candidates = solve_batch_candidate_closure(deps, locked_rows, source_payloads)
       return false_nil unless candidates
       return false_nil unless apply_locked_checksums(candidates, locked_rows)
-      parsed_candidates = SolveBatch::Digest.candidates_by_source(JSON::Any.new(candidates), source_ids)
+      parsed_candidates = SolveBatch::Digest.candidates_by_source(JSON::Any.new(candidates.transform_values { |rows| JSON::Any.new(rows) }), source_ids)
       candidate_count = parsed_candidates.values.sum(&.size)
       return false_nil if candidate_count > SolveBatch::MAX_CANDIDATES
       name_count = parsed_candidates.values.flat_map(&.map(&.["name"].as_s)).uniq.size
@@ -1294,7 +1313,6 @@ module Celerite
         end
         return false_nil unless candidate
         checksum = candidate["checksum"]
-        return false_nil if checksum.raw.nil?
         dependencies = spec.dependencies.map do |dependency|
           JSON::Any.new({
             "name"         => JSON::Any.new(dependency.name),
@@ -1315,7 +1333,7 @@ module Celerite
 
       groups = {} of String => JSON::Any
       %w[with without optional all].each do |key|
-        values = @definition.config[key]?.try(&.as?(Array(String))) || [] of String
+        values = @definition.config[key].try(&.as?(Array(String))) || [] of String
         groups[key] = JSON::Any.new(values.map { |value| JSON::Any.new(value) })
       end
       evaluation = JSON::Any.new({
@@ -1346,27 +1364,32 @@ module Celerite
     end
 
     private def solve_batch_sources : Array(JSON::Any)?
-      remotes_by_index = @evaluation.sources.map do |source|
+      sources = solve_batch_gem_sources
+      return nil unless sources
+      unnamed_sources = sources.count { |source| source.name.nil? }
+      return nil if unnamed_sources > 1
+      # SourceRegistry requires one real default when multiple sources exist.
+      # Do not invent a default for an all-scoped source set.
+      return nil if sources.size > 1 && unnamed_sources == 0
+
+      remotes_by_index = sources.map do |source|
         values = solve_batch_redacted_remotes(source)
-        return nil if values.empty?
+        return nil unless values && !values.empty?
         values
       end
-      return nil if remotes_by_index.any?(&.empty?)
 
-      raw_sources = @evaluation.sources.map_with_index do |source, index|
-        remote = source.remote || source.remotes.try(&.first?)
-        return nil unless remote
+      raw_sources = sources.map_with_index do |source, index|
         lock_options = if options = source.lock_options
                          JSON.parse(options.to_json)
                        else
                          JSON::Any.new({} of String => JSON::Any)
                        end
         JSON::Any.new({
-          "source_id"       => JSON::Any.new((@evaluation.sources.size == 1 || source.name.nil?) ? "default" : "source-#{index.to_s.rjust(4, '0')}"),
+          "source_id"       => JSON::Any.new((sources.size == 1 || source.name.nil?) ? "default" : "source-#{index.to_s.rjust(4, '0')}"),
           "type"            => JSON::Any.new("Rubygems"),
           "name"            => source.name ? JSON::Any.new(source.name.not_nil!) : JSON::Any.new(nil),
           "identity_sha256" => JSON::Any.new("0" * 64),
-          "uri_redacted"    => JSON::Any.new(solve_batch_redact_uri(remote)),
+          "uri_redacted"    => JSON::Any.new(remotes_by_index[index].first),
           "remotes"         => JSON::Any.new(remotes_by_index[index].map { |value| JSON::Any.new(value) }),
           "path"            => JSON::Any.new(nil),
           "revision"        => JSON::Any.new(nil),
@@ -1383,34 +1406,44 @@ module Celerite
       SolveBatch::SourceRegistry.assign(raw_sources)
     end
 
-    private def solve_batch_redacted_remotes(source : Bridge::EvaluatedSource) : Array(String)
+    private def solve_batch_redacted_remotes(source : Bridge::EvaluatedSource) : Array(String)?
       values = source.remotes
       if remote = source.remote
         values = [remote] if values.nil? || values.empty?
       end
-      (values || [] of String).map { |value| solve_batch_redact_uri(value) }
+      redacted = [] of String
+      (values || [] of String).each do |value|
+        uri = solve_batch_redact_uri(value)
+        return nil unless uri
+        redacted << uri
+      end
+      redacted
     end
 
-    private def solve_batch_redact_uri(value : String) : String
-      if match = /\A([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\/?#]*)([^?#]*)/.match(value)
-        authority = match[2]
-        if at = authority.rindex('@')
-          authority = authority[(at + 1)..]
-        end
-        "#{match[1]}#{authority}#{match[3]}"
-      else
-        value.split(/[?#]/, 2).first
-      end
+    private def solve_batch_redact_uri(value : String) : String?
+      uri = URI.parse(value)
+      # A query or fragment participates in source identity. Silently dropping
+      # either would resolve against a different source than Bundler evaluated.
+      return nil if uri.query || uri.fragment
+      uri.user = nil
+      uri.password = nil
+      uri.to_s
+    rescue URI::Error
+      nil
     end
 
     private def solve_batch_original_source(payload : JSON::Any) : Bridge::EvaluatedSource?
-      matches = @evaluation.sources.select { |source| solve_batch_source_match?(source, payload) }
+      sources = solve_batch_gem_sources
+      return nil unless sources
+      matches = sources.select { |source| solve_batch_source_match?(source, payload) }
       matches.size == 1 ? matches.first : nil
     end
 
     private def solve_batch_source_match?(source : Bridge::EvaluatedSource, payload : JSON::Any) : Bool
+      redacted = solve_batch_redacted_remotes(source)
+      return false unless redacted
       expected = payload["remotes"].as_a.map(&.as_s).sort
-      source.name == payload["name"].as_s? && solve_batch_redacted_remotes(source).sort == expected
+      source.name == payload["name"].as_s? && redacted.sort == expected
     end
 
     private def solve_batch_fingerprint : JSON::Any?
@@ -1530,7 +1563,12 @@ module Celerite
         end
         candidates = sources.select do |source|
           remotes = source["remotes"].as_a.map(&.as_s)
-          lock_remotes.empty? || remotes.any? { |remote| lock_remotes.any? { |locked| solve_batch_redact_uri(locked) == remote } }
+          lock_remotes.empty? || remotes.any? do |remote|
+            lock_remotes.any? do |locked|
+              locked_remote = solve_batch_redact_uri(locked)
+              locked_remote && remote.rstrip('/') == locked_remote.rstrip('/')
+            end
+          end
         end
         if lock_remotes.empty? && sources.size == 1
           candidates = sources
@@ -1615,7 +1653,7 @@ module Celerite
         return false unless candidate
         current = candidate["checksum"].as_h?.try { |value| value["value"]?.try(&.as_s?) }
         return false if current && current != checksum
-        candidate["checksum"] = JSON::Any.new({"algorithm" => JSON::Any.new("sha256"), "value" => JSON::Any.new(checksum)})
+        candidate.as_h["checksum"] = JSON::Any.new({"algorithm" => JSON::Any.new("sha256"), "value" => JSON::Any.new(checksum)})
       end
       true
     end
@@ -1629,12 +1667,14 @@ module Celerite
     end
 
     private def apply_solve_batch_response(response : SolveBatch::Response, request : SolveBatch::Request,
-                                           deps : Array(Resolver::DepSpec)) : Nil
+                                           deps : Array(Resolver::DepSpec)) : Bool
       sources = {} of String => JSON::Any
       request.payload["evaluation"]["sources"].as_a.each { |source| sources[source["source_id"].as_s] = source }
       selected = [] of ResolvedSpec
       extras = [] of ResolvedSpec
       response.chosen.group_by { |candidate| {candidate.name, candidate.version} }.each_value do |group|
+        source_ids = group.map { |candidate| candidate.payload["source_id"].as_s }.uniq
+        return false if source_ids.size != 1
         group_specs = group.map { |candidate| solve_batch_candidate_to_index(candidate) }
         variant_specs = [] of Resolver::IndexSpec
         # `variants` is already schema/closure checked by Response.parse. Use it
@@ -1677,6 +1717,7 @@ module Celerite
           (@current_index[spec.name] ||= [] of Resolver::IndexSpec) << spec
         end
       end
+      true
     end
 
     private def solve_batch_candidate_to_index(candidate : SolveBatch::Candidate) : Resolver::IndexSpec
@@ -1686,7 +1727,7 @@ module Celerite
       ruby_requirement = candidate.payload["required_ruby_version"].as_s?
       rubygems_requirement = candidate.payload["required_rubygems_version"].as_s?
       checksum = candidate.payload["checksum"].as_h?.try { |value| value["value"].as_s }
-      created_at = candidate.payload["created_at"].as_s?.try { |value| Time.parse_rfc3339(value).to_unix }
+      created_at = candidate.payload["created_at"]?.try(&.as_s?).try { |value| Time.parse_rfc3339(value).to_unix }
       Resolver::IndexSpec.new(candidate.name, Gem::Version.new(candidate.version),
         candidate.platform == "ruby" ? Gem::Platform::RUBY : Gem::Platform.new(candidate.platform),
         dependencies,
@@ -1914,7 +1955,11 @@ module Celerite
           # The probe cached these names, so the real resolution would reuse
           # them silently; drop them and let it fetch and announce the index
           # itself, keeping the original line order.
-          probed.each { |name| @index_specs_cache.try &.delete_if { |key, _| key[0] == name } }
+          probed.each do |name|
+            @index_specs_cache.try do |cache|
+              cache.keys.select { |key| key[0] == name }.each { |key| cache.delete(key) }
+            end
+          end
         end
       end
       stale

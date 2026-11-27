@@ -1,5 +1,6 @@
 require "./spec_helper"
 require "../src/celerite"
+require "../src/celerite/gem/platform"
 require "file_utils"
 
 module Celerite
@@ -16,7 +17,7 @@ module Celerite
           resolution_batch_log(log).count { |entry| entry["op"] == "evaluate_batch" }.should eq(0)
 
           payload = requests.first["payload"]
-          payload["schema"].as_s.should eq(Bridge::SolveBatch::SCHEMA)
+          payload["schema"].as_s.should eq(Celerite::Bridge::SolveBatch::SCHEMA)
           payload["evaluation"]["fingerprint"]["state"].as_s.should eq("deterministic")
           payload["evaluation"]["sources"].as_a.all? { |source| source["type"].as_s == "Rubygems" }.should be_true
           payload["evaluation"]["sources"].as_a.all? { |source| source["materialization"].as_s == "pure_data" }.should be_true
@@ -25,7 +26,7 @@ module Celerite
           payload["candidate_closure"]["candidate_count"].as_i.should eq(2)
           payload["candidates_by_source"].as_h.values.sum(&.as_a.size).should eq(2)
           payload["locked_base"]["specs"].as_a.should be_empty
-          payload["limits"]["timeout_ms"].as_i.should eq(Bridge::SolveBatch::MAX_TIMEOUT_MS)
+          payload["limits"]["timeout_ms"].as_i.should eq(Celerite::Bridge::SolveBatch::MAX_TIMEOUT_MS)
         end
       end
     end
@@ -35,7 +36,7 @@ module Celerite
         with_resolution_batch_server("success") do |client, log|
           evaluation = resolution_batch_evaluation(batch.evaluation, "2.7.2")
           resolution = Resolution.from_evaluation(definition, evaluation, client, batch.fingerprint)
-          resolution.resolve!.map(&:name).should eq(["alpha"])
+          resolution.resolve!.map(&.name).should eq(["alpha"])
           resolution_batch_log(log).count { |entry| entry["op"] == "solve_batch" }.should eq(0)
         end
       end
@@ -46,11 +47,22 @@ module Celerite
         with_resolution_batch_project do |_dir, definition, batch|
           with_resolution_batch_server("success") do |client, log|
             original = batch.fingerprint.not_nil!
-            fingerprint = Bridge::EvalFingerprint.new(original.text, original.digest, original.verify, state, "test")
+            fingerprint = Celerite::Bridge::EvalFingerprint.new(original.text, original.digest, original.verify, state, "test")
             resolution = Resolution.from_evaluation(definition, batch.evaluation, client, fingerprint)
-            resolution.resolve!.map(&:name).should eq(["alpha"])
+            resolution.resolve!.map(&.name).should eq(["alpha"])
             resolution_batch_log(log).count { |entry| entry["op"] == "solve_batch" }.should eq(0)
           end
+        end
+      end
+    end
+
+    it "keeps a full unlock on the legacy path with zero solve_batch calls" do
+      with_resolution_batch_project do |_dir, definition, batch|
+        with_resolution_batch_server("success") do |client, log|
+          resolution = Resolution.from_evaluation(definition, batch.evaluation, client, batch.fingerprint)
+          resolution.unlock = true
+          resolution.resolve!.map(&.name).should eq(["alpha"])
+          resolution_batch_log(log).count { |entry| entry["op"] == "solve_batch" }.should eq(0)
         end
       end
     end
@@ -64,10 +76,10 @@ module Celerite
 
           specs.size.should eq(1)
           specs.first.platform.should eq(Gem::Platform.local.to_s)
-          specs.first.checksum.should eq("sha256=#{resolution_batch_local_checksum}")
+          specs.first.checksum.should be_nil
           resolution.lock_extra_specs.size.should eq(1)
           resolution.lock_extra_specs.first.platform.should be_nil
-          resolution.lock_extra_specs.first.checksum.should eq("sha256=#{resolution_batch_ruby_checksum}")
+          resolution.lock_extra_specs.first.checksum.should be_nil
 
           request = resolution_batch_log(log).find { |entry| entry["op"] == "solve_batch" }.not_nil!["payload"]
           request["candidate_closure"]["candidate_count"].as_i.should eq(2)
@@ -87,7 +99,7 @@ module Celerite
           locked.first["version"].as_s.should eq("1.0.0")
           locked.first["platform"].as_s.should eq("ruby")
           locked.first["source_id"].as_s.should eq("default")
-          locked.first["checksum"].raw.should_not be_nil
+          locked.first["checksum"].raw.should be_nil
         end
       end
     end
@@ -128,9 +140,61 @@ module Celerite
       with_resolution_batch_project do |_dir, definition, batch|
         with_resolution_batch_server("unknown_failure") do |client, log|
           resolution = Resolution.from_evaluation(definition, batch.evaluation, client, batch.fingerprint)
-          resolution.resolve!.map(&:name).should eq(["alpha"])
+          resolution.resolve!.map(&.name).should eq(["alpha"])
           entries = resolution_batch_log(log)
           entries.count { |entry| entry["op"] == "solve_batch" }.should eq(1)
+          entries.count { |entry| entry["op"] == "evaluate_batch" }.should eq(0)
+        end
+      end
+    end
+
+    it "accepts an empty requirement set and returns an empty chosen set" do
+      with_resolution_batch_project(dependency: "") do |_dir, definition, batch|
+        with_resolution_batch_server("success") do |client, log|
+          resolution = Resolution.from_evaluation(definition, batch.evaluation, client, batch.fingerprint)
+          resolution.resolve!.should be_empty
+          entries = resolution_batch_log(log)
+          entries.count { |entry| entry["op"] == "solve_batch" }.should eq(1)
+          entries.count { |entry| entry["op"] == "evaluate_batch" }.should eq(0)
+          payload = entries.find { |entry| entry["op"] == "solve_batch" }.not_nil!["payload"]
+          payload["requirements"].as_a.should be_empty
+          payload["candidate_closure"]["candidate_count"].as_i.should eq(0)
+        end
+      end
+    end
+
+    it "keeps multiple named sources without a default source on the legacy path" do
+      with_resolution_batch_project do |_dir, definition, batch|
+        raw = JSON.parse(batch.evaluation.to_json)
+        first = raw["sources"].as_a.first
+        first.as_h["name"] = JSON::Any.new("primary")
+        second = JSON.parse(first.to_json)
+        second.as_h["name"] = JSON::Any.new("secondary")
+        raw.as_h["sources"] = JSON::Any.new([first, second])
+        evaluation = Celerite::Bridge::GemfileEvaluation.from_json(raw.to_json)
+        with_resolution_batch_server("success") do |client, log|
+          resolution = Resolution.from_evaluation(definition, evaluation, client, batch.fingerprint)
+          resolution.resolve!.map(&.name).should eq(["alpha"])
+          entries = resolution_batch_log(log)
+          entries.count { |entry| entry["op"] == "solve_batch" }.should eq(0)
+          entries.count { |entry| entry["op"] == "evaluate_batch" }.should eq(0)
+        end
+      end
+    end
+
+    it "keeps query or fragment source identities on the legacy path" do
+      with_resolution_batch_project do |_dir, definition, batch|
+        raw = JSON.parse(batch.evaluation.to_json)
+        source = raw["sources"].as_a.first.as_h
+        remote = "#{source["remotes"].as_a.first.as_s}?cache=1#section"
+        source["remote"] = JSON::Any.new(remote)
+        source["remotes"] = JSON::Any.new([JSON::Any.new(remote)])
+        evaluation = Celerite::Bridge::GemfileEvaluation.from_json(raw.to_json)
+        with_resolution_batch_server("success") do |client, log|
+          resolution = Resolution.from_evaluation(definition, evaluation, client, batch.fingerprint)
+          resolution.resolve!.map(&.name).should eq(["alpha"])
+          entries = resolution_batch_log(log)
+          entries.count { |entry| entry["op"] == "solve_batch" }.should eq(0)
           entries.count { |entry| entry["op"] == "evaluate_batch" }.should eq(0)
         end
       end
@@ -146,15 +210,15 @@ private def resolution_batch_ruby_checksum : String
   "b" * 64
 end
 
-private def resolution_batch_evaluation(evaluation : Bridge::GemfileEvaluation, version : String) : Bridge::GemfileEvaluation
+private def resolution_batch_evaluation(evaluation : Celerite::Bridge::GemfileEvaluation, version : String) : Celerite::Bridge::GemfileEvaluation
   raw = JSON.parse(evaluation.to_json)
   raw.as_h["bundler_version"] = JSON::Any.new(version)
-  Bridge::GemfileEvaluation.from_json(raw.to_json)
+  Celerite::Bridge::GemfileEvaluation.from_json(raw.to_json)
 end
 
-private def with_resolution_batch_project(locked : Bool = false, & : String, Definition, Bridge::BatchGemfileEvaluation -> Nil) : Nil
+private def with_resolution_batch_project(locked : Bool = false, dependency : String = %(gem "alpha", ">= 0"), & : String, Celerite::Definition, Celerite::Bridge::BatchGemfileEvaluation -> Nil) : Nil
   pending! "ruby not available" unless ruby_available?
-  platform = Gem::Platform.local.to_s
+  platform = Celerite::Gem::Platform.local.to_s
   with_project({
     "Gemfile"            => "",
     "index/specs.4.8.gz" => "",
@@ -164,42 +228,42 @@ private def with_resolution_batch_project(locked : Bool = false, & : String, Def
     index = File.join(dir, "index").gsub(/\\/, "/")
     remote = file_source_url(index)
     gemfile = File.join(dir, "Gemfile")
-    File.write(gemfile, %(source "#{remote}"\n\ngem "alpha", ">= 0"\n))
+    File.write(gemfile, %(source "#{remote}"\n\n#{dependency}\n))
     if locked
-      File.write(File.join(dir, "Gemfile.lock"), <<-LOCK)
-        GEM
-          remote: #{remote}
-          specs:
-            alpha (1.0.0)
-
-        PLATFORMS
-          ruby
-
-        DEPENDENCIES
-          alpha
-
-        CHECKSUMS
-          alpha (1.0.0) sha256=#{resolution_batch_ruby_checksum}
-
-        BUNDLED WITH
-           4.0.24
-      LOCK
+      File.write(File.join(dir, "Gemfile.lock"), [
+        "GEM",
+        "  remote: #{remote}",
+        "  specs:",
+        "    alpha (1.0.0)",
+        "",
+        "PLATFORMS",
+        "  ruby",
+        "",
+        "DEPENDENCIES",
+        "  alpha",
+        "",
+        "BUNDLED WITH",
+        "   4.0.24",
+        "",
+      ].join("\n"))
     end
+    ENV["CELERITE_REFERENCE_BUNDLER_VERSION"] = "4.0.24"
     with_client do |client|
       batch = client.evaluate_batch(gemfile, ["fingerprint"])
+      batch.evaluation.bundler_version.should eq("4.0.24")
       batch.fingerprint.should_not be_nil
-      batch.fingerprint.not_nil!.state.should eq(EvalFingerprint::State::Deterministic)
-      yield dir, Definition.build, batch
+      batch.fingerprint.not_nil!.state.should eq(Celerite::EvalFingerprint::State::Deterministic)
+      yield dir, Celerite::Definition.build, batch
     end
   end
 end
 
 private def resolution_batch_log(path : String) : Array(JSON::Any)
   return [] of JSON::Any unless File.exists?(path)
-  File.each_line(path).map { |line| JSON.parse(line) }.to_a
+  File.read_lines(path).map { |line| JSON.parse(line) }
 end
 
-private def with_resolution_batch_server(mode : String, & : Bridge::Client, String -> Nil) : Nil
+private def with_resolution_batch_server(mode : String, & : Celerite::Bridge::Client, String -> Nil) : Nil
   pending! "ruby not available" unless ruby_available?
   dir = File.join(Dir.tempdir, "celerite-resolution-batch-#{Process.pid}-#{Random.rand(1_000_000)}")
   FileUtils.mkdir_p(dir)
@@ -214,7 +278,7 @@ private def with_resolution_batch_server(mode : String, & : Bridge::Client, Stri
       "ruby_version" => "3.3.0", "ruby_description" => "ruby 3.3.0",
       "ruby_env_line" => "ruby 3.3.0", "engine" => "ruby",
       "engine_version" => "3.3.0", "rubygems_version" => "3.5.0",
-      "ruby_revision" => "test", "patchlevel" => 0, "platform" => "ruby",
+      "ruby_revision" => "test", "patchlevel" => "0", "platform" => "ruby",
       "ruby_exe" => "ruby", "gem_paths" => [], "default_gem_dir" => "/gems",
       "loaded_bundler_version" => "4.0.24"
     }
@@ -234,6 +298,8 @@ private def with_resolution_batch_server(mode : String, & : Bridge::Client, Stri
       result = case envelope["op"]
       when "ruby_environment"
         environment
+      when "installed_specs"
+        []
       when "solve_batch"
         payload = envelope["payload"]
         candidates = []
@@ -259,15 +325,15 @@ private def with_resolution_batch_server(mode : String, & : Bridge::Client, Stri
         edges = []
         payload["requirements"].each do |requirement|
           chosen.select { |candidate| candidate["name"] == requirement["name"] }.each do |candidate|
-            edges << {"from" => "root", "to" => "#{candidate["name"]}/#{candidate["version"]}/#{candidate["platform"]}",
+            edges << {"from" => "root", "to" => "\#{candidate["name"]}/\#{candidate["version"]}/\#{candidate["platform"]}",
               "requirements" => requirement["requirements"].sort}
           end
         end
         chosen.each do |source|
           source["dependencies"].each do |dependency|
             chosen.select { |target| target["name"] == dependency["name"] }.each do |target|
-              edges << {"from" => "#{source["name"]}/#{source["version"]}/#{source["platform"]}",
-                "to" => "#{target["name"]}/#{target["version"]}/#{target["platform"]}",
+              edges << {"from" => "\#{source["name"]}/\#{source["version"]}/\#{source["platform"]}",
+                "to" => "\#{target["name"]}/\#{target["version"]}/\#{target["platform"]}",
                 "requirements" => dependency["requirements"].sort}
             end
           end
@@ -277,7 +343,7 @@ private def with_resolution_batch_server(mode : String, & : Bridge::Client, Stri
         chosen.group_by { |candidate| [candidate["name"], candidate["version"]] }.each do |_key, group|
           next if group.size < 2
           group.each do |candidate|
-            variants["#{candidate["name"]}/#{candidate["version"]}/#{candidate["platform"]}"] =
+            variants["\#{candidate["name"]}/\#{candidate["version"]}/\#{candidate["platform"]}"] =
               group.reject { |item| item.equal?(candidate) }.map { |item| item["platform"] }.sort
           end
         end
@@ -302,13 +368,13 @@ private def with_resolution_batch_server(mode : String, & : Bridge::Client, Stri
               "failure" => nil, "stats" => stats}}
         end
       else
-        raise "unexpected bridge op: #{envelope["op"]}"
+        raise "unexpected bridge op: \#{envelope["op"]}"
       end
       STDOUT.puts JSON.generate("proto" => envelope["proto"], "id" => envelope["id"], "ok" => true, "result" => result)
       STDOUT.flush
     end
   RUBY
-  client = Bridge::Client.new(server_path: server)
+  client = Celerite::Bridge::Client.new(server_path: server)
   begin
     yield client, log
   ensure
