@@ -164,5 +164,21 @@ check("plugin index mutation writes nonempty valid YAML") do
   end
 end
 
+check("snapshot restore preserves the exact pre-hot project state") do
+  Dir.mktmpdir("celerite-gate-snapshot") do |root|
+    project = File.join(root, "project")
+    snapshot = File.join(root, "snapshot")
+    installed = File.join(project, "bundle", "ruby", "4.0.0", "gems", "json_pure-2.6.0", "lib", "json_pure.rb")
+    FileUtils.mkdir_p(File.dirname(installed))
+    File.write(installed, "original\n")
+    FastPathGates.snapshot_project(project, snapshot)
+    File.write(installed, "mutated by failed hot run\n")
+    File.write(File.join(project, "unexpected"), "side effect\n")
+    FastPathGates.restore_project(project, snapshot)
+    assert(File.read(installed) == "original\n", "snapshot did not restore installed bytes")
+    assert(!File.exist?(File.join(project, "unexpected")), "snapshot restore kept a hot-run side effect")
+  end
+end
+
 puts "fast_path_gates_test: #{$passed} checks, #{$failures.length} failures"
 exit($failures.empty? ? 0 : 1)
