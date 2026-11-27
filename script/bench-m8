@@ -52,9 +52,14 @@
 #      install failed, timeout, YJIT requested but unsupported)
 #   4  samples were produced but the two sides disagreed (recorded as findings)
 #
-# Platform: Windows uses a PowerShell helper embedded below (PowerShell 7
-# preferred, Windows PowerShell 5.1 accepted); other platforms use
-# /usr/bin/time.  The POSIX path is not exercised on this host.
+# Platform: Linux delegates to the Ruby process-tree collector used by the
+# final manual workflow. Windows keeps the historical PowerShell path below.
+# The POSIX path is not exercised on this host.
+if [ "$(uname -s 2>/dev/null || true)" = "Linux" ]; then
+  SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+  exec ruby "$SCRIPT_DIR/bench_m8.rb" "$@"
+fi
+
 set -uo pipefail
 
 PROG=${0##*/}

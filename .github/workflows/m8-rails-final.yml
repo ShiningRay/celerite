@@ -1,0 +1,163 @@
+name: M8 Rails final benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_sha:
+        description: Immutable full commit to benchmark; HEAD must match exactly
+        required: true
+        type: string
+      mode:
+        description: Smoke (hot/noop, n=1) or full (cold/hot/noop, n=5)
+        required: true
+        default: full
+        type: choice
+        options: [smoke, full]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m8-rails-final
+  cancel-in-progress: false
+
+jobs:
+  rails-final:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      ARTIFACT_DIR: ${{ runner.temp }}/m8-rails-final-artifacts
+      SCRATCH_DIR: ${{ runner.temp }}/m8-rails-final-scratch-${{ github.run_id }}-${{ github.run_attempt }}
+      BASELINE_SHA: ${{ inputs.baseline_sha }}
+      MATRIX_MODE: ${{ inputs.mode }}
+    steps:
+      - name: Validate immutable baseline input
+        run: |
+          set -euo pipefail
+          [[ "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          mkdir -p "$ARTIFACT_DIR/logs"
+          printf 'workflow=%s\nrun_id=%s\nrun_attempt=%s\nbaseline_sha=%s\n' \
+            "$GITHUB_WORKFLOW_REF" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$BASELINE_SHA" \
+            > "$ARTIFACT_DIR/commands.txt"
+
+      - name: Check out immutable baseline
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.baseline_sha }}
+          fetch-depth: 1
+
+      - name: Assert exact baseline and initialize evidence
+        run: |
+          set -euo pipefail
+          head=$(git rev-parse HEAD)
+          test "$head" = "$BASELINE_SHA"
+          test -z "$(git status --porcelain)"
+          printf 'HEAD=%s\nworktree=clean\n' "$head" | tee "$ARTIFACT_DIR/logs/baseline.txt"
+
+      - name: Install Crystal 1.22.1
+        uses: crystal-lang/install-crystal@47f17b5ecff0cc09e96fa95f5220311329bf4bc8 # v1
+        with:
+          crystal: "1.22.1"
+
+      - name: Install Ruby 4.0.6 without Bundler cache
+        uses: ruby/setup-ruby@145243922b4465b78e04dd66294782c7de45901f # v1
+        with:
+          ruby-version: "4.0.6"
+          bundler-cache: false
+
+      - name: Install and assert reference Bundler 4.0.24
+        run: |
+          set -euo pipefail
+          gem install bundler -v 4.0.24 --no-document
+          bundle _4.0.24_ --version | tee "$ARTIFACT_DIR/logs/bundler.txt"
+          ruby -v | tee "$ARTIFACT_DIR/logs/ruby.txt"
+          crystal --version | tee "$ARTIFACT_DIR/logs/crystal.txt"
+
+      - name: Expose bridge environment
+        run: |
+          set -euo pipefail
+          echo "CELERITE_BRIDGE_SERVER=$GITHUB_WORKSPACE/assets/bridge/server.rb" >> "$GITHUB_ENV"
+          echo "CELERITE_REFERENCE_BUNDLER_LIB=$(gem contents bundler -v 4.0.24 --show-install-dir)/lib" >> "$GITHUB_ENV"
+          echo "CELERITE_PROFILE_BUNDLER_VERSION=4.0.24" >> "$GITHUB_ENV"
+
+      - name: Prove YJIT off/on fail closed
+        env:
+          BASELINE_SHA: ${{ inputs.baseline_sha }}
+        run: |
+          set -euo pipefail
+          ruby script/bench_m8.rb --probe-only \
+            --baseline-sha "$BASELINE_SHA" \
+            --ruby "$(command -v ruby)" \
+            --out "$ARTIFACT_DIR" --scratch "$SCRATCH_DIR" \
+            > "$ARTIFACT_DIR/logs/yjit-probe-step.log" 2>&1
+
+      - name: Run Linux collector self-test
+        env:
+          BASELINE_SHA: ${{ inputs.baseline_sha }}
+        run: |
+          set -euo pipefail
+          ruby script/bench_m8.rb --self-test \
+            --baseline-sha "$BASELINE_SHA" \
+            --ruby "$(command -v ruby)" \
+            --out "$ARTIFACT_DIR" --scratch "$SCRATCH_DIR" \
+            > "$ARTIFACT_DIR/logs/collector-self-test-step.log" 2>&1
+
+      - name: Build current baseline binary once
+        run: |
+          set -euo pipefail
+          shards build 2>&1 | tee "$ARTIFACT_DIR/logs/build.log"
+          test -f "$GITHUB_WORKSPACE/bin/celerite"
+          sha256sum "$GITHUB_WORKSPACE/bin/celerite" | tee "$ARTIFACT_DIR/logs/celerite-sha256.txt"
+
+      - name: Run validated Rails matrix
+        env:
+          BASELINE_SHA: ${{ inputs.baseline_sha }}
+          MATRIX_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          if [[ "$MATRIX_MODE" == "smoke" ]]; then
+            runs=1
+            tiers=hot,noop
+          else
+            runs=5
+            tiers=cold,hot,noop
+          fi
+          set +e
+          ruby script/bench_m8.rb \
+            --baseline-sha "$BASELINE_SHA" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --mode "$MATRIX_MODE" --runs "$runs" --warmup 1 --jobs 4 \
+            --tiers "$tiers" --ruby-mode off --ruby-mode on \
+            --celerite "$GITHUB_WORKSPACE/bin/celerite" \
+            --ruby "$(command -v ruby)" --bundle-exe "$(command -v bundle)" \
+            --scratch "$SCRATCH_DIR" --out "$ARTIFACT_DIR" \
+            --cold-timeout 1800 --hot-timeout 120 --noop-timeout 120 --poll-ms 20 \
+            > "$ARTIFACT_DIR/logs/driver.log" 2>&1
+          status=$?
+          set -e
+          cat "$ARTIFACT_DIR/logs/driver.log"
+          exit "$status"
+
+      - name: Seal artifact checksums
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACT_DIR"
+          ruby -rdigest -e '
+            root = File.expand_path(ENV.fetch("ARTIFACT_DIR"))
+            paths = Dir.glob(File.join(root, "**", "*")).select { |p| File.file?(p) && File.basename(p) != "checksums.sha256" }.sort
+            File.binwrite(File.join(root, "checksums.sha256"), paths.map { |p| "#{Digest::SHA256.file(p).hexdigest}  #{p.delete_prefix(root + File::SEPARATOR).tr("\\", "/")}\n" }.join)
+          '
+
+      - name: Upload raw evidence and failure logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: m8-rails-final-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.baseline_sha }}
+          path: ${{ env.ARTIFACT_DIR }}/
+          if-no-files-found: warn
+          retention-days: 30
