@@ -205,3 +205,11 @@ task-265 的修正成立：
 5. 当前未加入 Ruby executable summary；这是与计划判据 7 的冲突项，不是自动豁免。
 
 **建议裁断：L164 保持 `[ ]`；先关闭 A 中四项，再补 B 中 CI/差分/平台证据。仅补文档或仅重跑现有 Windows spec 不足以闭合。**
+
+## 十一、task-291 最终闭合说明（2026-11-27）
+
+- 历史判定保留：task-268 审计时 A 中产品缺口、B 中 CI/差分/平台证据尚未闭合，故当时建议 L164 保持 `[ ]`。
+- 最终证据：GitHub Actions run [`45975413773`](https://github.com/ShiningRay/celerite/actions/runs/45975413773) 绑定 `4e1faee0827fec85a6a18752a4db0e9ef288b995`，Windows/Ubuntu × Bundler 4.0.24/2.7.2 四格均 success；四格 artifact 的 `summary.json` 均 `status=passed`，lock/install hot 四计数均 `{0,0,0,0}`，stats-off 均精确失败 `expected exactly one bridge stats line, got []`，current capability 步骤均 success。
+- 旧 binary 反假绿：固定 `d9009b14a0bf18da62b7a85cfc68b2442c4446de` 在四格均非零且精确失败 `expected_miss_after_lock_tamper: stats={0, 0, 0, 0}`，证明到达锁篡改断言，而非编译、证书或环境提前失败。
+- 逐项结论：L164 原文要求的无变化 `lock`/`install` 零 Ruby 快路径、动态 DSL/插件/指纹不确定时显式兼容路径，已由四格正门、四类负门、parity 与旧 binary 负门共同闭合；task-291 只勾选 `docs/roadmap.md:164`，不宣称 L161/L165/L166 完成。
+- 残余未验证：Ubuntu 本机、第二 ABI、JRuby/TruffleRuby/shim、真实 ACL、多进程并发、idle-timeout、Windows rename/symlink/junction、大小写与真实路径边界、跨文件非原子、硬终止、真实 index/Rails 与全量 differential 仍未验证；artifact 未单独归档 current binary SHA-256。详细四格 job/artifact 与 lock SHA 见 `docs/roadmap-evidence/M8-l164-platform-evidence.md` §9。

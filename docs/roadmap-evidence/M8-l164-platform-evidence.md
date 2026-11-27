@@ -2,9 +2,9 @@
 
 ## 1. 结论
 
-- **L164 仍不可勾选。** 最低硬门是：GitHub Actions `windows-latest/ubuntu-latest × Bundler 4.0.24/2.7.2` 四格实际全绿，且固定旧 binary `d9009b14a0bf18da62b7a85cfc68b2442c4446de` 在四格都因 `expected_miss_after_lock_tamper` 断言失败。首轮 run `45837915978` 已运行但仅 Windows/4.0.24 success；`7bcdf6f` 修复装具后四格复跑待观察。首辅已在 task-275 合流后于本机 Windows 完成双 profile driver PASS 与旧 binary 定向负门，见 `docs/compat-evidence/2026-11-26.md` 的 task-275 节；这只关闭本机局部证据，不替代四格 CI。
+- **L164 最终可勾选。** 最低硬门已由 GitHub Actions run [`45975413773`](https://github.com/ShiningRay/celerite/actions/runs/45975413773) 在 `4e1faee0827fec85a6a18752a4db0e9ef288b995` 上闭合：Windows/Ubuntu × Bundler 4.0.24/2.7.2 四格均 success，四格 `summary.json` 均 `status=passed`，lock/install hot 四计数均 `{0,0,0,0}`；固定旧 binary `d9009b14a0bf18da62b7a85cfc68b2442c4446de` 在四格均非零且精确失败 `expected_miss_after_lock_tamper: stats={0, 0, 0, 0}`。task-276 当时的“不可勾”结论保留为历史，由本文 §9 最终闭合说明取代。
 - 本机 Windows 只有 task-269/272/273/274 的历史实证与当前基线内的测试面；**task-276 没有复跑任何 Crystal、build、spec、differential 或 Rails**，不能把历史结果改写成本轮实测。
-- Ubuntu 本机未验证；GitHub Actions 首轮 run `45837915978` 仅 Windows/4.0.24 success，Windows/2.7.2 因 focused 缺 Bundler 4.0.24、Ubuntu 两格因盘符路径展开失败，`7bcdf6f` 已修装具并待四格复跑。task-275 的 workflow/driver/focused capability 已由首辅在本机 Windows 完成真实双 profile 正门与固定 `d9009b1` 旧 binary 负门，但 **task-276 本身未复跑**，不能把首辅结果写成本轮实测，也不证明 CI 或产品跨平台门禁通过。
+- Ubuntu 本机仍未验证；GitHub Actions 四格 CI 已全绿，但 CI 不等于 Ubuntu 本机实测。task-276 本身未复跑门禁；task-291 只独立核对 run/job/artifact 与旧 binary 精确失败证据，未运行 Crystal、build、spec、differential 或 Rails。
 - 第二 ABI、JRuby/TruffleRuby/shim、真实 ACL、多进程并发、bridge idle-timeout、Windows rename/ACL/symlink/junction、大小写与路径边界、跨文件非原子、硬终止均未验证。
 - 本文只做证据审计与补证设计，不实现产品，不修改 roadmap 复选框、claims、CI 或任何 `src/spec` 文件。
 
@@ -85,11 +85,11 @@
 |---|---|---|---|
 | 本机 Windows，当前提交 | 完整 spec 1393/0/0/0；M8 家族 309/0；task-275 双 profile driver PASS；固定旧 binary 定向负门精确失败 | `W-LOCAL`，局部 | 四格 CI 与下述平台边界 |
 | Ubuntu 本机 | 无 | `UNVERIFIED` | Ubuntu 实机命令与日志；若验收只接受 CI，也须明确记录本机仍未验证 |
-| GitHub Windows × 4.0.24 | workflow 设计存在 | `UNVERIFIED` | 该格 run URL/commit SHA、当前 binary SHA、driver/stats-off/capability 日志与 artifact |
-| GitHub Windows × 2.7.2 | workflow 设计存在 | `UNVERIFIED` | 同上 |
-| GitHub Ubuntu × 4.0.24 | workflow 设计存在 | `UNVERIFIED` | 同上 |
-| GitHub Ubuntu × 2.7.2 | workflow 设计存在 | `UNVERIFIED` | 同上 |
-| 旧 binary d9009b1 定向负门 | 本机 Windows 已构建并精确失败 `expected_miss_after_lock_tamper: stats={0, 0, 0, 0}` | `W-LOCAL`（Windows）；四格 `UNVERIFIED` | 四格均非零且命中同一断言；不得因缺 v2 证书提前失败 |
+| GitHub Windows × 4.0.24 | run `45975413773` @ `4e1faee`；job `140425798675`；artifact `15185899854`；`summary=passed`、hot `{0,0,0,0}`、旧 binary 精确 tamper FAIL | `CI-GREEN` | 无（本行最低门已闭合） |
+| GitHub Windows × 2.7.2 | run `45975413773` @ `4e1faee`；job `140425798221`；artifact `15187555618`；`summary=passed`、hot `{0,0,0,0}`、旧 binary 精确 tamper FAIL | `CI-GREEN` | 无（本行最低门已闭合） |
+| GitHub Ubuntu × 4.0.24 | run `45975413773` @ `4e1faee`；job `140425798534`；artifact `15186722159`；`summary=passed`、hot `{0,0,0,0}`、旧 binary 精确 tamper FAIL | `CI-GREEN` | 无（本行最低门已闭合） |
+| GitHub Ubuntu × 2.7.2 | run `45975413773` @ `4e1faee`；job `140425798626`；artifact `15187376171`；`summary=passed`、hot `{0,0,0,0}`、旧 binary 精确 tamper FAIL | `CI-GREEN` | 无（本行最低门已闭合） |
+| 旧 binary d9009b1 定向负门 | 四格均从 `d9009b14a0bf18da62b7a85cfc68b2442c4446de` 构建，均 `1 examples, 1 failures, 0 errors, 0 pending`，精确 `expected_miss_after_lock_tamper: stats={0, 0, 0, 0}` | `CI-GREEN`（四格） | 无（本行最低门已闭合） |
 | 第二 Ruby ABI / target-rbconfig | 三 ABI 视图的结构性 spec 存在 | `UNVERIFIED` | 第二 ABI 的真实 cold/warm/hot、输出/锁/树/exit parity 与负门 |
 | JRuby / TruffleRuby | 无 | `UNVERIFIED` | 真实解释器矩阵；不支持时须证明 `RubyIdentity=unknown` 并安全回落 |
 | shim / wrapper | task-272 有“首个 shim 不跳过”的 Windows spec | `UNVERIFIED`（跨平台/真实 wrapper） | Windows/Unix shim、batch、wrapper、断链、循环链实跑 |
@@ -152,3 +152,21 @@
 - 已做：只读检查基线/参考树、源码/spec、历史 claims/evidence、task-275 workflow/driver/test/capability；形成本矩阵与补证清单。
 - 未做：Crystal、build、spec、differential、Rails、真实 lock/install、GitHub Actions、当前/旧 binary 构建与能力门、Ubuntu、第二 ABI、真实 ACL、并发、idle-timeout、硬终止。
 - 因此本文所有产品行为结果均继承历史证据或标为未验证；本文不宣告 L164 闭合。
+
+## 9. task-291 最终闭合说明（2026-11-27）
+
+- 最终基线：`C:\Temp\celerite-t291`，HEAD `4e1faee0827fec85a6a18752a4db0e9ef288b995`。GitHub Actions run [`45975413773`](https://github.com/ShiningRay/celerite/actions/runs/45975413773) 为 `completed/success`；四格 job 均 `completed/success`，`Lightweight driver checks`、`Build current binary`、`Run fast-path CI gates`、`Require stats-off`、`Verify current capability`、`Build old binary`、`Require old binary fail` 关键步骤均 success。
+- 四格证据矩阵：
+
+| 平台 / Bundler | job | artifact | `summary.json` | lock/install hot | lock / install 锁 SHA-256 |
+|---|---|---|---|---|---|
+| Windows / 2.7.2 | [`140425798221`](https://github.com/ShiningRay/celerite/actions/runs/45975413773/job/140425798221) | `15187555618` | `status=passed`，`platform=mingw32` | `{0,0,0,0}` / `{0,0,0,0}` | `9ee90536714d0debaf1f6cce4d614ce5c436256a01845f729a40f68519911f31` / `01cd1b24d5d70aad634cf64fb6110c81fc77df0a9bee6c3a91299a683ad59ada` |
+| Ubuntu / 4.0.24 | [`140425798534`](https://github.com/ShiningRay/celerite/actions/runs/45975413773/job/140425798534) | `15186722159` | `status=passed`，`platform=linux` | `{0,0,0,0}` / `{0,0,0,0}` | `d39afaa9e77a1e004b599d8dcfe5314091d1a14802b57dff13f3f200819804a4` / `3be3b6be54551428aa46bfacb30686893c2492efe32cb550a492f22ef237f80f` |
+| Ubuntu / 2.7.2 | [`140425798626`](https://github.com/ShiningRay/celerite/actions/runs/45975413773/job/140425798626) | `15187376171` | `status=passed`，`platform=linux` | `{0,0,0,0}` / `{0,0,0,0}` | `9c5760c39ec86fcce956870cfb04a2adcd81e7cbe55a107a696926e95433900e` / `d7fd45b91b3ac201382318754ac7a8c3464647a89599bfcb691d9eb6a2d467d9` |
+| Windows / 4.0.24 | [`140425798675`](https://github.com/ShiningRay/celerite/actions/runs/45975413773/job/140425798675) | `15185899854` | `status=passed`，`platform=mingw32` | `{0,0,0,0}` / `{0,0,0,0}` | `86d43878a6c1d15b39862864719fb75e8d492a5f8ae014ed55c1285dbc688c90` / `58600f5368ad2c72607828be429918a950b40bef45040d539e9153c462630221` |
+
+- 四格日志共同实测：`bin_stubs_test: 1 checks, 0 failures`、`fast_path_gates_test: 12 checks, 0 failures`、`fast-path-gates: PASS profile=<版本>`；stats-off 负门精确失败 `expected exactly one bridge stats line, got []`。四类锁字节/锁注释/安装树/插件索引负门均包含在 driver 的 `summary.json` 中，current capability 步骤均 success。
+- 固定旧 commit `d9009b14a0bf18da62b7a85cfc68b2442c4446de` 构建的旧 binary 在四格均得到 `1 examples, 1 failures, 0 errors, 0 pending`，精确失败 `expected_miss_after_lock_tamper: stats={0, 0, 0, 0}`；断言位置 `spec/m8_install_fast_path_spec.cr:1564`，failure trace 另见 `:1577`。这证明到达锁篡改点，而非编译、证书或环境提前失败。
+- 逐项复核 L164：无变化 `lock`/`install` 使用 lockfile/安装计划且不启动 Ruby，由四格 lock/install hot 四计数全 0 证明；动态 DSL、插件或指纹不确定时显式走兼容路径，由静态 Unknown 回落与四类真实 `procs>=1` 负门证明；输出、锁、树与退出码 parity 由 driver 对 `CELERITE_FAST_PATH=0` 的比较证明。最低 CI 正门与旧 binary 反假绿门闭合，故只勾 `docs/roadmap.md:164`。
+- 残余未验证：Ubuntu 本机、第二 ABI、JRuby/TruffleRuby/shim、真实 ACL、多进程并发、idle-timeout、Windows rename/symlink/junction、大小写与真实路径边界、跨文件非原子、硬终止、真实 index/Rails 与全量 differential 仍未验证；artifact 未单独归档 current binary SHA-256。以上均不冒充本行已闭合，也不宣称 L161/L165/L166 完成。
+- task-291 执行边界：只独立核对 GitHub Actions run/job/artifact、更新文档、机械重建并校验 claims 索引；未运行 Crystal、build、spec、differential 或 Rails，未改源码/spec/其他 claim/甘特图，一笔提交不 push。

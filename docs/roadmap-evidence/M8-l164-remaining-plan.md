@@ -444,3 +444,10 @@ C 只能写入 compat-evidence/claims 的差异记录：说明其接受未识别
 - 未验证 Crystal 在各平台暴露的 mtime 纳秒精度、junction/符号链接行为、跨盘 atomic rename 行为；task-272/273 必须补平台 spec。
 - 未验证旧二进制 `d9009b1` 在锁篡改负向子集上的实际失败文本；task-275 必须固定并观测。
 - 未验证硬终止窗口；见第 4.2 节。
+
+## 10. task-291 最终闭合说明（2026-11-27）
+
+- §8.1 可勾条件已由后续实现与 run [`45975413773`](https://github.com/ShiningRay/celerite/actions/runs/45975413773) 闭合：同一提交 `4e1faee0827fec85a6a18752a4db0e9ef288b995` 的 Windows/Ubuntu × Bundler 4.0.24/2.7.2 四格均 success，四格 `summary.json` 均 `status=passed`，lock/install hot 四计数均 `{0,0,0,0}`，输出/锁/树/exit parity、四类负门、stats-off fail closed 与 current capability 均通过。
+- 固定旧 binary `d9009b14a0bf18da62b7a85cfc68b2442c4446de` 在四格均非零且精确失败 `expected_miss_after_lock_tamper: stats={0, 0, 0, 0}`，满足 §8.1 的旧二进制 FAIL 与正确失败原因要求。
+- §8.2 中“只有 Windows 或只有 Unix 实测”“只跑本地手工”“旧 binary 未到锁篡改点”等阻断已消除；硬终止原子性未被宣称解决，明确排除在本行最低闭合条件之外并继续保留风险，因此不构成伪报完成。
+- 最终只勾选 `docs/roadmap.md:164`。第二 ABI、JRuby/TruffleRuby/shim、真实 ACL、多进程并发、idle-timeout、Windows rename/symlink/junction、大小写/路径、跨文件非原子、硬终止、Ubuntu 本机、真实 index/Rails 与全量 differential 仍为残余未验证项；L161/L165/L166 状态不变。
