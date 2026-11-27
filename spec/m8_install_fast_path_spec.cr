@@ -142,9 +142,8 @@ private def ifp_ready(project : String, profile : String = "4.0.24",
     fail "cold install failed (#{status}): #{output} #{errors}" unless status == 0
     ifp_stats(errors)[0].should be >= 1
     if single_platform && ifp_single_platform_lock!(project)
-      status, output, errors = ifp_run(project, ["install"])
-      fail "single-platform re-warm install failed (#{status}): #{output} #{errors}" unless status == 0
-      ifp_stats(errors)[0].should be >= 1
+      status, output, errors = ifp_run(project, ["lock"])
+      fail "single-platform lock re-sign failed (#{status}): #{output} #{errors}" unless status == 0
     end
     ifp_assert_install_certificate(project) if require_install_certificate
   end
@@ -1548,6 +1547,18 @@ describe "install takes the no-Ruby fast path on an unchanged project" do
     end
   end
 
+  it "re-signs a normalized legacy lock through lock without requiring a Ruby spawn" do
+    with_project({} of String => String) do |project|
+      overrides = {"BUNDLE_PLUGINS" => "false"}
+      ifp_ready(project, overrides: overrides, require_install_certificate: false, single_platform: true)
+      section = File.read(File.join(project, "Gemfile.lock")).match(/^PLATFORMS\r?\n((?:  [^\r\n]+\r?\n)+)/m).not_nil!
+      section[1].lines.map(&.strip).should eq([Celerite::Gem::Platform.local.to_s])
+
+      status, _output, _errors, stats = ifp_hot(project, ["install"], overrides)
+      status.should eq(0)
+      stats.should eq({0, 0, 0, 0})
+    end
+  end
   it "CI capability: expected_miss_after_lock_tamper" do
     with_project({} of String => String) do |project|
       overrides = {"BUNDLE_PLUGINS" => "false"}
