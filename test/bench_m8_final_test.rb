@@ -287,6 +287,29 @@ check("tree sampler sums identities and marks missing child IO incomplete") do
 
   collector_source = File.read(File.join(ROOT, "script/bench_m8_collector.rb"))
   assert(collector_source.include?("sleep 0.35"), "self-test observation window is too short")
+  selected_ruby = File.join(Dir.tmpdir, "Ruby With Space", "ruby")
+  captured_command = nil
+  original_new = BenchM8::LinuxCollector.method(:new)
+  fake_collector = Object.new
+  def fake_collector.last_result
+    nil
+  end
+  fake_collector.define_singleton_method(:run) do |command, **_kwargs|
+    captured_command = command
+    raise BenchM8::CollectionError, "captured self-test argv"
+  end
+  BenchM8::LinuxCollector.define_singleton_method(:new) { |*_args, **_kwargs| fake_collector }
+  begin
+    begin
+      BenchM8::LinuxCollector.self_test(ruby: selected_ruby)
+      raise "self-test did not invoke collector"
+    rescue BenchM8::CollectionError
+    end
+    assert(captured_command && captured_command[0] == selected_ruby, "self-test argv[0] is not the raw Ruby executable path")
+    assert(!captured_command[0].include?('"'), "self-test argv[0] contains Ruby dump quotes")
+  ensure
+    BenchM8::LinuxCollector.define_singleton_method(:new, original_new)
+  end
   Dir.mktmpdir("m8-collector-diagnostics") do |directory|
     stderr_path = File.join(directory, "stderr.txt")
     time_path = File.join(directory, "stdout.txt.time")

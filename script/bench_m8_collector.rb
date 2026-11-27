@@ -55,7 +55,7 @@ module BenchM8
         stderr = File.join(dir, "stderr.txt")
         begin
           result = collector.run(
-            [ruby.dump, "-e", parent, io_path],
+            [ruby, "-e", parent, io_path],
             env: { "RUBYOPT" => "", "LC_ALL" => "C" },
             chdir: dir,
             stdout_path: stdout,
