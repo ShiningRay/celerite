@@ -434,3 +434,13 @@
 - 边界：本机 Windows 与真实 Ubuntu CI 已验证 binstub 生成；完整 spec、differential、Rails、第二 ABI 与真实 ACL/并发仍未验证。旧参数顺序的独立 Linux 反假绿未再单列，四格 CI 的 install setup 通过即为该平台能力证据。
 - 生效：task-286（随 Fast path run `45975413773` 四格 CI 闭环）
 - 取代：无；只修 `generate_bin_stubs` 的 chmod 调用签名，不放宽其它安装行为。
+
+## C-M8-1-038 check 对多平台锁只检查当前最佳可安装变体（task-290）
+
+- 状态：已实现
+- 参考行为（4.0.24）：`lib/bundler/spec_set.rb:241-269` 先按当前平台物化 locked specs，再计算 missing/reachable 集合；`lib/bundler/materialization.rb:21-36,49-52` 以平台匹配选出可安装规格；`lib/bundler/match_platform.rb:12-35` 定义 `platform_specificity_match`。因此 `bundle check` 不要求锁内全部平台变体都已安装，本地 native 缺位时才采用 ruby 变体。
+- 我方行为：`src/celerite/cli/commands_surface.cr:1670-1694` 新增纯 helper `best_match_locked_specs`，按 name/version 分组，沿用 `Gem::Platform#match?` 与 `Gem::Platform.platform_specificity_match` 选择本地最佳 native，native 缺位时选 ruby，并保留锁对象身份。`src/celerite/cli/commands.cr:1623-1645` 在组过滤后、依赖闭包前收口变体；installed/missing 判定只看到选中变体。native 缺失时其它平台或 ruby 已装也不能冒充；无 native 且无 ruby 的组保留旧行，避免误判满足。非 frozen 的组子集使用 `check_evaluation || gemfile_evaluation` 计算闭包，default-only 保持旧语义。
+- 判据：`crystal spec spec/m8_check_platform_variants_spec.cr spec/m8_resolution_solve_batch_spec.cr spec/m7_check_missing_dependency_spec.cr` = **27 examples, 0 failures, 0 errors, 0 pending（45.51s）**；独立树 18 文件 **126 examples, 0 failures, 0 errors, 0 pending（2m07s）**；首辅独立 15 文件中多平台/进度相关 **187 examples通过**，另两例 P3 回归在未含 task-290 的 main 同样失败，已由 task-285 收口。Rails run `45973141516` 的 `driver.log` 为 `celerite seed check failed: exit=1`，seed stderr 重复列出 8 个 nokogiri 与 8 个 prism 平台变体，而 install 已装当前 `x86_64-linux-gnu`。main 合入 fix `3ade9e0`、test `50d7661`/`0b726e7` 后，首辅在完整 PATH、树内隔离 HOME/TMP/CACHE 下重跑 format/no-codegen/binary build/claims/diff 均 EXIT=0；16 文件集成门禁 = **249 examples, 0 failures, 0 errors, 0 pending（11:47）**。
+- 边界：`check` 只改锁变体选择，不改 fast path、plan cache、solver 语义、桥、install 行为、doctor 或 roadmap 复选框；不放宽、不 skip 既有多平台、默认 gem、PATH、GIT 测试。progress followup 只缓冲 batch 候选发现期间的输出并校正 Resolving/Fetching 顺序，不改变 batch eligibility、缓存或求解路径。真实 Rails/Linux 复验、全量 spec/differential、macOS 与第二 ABI 未验证。
+- 生效：task-290（main fix/test 已合入，Linux Rails 复验待跑）
+- 取代：无；只收口 `check` 对多平台锁的 installed 判定，不放宽解析或安装语义。
