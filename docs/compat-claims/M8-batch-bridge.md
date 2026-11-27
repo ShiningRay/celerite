@@ -414,3 +414,13 @@
 - 边界：本机 Windows 通过 `CELERITE_LOCAL_PLATFORM=x86_64-linux` 覆盖 generic-ruby 锁形状，但没有在真实 Ubuntu runner 执行新 binary；不声称四格 CI 已绿。全量 spec、differential、Rails、第二 ABI 未验证，L164 不据此单独勾选。
 - 生效：M8 期间（task-284）
 - 取代：无；收窄 task-261 的 exact-set 边界，只补 generic-ruby 的规范两平台形状，不放宽任意附加平台。
+
+## C-M8-1-037 Linux binstub chmod 参数顺序与跨平台桥测试（M8 L164，task-286）
+
+- 状态：已实现
+- 参考行为：Ruby `File.chmod` 的签名是 `File.chmod(mode, file)`；非 Windows 生成 binstub 后应设置 executable bit，Windows 走 `.bat` 分支。
+- 我方行为：`assets/bridge/server.rb` 将 `File.chmod(script_path, 0o755)` 改为 `File.chmod(0o755, script_path)`，不改 stub 输出；新增真实 JSONL 桥集成测试，解包 thor fixture 后调用 `generate_bin_stubs`，断言成功、`thor` 脚本及按平台检查 executable bit 或 `.bat`；四格 fast-path workflow 均执行该测试。
+- 判据：2026-11-27 首辅在 `C:\Temp\celerite-t286` 独立标准环境复验：format、no-codegen、binary build、四个 Ruby `-c`、claims、diff 全 0；`ruby test/bin_stubs_test.rb` = **1 checks, 0 failures**；`ruby test/fast_path_gates_test.rb` = **12 checks, 0 failures**；`crystal spec spec/m7_binstubs_template_spec.cr spec/m7_binstubs_path_source_spec.cr` = **7 examples, 0 failures, 0 errors, 0 pending（16.5s）**。旧 main 在 Windows 的同测试通过，因 `Gem.win_platform?` 跳过 chmod，不能作为 Linux 反假绿证据。
+- 边界：本机 Windows 已验证；旧参数顺序在 Linux 的失败复现与四格 CI 均未验证。未跑完整 spec、differential 或 Rails，不改 roadmap 复选框，不宣称四格已绿。
+- 生效：task-286（Linux CI 待跑）
+- 取代：无；只修 `generate_bin_stubs` 的 chmod 调用签名，不放宽其它安装行为。
