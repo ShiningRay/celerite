@@ -28,6 +28,7 @@ module Celerite::PlanCache
   ENTRY_FILE            = /\A[0-9a-f]{64}\.json\z/
   CREDENTIAL_URI        = %r{://[^/"\\\s]+@}
   SENSITIVE_KEY         = /\A(?:api[_-]?key|authorization|credential|credentials|password|passwd|secret|token)\z/i
+  ENV_CREDENTIAL_KEY    = /(?:^|[_-])(?:api[_-]?key|authorization|credentials?|password|passwd|secret|token)(?:$|[_-])/i
   PAYLOAD_KEYS          = %w[installed_snapshot plan specs]
   COMPONENT_KEYS        = %w[abi build checksums credential_namespace platform sources]
   LOCKED_COMPONENT_KEYS = %w[abi build bundler_cache bundler_version checksums credential_namespace evaluation_digest lockfile_sha256 platform sources]
@@ -345,7 +346,8 @@ module Celerite::PlanCache
       info = File.info(path)
       return corrupt(path, "too_large") if info.size > MAX_BYTES
       text = File.read(path)
-      entry = JSON.parse(text).as_h
+      entry_value = JSON.parse(text)
+      entry = entry_value.as_h
       return corrupt(path, "format") unless entry["format"]?.try(&.as_s?) == FORMAT
 
       components = entry["key"]?
@@ -361,6 +363,10 @@ module Celerite::PlanCache
       payload = entry["payload"]?
       return corrupt(path, "payload_missing") unless payload
       return corrupt(path, "digest_mismatch") unless Digest::SHA256.hexdigest(canonical_json(payload)) == digest
+      if reason = payload_validation_reason(components, payload)
+        return corrupt(path, reason)
+      end
+      return corrupt(path, "credential_value") if contains_environment_credential?(entry_value)
 
       result(Status::Hit, "ok", payload)
     rescue ex : File::NotFoundError
@@ -402,10 +408,14 @@ module Celerite::PlanCache
     return write_result(WriteStatus::InvalidKey, "key_mismatch") unless recomputed == key
     embedded_ns = components.as_h["credential_namespace"].as_s?
     return write_result(WriteStatus::InvalidNamespace, "key_namespace_mismatch") unless embedded_ns == namespace
-    return write_result(WriteStatus::CredentialPayload, "credential_key") unless credential_free_json?(components)
-    return write_result(WriteStatus::InvalidPayload, "payload_invalid") unless valid_payload?(payload)
-    return write_result(WriteStatus::CredentialPayload, "credential_key") unless credential_free_json?(payload)
-    return write_result(WriteStatus::NonPortablePayload, "payload_root_dependent") unless portable_json?(payload)
+    if reason = payload_validation_reason(components, payload)
+      status = case reason
+               when "credential_key"         then WriteStatus::CredentialPayload
+               when "payload_root_dependent" then WriteStatus::NonPortablePayload
+               else                               WriteStatus::InvalidPayload
+               end
+      return write_result(status, reason)
+    end
 
     begin
       canonical_payload = canonical_json(payload)
@@ -423,7 +433,7 @@ module Celerite::PlanCache
       })
       text = canonical_json(entry)
       return write_result(WriteStatus::TooLarge, "too_large") if text.bytesize > MAX_BYTES
-      return write_result(WriteStatus::CredentialPayload, "credential_value") if contains_environment_credential?(text)
+      return write_result(WriteStatus::CredentialPayload, "credential_value") if contains_environment_credential?(entry)
       return write_result(WriteStatus::IoError, "io_error") unless atomic_write(path, text)
     rescue ex : ArgumentError
       return write_result(WriteStatus::InvalidPayload, "payload_invalid")
@@ -519,6 +529,17 @@ module Celerite::PlanCache
     end
   end
 
+  # Read and write share the same trust boundary. A digest only proves that a
+  # payload is internally consistent; it does not make root-dependent paths or
+  # credentials safe to hydrate on another machine.
+  private def self.payload_validation_reason(components : JSON::Any, payload : JSON::Any) : String?
+    return "credential_key" unless credential_free_json?(components)
+    return "payload_invalid" unless valid_payload?(payload)
+    return "credential_key" unless credential_free_json?(payload)
+    return "payload_root_dependent" unless portable_json?(payload)
+    nil
+  end
+
   private def self.valid_payload?(value : JSON::Any) : Bool
     object = value.as_h?
     return true if object && object.keys.sort == PAYLOAD_KEYS &&
@@ -570,9 +591,25 @@ module Celerite::PlanCache
     end
   end
 
-  private def self.contains_environment_credential?(text : String) : Bool
-    ENV.any? do |key, value|
-      credential?(key, value) && !value.empty? && text.includes?(value)
+  private def self.environment_credential?(key : String, value : String) : Bool
+    key.matches?(ENV_CREDENTIAL_KEY) || value.matches?(CREDENTIAL_URI)
+  end
+
+  # Only string values are inspected. JSON keys and scalar booleans/numbers are
+  # not credential material, and ordinary BUNDLE_GEM__* settings must not make
+  # an otherwise portable entry look like a token leak.
+  private def self.contains_environment_credential?(value : JSON::Any) : Bool
+    case raw = value.raw
+    when Hash(String, JSON::Any)
+      raw.each_value.any? { |item| contains_environment_credential?(item) }
+    when Array(JSON::Any)
+      raw.any? { |item| contains_environment_credential?(item) }
+    when String
+      ENV.any? do |key, env_value|
+        environment_credential?(key, env_value) && !env_value.empty? && raw.includes?(env_value)
+      end
+    else
+      false
     end
   end
 
